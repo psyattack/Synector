@@ -396,6 +396,10 @@ pub enum Action {
     },
     #[serde(rename = "macro")]
     Macro {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preset_id: Option<String>,
+        #[serde(default)]
+        operation: MacroOperation,
         #[serde(default)]
         events: Vec<MacroEvent>,
         #[serde(default = "default_repeat_one")]
@@ -704,6 +708,76 @@ pub fn default_text_delay() -> u32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum MacroOperation {
+    #[default]
+    Run,
+    Stop,
+    Toggle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MacroPreset {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub events: Vec<MacroEvent>,
+    #[serde(default = "default_repeat_one")]
+    pub repeat: u32,
+    #[serde(default = "default_speed_one")]
+    pub speed: f32,
+    #[serde(default)]
+    pub infinite: bool,
+}
+
+impl MacroPreset {
+    pub fn new(id: impl Into<String>, name: impl Into<String>, events: Vec<MacroEvent>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            events,
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+        }
+    }
+}
+
+pub fn default_macro_presets() -> Vec<MacroPreset> {
+    vec![
+        MacroPreset {
+            id: "macro_spam_click".to_string(),
+            name: "Rapid Clicker".to_string(),
+            events: vec![
+                MacroEvent::MouseDown { button: MouseButton::Left },
+                MacroEvent::Delay { ms: 25, organic: false, jitter_percent: 0 },
+                MacroEvent::MouseUp { button: MouseButton::Left },
+                MacroEvent::Delay { ms: 25, organic: false, jitter_percent: 0 },
+            ],
+            repeat: 10,
+            speed: 1.0,
+            infinite: false,
+        },
+        MacroPreset {
+            id: "macro_copy_paste".to_string(),
+            name: "Copy & Paste".to_string(),
+            events: vec![
+                MacroEvent::KeyDown { key: "Control".to_string() },
+                MacroEvent::KeyPress { key: "c".to_string() },
+                MacroEvent::KeyUp { key: "Control".to_string() },
+                MacroEvent::Delay { ms: 50, organic: false, jitter_percent: 0 },
+                MacroEvent::KeyDown { key: "Control".to_string() },
+                MacroEvent::KeyPress { key: "v".to_string() },
+                MacroEvent::KeyUp { key: "Control".to_string() },
+            ],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+        },
+    ]
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum MouseActionType {
     #[default]
     Click,
@@ -978,16 +1052,18 @@ impl Action {
     pub fn refresh_overlay_ids(&mut self) {
         match self {
             Action::Overlay { overlay_id, custom_overlay, .. } => {
-                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let fresh_id = format!(
-                    "overlay_{:x}_{:x}",
-                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
-                    count
-                );
-                *overlay_id = fresh_id.clone();
-                if let Some(def) = custom_overlay.as_deref_mut() {
-                    def.id = fresh_id;
+                if custom_overlay.is_some() {
+                    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                    let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let fresh_id = format!(
+                        "overlay_{:x}_{:x}",
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+                        count
+                    );
+                    *overlay_id = fresh_id.clone();
+                    if let Some(def) = custom_overlay.as_deref_mut() {
+                        def.id = fresh_id;
+                    }
                 }
             }
             Action::IfElse { then_actions, else_if_branches, else_actions, .. } => {
@@ -1161,6 +1237,7 @@ pub enum OverlayOperation {
     Hide,
     Toggle,
     Flash,
+    SetText,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2339,6 +2416,8 @@ mod tests {
                     trim_memory: true,
                 },
                 Action::Macro {
+                    preset_id: None,
+                    operation: MacroOperation::Run,
                     events: vec![
                         MacroEvent::KeyDown { key: "Shift".into() },
                         MacroEvent::KeyPress { key: "P".into() },
@@ -2471,6 +2550,8 @@ mod tests {
                 run_in_window: true,
             },
             Action::Macro {
+                preset_id: None,
+                operation: MacroOperation::Run,
                 events: vec![
                     MacroEvent::KeyDown { key: "Shift".into() },
                     MacroEvent::KeyPress { key: "A".into() },
@@ -2984,5 +3065,81 @@ mod tests {
         let json_wsh = serde_json::to_string(&win_show_hide).unwrap();
         let dec_wsh: Action = serde_json::from_str(&json_wsh).unwrap();
         assert_eq!(dec_wsh, win_show_hide);
+    }
+
+    #[test]
+    fn test_macro_presets_and_operations_serde() {
+        let preset = MacroPreset {
+            id: "preset_1".into(),
+            name: "Test Macro".into(),
+            events: vec![
+                MacroEvent::KeyDown { key: "A".into() },
+                MacroEvent::KeyUp { key: "A".into() },
+            ],
+            repeat: 3,
+            speed: 1.5,
+            infinite: false,
+        };
+        let preset_json = serde_json::to_string(&preset).unwrap();
+        let dec_preset: MacroPreset = serde_json::from_str(&preset_json).unwrap();
+        assert_eq!(dec_preset.id, "preset_1");
+        assert_eq!(dec_preset.name, "Test Macro");
+        assert_eq!(dec_preset.events.len(), 2);
+        assert_eq!(dec_preset.repeat, 3);
+        assert_eq!(dec_preset.speed, 1.5);
+        assert!(!dec_preset.infinite);
+
+        let macro_run_action = Action::Macro {
+            events: vec![],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+            preset_id: Some("preset_1".into()),
+            operation: MacroOperation::Run,
+        };
+        let json_run = serde_json::to_string(&macro_run_action).unwrap();
+        let dec_run: Action = serde_json::from_str(&json_run).unwrap();
+        assert_eq!(dec_run, macro_run_action);
+
+        let macro_stop_action = Action::Macro {
+            events: vec![],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+            preset_id: Some("preset_1".into()),
+            operation: MacroOperation::Stop,
+        };
+        let json_stop = serde_json::to_string(&macro_stop_action).unwrap();
+        let dec_stop: Action = serde_json::from_str(&json_stop).unwrap();
+        assert_eq!(dec_stop, macro_stop_action);
+
+        let macro_toggle_action = Action::Macro {
+            events: vec![],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+            preset_id: Some("preset_1".into()),
+            operation: MacroOperation::Toggle,
+        };
+        let json_toggle = serde_json::to_string(&macro_toggle_action).unwrap();
+        let dec_toggle: Action = serde_json::from_str(&json_toggle).unwrap();
+        assert_eq!(dec_toggle, macro_toggle_action);
+
+        let overlay_set_text = Action::Overlay {
+            overlay_id: "overlay_1".into(),
+            operation: OverlayOperation::SetText,
+            custom_overlay: None,
+            override_text: Some("Dynamic notification text".into()),
+            duration_ms: None,
+            close_on_exit: false,
+        };
+        let json_set_text = serde_json::to_string(&overlay_set_text).unwrap();
+        let dec_set_text: Action = serde_json::from_str(&json_set_text).unwrap();
+        assert_eq!(dec_set_text, overlay_set_text);
+
+        // Verify refresh_overlay_ids preserves preset reference (custom_overlay == None)
+        let mut cloned_action = overlay_set_text.clone();
+        cloned_action.refresh_overlay_ids();
+        assert_eq!(cloned_action, overlay_set_text);
     }
 }

@@ -64,7 +64,7 @@ impl LuaRunner {
         // 7. ph.overlay_show(id)
         let ov_show = lua.create_function(|_, id: String| {
             let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-            let overlay = config.overlays.iter().find(|o| o.id == id).cloned().unwrap_or_else(|| match id.as_str() {
+            let overlay = config.find_overlay(&id).cloned().unwrap_or_else(|| match id.as_str() {
                 "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                 "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
                 "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
@@ -77,7 +77,9 @@ impl LuaRunner {
 
         // 8. ph.overlay_hide(id)
         let ov_hide = lua.create_function(|_, id: String| {
-            crate::daemon::overlay_manager::hide_overlay(&id);
+            let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+            let target_id = config.find_overlay(&id).map(|o| o.id.as_str()).unwrap_or(&id);
+            crate::daemon::overlay_manager::hide_overlay(target_id);
             Ok(())
         }).map_err(|e| e.to_string())?;
         ph_table.set("overlay_hide", ov_hide).map_err(|e| e.to_string())?;
@@ -85,7 +87,7 @@ impl LuaRunner {
         // 9. ph.overlay_toggle(id)
         let ov_toggle = lua.create_function(|_, id: String| {
             let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-            let overlay = config.overlays.iter().find(|o| o.id == id).cloned().unwrap_or_else(|| match id.as_str() {
+            let overlay = config.find_overlay(&id).cloned().unwrap_or_else(|| match id.as_str() {
                 "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                 "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
                 "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),

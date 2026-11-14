@@ -263,6 +263,8 @@ const CATALOG_ITEMS: [CatalogItem; 25] = [
             "макрос", "клавиатура", "мышь", "клик", "запись", "нажатие", "печать", "хоткей", "курсор", "эмуляция",
         ],
         constructor: || Action::Macro {
+            preset_id: None,
+            operation: crate::models::MacroOperation::Run,
             events: Vec::new(),
             repeat: 1,
             speed: 1.0,

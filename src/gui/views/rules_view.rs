@@ -1060,16 +1060,39 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
             crate::models::ScriptType::Batch => "CMD".to_string(),
             crate::models::ScriptType::Lua => "LUA".to_string(),
         }
-        Action::Macro { events, repeat, speed, infinite } => {
-            let rep_str = if *infinite {
-                " ∞".to_string()
-            } else if *repeat > 1 {
-                format!(" {}x", repeat)
-            } else {
-                String::new()
+        Action::Macro { events, repeat, speed, infinite, preset_id, operation } => {
+            let op_prefix = match operation {
+                crate::models::MacroOperation::Run => "MACRO",
+                crate::models::MacroOperation::Stop => "STOP MACRO",
+                crate::models::MacroOperation::Toggle => "TOGGLE MACRO",
             };
-            let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
-            format!("MACRO ({} ev){}{}", events.len(), rep_str, spd_str)
+            if *operation == crate::models::MacroOperation::Stop {
+                if let Some(pid) = preset_id {
+                    format!("STOP MACRO ({})", pid)
+                } else {
+                    "STOP ALL MACROS".to_string()
+                }
+            } else if let Some(pid) = preset_id {
+                let rep_str = if *infinite {
+                    " ∞".to_string()
+                } else if *repeat > 1 {
+                    format!(" {}x", repeat)
+                } else {
+                    String::new()
+                };
+                let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
+                format!("{} [{}] {}{}", op_prefix, pid, rep_str, spd_str)
+            } else {
+                let rep_str = if *infinite {
+                    " ∞".to_string()
+                } else if *repeat > 1 {
+                    format!(" {}x", repeat)
+                } else {
+                    String::new()
+                };
+                let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
+                format!("{} ({} ev){}{}", op_prefix, events.len(), rep_str, spd_str)
+            }
         }
         Action::Notification { title, .. } => format!("NOTIFY \"{}\"", title),
         Action::SystemPower { power_type } => format!("{} {:?}", loc.summary_action_power, power_type),
@@ -1173,6 +1196,7 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
                 crate::models::OverlayOperation::Flash => "FLASH OVERLAY".to_string(),
                 crate::models::OverlayOperation::Show => "SHOW OVERLAY".to_string(),
                 crate::models::OverlayOperation::Hide => "HIDE OVERLAY".to_string(),
+                crate::models::OverlayOperation::SetText => "SET OVERLAY TEXT".to_string(),
             }
         }
     }

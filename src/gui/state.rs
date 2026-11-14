@@ -114,6 +114,9 @@ pub struct OverlayStudioState {
     pub last_synced_pos: Option<(f32, f32)>,
     pub undo_stack: Vec<crate::models::OverlayDefinition>,
     pub redo_stack: Vec<crate::models::OverlayDefinition>,
+    pub show_presets_popover: bool,
+    pub preset_save_name: String,
+    pub preset_search_query: String,
 }
 
 impl OverlayStudioState {
@@ -205,6 +208,9 @@ pub struct GuiState {
     pub last_script_editor: Option<ExpandedScriptEditorState>,
     pub macro_editor: Option<MacroEditorModalState>,
     pub last_macro_editor: Option<MacroEditorModalState>,
+    pub show_macro_presets_modal: bool,
+    pub macro_preset_save_name: String,
+    pub macro_preset_search_query: String,
     pub overlay_studio: Option<OverlayStudioState>,
     pub last_overlay_studio: Option<OverlayStudioState>,
     pub action_catalog: Option<ActionCatalogModalState>,
@@ -272,6 +278,9 @@ impl GuiState {
             last_script_editor: None,
             macro_editor: None,
             last_macro_editor: None,
+            show_macro_presets_modal: false,
+            macro_preset_save_name: String::new(),
+            macro_preset_search_query: String::new(),
             overlay_studio: None,
             last_overlay_studio: None,
             action_catalog: None,
@@ -382,12 +391,27 @@ impl GuiState {
     }
 
     pub fn open_macro_editor(&mut self, step_idx: usize, is_exit_pipeline: bool) {
+        if let Some(rule) = &mut self.editing_rule {
+            let actions = if is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
+            if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(step_idx) {
+                if events.is_empty() {
+                    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                    if let Some(preset) = config.find_macro(pid) {
+                        *events = preset.events.clone();
+                        *repeat = preset.repeat;
+                        *speed = preset.speed;
+                        *infinite = preset.infinite;
+                    }
+                }
+            }
+        }
         let editor = MacroEditorModalState {
             step_idx,
             is_exit_pipeline,
         };
         self.macro_editor = Some(editor.clone());
         self.last_macro_editor = Some(editor);
+        self.macro_preset_save_name = self.editing_rule.as_ref().map(|r| r.name.clone()).unwrap_or_else(|| "Custom Macro".to_string());
         crate::gui::macro_recorder::set_studio_active(true);
     }
 
@@ -397,7 +421,25 @@ impl GuiState {
             rec.stop_recording();
         }
         crate::gui::macro_recorder::stop_macro_test();
-        self.macro_editor = None;
+        if let Some(edit_info) = self.macro_editor.take() {
+            if let Some(rule) = &mut self.editing_rule {
+                let actions = if edit_info.is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
+                if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(edit_info.step_idx) {
+                    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                    let preset_name = config.find_macro(pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.clone());
+                    let preset = crate::models::MacroPreset {
+                        id: pid.clone(),
+                        name: preset_name,
+                        events: events.clone(),
+                        repeat: *repeat,
+                        speed: *speed,
+                        infinite: *infinite,
+                    };
+                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(preset));
+                    events.clear();
+                }
+            }
+        }
         crate::gui::macro_recorder::set_studio_active(false);
     }
 
@@ -425,6 +467,9 @@ impl GuiState {
             last_synced_pos: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            show_presets_popover: false,
+            preset_save_name: String::new(),
+            preset_search_query: String::new(),
         };
         self.overlay_studio = Some(studio.clone());
         self.last_overlay_studio = Some(studio);
@@ -447,6 +492,7 @@ impl GuiState {
                         }
                     })
                 };
+                let save_name = overlay.name.clone();
                 let studio = OverlayStudioState {
                     overlay,
                     is_calibrating: false,
@@ -461,6 +507,9 @@ impl GuiState {
                     last_synced_pos: None,
                     undo_stack: Vec::new(),
                     redo_stack: Vec::new(),
+                    show_presets_popover: false,
+                    preset_save_name: save_name,
+                    preset_search_query: String::new(),
                 };
                 self.overlay_studio = Some(studio.clone());
                 self.last_overlay_studio = Some(studio);
@@ -479,10 +528,16 @@ impl GuiState {
                         &mut rule.actions
                     };
                     if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(action_idx) {
-                        *custom_overlay = Some(Box::new(studio.overlay.clone()));
-                        *overlay_id = studio.overlay.id.clone();
+                        if custom_overlay.is_some() {
+                            *custom_overlay = Some(Box::new(studio.overlay.clone()));
+                            *overlay_id = studio.overlay.id.clone();
+                        } else {
+                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(studio.overlay.clone()));
+                        }
                     }
                 }
+            } else {
+                let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(studio.overlay.clone()));
             }
         }
         self.overlay_studio = None;

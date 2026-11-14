@@ -52,6 +52,72 @@ pub enum ActionOutcome {
     AbortPipeline { reason: String },
 }
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+static ACTIVE_MACRO_CANCELLATIONS: OnceLock<Mutex<HashMap<String, Vec<Arc<AtomicBool>>>>> = OnceLock::new();
+
+fn macro_cancellations() -> &'static Mutex<HashMap<String, Vec<Arc<AtomicBool>>>> {
+    ACTIVE_MACRO_CANCELLATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn stop_macro_by_id_or_name(id_or_name: &str) {
+    let mut lock = macro_cancellations().lock().unwrap();
+    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let resolved_id = config.find_macro(id_or_name).map(|p| p.id.as_str()).unwrap_or(id_or_name);
+
+    if let Some(tokens) = lock.get_mut(resolved_id) {
+        for token in tokens.drain(..) {
+            token.store(true, Ordering::SeqCst);
+        }
+    }
+    if let Some(tokens) = lock.get_mut(id_or_name) {
+        for token in tokens.drain(..) {
+            token.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn stop_all_active_macros() {
+    let mut lock = macro_cancellations().lock().unwrap();
+    for (_, tokens) in lock.drain() {
+        for token in tokens {
+            token.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+pub fn is_macro_running(id_or_name: &str) -> bool {
+    let mut lock = macro_cancellations().lock().unwrap();
+    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let resolved_id = config.find_macro(id_or_name).map(|p| p.id.as_str()).unwrap_or(id_or_name);
+
+    if let Some(tokens) = lock.get_mut(resolved_id) {
+        tokens.retain(|t| !t.load(Ordering::Relaxed));
+        if !tokens.is_empty() {
+            return true;
+        }
+    }
+    if let Some(tokens) = lock.get_mut(id_or_name) {
+        tokens.retain(|t| !t.load(Ordering::Relaxed));
+        if !tokens.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn has_any_active_macro() -> bool {
+    let mut lock = macro_cancellations().lock().unwrap();
+    for tokens in lock.values_mut() {
+        tokens.retain(|t| !t.load(Ordering::Relaxed));
+        if !tokens.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
 pub struct ActionRunner;
 
 impl ActionRunner {
@@ -646,16 +712,122 @@ impl ActionRunner {
                 Ok(())
             }
 
-            Action::Macro { events, repeat, speed, infinite } => {
-                let rep = (*repeat).max(1);
-                let mut count = 0;
-                while *infinite || count < rep {
-                    for ev in events {
-                        execute_macro_event(ev, *speed, context).await?;
+            Action::Macro {
+                preset_id,
+                operation,
+                events,
+                repeat,
+                speed,
+                infinite,
+            } => {
+                let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                let interp_preset_id = preset_id.as_ref().map(|p| Self::interpolate_tokens(p, context));
+
+                match operation {
+                    crate::models::MacroOperation::Stop => {
+                        if let Some(ref pid) = interp_preset_id {
+                            stop_macro_by_id_or_name(pid);
+                        } else {
+                            stop_all_active_macros();
+                        }
+                        Ok(())
                     }
-                    count += 1;
+                    crate::models::MacroOperation::Toggle => {
+                        let is_running = if let Some(ref pid) = interp_preset_id {
+                            is_macro_running(pid)
+                        } else {
+                            has_any_active_macro()
+                        };
+
+                        if is_running {
+                            if let Some(ref pid) = interp_preset_id {
+                                stop_macro_by_id_or_name(pid);
+                            } else {
+                                stop_all_active_macros();
+                            }
+                            Ok(())
+                        } else {
+                            let found_preset = interp_preset_id.as_deref().and_then(|pid| config.find_macro(pid));
+                            let (macro_events, macro_repeat, macro_speed, macro_infinite) = if let Some(preset) = found_preset {
+                                let evs = if events.is_empty() { preset.events.clone() } else { events.clone() };
+                                let rep = if *repeat == 1 && preset.repeat > 1 { preset.repeat } else { *repeat };
+                                let spd = if (*speed - 1.0).abs() < f32::EPSILON && (preset.speed - 1.0).abs() > f32::EPSILON { preset.speed } else { *speed };
+                                let inf = *infinite || preset.infinite;
+                                (evs, rep, spd, inf)
+                            } else {
+                                (events.clone(), *repeat, *speed, *infinite)
+                            };
+
+                            let cancel_flag = Arc::new(AtomicBool::new(false));
+                            let key_to_register = interp_preset_id.clone().or_else(|| found_preset.map(|p| p.id.clone()));
+                            if let Some(ref key) = key_to_register {
+                                let mut lock = macro_cancellations().lock().unwrap();
+                                lock.entry(key.clone()).or_default().push(Arc::clone(&cancel_flag));
+                            }
+
+                            let rep = macro_repeat.max(1);
+                            let mut count = 0;
+                            while (macro_infinite || count < rep) && !cancel_flag.load(Ordering::Relaxed) {
+                                for ev in &macro_events {
+                                    if cancel_flag.load(Ordering::Relaxed) {
+                                        break;
+                                    }
+                                    execute_macro_event(ev, macro_speed, context).await?;
+                                }
+                                count += 1;
+                            }
+
+                            if let Some(ref key) = key_to_register {
+                                let mut lock = macro_cancellations().lock().unwrap();
+                                if let Some(vec) = lock.get_mut(key) {
+                                    vec.retain(|f| !Arc::ptr_eq(f, &cancel_flag));
+                                }
+                            }
+
+                            Ok(())
+                        }
+                    }
+                    crate::models::MacroOperation::Run => {
+                        let found_preset = interp_preset_id.as_deref().and_then(|pid| config.find_macro(pid));
+                        let (macro_events, macro_repeat, macro_speed, macro_infinite) = if let Some(preset) = found_preset {
+                            let evs = if events.is_empty() { preset.events.clone() } else { events.clone() };
+                            let rep = if *repeat == 1 && preset.repeat > 1 { preset.repeat } else { *repeat };
+                            let spd = if (*speed - 1.0).abs() < f32::EPSILON && (preset.speed - 1.0).abs() > f32::EPSILON { preset.speed } else { *speed };
+                            let inf = *infinite || preset.infinite;
+                            (evs, rep, spd, inf)
+                        } else {
+                            (events.clone(), *repeat, *speed, *infinite)
+                        };
+
+                        let cancel_flag = Arc::new(AtomicBool::new(false));
+                        let key_to_register = interp_preset_id.clone().or_else(|| found_preset.map(|p| p.id.clone()));
+                        if let Some(ref key) = key_to_register {
+                            let mut lock = macro_cancellations().lock().unwrap();
+                            lock.entry(key.clone()).or_default().push(Arc::clone(&cancel_flag));
+                        }
+
+                        let rep = macro_repeat.max(1);
+                        let mut count = 0;
+                        while (macro_infinite || count < rep) && !cancel_flag.load(Ordering::Relaxed) {
+                            for ev in &macro_events {
+                                if cancel_flag.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                execute_macro_event(ev, macro_speed, context).await?;
+                            }
+                            count += 1;
+                        }
+
+                        if let Some(ref key) = key_to_register {
+                            let mut lock = macro_cancellations().lock().unwrap();
+                            if let Some(vec) = lock.get_mut(key) {
+                                vec.retain(|f| !Arc::ptr_eq(f, &cancel_flag));
+                            }
+                        }
+
+                        Ok(())
+                    }
                 }
-                Ok(())
             }
 
             Action::TrimWorkingSet {
@@ -759,14 +931,16 @@ impl ActionRunner {
 
                 let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
                 let mut found_overlay = custom_overlay.as_deref().cloned().or_else(|| {
-                    config.overlays.iter().find(|o| o.id == id).cloned()
+                    config.find_overlay(&id).cloned()
                 });
 
                 if let Some(ref mut def) = found_overlay {
-                    if !id.is_empty() && def.id != id {
+                    if !id.is_empty() && def.id != id && custom_overlay.is_some() {
                         def.id = id.clone();
                     }
                 }
+
+                let target_id = found_overlay.as_ref().map(|o| o.id.as_str()).unwrap_or(&id);
 
                 match operation {
                     crate::models::OverlayOperation::Show => {
@@ -786,7 +960,7 @@ impl ActionRunner {
                         }
                     }
                     crate::models::OverlayOperation::Hide => {
-                        crate::daemon::overlay_manager::hide_overlay(&id);
+                        crate::daemon::overlay_manager::hide_overlay(target_id);
                     }
                     crate::models::OverlayOperation::Toggle => {
                         let overlay = found_overlay.unwrap_or_else(|| match id.as_str() {
@@ -806,6 +980,10 @@ impl ActionRunner {
                             _ => crate::models::OverlayDefinition::default_new_overlay(),
                         });
                         crate::daemon::overlay_manager::flash_overlay(&overlay, dur, text);
+                    }
+                    crate::models::OverlayOperation::SetText => {
+                        let t_str = text.unwrap_or_default();
+                        crate::daemon::overlay_manager::update_overlay_text(target_id, &t_str);
                     }
                 }
                 Ok(())
@@ -3328,5 +3506,38 @@ mod tests {
         if let Some(pid) = fg_pid {
             assert!(pid > 0);
         }
+    }
+
+    #[test]
+    fn test_macro_cancellation_by_id_and_all() {
+        let cancel_token_1 = Arc::new(AtomicBool::new(false));
+        let cancel_token_2 = Arc::new(AtomicBool::new(false));
+
+        {
+            let mut lock = macro_cancellations().lock().unwrap();
+            lock.entry("test_macro_alpha".to_string())
+                .or_default()
+                .push(cancel_token_1.clone());
+            lock.entry("test_macro_beta".to_string())
+                .or_default()
+                .push(cancel_token_2.clone());
+        }
+
+        assert!(!cancel_token_1.load(Ordering::SeqCst));
+        assert!(!cancel_token_2.load(Ordering::SeqCst));
+        assert!(is_macro_running("test_macro_alpha"));
+        assert!(is_macro_running("test_macro_beta"));
+        assert!(has_any_active_macro());
+
+        stop_macro_by_id_or_name("test_macro_alpha");
+        assert!(cancel_token_1.load(Ordering::SeqCst));
+        assert!(!cancel_token_2.load(Ordering::SeqCst));
+        assert!(!is_macro_running("test_macro_alpha"));
+        assert!(is_macro_running("test_macro_beta"));
+
+        stop_all_active_macros();
+        assert!(cancel_token_2.load(Ordering::SeqCst));
+        assert!(!is_macro_running("test_macro_beta"));
+        assert!(!has_any_active_macro());
     }
 }

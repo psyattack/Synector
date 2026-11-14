@@ -444,6 +444,16 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                         if widgets::button(ui, cal_text, cal_kind, 0.0).clicked() {
                             toggle_calibration = true;
                         }
+
+                        // Presets Button
+                        ui.add_space(8.0);
+                        let presets_kind = if studio.show_presets_popover { Kind::Primary } else { Kind::Secondary };
+                        if widgets::button(ui, loc.overlay_studio_presets_btn, presets_kind, 0.0).clicked() {
+                            studio.show_presets_popover = !studio.show_presets_popover;
+                            if studio.show_presets_popover && studio.preset_save_name.trim().is_empty() {
+                                studio.preset_save_name = studio.overlay.name.clone();
+                            }
+                        }
                     });
                 });
             });
@@ -561,7 +571,9 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                         &mut rule.actions
                     };
                     if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(target_idx) {
-                        *custom_overlay = Some(Box::new(studio.overlay.clone()));
+                        if custom_overlay.is_some() {
+                            *custom_overlay = Some(Box::new(studio.overlay.clone()));
+                        }
                         *overlay_id = studio.overlay.id.clone();
                     }
                 }
@@ -575,6 +587,211 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     if open_element_catalog {
         state.open_element_catalog();
+    }
+}
+
+pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
+    let t = Tokens::get(ctx);
+    let is_open = state.overlay_studio.as_ref().is_some_and(|s| s.show_presets_popover);
+    let loc = state.loc();
+    let mut save_requested = false;
+
+    let modal_res = Modal::new("overlay-presets-modal", is_open)
+        .width_fraction(0.55)
+        .height_fraction(0.68)
+        .min_size(vec2(540.0, 480.0))
+        .max_size(vec2(640.0, 640.0))
+        .header_height(46.0)
+        .header_sunken(true)
+        .show(ctx, &t, |frame| {
+            // Header: Title on left, Close on right
+            frame.header(|ui, close_req| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
+                            .family(theme::phosphor())
+                            .size(16.0)
+                            .color(t.accent_ink),
+                    );
+                    ui.add_space(8.0);
+                    widgets::hud(ui, loc.overlay_studio_presets_title, t.ink_strong);
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(14.0);
+                        if widgets::glyph_button(ui, Glyph::Close, loc.modal_tip_close).clicked() {
+                            *close_req = true;
+                        }
+                    });
+                });
+            });
+
+            // Body
+            frame.body(|ui| {
+                let Some(studio) = state.overlay_studio.as_mut() else { return; };
+                egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                    // 1. Save Current as Preset Section (custom name input + save button)
+                    widgets::hud(ui, loc.presets_save_btn, t.muted);
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let btn_w = widgets::button_width(ui, loc.presets_save_btn, 0.0);
+                        let text_w = (ui.available_width() - btn_w - ui.spacing().item_spacing.x).max(100.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut studio.preset_save_name)
+                                .hint_text(loc.presets_save_placeholder)
+                                .desired_width(text_w)
+                                .min_size(vec2(0.0, theme::CONTROL_H))
+                        );
+                        if widgets::button(ui, loc.presets_save_btn, Kind::Primary, btn_w).clicked() {
+                            save_requested = true;
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    widgets::rule(ui, 1.0);
+                    ui.add_space(10.0);
+
+                    // 2. Search (at top of list)
+                    ui.add(
+                        egui::TextEdit::singleline(&mut studio.preset_search_query)
+                            .hint_text(loc.presets_search_placeholder)
+                            .desired_width(ui.available_width())
+                            .min_size(vec2(0.0, theme::CONTROL_H - 4.0))
+                    );
+                    ui.add_space(10.0);
+
+                    // 3. Presets List
+                    let all_presets = state.daemon_state.as_ref()
+                        .map(|s| s.config.overlays.clone())
+                        .unwrap_or_else(|| crate::config::AppConfig::load().overlays);
+
+                    let q = studio.preset_search_query.trim().to_lowercase();
+                    let filtered: Vec<_> = all_presets.into_iter()
+                        .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q) || p.id.to_lowercase().contains(&q))
+                        .collect();
+
+                    if filtered.is_empty() {
+                        ui.add_space(30.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new(loc.presets_empty).color(t.muted).size(13.0));
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .id_salt("overlay_presets_scroll")
+                            .max_height(340.0)
+                            .show(ui, |ui| {
+                                let mut to_load = None;
+                                let mut to_delete = None;
+
+                                for p in &filtered {
+                                    ui.scope(|ui| {
+                                        let row_h = 52.0;
+                                        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+                                        ui.painter().rect_filled(rect, CornerRadius::same(3), t.sunken);
+                                        ui.painter().rect_stroke(rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
+
+                                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                            egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    // 1. Title and details on the left (first)
+                                                    ui.vertical(|ui| {
+                                                        ui.label(RichText::new(&p.name).font(FontId::new(13.0, theme::semibold())).color(t.ink_strong));
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}, {}×{}", p.elements.len(), loc.presets_badge_elements, p.rect.width as i32, p.rect.height as i32))
+                                                                .size(11.0)
+                                                                .color(t.muted)
+                                                        );
+                                                    });
+
+                                                    // 2. Action buttons on the right (second)
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        if widgets::compact_button(ui, loc.presets_delete_btn, Kind::Danger, 24.0).clicked() {
+                                                            to_delete = Some(p.id.clone());
+                                                        }
+                                                        ui.add_space(4.0);
+                                                        if widgets::compact_button(ui, loc.presets_load_btn, Kind::Secondary, 24.0).clicked() {
+                                                            to_load = Some(p.clone());
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                        });
+                                    });
+                                    ui.add_space(4.0);
+                                }
+
+                                if let Some(loaded) = to_load {
+                                    studio.push_undo_snapshot();
+                                    studio.overlay.elements = loaded.elements;
+                                    studio.overlay.style = loaded.style;
+                                    studio.overlay.rect = loaded.rect;
+                                    studio.overlay.anchor = loaded.anchor;
+                                    studio.overlay.opacity = loaded.opacity;
+                                    studio.overlay.click_through = loaded.click_through;
+                                    studio.overlay.draggable = loaded.draggable;
+                                    clamp_elements_to_canvas(&mut studio.overlay);
+                                    studio.show_presets_popover = false;
+                                    state.toast = Some((loc.presets_loaded_toast.replace("{}", &loaded.name), std::time::Instant::now()));
+                                }
+
+                                if let Some(del_id) = to_delete {
+                                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(del_id.clone()));
+                                    let mut cfg = crate::config::AppConfig::load();
+                                    cfg.overlays.retain(|o| o.id != del_id);
+                                    let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+                                    if let Some(ds) = &mut state.daemon_state {
+                                        ds.config.overlays.retain(|o| o.id != del_id);
+                                    }
+                                }
+                            });
+                    }
+                });
+            });
+        });
+
+    if save_requested {
+        if let Some(studio) = state.overlay_studio.as_mut() {
+            let name = if studio.preset_save_name.trim().is_empty() {
+                if studio.overlay.name.trim().is_empty() {
+                    "Custom Overlay".to_string()
+                } else {
+                    studio.overlay.name.trim().to_string()
+                }
+            } else {
+                studio.preset_save_name.trim().to_string()
+            };
+            let clean_id = name.to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                .collect::<String>();
+            let fresh_id = format!("overlay_{}", clean_id.trim_matches('_'));
+            let mut saved_def = studio.overlay.clone();
+            saved_def.id = fresh_id;
+            saved_def.name = name.clone();
+
+            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(saved_def.clone()));
+            let mut cfg = crate::config::AppConfig::load();
+            if let Some(existing) = cfg.overlays.iter_mut().find(|o| o.id == saved_def.id) {
+                *existing = saved_def.clone();
+            } else {
+                cfg.overlays.push(saved_def.clone());
+            }
+            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+            if let Some(ds) = &mut state.daemon_state {
+                if let Some(existing) = ds.config.overlays.iter_mut().find(|o| o.id == saved_def.id) {
+                    *existing = saved_def.clone();
+                } else {
+                    ds.config.overlays.push(saved_def.clone());
+                }
+            }
+            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
+        }
+    }
+
+    if modal_res.is_some_and(|r| r.close_requested) {
+        if let Some(studio) = state.overlay_studio.as_mut() {
+            studio.show_presets_popover = false;
+        }
     }
 }
 

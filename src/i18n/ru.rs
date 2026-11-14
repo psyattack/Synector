@@ -1096,4 +1096,43 @@ pub static STRINGS: Strings = Strings {
     dialog_select_shortcut_folder: "Выберите папку для ярлыка",
     toast_shortcut_created: "Ярлык создан: {}",
     toast_shortcut_failed: "Ошибка создания ярлыка: {}",
+
+    // Presets & Templates
+    presets_title: "ПРЕСЕТЫ И ШАБЛОНЫ",
+    presets_load_btn: "Загрузить",
+    presets_save_btn: "Сохранить как пресет",
+    presets_save_placeholder: "Название пресета...",
+    presets_search_placeholder: "Поиск пресетов...",
+    presets_empty: "Пресеты не найдены",
+    presets_delete_btn: "Удалить",
+    presets_badge_elements: "элементов",
+    presets_badge_events: "событий",
+    presets_saved_toast: "Пресет сохранен: {}",
+    presets_loaded_toast: "Пресет загружен: {}",
+
+    overlay_studio_presets_btn: "Пресеты",
+    overlay_studio_presets_title: "ПРЕСЕТЫ ОВЕРЛЕЕВ",
+    macro_studio_presets_btn: "Пресеты",
+    macro_studio_presets_title: "ПРЕСЕТЫ МАКРОСОВ",
+
+    inspector_preset_source: "ИСТОЧНИК ПРЕСЕТА",
+    inspector_preset_custom: "Пользовательский (встроенный)",
+    inspector_preset_select: "Выбрать пресет",
+    inspector_preset_detach: "Отвязать в копию",
+    inspector_preset_detach_tip: "Преобразовать ссылку на пресет в независимую встроенную копию",
+
+    inspector_macro_operation: "ОПЕРАЦИЯ",
+    inspector_macro_op_run: "Воспроизвести",
+    inspector_macro_op_stop: "Остановить",
+    inspector_macro_op_toggle: "Переключить",
+    inspector_macro_op_run_desc: "Воспроизведение последовательности макроса",
+    inspector_macro_op_stop_desc: "Остановка выполняющегося макроса",
+    inspector_macro_op_toggle_desc: "Запустить если остановлен, остановить если выполняется",
+
+    inspector_overlay_op_show: "Показать",
+    inspector_overlay_op_hide: "Скрыть",
+    inspector_overlay_op_set_text: "Передать текст",
+    inspector_overlay_op_show_desc: "Отобразить оверлей на экране",
+    inspector_overlay_op_hide_desc: "Скрыть и закрыть оверлей",
+    inspector_overlay_op_set_text_desc: "Обновить динамический текст оверлея",
 };

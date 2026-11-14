@@ -200,6 +200,8 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     if !matches!(action, Action::Macro { .. }) {
         *action = Action::Macro {
+            preset_id: None,
+            operation: crate::models::MacroOperation::Run,
             events: Vec::new(),
             repeat: 1,
             speed: 1.0,
@@ -207,7 +209,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
         };
     }
 
-    let Action::Macro { events, repeat, speed, infinite } = action else { return; };
+    let Action::Macro { events, repeat, speed, infinite, .. } = action else { return; };
 
     // Real-time live draining: any newly captured events stream directly into the list
     let new_events = recorder.drain_events();
@@ -221,6 +223,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
     // Sync with studio payload for background hotkeys
     crate::gui::macro_recorder::update_studio_payload(events.clone(), *speed);
 
+    let rule_name = rule.name.trim().to_string();
     let t = Tokens::get(ctx);
     let mut group_full_presses = state.group_full_presses;
 
@@ -261,6 +264,16 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
 
                         if widgets::glyph_button(ui, widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+
+                        // Presets button
+                        ui.add_space(8.0);
+                        let presets_kind = if state.show_macro_presets_modal { Kind::Primary } else { Kind::Secondary };
+                        if widgets::button(ui, loc.macro_studio_presets_btn, presets_kind, 0.0).clicked() {
+                            state.show_macro_presets_modal = !state.show_macro_presets_modal;
+                            if state.show_macro_presets_modal && state.macro_preset_save_name.trim().is_empty() && !rule_name.is_empty() {
+                                state.macro_preset_save_name = rule_name.clone();
+                            }
                         }
 
                         // Test run button (F10) - toggle start / stop on safe background runner
@@ -1433,6 +1446,233 @@ fn render_compact_coord_picker(
     #[cfg(not(windows))]
     {
         let _ = (ui, picker_id, x, y, loc);
+    }
+}
+
+pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
+    let t = Tokens::get(ctx);
+    let is_open = state.show_macro_presets_modal;
+    let loc = state.loc();
+    let mut save_requested = false;
+
+    let modal_res = Modal::new("macro-presets-modal", is_open)
+        .width_fraction(0.55)
+        .height_fraction(0.68)
+        .min_size(vec2(540.0, 480.0))
+        .max_size(vec2(640.0, 640.0))
+        .header_height(46.0)
+        .header_sunken(true)
+        .show(ctx, &t, |frame| {
+            // Header: Title on left, Close on right
+            frame.header(|ui, close_req| {
+                ui.horizontal_centered(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(
+                        RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
+                            .family(theme::phosphor())
+                            .size(16.0)
+                            .color(t.accent_ink),
+                    );
+                    ui.add_space(8.0);
+                    widgets::hud(ui, loc.macro_studio_presets_title, t.ink_strong);
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(14.0);
+                        if widgets::glyph_button(ui, widgets::Glyph::Close, loc.modal_tip_close).clicked() {
+                            *close_req = true;
+                        }
+                    });
+                });
+            });
+
+            // Body
+            frame.body(|ui| {
+                egui::Frame::new().inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+                    // 1. Save Current as Preset Section (custom name input + save button)
+                    widgets::hud(ui, loc.presets_save_btn, t.muted);
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        let btn_w = widgets::button_width(ui, loc.presets_save_btn, 0.0);
+                        let text_w = (ui.available_width() - btn_w - ui.spacing().item_spacing.x).max(100.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.macro_preset_save_name)
+                                .hint_text(loc.presets_save_placeholder)
+                                .desired_width(text_w)
+                                .min_size(vec2(0.0, theme::CONTROL_H))
+                        );
+                        if widgets::button(ui, loc.presets_save_btn, Kind::Primary, btn_w).clicked() {
+                            save_requested = true;
+                        }
+                    });
+
+                    ui.add_space(12.0);
+                    widgets::rule(ui, 1.0);
+                    ui.add_space(10.0);
+
+                    // 2. Search (at top of list)
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.macro_preset_search_query)
+                            .hint_text(loc.presets_search_placeholder)
+                            .desired_width(ui.available_width())
+                            .min_size(vec2(0.0, theme::CONTROL_H - 4.0))
+                    );
+                    ui.add_space(10.0);
+
+                    // Presets List
+                    let all_presets = state.daemon_state.as_ref()
+                        .map(|s| s.config.macro_presets.clone())
+                        .unwrap_or_else(|| crate::config::AppConfig::load().macro_presets);
+
+                    let q = state.macro_preset_search_query.trim().to_lowercase();
+                    let filtered: Vec<_> = all_presets.into_iter()
+                        .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q) || p.id.to_lowercase().contains(&q))
+                        .collect();
+
+                    if filtered.is_empty() {
+                        ui.add_space(30.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(RichText::new(loc.presets_empty).color(t.muted).size(13.0));
+                        });
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .id_salt("macro_presets_scroll")
+                            .max_height(360.0)
+                            .show(ui, |ui| {
+                                let mut to_load = None;
+                                let mut to_delete = None;
+
+                                for p in &filtered {
+                                    ui.scope(|ui| {
+                                        let row_h = 52.0;
+                                        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
+                                        ui.painter().rect_filled(rect, CornerRadius::same(3), t.sunken);
+                                        ui.painter().rect_stroke(rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
+
+                                        ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                                            egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
+                                                ui.horizontal(|ui| {
+                                                    // 1. Title and details on the left (first)
+                                                    ui.vertical(|ui| {
+                                                        ui.label(RichText::new(&p.name).font(egui::FontId::new(13.0, theme::semibold())).color(t.ink_strong));
+                                                        let inf_or_rep = if p.infinite {
+                                                            format!(", {}", loc.macro_studio_infinite_tip)
+                                                        } else if p.repeat > 1 {
+                                                            format!(", {}x", p.repeat)
+                                                        } else {
+                                                            String::new()
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(format!("{} {}, {:.1}x speed{}", p.events.len(), loc.presets_badge_events, p.speed, inf_or_rep))
+                                                                .size(11.0)
+                                                                .color(t.muted)
+                                                        );
+                                                    });
+
+                                                    // 2. Action buttons on the right (second)
+                                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                        if widgets::compact_button(ui, loc.presets_delete_btn, Kind::Danger, 24.0).clicked() {
+                                                            to_delete = Some(p.id.clone());
+                                                        }
+                                                        ui.add_space(4.0);
+                                                        if widgets::compact_button(ui, loc.presets_load_btn, Kind::Secondary, 24.0).clicked() {
+                                                            to_load = Some(p.clone());
+                                                        }
+                                                    });
+                                                });
+                                            });
+                                        });
+                                    });
+                                    ui.add_space(4.0);
+                                }
+
+                                if let Some(loaded) = to_load {
+                                    if let Some(r) = state.editing_rule.as_mut() {
+                                        if let Some(edit_info) = state.macro_editor.as_ref() {
+                                            let actions = if edit_info.is_exit_pipeline {
+                                                &mut r.on_exit_actions
+                                            } else {
+                                                &mut r.actions
+                                            };
+                                            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = actions.get_mut(edit_info.step_idx) {
+                                                *events = loaded.events;
+                                                *repeat = loaded.repeat;
+                                                *speed = loaded.speed;
+                                                *infinite = loaded.infinite;
+                                                *preset_id = None;
+                                            }
+                                        }
+                                    }
+                                    state.show_macro_presets_modal = false;
+                                    state.toast = Some((loc.presets_loaded_toast.replace("{}", &loaded.name), std::time::Instant::now()));
+                                }
+
+                                if let Some(del_id) = to_delete {
+                                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(del_id.clone()));
+                                    let mut cfg = crate::config::AppConfig::load();
+                                    cfg.macro_presets.retain(|p| p.id != del_id);
+                                    let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+                                    if let Some(ds) = &mut state.daemon_state {
+                                        ds.config.macro_presets.retain(|p| p.id != del_id);
+                                    }
+                                }
+                            });
+                    }
+                });
+            });
+        });
+
+    if save_requested {
+        let current_macro = state.editing_rule.as_ref().and_then(|r| {
+            let edit_info = state.macro_editor.as_ref()?;
+            let actions = if edit_info.is_exit_pipeline { &r.on_exit_actions } else { &r.actions };
+            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, .. }) = actions.get(edit_info.step_idx) {
+                let name = if state.macro_preset_save_name.trim().is_empty() {
+                    if r.name.trim().is_empty() { "Custom Macro".to_string() } else { r.name.trim().to_string() }
+                } else {
+                    state.macro_preset_save_name.trim().to_string()
+                };
+                Some((name, events.clone(), *repeat, *speed, *infinite))
+            } else {
+                None
+            }
+        });
+
+        if let Some((name, events, repeat, speed, infinite)) = current_macro {
+            let clean_id = name.to_lowercase()
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                .collect::<String>();
+            let fresh_id = format!("macro_{}", clean_id.trim_matches('_'));
+            let saved_preset = crate::models::MacroPreset {
+                id: fresh_id,
+                name: name.clone(),
+                events,
+                repeat,
+                speed,
+                infinite,
+            };
+
+            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(saved_preset.clone()));
+            let mut cfg = crate::config::AppConfig::load();
+            if let Some(existing) = cfg.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
+                *existing = saved_preset.clone();
+            } else {
+                cfg.macro_presets.push(saved_preset.clone());
+            }
+            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+            if let Some(ds) = &mut state.daemon_state {
+                if let Some(existing) = ds.config.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
+                    *existing = saved_preset.clone();
+                } else {
+                    ds.config.macro_presets.push(saved_preset.clone());
+                }
+            }
+            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
+        }
+    }
+
+    if modal_res.is_some_and(|r| r.close_requested) {
+        state.show_macro_presets_modal = false;
     }
 }
 

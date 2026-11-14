@@ -1113,6 +1113,45 @@ pub struct Strings {
     pub dialog_select_shortcut_folder: &'static str,
     pub toast_shortcut_created: &'static str,
     pub toast_shortcut_failed: &'static str,
+
+    // Presets & Templates
+    pub presets_title: &'static str,
+    pub presets_load_btn: &'static str,
+    pub presets_save_btn: &'static str,
+    pub presets_save_placeholder: &'static str,
+    pub presets_search_placeholder: &'static str,
+    pub presets_empty: &'static str,
+    pub presets_delete_btn: &'static str,
+    pub presets_badge_elements: &'static str,
+    pub presets_badge_events: &'static str,
+    pub presets_saved_toast: &'static str,
+    pub presets_loaded_toast: &'static str,
+
+    pub overlay_studio_presets_btn: &'static str,
+    pub overlay_studio_presets_title: &'static str,
+    pub macro_studio_presets_btn: &'static str,
+    pub macro_studio_presets_title: &'static str,
+
+    pub inspector_preset_source: &'static str,
+    pub inspector_preset_custom: &'static str,
+    pub inspector_preset_select: &'static str,
+    pub inspector_preset_detach: &'static str,
+    pub inspector_preset_detach_tip: &'static str,
+
+    pub inspector_macro_operation: &'static str,
+    pub inspector_macro_op_run: &'static str,
+    pub inspector_macro_op_stop: &'static str,
+    pub inspector_macro_op_toggle: &'static str,
+    pub inspector_macro_op_run_desc: &'static str,
+    pub inspector_macro_op_stop_desc: &'static str,
+    pub inspector_macro_op_toggle_desc: &'static str,
+
+    pub inspector_overlay_op_show: &'static str,
+    pub inspector_overlay_op_hide: &'static str,
+    pub inspector_overlay_op_set_text: &'static str,
+    pub inspector_overlay_op_show_desc: &'static str,
+    pub inspector_overlay_op_hide_desc: &'static str,
+    pub inspector_overlay_op_set_text_desc: &'static str,
 }
 
 pub fn get(lang: Language) -> &'static Strings {

@@ -1096,4 +1096,43 @@ pub static STRINGS: Strings = Strings {
     dialog_select_shortcut_folder: "Select Folder for Shortcut",
     toast_shortcut_created: "Shortcut created: {}",
     toast_shortcut_failed: "Failed to create shortcut: {}",
+
+    // Presets & Templates
+    presets_title: "PRESETS & TEMPLATES",
+    presets_load_btn: "Load",
+    presets_save_btn: "Save as Preset",
+    presets_save_placeholder: "Preset name...",
+    presets_search_placeholder: "Search presets...",
+    presets_empty: "No presets found",
+    presets_delete_btn: "Delete",
+    presets_badge_elements: "elements",
+    presets_badge_events: "events",
+    presets_saved_toast: "Preset saved: {}",
+    presets_loaded_toast: "Preset loaded: {}",
+
+    overlay_studio_presets_btn: "Presets",
+    overlay_studio_presets_title: "OVERLAY PRESETS",
+    macro_studio_presets_btn: "Presets",
+    macro_studio_presets_title: "MACRO PRESETS",
+
+    inspector_preset_source: "PRESET SOURCE",
+    inspector_preset_custom: "Custom (Inline)",
+    inspector_preset_select: "Select Preset",
+    inspector_preset_detach: "Detach to Custom",
+    inspector_preset_detach_tip: "Convert preset reference into an independent inline copy",
+
+    inspector_macro_operation: "OPERATION",
+    inspector_macro_op_run: "Play Macro",
+    inspector_macro_op_stop: "Stop Macro",
+    inspector_macro_op_toggle: "Toggle Macro",
+    inspector_macro_op_run_desc: "Replay macro sequence",
+    inspector_macro_op_stop_desc: "Halt running macro",
+    inspector_macro_op_toggle_desc: "Play if stopped, halt if playing",
+
+    inspector_overlay_op_show: "Show",
+    inspector_overlay_op_hide: "Hide",
+    inspector_overlay_op_set_text: "Set Text",
+    inspector_overlay_op_show_desc: "Display overlay on screen",
+    inspector_overlay_op_hide_desc: "Hide and close overlay",
+    inspector_overlay_op_set_text_desc: "Update dynamic overlay text",
 };

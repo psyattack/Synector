@@ -77,8 +77,11 @@ pub struct AppConfig {
     #[serde(default)]
     pub theme: AppTheme,
 
-    #[serde(default = "default_config_overlays")]
+    #[serde(default = "default_config_overlays", alias = "overlay_presets")]
     pub overlays: Vec<crate::models::OverlayDefinition>,
+
+    #[serde(default = "crate::models::default_macro_presets", alias = "macros")]
+    pub macro_presets: Vec<crate::models::MacroPreset>,
 }
 
 pub fn default_config_overlays() -> Vec<crate::models::OverlayDefinition> {
@@ -107,11 +110,28 @@ impl Default for AppConfig {
             auto_install_updates: false,
             theme: AppTheme::Dark,
             overlays: default_config_overlays(),
+            macro_presets: crate::models::default_macro_presets(),
         }
     }
 }
 
 impl AppConfig {
+    pub fn find_overlay(&self, id_or_name: &str) -> Option<&crate::models::OverlayDefinition> {
+        let needle = id_or_name.trim();
+        if needle.is_empty() {
+            return None;
+        }
+        self.overlays.iter().find(|o| o.id == needle || o.name.eq_ignore_ascii_case(needle))
+    }
+
+    pub fn find_macro(&self, id_or_name: &str) -> Option<&crate::models::MacroPreset> {
+        let needle = id_or_name.trim();
+        if needle.is_empty() {
+            return None;
+        }
+        self.macro_presets.iter().find(|p| p.id == needle || p.name.eq_ignore_ascii_case(needle))
+    }
+
     pub fn load() -> Self {
         Self::load_from_file(Self::config_path())
     }
@@ -210,6 +230,11 @@ mod tests {
         assert!(cfg.check_updates_on_startup);
         assert!(!cfg.auto_install_updates);
         assert_eq!(cfg.overlays.len(), 3);
+        assert_eq!(cfg.macro_presets.len(), 2);
+        assert!(cfg.find_overlay("overlay_crosshair").is_some());
+        assert!(cfg.find_overlay("Gaming Crosshair").is_some());
+        assert!(cfg.find_macro("macro_spam_click").is_some());
+        assert!(cfg.find_macro("Rapid Clicker").is_some());
     }
 
     #[test]

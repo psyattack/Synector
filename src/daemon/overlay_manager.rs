@@ -17,6 +17,7 @@ pub struct ActiveOverlayProcess {
 static ACTIVE_PROCESSES: OnceLock<Arc<Mutex<HashMap<String, ActiveOverlayProcess>>>> = OnceLock::new();
 type CalibratedPositionsMap = Arc<Mutex<HashMap<String, (f32, f32)>>>;
 static CALIBRATED_POSITIONS: OnceLock<CalibratedPositionsMap> = OnceLock::new();
+static OVERLAY_TEXTS: OnceLock<Arc<Mutex<HashMap<String, String>>>> = OnceLock::new();
 
 fn active_map() -> &'static Arc<Mutex<HashMap<String, ActiveOverlayProcess>>> {
     ACTIVE_PROCESSES.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
@@ -26,12 +27,39 @@ fn calibrated_map() -> &'static Arc<Mutex<HashMap<String, (f32, f32)>>> {
     CALIBRATED_POSITIONS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
+fn texts_map() -> &'static Arc<Mutex<HashMap<String, String>>> {
+    OVERLAY_TEXTS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+}
+
+pub fn get_overlay_text(id: &str) -> Option<String> {
+    texts_map().lock().unwrap().get(id).cloned()
+}
+
+pub fn update_overlay_text(id_or_name: &str, text: &str) {
+    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let resolved = config.find_overlay(id_or_name).cloned();
+    let resolved_id = resolved.as_ref().map(|o| o.id.clone()).unwrap_or_else(|| id_or_name.to_string());
+    texts_map().lock().unwrap().insert(resolved_id.clone(), text.to_string());
+
+    let is_active = get_active_overlay_ids().contains(&resolved_id);
+    if let Some(overlay) = resolved {
+        if is_active {
+            show_overlay(&overlay, false, Some(text.to_string()));
+        }
+    }
+}
+
 pub fn init() {
     let _ = active_map();
     let _ = calibrated_map();
+    let _ = texts_map();
 }
 
 pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_text: Option<String>) {
+    let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
+    if let Some(ref txt) = effective_text {
+        texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
+    }
     let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
 
     let mut lock = active_map().lock().unwrap();
@@ -51,7 +79,7 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
         if calibration {
             cmd.arg("--calibration");
         }
-        if let Some(txt) = override_text {
+        if let Some(txt) = effective_text {
             cmd.arg("--override-text").arg(txt);
         }
         if let Some(b64_str) = b64 {
@@ -181,6 +209,10 @@ pub fn toggle_overlay(overlay: &OverlayDefinition, override_text: Option<String>
 }
 
 pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_text: Option<String>) {
+    let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
+    if let Some(ref txt) = effective_text {
+        texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
+    }
     let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
 
     let mut lock = active_map().lock().unwrap();
@@ -198,7 +230,7 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
         cmd.arg("--overlay-window").arg(&overlay.id);
         cmd.arg("--duration").arg(duration_ms.to_string());
 
-        if let Some(txt) = override_text {
+        if let Some(txt) = effective_text {
             cmd.arg("--override-text").arg(txt);
         }
         if let Some(b64_str) = b64 {
@@ -364,41 +396,7 @@ pub fn save_calibrated_position(id: &str, x: f32, y: f32) {
     }
 }
 
-pub fn update_overlay_text(id: &str, text: &str) {
-    let mut lock = active_map().lock().unwrap();
-    if let Some(mut proc) = lock.remove(id) {
-        if let Some(mut ch) = proc.child.take() {
-            let _ = ch.kill();
-        }
-        // Relaunch with updated override text
-        let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-        if let Some(def) = config.overlays.iter().find(|o| o.id == id) {
-            let exe = std::env::current_exe().unwrap_or_default();
-            let mut cmd = Command::new(&exe);
-            cmd.arg("--overlay-window").arg(id).arg("--override-text").arg(text);
-            if let Some(b64) = crate::gui::overlay_window::encode_overlay_b64(def) {
-                cmd.arg("--overlay-data").arg(b64);
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                const CREATE_NO_WINDOW: u32 = 0x08000000;
-                cmd.creation_flags(CREATE_NO_WINDOW);
-            }
-            let child = cmd.spawn().ok();
-            lock.insert(
-                id.to_string(),
-                ActiveOverlayProcess {
-                    id: id.to_string(),
-                    child,
-                    close_with_target: def.close_with_target,
-                    target_process: def.target_process.clone().unwrap_or_default(),
-                    fade_out_ms: def.fade_out_ms,
-                },
-            );
-        }
-    }
-}
+
 
 pub fn check_process_terminated(process_name: &str) {
     let clean_target = std::path::Path::new(process_name)
@@ -634,5 +632,17 @@ mod tests {
 
         hide_update_progress_overlay();
         assert!(!get_active_overlay_ids().contains("overlay_update_progress"));
+    }
+
+    #[test]
+    fn test_dynamic_overlay_text_cache() {
+        init();
+        assert!(get_overlay_text("test_ov_cache").is_none());
+
+        update_overlay_text("test_ov_cache", "Initial text");
+        assert_eq!(get_overlay_text("test_ov_cache").as_deref(), Some("Initial text"));
+
+        update_overlay_text("test_ov_cache", "Updated dynamic text");
+        assert_eq!(get_overlay_text("test_ov_cache").as_deref(), Some("Updated dynamic text"));
     }
 }

@@ -3,7 +3,7 @@
 //! and process details.
 
 use egui::{
-    Color32, CornerRadius, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, Ui, emath::easing, pos2, vec2,
+    Color32, CornerRadius, Id, LayerId, Order, Pos2, Rect, RichText, Sense, Stroke, Ui, emath::easing, pos2, vec2,
 };
 use crate::gui::components::script_highlighter::{create_script_layouter, ScriptLanguage};
 use crate::gui::components::widgets::{self, Cell, Glyph, Kind};
@@ -1323,16 +1323,39 @@ fn action_summary_preview(action: &Action) -> String {
                 format!("{}: {}", name, first.chars().take(35).collect::<String>())
             }
         }
-        Action::Macro { events, repeat, speed, infinite } => {
-            let rep_str = if *infinite {
-                " ∞".to_string()
-            } else if *repeat > 1 {
-                format!(" x{}", repeat)
-            } else {
-                String::new()
+        Action::Macro { preset_id, operation, events, repeat, speed, infinite } => {
+            let pfx = match operation {
+                crate::models::MacroOperation::Run => "Macro",
+                crate::models::MacroOperation::Stop => "Stop Macro",
+                crate::models::MacroOperation::Toggle => "Toggle Macro",
             };
-            let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
-            format!("Macro: {} events{}{}", events.len(), rep_str, spd_str)
+            if *operation == crate::models::MacroOperation::Stop {
+                if let Some(pid) = preset_id {
+                    format!("Stop Macro: {}", pid)
+                } else {
+                    "Stop All Macros".to_string()
+                }
+            } else if let Some(pid) = preset_id {
+                let rep_str = if *infinite {
+                    " ∞".to_string()
+                } else if *repeat > 1 {
+                    format!(" x{}", repeat)
+                } else {
+                    String::new()
+                };
+                let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
+                format!("{}: {}{}{}", pfx, pid, rep_str, spd_str)
+            } else {
+                let rep_str = if *infinite {
+                    " ∞".to_string()
+                } else if *repeat > 1 {
+                    format!(" x{}", repeat)
+                } else {
+                    String::new()
+                };
+                let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
+                format!("{}: {} events{}{}", pfx, events.len(), rep_str, spd_str)
+            }
         }
         Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
             let glyph = conditions.first().map(|c| c.condition.icon_glyph()).unwrap_or("❓");
@@ -1368,8 +1391,19 @@ fn action_summary_preview(action: &Action) -> String {
             let fname = std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy();
             format!("{:?}: {}", operation, fname)
         }
-        Action::Overlay { operation, .. } => {
-            format!("{:?} Overlay", operation)
+        Action::Overlay { overlay_id, operation, override_text, .. } => {
+            let op_str = match operation {
+                crate::models::OverlayOperation::Show => "Show",
+                crate::models::OverlayOperation::Hide => "Hide",
+                crate::models::OverlayOperation::Toggle => "Toggle",
+                crate::models::OverlayOperation::Flash => "Flash",
+                crate::models::OverlayOperation::SetText => "Set Text",
+            };
+            if let Some(txt) = override_text {
+                format!("{} Overlay [{}] \"{}\"", op_str, overlay_id, txt)
+            } else {
+                format!("{} Overlay [{}]", op_str, overlay_id)
+            }
         }
     }
 }
@@ -2955,53 +2989,134 @@ fn render_action_parameter_fields(
                         }
                     }
 
-                    Action::Macro { .. } => {
-                        let banner_h = 44.0;
-                        let (rect, macro_btn_resp) = ui.allocate_exact_size(vec2(ui.available_width(), banner_h), Sense::click());
-                        let hovered = macro_btn_resp.hovered();
+                    Action::Macro { preset_id, operation, events, repeat, speed, infinite } => {
+                        let all_macro_presets = state.daemon_state.as_ref()
+                            .map(|s| s.config.macro_presets.clone())
+                            .unwrap_or_else(|| crate::config::AppConfig::load().macro_presets);
 
-                        if macro_btn_resp.clicked() {
-                            resp.expand_macro = true;
+                        // 1. Operation selector (Play / Stop / Toggle)
+                        widgets::hud(ui, loc.inspector_macro_operation, t.muted);
+                        let op_options = [
+                            (crate::models::MacroOperation::Run, widgets::Cell::new(loc.inspector_macro_op_run, loc.inspector_macro_op_run_desc)),
+                            (crate::models::MacroOperation::Stop, widgets::Cell::new(loc.inspector_macro_op_stop, loc.inspector_macro_op_stop_desc)),
+                            (crate::models::MacroOperation::Toggle, widgets::Cell::new(loc.inspector_macro_op_toggle, loc.inspector_macro_op_toggle_desc)),
+                        ];
+                        widgets::cells(ui, operation, &op_options);
+
+                        ui.add_space(4.0);
+
+                        // 2. Preset Source selector
+                        let is_preset = preset_id.is_some();
+                        widgets::hud(ui, loc.inspector_preset_source, t.muted);
+                        ui.horizontal(|ui| {
+                            let current_label = match preset_id {
+                                Some(pid) => {
+                                    let matched_name = all_macro_presets.iter()
+                                        .find(|p| p.id == *pid || p.name.eq_ignore_ascii_case(pid))
+                                        .map(|p| p.name.clone())
+                                        .unwrap_or_else(|| pid.clone());
+                                    format!("Preset: {}", matched_name)
+                                }
+                                None => loc.inspector_preset_custom.to_string(),
+                            };
+
+                            egui::ComboBox::from_id_salt(("macro_preset_select", idx))
+                                .selected_text(RichText::new(current_label).size(12.0))
+                                .width((ui.available_width() - if is_preset { 120.0 } else { 0.0 }).max(140.0))
+                                .show_ui(ui, |ui| {
+                                    if ui.selectable_label(!is_preset, loc.inspector_preset_custom).clicked() {
+                                        if let Some(pid) = preset_id.take() {
+                                            if let Some(p) = all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(&pid)) {
+                                                if events.is_empty() {
+                                                    *events = p.events.clone();
+                                                }
+                                                *repeat = p.repeat;
+                                                *speed = p.speed;
+                                                *infinite = p.infinite;
+                                            }
+                                        }
+                                    }
+                                    for p in &all_macro_presets {
+                                        let is_sel = preset_id.as_deref().is_some_and(|id| id == p.id || id.eq_ignore_ascii_case(&p.name));
+                                        if ui.selectable_label(is_sel, &p.name).clicked() {
+                                            *preset_id = Some(p.id.clone());
+                                            events.clear();
+                                        }
+                                    }
+                                });
+
+                            if is_preset
+                                && widgets::compact_button(ui, loc.inspector_preset_detach, Kind::Secondary, 24.0)
+                                    .on_hover_text(loc.inspector_preset_detach_tip)
+                                    .clicked()
+                            {
+                                if let Some(pid) = preset_id.take() {
+                                    if let Some(p) = all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(&pid)) {
+                                        *events = p.events.clone();
+                                        *repeat = p.repeat;
+                                        *speed = p.speed;
+                                        *infinite = p.infinite;
+                                    }
+                                }
+                            }
+                        });
+
+                        // 3. Studio Banner (when Play / Run / Toggle)
+                        if *operation != crate::models::MacroOperation::Stop {
+                            ui.add_space(6.0);
+                            let banner_h = 44.0;
+                            let (rect, macro_btn_resp) = ui.allocate_exact_size(vec2(ui.available_width(), banner_h), Sense::click());
+                            let hovered = macro_btn_resp.hovered();
+
+                            if macro_btn_resp.clicked() {
+                                resp.expand_macro = true;
+                            }
+
+                            let p = ui.painter();
+                            let bg = if hovered { t.sunken } else { t.bg };
+                            let border_color = if hovered { t.accent_ink } else { t.hairline().color };
+                            p.rect_filled(rect, CornerRadius::same(2), bg);
+                            p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+
+                            // Icon chip on left
+                            let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
+                            let icon_bg = if hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
+                            p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
+                            p.text(
+                                icon_box.center(),
+                                egui::Align2::CENTER_CENTER,
+                                egui_phosphor::regular::GAME_CONTROLLER,
+                                egui::FontId::new(18.0, theme::phosphor()),
+                                t.accent_ink,
+                            );
+
+                            // Middle title (clean, centered vertically)
+                            let text_left = icon_box.right() + 10.0;
+                            let title_pos = pos2(text_left, rect.center().y);
+                            let studio_btn_text = if is_preset {
+                                let pname = preset_id.as_deref().and_then(|pid| all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(pid))).map(|p| p.name.as_str()).unwrap_or("Preset");
+                                format!("{} ({})", loc.inspector_macro_studio_title, pname)
+                            } else {
+                                loc.inspector_macro_studio_title.to_string()
+                            };
+                            p.text(
+                                title_pos,
+                                egui::Align2::LEFT_CENTER,
+                                studio_btn_text,
+                                egui::FontId::new(13.0, theme::semibold()),
+                                if hovered { t.accent_ink } else { t.ink_strong },
+                            );
+
+                            // Action arrow pill on right
+                            let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
+                            p.text(
+                                arrow_pos,
+                                egui::Align2::RIGHT_CENTER,
+                                loc.inspector_macro_studio_open,
+                                egui::FontId::new(11.0, theme::mono_bold()),
+                                if hovered { t.accent_ink } else { t.faint },
+                            );
                         }
-
-                        let p = ui.painter();
-                        let bg = if hovered { t.sunken } else { t.bg };
-                        let border_color = if hovered { t.accent_ink } else { t.hairline().color };
-                        p.rect_filled(rect, CornerRadius::same(2), bg);
-                        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
-
-                        // Icon chip on left
-                        let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
-                        let icon_bg = if hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
-                        p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
-                        p.text(
-                            icon_box.center(),
-                            egui::Align2::CENTER_CENTER,
-                            egui_phosphor::regular::GAME_CONTROLLER,
-                            egui::FontId::new(18.0, theme::phosphor()),
-                            t.accent_ink,
-                        );
-
-                        // Middle title (clean, centered vertically)
-                        let text_left = icon_box.right() + 10.0;
-                        let title_pos = pos2(text_left, rect.center().y);
-                        p.text(
-                            title_pos,
-                            egui::Align2::LEFT_CENTER,
-                            loc.inspector_macro_studio_title,
-                            egui::FontId::new(13.0, theme::semibold()),
-                            if hovered { t.accent_ink } else { t.ink_strong },
-                        );
-
-                        // Action arrow pill on right
-                        let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
-                        p.text(
-                            arrow_pos,
-                            egui::Align2::RIGHT_CENTER,
-                            loc.inspector_macro_studio_open,
-                            egui::FontId::new(11.0, theme::mono_bold()),
-                            if hovered { t.accent_ink } else { t.faint },
-                        );
                     }
 
         Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
@@ -3723,95 +3838,163 @@ fn render_action_parameter_fields(
             duration_ms,
             close_on_exit,
         } => {
-            if custom_overlay.is_none() {
-                static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                let count = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let unique_id = format!("overlay_{:x}_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), count);
-                *overlay_id = unique_id.clone();
-                let def = crate::models::OverlayDefinition {
-                    id: unique_id,
-                    ..Default::default()
-                };
-                *custom_overlay = Some(Box::new(def));
-            } else if let Some(def) = custom_overlay.as_deref_mut() {
+            let all_overlays = state.daemon_state.as_ref()
+                .map(|s| s.config.overlays.clone())
+                .unwrap_or_else(|| crate::config::AppConfig::load().overlays);
+
+            if overlay_id.is_empty() {
+                if let Some(first) = all_overlays.first() {
+                    *overlay_id = first.id.clone();
+                } else {
+                    *overlay_id = "overlay_crosshair".to_string();
+                }
+            }
+
+            if let Some(def) = custom_overlay.as_deref_mut() {
                 if !overlay_id.is_empty() && def.id != *overlay_id {
                     def.id = overlay_id.clone();
                 }
             }
 
-            let banner_h = 44.0;
-            let (rect, overlay_btn_resp) = ui.allocate_exact_size(vec2(ui.available_width(), banner_h), Sense::click());
-            let hovered = overlay_btn_resp.hovered();
+            // 1. Preset Source Selector
+            let is_custom = custom_overlay.is_some();
+            widgets::hud(ui, loc.inspector_preset_source, t.muted);
+            ui.horizontal(|ui| {
+                let current_label = if is_custom {
+                    loc.inspector_preset_custom.to_string()
+                } else {
+                    let matched_name = all_overlays.iter()
+                        .find(|o| o.id == *overlay_id || o.name.eq_ignore_ascii_case(overlay_id))
+                        .map(|o| o.name.clone())
+                        .unwrap_or_else(|| overlay_id.clone());
+                    format!("Preset: {}", matched_name)
+                };
 
-            if overlay_btn_resp.clicked() {
-                resp.expand_overlay_action = Some(idx);
+                egui::ComboBox::from_id_salt(("overlay_preset_select", idx))
+                    .selected_text(RichText::new(current_label).size(12.0))
+                    .width((ui.available_width() - if !is_custom { 120.0 } else { 0.0 }).max(140.0))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(is_custom, loc.inspector_preset_custom).clicked()
+                            && custom_overlay.is_none()
+                        {
+                            let def = all_overlays.iter()
+                                .find(|o| o.id == *overlay_id || o.name.eq_ignore_ascii_case(overlay_id))
+                                .cloned()
+                                .unwrap_or_else(crate::models::OverlayDefinition::default_new_overlay);
+                            *custom_overlay = Some(Box::new(def));
+                        }
+                        for ov in &all_overlays {
+                            let is_sel = !is_custom && (ov.id == *overlay_id || ov.name.eq_ignore_ascii_case(overlay_id));
+                            if ui.selectable_label(is_sel, &ov.name).clicked() {
+                                *custom_overlay = None;
+                                *overlay_id = ov.id.clone();
+                            }
+                        }
+                    });
+
+                if !is_custom
+                    && widgets::compact_button(ui, loc.inspector_preset_detach, Kind::Secondary, 24.0)
+                        .on_hover_text(loc.inspector_preset_detach_tip)
+                        .clicked()
+                {
+                    let def = all_overlays.iter()
+                        .find(|o| o.id == *overlay_id || o.name.eq_ignore_ascii_case(overlay_id))
+                        .cloned()
+                        .unwrap_or_else(crate::models::OverlayDefinition::default_new_overlay);
+                    *custom_overlay = Some(Box::new(def));
+                }
+            });
+
+            // 2. Overlay Studio Button (shown if not Hide)
+            if *operation != crate::models::OverlayOperation::Hide {
+                ui.add_space(6.0);
+                let banner_h = 44.0;
+                let (rect, overlay_btn_resp) = ui.allocate_exact_size(vec2(ui.available_width(), banner_h), Sense::click());
+                let hovered = overlay_btn_resp.hovered();
+
+                if overlay_btn_resp.clicked() {
+                    resp.expand_overlay_action = Some(idx);
+                }
+
+                let is_overlay_showing = state.daemon_state.as_ref().is_some_and(|d| d.active_overlay_ids.contains(overlay_id))
+                    || state.active_test_overlays.contains(overlay_id);
+
+                let p = ui.painter();
+                let bg = if hovered { t.sunken } else { t.bg };
+                let border_color = if is_overlay_showing || hovered {
+                    t.accent_ink
+                } else {
+                    t.hairline().color
+                };
+                p.rect_filled(rect, CornerRadius::same(2), bg);
+                p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+
+                // Icon chip on left
+                let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
+                let icon_bg = if is_overlay_showing || hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
+                p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
+                p.text(
+                    icon_box.center(),
+                    egui::Align2::CENTER_CENTER,
+                    egui_phosphor::regular::FRAME_CORNERS,
+                    egui::FontId::new(18.0, theme::phosphor()),
+                    t.accent_ink,
+                );
+
+                // Middle title
+                let text_left = icon_box.right() + 10.0;
+                let title_pos = pos2(text_left, rect.center().y);
+                let btn_title = if is_custom {
+                    loc.inspector_overlay_studio_title.to_string()
+                } else {
+                    let matched_name = all_overlays.iter()
+                        .find(|o| o.id == *overlay_id || o.name.eq_ignore_ascii_case(overlay_id))
+                        .map(|o| o.name.as_str())
+                        .unwrap_or(overlay_id.as_str());
+                    format!("{} ({})", loc.inspector_overlay_studio_title, matched_name)
+                };
+                p.text(
+                    title_pos,
+                    egui::Align2::LEFT_CENTER,
+                    btn_title,
+                    egui::FontId::new(13.0, theme::semibold()),
+                    if is_overlay_showing || hovered { t.accent_ink } else { t.ink_strong },
+                );
+
+                // Action arrow pill on right
+                let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
+                let (status_text, status_color) = if is_overlay_showing {
+                    (loc.inspector_badge_executing_now, t.accent_ink)
+                } else if hovered {
+                    (loc.inspector_overlay_studio_open, t.accent_ink)
+                } else {
+                    (loc.inspector_overlay_studio_open, t.faint)
+                };
+                p.text(
+                    arrow_pos,
+                    egui::Align2::RIGHT_CENTER,
+                    status_text,
+                    egui::FontId::new(11.0, theme::mono_bold()),
+                    status_color,
+                );
             }
-
-            let is_overlay_showing = state.daemon_state.as_ref().is_some_and(|d| d.active_overlay_ids.contains(overlay_id))
-                || state.active_test_overlays.contains(overlay_id);
-
-            let p = ui.painter();
-            let bg = if hovered { t.sunken } else { t.bg };
-            let border_color = if is_overlay_showing || hovered {
-                t.accent_ink
-            } else {
-                t.hairline().color
-            };
-            p.rect_filled(rect, CornerRadius::same(2), bg);
-            p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
-
-            // Icon chip on left
-            let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
-            let icon_bg = if is_overlay_showing || hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
-            p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
-            p.text(
-                icon_box.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::FRAME_CORNERS,
-                egui::FontId::new(18.0, theme::phosphor()),
-                t.accent_ink,
-            );
-
-            // Middle title (clean, centered vertically)
-            let text_left = icon_box.right() + 10.0;
-            let title_pos = pos2(text_left, rect.center().y);
-            p.text(
-                title_pos,
-                egui::Align2::LEFT_CENTER,
-                loc.inspector_overlay_studio_title,
-                egui::FontId::new(13.0, theme::semibold()),
-                if is_overlay_showing || hovered { t.accent_ink } else { t.ink_strong },
-            );
-
-            // Action arrow pill on right
-            let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
-            let (status_text, status_color) = if is_overlay_showing {
-                (loc.inspector_badge_executing_now, t.accent_ink)
-            } else if hovered {
-                (loc.inspector_overlay_studio_open, t.accent_ink)
-            } else {
-                (loc.inspector_overlay_studio_open, t.faint)
-            };
-            p.text(
-                arrow_pos,
-                egui::Align2::RIGHT_CENTER,
-                status_text,
-                egui::FontId::new(11.0, theme::mono_bold()),
-                status_color,
-            );
 
             ui.add_space(6.0);
 
-            // Operation selector using segmented hairline button cells (Toggle / Flash only)
+            // 3. Operation selector (Show / Hide / Toggle / Flash / SetText in 2 rows to fit any screen width)
             widgets::hud(ui, loc.inspector_overlay_operation, t.muted);
-            if *operation == crate::models::OverlayOperation::Show || *operation == crate::models::OverlayOperation::Hide {
-                *operation = crate::models::OverlayOperation::Toggle;
-            }
-            let op_options = [
+            let row1 = [
+                (crate::models::OverlayOperation::Show, widgets::Cell::new(loc.inspector_overlay_op_show, loc.inspector_overlay_op_show_desc)),
+                (crate::models::OverlayOperation::Hide, widgets::Cell::new(loc.inspector_overlay_op_hide, loc.inspector_overlay_op_hide_desc)),
                 (crate::models::OverlayOperation::Toggle, widgets::Cell::new(loc.inspector_overlay_op_toggle, loc.inspector_overlay_op_toggle_desc)),
-                (crate::models::OverlayOperation::Flash, widgets::Cell::new(loc.inspector_overlay_op_flash, loc.inspector_overlay_op_flash_desc)),
             ];
-            widgets::cells(ui, operation, &op_options);
+            widgets::cells(ui, operation, &row1);
+            ui.add_space(2.0);
+            let row2 = [
+                (crate::models::OverlayOperation::Flash, widgets::Cell::new(loc.inspector_overlay_op_flash, loc.inspector_overlay_op_flash_desc)),
+                (crate::models::OverlayOperation::SetText, widgets::Cell::new(loc.inspector_overlay_op_set_text, loc.inspector_overlay_op_set_text_desc)),
+            ];
+            widgets::cells(ui, operation, &row2);
 
             if *operation == crate::models::OverlayOperation::Flash {
                 ui.add_space(4.0);
@@ -3822,17 +4005,19 @@ fn render_action_parameter_fields(
                 }
             }
 
-            ui.add_space(4.0);
-            widgets::hud(ui, loc.inspector_overlay_override_text, t.muted);
-            let mut ov_txt = override_text.clone().unwrap_or_default();
-            if ui.add(
-                egui::TextEdit::singleline(&mut ov_txt)
-                    .hint_text(loc.inspector_overlay_hint_override)
-                    .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
-                    .margin(vec2(10.0, 8.0)),
-            ).changed() {
-                *override_text = if ov_txt.trim().is_empty() { None } else { Some(ov_txt) };
+            if *operation != crate::models::OverlayOperation::Hide {
+                ui.add_space(4.0);
+                widgets::hud(ui, loc.inspector_overlay_override_text, t.muted);
+                let mut ov_txt = override_text.clone().unwrap_or_default();
+                if ui.add(
+                    egui::TextEdit::singleline(&mut ov_txt)
+                        .hint_text(loc.inspector_overlay_hint_override)
+                        .desired_width(ui.available_width())
+                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .margin(vec2(10.0, 8.0)),
+                ).changed() {
+                    *override_text = if ov_txt.trim().is_empty() { None } else { Some(ov_txt) };
+                }
             }
 
             // Compact checkbox group for overlay behaviors (click-through, draggable dependent on click-through, hide from capture)

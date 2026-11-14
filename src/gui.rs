@@ -18,8 +18,8 @@ use views::element_catalog_modal::render_element_catalog_modal;
 use views::guide_modal::render_guide_modal;
 use views::header_bar::render_header_bar;
 use views::inspector::render_inspector_drawer;
-use views::macro_modal::render_macro_modal;
-use views::overlay_modal::render_overlay_modal;
+use views::macro_modal::{render_macro_modal, render_macro_presets_modal};
+use views::overlay_modal::{render_overlay_modal, render_overlay_presets_modal};
 use views::process_picker_modal::render_process_picker_modal;
 use views::rules_view::render_rules_view;
 use views::script_modal::render_script_editor_canvas;
@@ -263,11 +263,17 @@ impl App for SynectorApp {
         // 8. Centered Interactive Macro Studio Modal (record / edit keystrokes & mouse)
         render_macro_modal(&ctx, &mut self.state);
 
+        // 8.0.1. Macro Presets Modal (save / load macro templates)
+        render_macro_presets_modal(&ctx, &mut self.state);
+
         // 8.1. Centered Interactive Overlay Studio Modal (visual WYSIWYG overlay designer)
         render_overlay_modal(&ctx, &mut self.state);
 
         // 8.1.1. Overlay Element Catalog Modal (library for selecting overlay elements & widgets)
         render_element_catalog_modal(&ctx, &mut self.state);
+
+        // 8.1.2. Overlay Presets Modal (save / load overlay templates)
+        render_overlay_presets_modal(&ctx, &mut self.state);
 
         // 8.2. Process Picker Modal (Hunter inside studio modal for selecting a running process)
         render_process_picker_modal(&ctx, &mut self.state);

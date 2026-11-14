@@ -2120,8 +2120,29 @@ impl DaemonEngine {
 
             IpcRequest::DeleteOverlay(id) => {
                 crate::daemon::overlay_manager::hide_overlay(&id);
-                self.config.overlays.retain(|o| o.id != id);
+                self.config.overlays.retain(|o| o.id != id && !o.name.eq_ignore_ascii_case(&id));
                 let _ = self.config.save_to_file(AppConfig::config_path());
+                IpcResponse::Ok
+            }
+
+            IpcRequest::SaveMacroPreset(preset) => {
+                if let Some(existing) = self.config.macro_presets.iter_mut().find(|p| p.id == preset.id) {
+                    *existing = preset;
+                } else {
+                    self.config.macro_presets.push(preset);
+                }
+                let _ = self.config.save_to_file(AppConfig::config_path());
+                IpcResponse::Ok
+            }
+
+            IpcRequest::DeleteMacroPreset(id) => {
+                self.config.macro_presets.retain(|p| p.id != id && !p.name.eq_ignore_ascii_case(&id));
+                let _ = self.config.save_to_file(AppConfig::config_path());
+                IpcResponse::Ok
+            }
+
+            IpcRequest::SetOverlayText { id, text } => {
+                crate::daemon::overlay_manager::update_overlay_text(&id, &text);
                 IpcResponse::Ok
             }
 
