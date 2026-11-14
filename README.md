@@ -37,7 +37,10 @@
 * **Macro Studio**: Record and replay precise keyboard and mouse sequences with 3D camera rotation support, humanized motion jitter, and game-compatible DirectInput scancodes.
 * **Resource Optimization**: Protect your system from rogue memory leaks by automatically trimming process working sets and dynamically adjusting CPU priorities and affinity.
 * **Audio & Device Automation**: Control master and per-app volumes, balance channels, switch audio endpoints, or trigger automations from hardware and power events.
-* **Smart Rules & Branching**: Combine multi-condition pre-checks (running apps, active window, schedules, webhooks, system idle) with dynamic If/Else execution flows.
+* **Wait Conditions & Smart Flow**: Pause pipelines with timers or await dynamic events (window, process, hotkey, file changes) with timeout policies, mid-pipeline checks, and If/Else branching.
+* **Presets & Quick Operations**: Modular template presets for overlays and macros with instant operations (Run, Stop, Toggle) and dynamic runtime text updates.
+* **Desktop Shortcuts & CLI Runner**: Generate Windows `.lnk` shortcuts to launch any rule from desktop, or run automations directly via `--run-rule`.
+* **Silent Background Updates**: Daemon-managed GitHub release monitoring, auto-install, tray progress indicators, and overlay alerts.
 * **Portable Sharing**: Export and import complete automations instantly via compact clipboard codes for effortless backup and sharing.
 
 ## Installation
@@ -171,8 +174,10 @@ Synector/
 │   ├── i18n.rs                            # Internationalization loader & language switcher
 │   ├── models.rs                          # Domain data models (Rule, Trigger, Action, Process)
 │   ├── sharing.rs                         # Portable automation compression, encoding & clipboard sharing
+│   ├── shortcut.rs                        # Windows shell link (.lnk) desktop shortcut generator
+│   ├── single_instance.rs                 # Win32 Named Mutex guards for daemon and GUI
 │   ├── updater.rs                         # GitHub releases auto-update & self-replacement engine
-│   └── main.rs                            # CLI dispatcher (--daemon, --gui, default)
+│   └── main.rs                            # CLI dispatcher (--daemon, --gui, --run-rule, default)
 ├── build.rs                               # Windows resource compilation (icon, manifest)
 └── Cargo.toml                             # Rust manifest & dependencies
 ```

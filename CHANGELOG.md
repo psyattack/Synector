@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.8.0](https://github.com/psyattack/Synector/compare/v2.7.0...v2.8.0) - 2026-11-15
+
+### Added
+- Template Presets for Overlays and Macros: Save and reuse HUD overlays and macro sequences across rules using the new Preset library. Easily browse, load, delete, or detach presets into independent copies directly within Overlay Studio, Macro Studio, or the Rule Inspector.
+- Advanced Macro and Overlay Operations: Trigger macros with dedicated Run, Stop, and Toggle actions, including active thread cancellation. Dynamically update text on active HUD overlays at runtime with the new Set Text overlay operation.
+- Universal Wait Conditions: Replaced simple delay pauses with a versatile Wait step. Pause for a fixed duration or hold execution until a target window opens or closes, a process starts or terminates, a hotkey is pressed, or a file is created or deleted, with configurable timeouts and timeout policies.
+- Inline Check Step: Insert condition checks anywhere within an action pipeline. If conditions are not met, the remaining steps gracefully stop without recording an error or interrupting other rules.
+- Windows Desktop Shortcuts: Create native Windows desktop shortcuts (.lnk) for any automation rule with a single click. Launch rules directly from your desktop, Start menu, or custom keybindings.
+- Direct Rule Execution CLI: Launch specific automation rules from the command line using `--run-rule <name_or_id>`, communicating with the background daemon or executing autonomously.
+- Action Toggle Modes: Toggle network traffic blocking in Windows Firewall, or toggle window visibility (show/hide) and state (minimize/restore) with a single action step.
+- Background Daemon Updates: Software updates are now handled seamlessly by the background daemon. Enjoy optional silent auto-installation, update progress in the tray menu, and non-intrusive GPU overlay alerts.
+
+### Changed
+- Streamlined Rule Cards: Rule titles and colored tags now appear neatly in a fixed-height row with status toggle switches aligned to the far right for cleaner visual scanning.
+- Polished Trigger Badges: Removed redundant label prefixes on schedule and process badges across all language catalogs for a more concise interface.
+- Theme-Adaptive Tray Icons: Tray context menu icons now automatically adapt to Windows light and dark themes.
+- Enhanced Process Matching: Automatic .exe extension normalization and improved window focus tracking ensure reliable process detection regardless of how application names are entered.
+
+### Fixed
+- Resolved companion satellite processes occasionally failing to terminate cleanly upon primary application exit.
+- Other improvements.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **presets:** add overlay and macro templates, control operations, and dynamic text updates (by @psyattack in 55a0e57)
+- **rules:** add wait conditions, pipeline check, toggle actions, and rule shortcuts (by @psyattack in a362ca3)
+- **updater:** daemon-managed updates, tray integration, overlay alerts, and auto-install (by @psyattack in 5cca2b7)
+- **ui:** streamline rule card layout, inline tags, clean trigger badges, and polish tray icons (by @psyattack in 8b9c064)
+- **daemon:** enhance process normalization, bound lifecycle cleanup, window focus loop, and session lock detection (by @psyattack in f2f5688)
+
+### Changed
+- **readme:** update screen (by @psyattack in 59391f7)
+
+</details>
+
+
 ## [2.7.0](https://github.com/psyattack/Synector/compare/v2.6.0...v2.7.0) - 2026-11-03
 
 ### Added

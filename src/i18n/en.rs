@@ -348,7 +348,6 @@ pub static STRINGS: Strings = Strings {
     inspector_menu_kill_process: "Kill Process",
     inspector_menu_notification: "Notification Toast",
     inspector_menu_system_power: "System State",
-    inspector_menu_delay: "Delay Pause",
     inspector_menu_webhook: "HTTP Webhook",
     inspector_search_action_hint: "Search action...",
     inspector_no_matching_actions: "No matching actions found",
@@ -444,7 +443,6 @@ pub static STRINGS: Strings = Strings {
     catalog_desc_notification: "Display a Windows notification toast banner with custom title and message",
     catalog_desc_webhook: "Send HTTP request with headers and payload",
     catalog_desc_system_power: "Lock computer, sleep, restart, shut down, or turn off monitors",
-    catalog_desc_delay: "Pause execution pipeline for a specified duration in seconds",
 
     // Inspector Action Cards & Badges
     inspector_tip_drag_step: "Drag to reorder step",
@@ -459,7 +457,6 @@ pub static STRINGS: Strings = Strings {
     inspector_badge_notification: "NOTIFICATION",
     inspector_badge_system_power: "SYSTEM STATE",
     inspector_badge_audio_format: "AUDIO FORMAT",
-    inspector_badge_delay: "DELAY",
     inspector_badge_webhook: "WEBHOOK",
 
     // Audio Format & Sound extensions
@@ -624,7 +621,6 @@ pub static STRINGS: Strings = Strings {
     update_notification_hint: "Click here or use tray to install",
     update_progress_downloading: "Downloading update v{}...",
     update_progress_applying: "Applying update and restarting...",
-    update_progress_failed: "Update failed: {}",
 
     // Actions & Catalog additions
     action_window_title: "Window Control",
@@ -1098,7 +1094,6 @@ pub static STRINGS: Strings = Strings {
     toast_shortcut_failed: "Failed to create shortcut: {}",
 
     // Presets & Templates
-    presets_title: "PRESETS & TEMPLATES",
     presets_load_btn: "Load",
     presets_save_btn: "Save as Preset",
     presets_save_placeholder: "Preset name...",
@@ -1117,7 +1112,6 @@ pub static STRINGS: Strings = Strings {
 
     inspector_preset_source: "PRESET SOURCE",
     inspector_preset_custom: "Custom (Inline)",
-    inspector_preset_select: "Select Preset",
     inspector_preset_detach: "Detach to Custom",
     inspector_preset_detach_tip: "Convert preset reference into an independent inline copy",
 

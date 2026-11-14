@@ -348,7 +348,6 @@ pub static STRINGS: Strings = Strings {
     inspector_menu_kill_process: "Завершение процесса",
     inspector_menu_notification: "Уведомление",
     inspector_menu_system_power: "Питание системы",
-    inspector_menu_delay: "Пауза",
     inspector_menu_webhook: "HTTP Webhook",
     inspector_search_action_hint: "Поиск действия...",
     inspector_no_matching_actions: "Подходящих действий не найдено",
@@ -444,7 +443,6 @@ pub static STRINGS: Strings = Strings {
     catalog_desc_notification: "Показ системного всплывающего уведомления Windows с заголовком и текстом",
     catalog_desc_webhook: "Отправка HTTP вебхука с заголовками и телом JSON",
     catalog_desc_system_power: "Блокировка экрана, спящий режим, перезагрузка, выключение или гашение монитора",
-    catalog_desc_delay: "Приостановка выполнения цепочки действий на заданное количество секунд",
 
     // Inspector Action Cards & Badges
     inspector_tip_drag_step: "Потяните для изменения порядка шагов",
@@ -459,7 +457,6 @@ pub static STRINGS: Strings = Strings {
     inspector_badge_notification: "УВЕДОМЛЕНИЕ",
     inspector_badge_system_power: "СОСТОЯНИЕ СИСТЕМЫ",
     inspector_badge_audio_format: "ФОРМАТ АУДИО",
-    inspector_badge_delay: "ЗАДЕРЖКА",
     inspector_badge_webhook: "WEBHOOK",
 
     // Audio Format & Sound extensions
@@ -624,7 +621,6 @@ pub static STRINGS: Strings = Strings {
     update_notification_hint: "Нажмите здесь или в трее для установки",
     update_progress_downloading: "Загрузка обновления v{}...",
     update_progress_applying: "Применение обновления и перезапуск...",
-    update_progress_failed: "Сбой обновления: {}",
 
     // Actions & Catalog additions
     action_window_title: "Управление окном",
@@ -1098,7 +1094,6 @@ pub static STRINGS: Strings = Strings {
     toast_shortcut_failed: "Ошибка создания ярлыка: {}",
 
     // Presets & Templates
-    presets_title: "ПРЕСЕТЫ И ШАБЛОНЫ",
     presets_load_btn: "Загрузить",
     presets_save_btn: "Сохранить как пресет",
     presets_save_placeholder: "Название пресета...",
@@ -1117,7 +1112,6 @@ pub static STRINGS: Strings = Strings {
 
     inspector_preset_source: "ИСТОЧНИК ПРЕСЕТА",
     inspector_preset_custom: "Пользовательский (встроенный)",
-    inspector_preset_select: "Выбрать пресет",
     inspector_preset_detach: "Отвязать в копию",
     inspector_preset_detach_tip: "Преобразовать ссылку на пресет в независимую встроенную копию",
 

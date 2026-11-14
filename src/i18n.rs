@@ -365,7 +365,6 @@ pub struct Strings {
     pub inspector_menu_kill_process: &'static str,
     pub inspector_menu_notification: &'static str,
     pub inspector_menu_system_power: &'static str,
-    pub inspector_menu_delay: &'static str,
     pub inspector_menu_webhook: &'static str,
     pub inspector_search_action_hint: &'static str,
     pub inspector_no_matching_actions: &'static str,
@@ -461,7 +460,6 @@ pub struct Strings {
     pub catalog_desc_notification: &'static str,
     pub catalog_desc_webhook: &'static str,
     pub catalog_desc_system_power: &'static str,
-    pub catalog_desc_delay: &'static str,
 
     // Inspector Action Cards & Badges
     pub inspector_tip_drag_step: &'static str,
@@ -476,7 +474,6 @@ pub struct Strings {
     pub inspector_badge_notification: &'static str,
     pub inspector_badge_system_power: &'static str,
     pub inspector_badge_audio_format: &'static str,
-    pub inspector_badge_delay: &'static str,
     pub inspector_badge_webhook: &'static str,
 
     // Audio Format & Sound extensions
@@ -641,7 +638,6 @@ pub struct Strings {
     pub update_notification_hint: &'static str,
     pub update_progress_downloading: &'static str,
     pub update_progress_applying: &'static str,
-    pub update_progress_failed: &'static str,
 
     // Actions & Catalog additions
     pub action_window_title: &'static str,
@@ -1115,7 +1111,6 @@ pub struct Strings {
     pub toast_shortcut_failed: &'static str,
 
     // Presets & Templates
-    pub presets_title: &'static str,
     pub presets_load_btn: &'static str,
     pub presets_save_btn: &'static str,
     pub presets_save_placeholder: &'static str,
@@ -1134,7 +1129,6 @@ pub struct Strings {
 
     pub inspector_preset_source: &'static str,
     pub inspector_preset_custom: &'static str,
-    pub inspector_preset_select: &'static str,
     pub inspector_preset_detach: &'static str,
     pub inspector_preset_detach_tip: &'static str,
 

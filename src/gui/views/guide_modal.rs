@@ -362,6 +362,8 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Test Rule / Step", "Проверка всей цепочки или отдельного шага прямо в редакторе без ожидания триггера.", t);
         doc_table_row(ui, "Backup & Sharing", "Экспорт и импорт правил в формате JSON для резервных копий и переноса настроек.", t);
         doc_table_row(ui, "Теги и Сортировка", "Цветные теги с иконками, фильтрация списка, автоматическая сортировка и ручное перетаскивание карточек (Drag & Drop).", t);
+        doc_table_row(ui, "Ярлыки (.lnk)", "Создание ярлыков Windows на рабочем столе для мгновенного прямого запуска правил из проводника или внешних лаунчеров.", t);
+        doc_table_row(ui, "Библиотека Пресетов", "Сохранение и загрузка готовых пресетов оверлеев и макросов, открепление в кастомные копии и управление операциями.", t);
 
         ui.add_space(2.0);
         doc_callout(
@@ -397,6 +399,8 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Test Rule / Step", "Test the full pipeline or single actions directly in the studio without waiting for real triggers.", t);
         doc_table_row(ui, "Backup & Sharing", "Export and import automations as JSON files for easy migration and sharing.", t);
         doc_table_row(ui, "Tags & Reordering", "Custom colored tags with icons, tag filtering, multi-mode sorting, and precision drag-and-drop rule card reordering.", t);
+        doc_table_row(ui, "Shortcuts (.lnk)", "Generate Windows desktop shortcuts for direct 1-click rule invocation from shell or external launchers.", t);
+        doc_table_row(ui, "Template Presets", "Reusable Overlay and Macro preset libraries with detach support, quick operations (Run, Stop, Toggle), and runtime text updates.", t);
 
         ui.add_space(2.0);
         doc_callout(
@@ -630,8 +634,8 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Формат Аудио", "Переключение частоты дискретизации (до 192 кГц), разрядности (16-32 бит) и каналов (Stereo/Mono).", t);
         doc_table_row(ui, "Воспроизведение Звука", "Воспроизведение звуковых файлов (WAV/MP3/OGG) или генерация тональных сигналов (Beep) с настраиваемой частотой.", t);
         doc_table_row(ui, "Устройство по Умолчанию", "Мгновенное переключение основного аудиовыхода или микрофона по имени устройства.", t);
-        doc_table_row(ui, "Window & Display", "Управление окнами (свернуть, прижать, TopMost), выбор целевого монитора, разрешение и Гц.", t);
-        doc_table_row(ui, "Tuning & Firewall", "Изменение приоритета процессов, привязка к ядрам CPU (Affinity) и блокировка сетевого трафика в Windows Firewall.", t);
+        doc_table_row(ui, "Window & Display", "Управление окнами (свернуть/восстановить, скрыть/показать, прижать, TopMost), выбор целевого монитора, разрешение и Гц.", t);
+        doc_table_row(ui, "Tuning & Firewall", "Изменение приоритета процессов, привязка к ядрам CPU (Affinity) и блокировка/переключение трафика в Windows Firewall.", t);
         doc_table_row(ui, "Очистка RAM (Trim)", "Сброс страниц памяти (Working Set) процесса обратно в систему с поддержкой мягких лимитов и пропуска активного окна.", t);
         doc_table_row(ui, "Discord Rich Presence", "Трансляция активности в Discord: статус игры/приложения, подробности, таймер, изображения и интерактивные кнопки с автосбросом.", t);
         doc_table_row(ui, "Архивация (Archive)", "Упаковка и распаковка файлов и директорий во всех популярных форматах: Zip, 7z, Tar, Tar.gz, Rar.", t);
@@ -639,7 +643,9 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Отправка исходящих REST-запросов (GET, POST, PUT, DELETE) с заголовками и телом.", t);
         doc_table_row(ui, "Power & System", "Схемы питания Windows; переход в сон, гибернация, перезагрузка, выключение и блокировка.", t);
         doc_table_row(ui, "Экранный Оверлей (HUD)", "Автономный GPU-оверлей поверх окон и игр: прицелы, текст с токенами, интерактивные кнопки/слайдеры, графики, телеметрия (CPU/RAM/сеть/микрофон), таймеры и медиаплеер с защитой от захвата.", t);
-        doc_table_row(ui, "Delay & Notification", "Асинхронные паузы между шагами, всплывающие уведомления Windows и воспроизведение звуковых сигналов.", t);
+        doc_table_row(ui, "Ожидание (Wait)", "Универсальная пауза: таймер задержки или ожидание событий (окно, процесс, хоткей, файл) с таймаутом и политикой прерывания.", t);
+        doc_table_row(ui, "Проверка (Check)", "Валидация условий посередине цепочки с мягким завершением выполнения последующих шагов без ошибок.", t);
+        doc_table_row(ui, "Всплывающие Уведомления", "Информационные toast-уведомления Windows с поддержкой токенов контекста.", t);
         doc_table_row(ui, "Ветвление (Если / Иначе)", "Динамическая проверка условий на лету с выполнением веток Если (THEN), Иначе Если (ELSE IF) и Иначе (ELSE).", t);
 
         ui.add_space(2.0);
@@ -684,8 +690,8 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Audio Format", "Configure sample rate (up to 192 kHz), bit depth (16-32 bit), and channels (Stereo/Mono) for audio devices.", t);
         doc_table_row(ui, "Play Sound", "Play local audio files (WAV/MP3/OGG) or generate customizable frequency/duration system beeps.", t);
         doc_table_row(ui, "Default Audio Device", "Switch default system playback audio output or recording microphone by name.", t);
-        doc_table_row(ui, "Window & Display", "Window positioning, TopMost on/off, target monitor index selection, resolution & Hz.", t);
-        doc_table_row(ui, "Tuning & Firewall", "Process priority class, CPU core affinity masks, and Windows Firewall traffic blocking.", t);
+        doc_table_row(ui, "Window & Display", "Window positioning, show/hide or minimize/restore toggles, TopMost, target monitor index selection, resolution & Hz.", t);
+        doc_table_row(ui, "Tuning & Firewall", "Process priority class, CPU core affinity masks, and Windows Firewall traffic blocking/toggling.", t);
         doc_table_row(ui, "Trim RAM (Working Set)", "Releases process working set memory pages back to the OS with configurable soft limits and active window skip safeguards.", t);
         doc_table_row(ui, "Discord Rich Presence", "Broadcast custom Rich Presence to Discord: game activity, state details, timer, image assets, and action buttons with auto-clear.", t);
         doc_table_row(ui, "Archive (Pack/Unpack)", "Compress or extract files and folders in all popular archive formats: Zip, 7z, Tar, Tar.gz, Rar.", t);
@@ -693,7 +699,9 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Send outbound HTTP requests (GET, POST, PUT, DELETE) with custom headers and body.", t);
         doc_table_row(ui, "Power & System", "Windows power plans; sleep, hibernate, restart, shutdown, and workstation lock.", t);
         doc_table_row(ui, "Screen Overlay (HUD)", "Standalone GPU overlay over apps and games: reticles, text with tokens, interactive buttons/sliders, live graphs, telemetry (CPU/RAM/net/mic), timers, and media player with anti-capture protection.", t);
-        doc_table_row(ui, "Delay & Notification", "Non-blocking delay pauses in pipeline, Windows desktop toast notifications, and audio alerts.", t);
+        doc_table_row(ui, "Wait Condition", "Universal wait: timer pause or waiting for events (window, process, hotkey, file) with timeout and abort/continue policies.", t);
+        doc_table_row(ui, "Check Condition", "Inline condition evaluation mid-pipeline that halts remaining steps cleanly without error.", t);
+        doc_table_row(ui, "Desktop Notifications", "Windows toast notifications with execution context tokens.", t);
         doc_table_row(ui, "Branching (If / Else)", "Evaluate conditions dynamically and branch into Then, Else If, and Else sub-action sequences.", t);
 
         ui.add_space(2.0);
