@@ -466,7 +466,7 @@ fn render_appearance_content(
 
             for (thm, label, bg_col, ink_col, accent_col) in themes {
                 let is_selected = state.theme == thm;
-                let card_size = vec2(90.0, 40.0);
+                let card_size = vec2(90.0, theme::CONTROL_H);
                 let (rect, resp) = ui.allocate_exact_size(card_size, Sense::click());
                 if resp.clicked() && !is_selected {
                     state.set_theme(thm);

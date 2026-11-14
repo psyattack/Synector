@@ -482,13 +482,9 @@ fn render_track_row(
                     state.edit_rule(rule.clone());
                 }
 
-                // 3. Rule Name and optional Tag Pills (Strictly fixed height - never alters card size)
+                // 3. Rule Name and optional Tag Pills (In a row, strictly fixed height 28px - never alters card size)
                 let title_color = if rule.is_enabled || is_manual { t.ink_strong } else { t.muted };
-                let title_font = if !rule.tags.is_empty() {
-                    egui::FontId::new(11.5, theme::semibold())
-                } else {
-                    egui::FontId::new(13.0, theme::semibold())
-                };
+                let title_font = egui::FontId::new(13.0, theme::semibold());
 
                 let natural_title_w = ui.painter().layout_no_wrap(
                     rule.name.clone(),
@@ -496,12 +492,9 @@ fn render_track_row(
                     title_color,
                 ).size().x;
 
-                let tags_w = if !rule.tags.is_empty() {
-                    measure_tags_width(ui, &rule.tags)
-                } else {
-                    0.0
-                };
-                let name_col_w = natural_title_w.max(tags_w).clamp(60.0, 200.0);
+                let has_tags = !rule.tags.is_empty();
+                let max_title_w = if has_tags { 160.0 } else { 220.0 };
+                let title_w = natural_title_w.min(max_title_w).max(40.0);
 
                 let format = egui::TextFormat {
                     font_id: title_font,
@@ -509,11 +502,11 @@ fn render_track_row(
                     ..Default::default()
                 };
                 let mut job = egui::text::LayoutJob::single_section(rule.name.clone(), format);
-                job.wrap = egui::text::TextWrapping::truncate_at_width(name_col_w);
+                job.wrap = egui::text::TextWrapping::truncate_at_width(title_w);
                 let title_galley = ui.painter().layout_job(job);
                 let is_elided = title_galley.elided;
 
-                let (name_rect, mut name_col_resp) = ui.allocate_exact_size(vec2(name_col_w, row_inner_h), Sense::click());
+                let (name_rect, mut name_col_resp) = ui.allocate_exact_size(vec2(title_w, row_inner_h), Sense::click());
                 name_col_resp = name_col_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
                 if is_elided {
                     name_col_resp = name_col_resp.on_hover_text(&rule.name);
@@ -522,25 +515,27 @@ fn render_track_row(
                     state.edit_rule(rule.clone());
                 }
 
-                if !rule.tags.is_empty() {
-                    ui.painter().galley(pos2(name_rect.left(), name_rect.top() + 1.0), title_galley, title_color);
+                let title_pos = pos2(name_rect.left(), name_rect.center().y - title_galley.size().y / 2.0);
+                ui.painter().galley(title_pos, title_galley, title_color);
 
+                if has_tags {
+                    let tags_w = measure_tags_width(ui, &rule.tags).min(180.0);
+                    let (tags_rect, _) = ui.allocate_exact_size(vec2(tags_w, row_inner_h), Sense::hover());
+                    let pill_h = 17.0;
+                    let pill_y = tags_rect.center().y - pill_h / 2.0;
                     render_card_tags_at(
                         ui,
                         &rule.tags,
-                        name_rect.left(),
-                        name_rect.top() + 15.0,
-                        name_col_w,
+                        tags_rect.left(),
+                        pill_y,
+                        tags_w,
                         &rule.id,
                         t,
                     );
-                } else {
-                    let title_pos = pos2(name_rect.left(), name_rect.center().y - title_galley.size().y / 2.0);
-                    ui.painter().galley(title_pos, title_galley, title_color);
                 }
 
-                // Spacing from title to trigger badge
-                ui.add_space(8.0);
+                // Spacing from title/tags to trigger badge
+                ui.add_space(2.0);
 
                 // 4. Center Pipeline Stream in Horizontal ScrollArea (Pixel-perfect vertical centering)
                 let right_controls_w = if is_manual { 165.0 } else { 205.0 };
@@ -590,34 +585,44 @@ fn render_track_row(
                     },
                 );
 
-                // 5. Far Right Controls: Toggle switch + RUN + EDIT + CLONE + SHARE + DELETE
+                // 5. Far Right Controls: TOGGLE SWITCH (far right) + DELETE + SHARE + CLONE + EDIT + RUN
                 ui.allocate_ui_with_layout(
                     vec2(ui.available_width(), row_inner_h),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
 
-                        // Delete (far right)
+                        // 1. Pause / Resume Toggle Switch (first item in right_to_left = placed at far right)
+                        if !is_manual {
+                            let mut is_on = rule.is_enabled;
+                            let switch_tip = if is_on { loc.rules_btn_pause } else { loc.rules_btn_resume };
+                            if widgets::toggle_switch(ui, &mut is_on).on_hover_text(switch_tip).changed() {
+                                state.toggle_rule(&rule.id, is_on);
+                            }
+                            ui.add_space(4.0);
+                        }
+
+                        // 2. Delete
                         if widgets::glyph_button_custom(ui, Glyph::Trash, 26.0, false, loc.rules_btn_delete).clicked() {
                             state.delete_rule(&rule.id);
                         }
 
-                        // Share
+                        // 3. Share
                         if widgets::glyph_button_custom(ui, Glyph::Share, 26.0, false, loc.rules_btn_copy_single_tip).clicked() {
                             state.copy_single_rule_to_clipboard(ui.ctx(), rule);
                         }
 
-                        // Clone
+                        // 4. Clone
                         if widgets::glyph_button_custom(ui, Glyph::Clone, 26.0, false, loc.rules_btn_clone).clicked() {
                             state.clone_rule(rule);
                         }
 
-                        // Edit
+                        // 5. Edit
                         if widgets::glyph_button_custom(ui, Glyph::Edit, 26.0, false, loc.rules_btn_edit).clicked() {
                             state.edit_rule(rule.clone());
                         }
 
-                        // Run / Stop
+                        // 6. Run / Stop
                         let is_stoppable = if is_manual { is_running } else { is_test_running };
                         let (run_glyph, run_tip) = if is_stoppable {
                             (Glyph::Stop, loc.rules_btn_stop)
@@ -631,17 +636,6 @@ fn render_track_row(
                                 state.stop_rule_execution(&rule.id);
                             } else {
                                 state.test_run_rule(&rule.id);
-                            }
-                        }
-
-                        if !is_manual {
-                            ui.add_space(6.0);
-
-                            // Pause / Resume Toggle Switch
-                            let mut is_on = rule.is_enabled;
-                            let switch_tip = if is_on { loc.rules_btn_pause } else { loc.rules_btn_resume };
-                            if widgets::toggle_switch(ui, &mut is_on).on_hover_text(switch_tip).changed() {
-                                state.toggle_rule(&rule.id, is_on);
                             }
                         }
                     },
@@ -683,10 +677,9 @@ fn render_track_pipeline(
     let trig_chip = format!("{} {}", trig_glyph, trig_label);
     let galley = widgets::caps(ui, &trig_chip, 9.5, theme::mono(), 0.5, t.accent_ink);
     let chip_w = galley.size().x + 12.0;
-    let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
+    let (chip_rect, _chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
     ui.painter().rect(chip_rect, CornerRadius::ZERO, t.sunken, t.hairline(), egui::StrokeKind::Inside);
     widgets::paint_centred(ui, chip_rect, galley, t.accent_ink);
-    chip_resp.on_hover_text(&trig_label);
 
     // 2. Pre-conditions (if any) - NO arrow before IF
     if !rule.conditions.is_empty() {
@@ -745,8 +738,6 @@ fn render_track_pipeline(
 
             if is_current {
                 chip_resp.on_hover_text(loc.rules_summary_step_active);
-            } else {
-                chip_resp.on_hover_text(&brief);
             }
         }
     }
@@ -789,8 +780,6 @@ fn render_track_pipeline(
 
             if is_current {
                 chip_resp.on_hover_text(loc.rules_summary_step_active);
-            } else {
-                chip_resp.on_hover_text(&brief);
             }
         }
     }
@@ -803,12 +792,14 @@ fn render_track_pipeline(
 }
 
 fn measure_tags_width(ui: &egui::Ui, tags: &[crate::models::RuleTag]) -> f32 {
-    let font_text = egui::FontId::new(8.5, theme::mono());
-    let font_icon = egui::FontId::new(9.0, theme::phosphor());
+    let font_text = egui::FontId::new(9.5, theme::mono());
+    let font_icon = egui::FontId::new(10.0, theme::phosphor());
     let mut total_w = 0.0;
+    let pad_x = 5.0;
+    let more_badge_w = 22.0;
     for (i, tag) in tags.iter().enumerate() {
         if i >= 3 {
-            total_w += 24.0;
+            total_w += more_badge_w + 3.0;
             break;
         }
         let text_w = ui.painter().layout_no_wrap(tag.name.clone(), font_text.clone(), egui::Color32::WHITE).size().x;
@@ -821,7 +812,7 @@ fn measure_tags_width(ui: &egui::Ui, tags: &[crate::models::RuleTag]) -> f32 {
         } else {
             0.0
         };
-        let pill_w = (9.0 + icon_w + text_w).max(16.0);
+        let pill_w = (pad_x + icon_w + text_w + pad_x).max(18.0);
         total_w += pill_w + 3.0;
     }
     total_w
@@ -836,11 +827,11 @@ fn render_card_tags_at(
     rule_id: &str,
     t: &Tokens,
 ) {
-    let font_text = egui::FontId::new(8.5, theme::mono());
-    let font_icon = egui::FontId::new(9.0, theme::phosphor());
+    let font_text = egui::FontId::new(9.5, theme::mono());
+    let font_icon = egui::FontId::new(10.0, theme::phosphor());
 
     let mut curr_x = start_x;
-    let pill_h = 13.0;
+    let pill_h = 17.0;
     let total_tags = tags.len();
     let mut shown_count = 0;
 
@@ -861,10 +852,10 @@ fn render_card_tags_at(
             (None, 0.0)
         };
 
-        let pad_x = 4.5;
+        let pad_x = 5.0;
         let gap = if has_ico { 3.5 } else { 0.0 };
-        let pill_w = (pad_x + icon_w + gap + text_galley.size().x + pad_x).max(16.0);
-        let more_badge_w = 20.0;
+        let pill_w = (pad_x + icon_w + gap + text_galley.size().x + pad_x).max(18.0);
+        let more_badge_w = 22.0;
 
         let has_more = i + 1 < total_tags;
         let needed_w = if has_more { pill_w + 3.0 + more_badge_w } else { pill_w };
@@ -874,7 +865,7 @@ fn render_card_tags_at(
         }
 
         let pill_rect = Rect::from_min_size(pos2(curr_x, top_y), vec2(pill_w, pill_h));
-        let resp = ui.interact(pill_rect, ui.id().with(("card_tag", rule_id, i)), Sense::hover());
+        let _resp = ui.interact(pill_rect, ui.id().with(("card_tag", rule_id, i)), Sense::hover());
 
         ui.painter().rect(
             pill_rect,
@@ -894,7 +885,7 @@ fn render_card_tags_at(
         let text_pos = pos2(draw_x, pill_rect.center().y - text_galley.size().y / 2.0);
         ui.painter().galley(text_pos, text_galley, tag_color);
 
-        resp.on_hover_text(&tag.name);
+        // Tautological tooltip removed: tag.name is already fully legible on the pill
 
         curr_x += pill_w + 3.0;
         shown_count += 1;
@@ -903,7 +894,7 @@ fn render_card_tags_at(
     let hidden_count = total_tags.saturating_sub(shown_count);
     if hidden_count > 0 {
         let more_text = format!("+{}", hidden_count);
-        let more_galley = ui.painter().layout_no_wrap(more_text, egui::FontId::new(8.0, theme::mono()), t.muted);
+        let more_galley = ui.painter().layout_no_wrap(more_text, egui::FontId::new(8.5, theme::mono()), t.muted);
         let more_w = more_galley.size().x + 8.0;
         let more_rect = Rect::from_min_size(pos2(curr_x, top_y), vec2(more_w, pill_h));
         let more_resp = ui.interact(more_rect, ui.id().with(("card_tag_more", rule_id)), Sense::hover());
@@ -1333,22 +1324,89 @@ mod tests {
 
     #[test]
     fn test_format_trigger_display_no_prefix() {
-        let loc = i18n::get(Language::English);
-        let (_, trig_manual) = format_trigger_display(&Some(Trigger::Manual), loc);
-        assert!(!trig_manual.starts_with("TRIGGER:"));
-        assert!(!trig_manual.starts_with("ТРИГГЕР:"));
+        for lang in [Language::English, Language::Russian] {
+            let loc = i18n::get(lang);
 
-        let (_, trig_proc) = format_trigger_display(
-            &Some(Trigger::Process {
-                process_name: "notepad.exe".into(),
-                match_mode: crate::models::ProcessMatchMode::Exact,
-                single_instance: false,
-            }),
-            loc,
-        );
-        assert!(!trig_proc.starts_with("TRIGGER:"));
-        assert!(!trig_proc.starts_with("ТРИГГЕР:"));
-        assert!(trig_proc.contains("notepad.exe"));
+            let (_, trig_manual) = format_trigger_display(&Some(Trigger::Manual), loc);
+            assert!(!trig_manual.starts_with("TRIGGER:"));
+            assert!(!trig_manual.starts_with("ТРИГГЕР:"));
+
+            let (_, trig_proc) = format_trigger_display(
+                &Some(Trigger::Process {
+                    process_name: "notepad.exe".into(),
+                    match_mode: crate::models::ProcessMatchMode::Exact,
+                    single_instance: false,
+                }),
+                loc,
+            );
+            assert!(!trig_proc.starts_with("TRIGGER:"));
+            assert!(!trig_proc.starts_with("ТРИГГЕР:"));
+            assert!(trig_proc.contains("notepad.exe"));
+
+            // Schedule: Daily
+            let (_, trig_daily) = format_trigger_display(
+                &Some(Trigger::Schedule {
+                    schedule_type: crate::models::ScheduleType::Daily,
+                    interval_sec: 0,
+                    daily_time: Some("14:30".into()),
+                    days_of_week: vec![],
+                    day_of_month: None,
+                    target_datetime: None,
+                    delay_sec: 0,
+                }),
+                loc,
+            );
+            assert!(!trig_daily.starts_with("TRIGGER:"));
+            assert!(!trig_daily.starts_with("ТРИГГЕР:"));
+
+            // Schedule: OneShot
+            let (_, trig_once) = format_trigger_display(
+                &Some(Trigger::Schedule {
+                    schedule_type: crate::models::ScheduleType::OneShot,
+                    interval_sec: 0,
+                    daily_time: None,
+                    days_of_week: vec![],
+                    day_of_month: None,
+                    target_datetime: Some("2026-12-31 23:59".into()),
+                    delay_sec: 0,
+                }),
+                loc,
+            );
+            assert!(!trig_once.starts_with("TRIGGER:"));
+            assert!(!trig_once.starts_with("ТРИГГЕР:"));
+
+            // Schedule: AppStartup
+            let (_, trig_startup) = format_trigger_display(
+                &Some(Trigger::Schedule {
+                    schedule_type: crate::models::ScheduleType::AppStartup,
+                    interval_sec: 0,
+                    daily_time: None,
+                    days_of_week: vec![],
+                    day_of_month: None,
+                    target_datetime: None,
+                    delay_sec: 0,
+                }),
+                loc,
+            );
+            assert!(!trig_startup.starts_with("TRIGGER:"));
+            assert!(!trig_startup.starts_with("ТРИГГЕР:"));
+
+            // Schedule: AppShutdown
+            let (_, trig_shutdown) = format_trigger_display(
+                &Some(Trigger::Schedule {
+                    schedule_type: crate::models::ScheduleType::AppShutdown,
+                    interval_sec: 0,
+                    daily_time: None,
+                    days_of_week: vec![],
+                    day_of_month: None,
+                    target_datetime: None,
+                    delay_sec: 0,
+                }),
+                loc,
+            );
+            assert!(!trig_shutdown.starts_with("TRIGGER:"));
+            assert!(!trig_shutdown.starts_with("ТРИГГЕР:"));
+        }
     }
 
     #[test]
@@ -1420,5 +1478,44 @@ mod tests {
         assert!(sorted_status[0].is_enabled);
         assert!(sorted_status[1].is_enabled);
         assert!(!sorted_status[2].is_enabled);
+    }
+
+    #[test]
+    fn test_track_row_rendering_no_panic_and_fixed_height() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::install_fonts(&ctx);
+        let mut state = GuiState::new();
+        let tokens = Tokens::get(&ctx);
+
+        let tag_work = crate::models::RuleTag::new("Work").with_color("#3B82F6");
+        let mut rule_with_tags = Rule::default();
+        rule_with_tags.id = "r_tags".into();
+        rule_with_tags.name = "Rule with Tags".into();
+        rule_with_tags.is_enabled = true;
+        rule_with_tags.tags = vec![tag_work];
+        rule_with_tags.actions = vec![Action::Delay { seconds: 1.0 }];
+
+        let mut rule_no_tags = Rule::default();
+        rule_no_tags.id = "r_no_tags".into();
+        rule_no_tags.name = "Rule without Tags".into();
+        rule_no_tags.is_enabled = false;
+        rule_no_tags.actions = vec![Action::Delay { seconds: 1.0 }];
+
+        let mut rect_with_tags = Rect::NOTHING;
+        let mut rect_no_tags = Rect::NOTHING;
+
+        let mut out = ctx.run_ui(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.set_width(1000.0);
+                let (r1, _) = render_track_row(ui, &mut state, &rule_with_tags, 0, false, false, true, false, &tokens);
+                rect_with_tags = r1;
+                let (r2, _) = render_track_row(ui, &mut state, &rule_no_tags, 1, false, false, true, false, &tokens);
+                rect_no_tags = r2;
+            });
+        });
+        out.textures_delta.clear();
+
+        assert_eq!(rect_with_tags.height(), rect_no_tags.height(), "Card height must remain strictly fixed and identical regardless of tags presence");
+        assert!(rect_with_tags.height() > 0.0);
     }
 }

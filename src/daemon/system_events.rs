@@ -1,3 +1,4 @@
+#![allow(clippy::missing_transmute_annotations)]
 use crate::models::SystemEventType;
 
 #[cfg(windows)]
@@ -129,7 +130,7 @@ pub fn is_network_connected() -> bool {
                 unsafe {
                     if let Ok(h) = LoadLibraryA(s!("wininet.dll")) {
                         if let Some(proc) = GetProcAddress(h, s!("InternetGetConnectedState")) {
-                            return Some(std::mem::transmute(proc));
+                            return Some(std::mem::transmute::<_, FnInternetGetConnectedState>(proc));
                         }
                     }
                     None
@@ -189,8 +190,8 @@ pub fn is_session_locked() -> bool {
                             GetProcAddress(h, s!("CloseDesktop")),
                         ) {
                             return Some((
-                                std::mem::transmute(open_p),
-                                std::mem::transmute(close_p),
+                                std::mem::transmute::<_, FnOpenInputDesktop>(open_p),
+                                std::mem::transmute::<_, FnCloseDesktop>(close_p),
                             ));
                         }
                     }
@@ -201,7 +202,7 @@ pub fn is_session_locked() -> bool {
         if let Some((open_desk, close_desk)) = *DESKTOP_FNS {
             unsafe {
                 let hdesk = open_desk(0, 0, 0x0001); // 0x0001 = DESKTOP_READOBJECTS
-                if !hdesk.is_invalid() && hdesk.0 != std::ptr::null_mut() {
+                if !hdesk.is_invalid() && !hdesk.0.is_null() {
                     let _ = close_desk(hdesk);
                     false
                 } else {

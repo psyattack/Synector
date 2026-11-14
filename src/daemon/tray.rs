@@ -334,11 +334,11 @@ unsafe extern "system" fn tray_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
                 let icon_size = GetSystemMetrics(SM_CXSMICON)
                     .max(GetSystemMetrics(SM_CYSMICON))
                     .max(16) as u32;
-                let hbmp_open = generate_play_menu_bitmap(icon_size);
-                let hbmp_exit = generate_exit_menu_bitmap(icon_size);
+                let hbmp_open = generate_open_menu_bitmap(icon_size, is_dark);
+                let hbmp_exit = generate_exit_menu_bitmap(icon_size, is_dark);
 
                 if let Ok(hmenu) = CreatePopupMenu() {
-                    // 1. Open Synector (Bold default item with play launch icon)
+                    // 1. Open Synector (Bold default item with app window / dashboard icon)
                     let mut mask_open = MIIM_ID | MIIM_STRING;
                     if hbmp_open.is_some() {
                         mask_open |= MIIM_BITMAP;
@@ -535,66 +535,84 @@ unsafe fn create_pargb_bitmap(width: i32, height: i32, rgba_pixels: &[u8]) -> Op
 }
 
 #[cfg(windows)]
-fn generate_play_menu_bitmap(size: u32) -> Option<HBITMAP> {
+fn dist_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let vx = b.0 - a.0;
+    let vy = b.1 - a.1;
+    let wx = p.0 - a.0;
+    let wy = p.1 - a.1;
+    let c1 = wx * vx + wy * vy;
+    if c1 <= 0.0 {
+        return (wx * wx + wy * wy).sqrt();
+    }
+    let c2 = vx * vx + vy * vy;
+    if c2 <= c1 {
+        let dx = p.0 - b.0;
+        let dy = p.1 - b.1;
+        return (dx * dx + dy * dy).sqrt();
+    }
+    let t = c1 / c2;
+    let qx = a.0 + t * vx;
+    let qy = a.1 + t * vy;
+    let dx = p.0 - qx;
+    let dy = p.1 - qy;
+    (dx * dx + dy * dy).sqrt()
+}
+
+#[cfg(windows)]
+fn sd_rounded_rect(p: (f32, f32), min_pt: (f32, f32), max_pt: (f32, f32), r: f32) -> f32 {
+    let cx = (min_pt.0 + max_pt.0) * 0.5;
+    let cy = (min_pt.1 + max_pt.1) * 0.5;
+    let hx = (max_pt.0 - min_pt.0) * 0.5 - r;
+    let hy = (max_pt.1 - min_pt.1) * 0.5 - r;
+    let qx = (p.0 - cx).abs() - hx;
+    let qy = (p.1 - cy).abs() - hy;
+    let ox = qx.max(0.0);
+    let oy = qy.max(0.0);
+    let out_d = (ox * ox + oy * oy).sqrt();
+    let in_d = qx.max(qy).min(0.0);
+    out_d + in_d - r
+}
+
+#[cfg(windows)]
+fn generate_open_menu_bitmap(size: u32, is_dark: bool) -> Option<HBITMAP> {
     let mut rgba = vec![0u8; (size * size * 4) as usize];
     let s = size as f32;
 
-    let r_corner = (s * 0.08).max(1.2);
-    // Base triangle vertices before dilation by r_corner
-    let v0 = (s * 0.32, s * 0.26);
-    let v1 = (s * 0.32, s * 0.74);
-    let v2 = (s * 0.74, s * 0.50);
+    let min_pt = (s * 0.14, s * 0.16);
+    let max_pt = (s * 0.86, s * 0.84);
+    let r = (s * 0.08).clamp(1.0, 2.0);
+    let hw = (s * 0.045).clamp(0.65, 1.0);
+    let y_hdr = s * 0.38;
 
-    fn dist_sq_to_segment(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
-        let vx = b.0 - a.0;
-        let vy = b.1 - a.1;
-        let wx = p.0 - a.0;
-        let wy = p.1 - a.1;
-        let c1 = wx * vx + wy * vy;
-        if c1 <= 0.0 {
-            return wx * wx + wy * wy;
-        }
-        let c2 = vx * vx + vy * vy;
-        if c2 <= c1 {
-            let dx = p.0 - b.0;
-            let dy = p.1 - b.1;
-            return dx * dx + dy * dy;
-        }
-        let t = c1 / c2;
-        let qx = a.0 + t * vx;
-        let qy = a.1 + t * vy;
-        let dx = p.0 - qx;
-        let dy = p.1 - qy;
-        dx * dx + dy * dy
-    }
+    // Monochrome theme adaptation: crisp white on dark, crisp black on light
+    let (r_col, g_col, b_col) = if is_dark {
+        (245u8, 245u8, 250u8) // Crisp white
+    } else {
+        (25u8, 25u8, 30u8)    // Crisp black/charcoal
+    };
+
+    let offsets = [(-0.25f32, -0.25f32), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)];
 
     for y in 0..size {
         for x in 0..size {
-            let p = (x as f32 + 0.5, y as f32 + 0.5);
+            let mut cov = 0.0f32;
+            for (ox, oy) in offsets {
+                let p = (x as f32 + 0.5 + ox, y as f32 + 0.5 + oy);
 
-            let d0 = dist_sq_to_segment(p, v0, v1);
-            let d1 = dist_sq_to_segment(p, v1, v2);
-            let d2 = dist_sq_to_segment(p, v2, v0);
-            let min_d = d0.min(d1).min(d2).sqrt();
+                let d_frame = sd_rounded_rect(p, min_pt, max_pt, r).abs() - hw;
+                let d_hdr = dist_to_segment(p, (min_pt.0 + hw, y_hdr), (max_pt.0 - hw, y_hdr)) - hw;
 
-            let c0 = (v1.0 - v0.0) * (p.1 - v0.1) - (v1.1 - v0.1) * (p.0 - v0.0);
-            let c1 = (v2.0 - v1.0) * (p.1 - v1.1) - (v2.1 - v1.1) * (p.0 - v1.0);
-            let c2 = (v0.0 - v2.0) * (p.1 - v2.1) - (v0.1 - v2.1) * (p.0 - v2.0);
+                let min_d = d_frame.min(d_hdr);
+                cov += (0.5 - min_d).clamp(0.0, 1.0);
+            }
+            cov *= 0.25;
 
-            let is_inside = (c0 >= 0.0 && c1 >= 0.0 && c2 >= 0.0) || (c0 <= 0.0 && c1 <= 0.0 && c2 <= 0.0);
-
-            let signed_dist = if is_inside { -min_d } else { min_d };
-            let dist_to_shape = signed_dist - r_corner;
-
-            let alpha = (0.5 - dist_to_shape).clamp(0.0, 1.0);
-
-            if alpha > 0.02 {
+            if cov > 0.015 {
                 let idx = ((y * size + x) * 4) as usize;
-                let a_byte = (alpha * 255.0) as u8;
-                // Vibrant Emerald Play Green: #22C55E (rgb 34, 197, 94)
-                rgba[idx] = 34;
-                rgba[idx + 1] = 197;
-                rgba[idx + 2] = 94;
+                let a_byte = (cov * 255.0) as u8;
+                rgba[idx] = r_col;
+                rgba[idx + 1] = g_col;
+                rgba[idx + 2] = b_col;
                 rgba[idx + 3] = a_byte;
             }
         }
@@ -604,50 +622,59 @@ fn generate_play_menu_bitmap(size: u32) -> Option<HBITMAP> {
 }
 
 #[cfg(windows)]
-fn generate_exit_menu_bitmap(size: u32) -> Option<HBITMAP> {
+fn generate_exit_menu_bitmap(size: u32, is_dark: bool) -> Option<HBITMAP> {
     let mut rgba = vec![0u8; (size * size * 4) as usize];
     let s = size as f32;
-    let center = s / 2.0;
-    let r_out = s * 0.40;
-    let r_in = s * 0.24;
-    let line_w = (s * 0.12).max(1.5);
+    let cx = s * 0.5;
+    let cy = s * 0.5;
+    let r = s * 0.32;
+    let hw = (s * 0.055).clamp(0.85, 1.4);
+
+    let rad_left = (-130.0f32).to_radians();
+    let rad_right = (-50.0f32).to_radians();
+    let p_left = (cx + r * rad_left.cos(), cy + r * rad_left.sin());
+    let p_right = (cx + r * rad_right.cos(), cy + r * rad_right.sin());
+
+    // Monochrome theme adaptation: crisp white on dark, crisp black on light
+    let (r_col, g_col, b_col) = if is_dark {
+        (245u8, 245u8, 250u8) // Crisp white
+    } else {
+        (25u8, 25u8, 30u8)    // Crisp black/charcoal
+    };
+
+    let offsets = [(-0.25f32, -0.25f32), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)];
 
     for y in 0..size {
         for x in 0..size {
-            let px = x as f32 + 0.5;
-            let py = y as f32 + 0.5;
-            let dx = px - center;
-            let dy = py - center;
-            let dist = (dx * dx + dy * dy).sqrt();
+            let mut cov = 0.0f32;
+            for (ox, oy) in offsets {
+                let p = (x as f32 + 0.5 + ox, y as f32 + 0.5 + oy);
+                let dx = p.0 - cx;
+                let dy = p.1 - cy;
+                let dist_from_c = (dx * dx + dy * dy).sqrt();
+                let angle_deg = dy.atan2(dx).to_degrees();
 
-            // Power button arc (exclude top 60 degrees)
-            let in_ring = dist >= (r_in - 0.7) && dist <= (r_out + 0.7);
-            let angle = dy.atan2(dx).to_degrees(); // -180 to 180 (top is -90)
-            let not_top_gap = angle > -60.0 || angle < -120.0;
+                let in_top_gap = angle_deg < -50.0 && angle_deg > -130.0;
+                let d_arc = if in_top_gap {
+                    let d_left = ((p.0 - p_left.0).powi(2) + (p.1 - p_left.1).powi(2)).sqrt() - hw;
+                    let d_right = ((p.0 - p_right.0).powi(2) + (p.1 - p_right.1).powi(2)).sqrt() - hw;
+                    d_left.min(d_right)
+                } else {
+                    (dist_from_c - r).abs() - hw
+                };
 
-            let mut alpha = 0.0f32;
-            if in_ring && not_top_gap {
-                let ring_center = (r_in + r_out) / 2.0;
-                let ring_half_w = (r_out - r_in) / 2.0;
-                let d_ring = (dist - ring_center).abs();
-                let a_ring = (1.0 - (d_ring / ring_half_w).clamp(0.0, 1.0)).powf(0.5);
-                alpha = alpha.max(a_ring);
+                let d_line = dist_to_segment(p, (cx, cy - s * 0.38), (cx, cy - s * 0.04)) - hw;
+                let min_d = d_arc.min(d_line);
+                cov += (0.5 - min_d).clamp(0.0, 1.0);
             }
+            cov *= 0.25;
 
-            // Vertical power bar at top
-            if dx.abs() <= (line_w / 2.0 + 0.7) && py >= (center - r_out - 0.5) && py <= (center + 0.5) {
-                let d_line = dx.abs() / (line_w / 2.0);
-                let a_line = (1.0 - d_line.clamp(0.0, 1.0)).powf(0.5);
-                alpha = alpha.max(a_line);
-            }
-
-            if alpha > 0.05 {
+            if cov > 0.015 {
                 let idx = ((y * size + x) * 4) as usize;
-                let a_byte = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
-                // Coral Red (#EF4444)
-                rgba[idx] = 239;
-                rgba[idx + 1] = 68;
-                rgba[idx + 2] = 68;
+                let a_byte = (cov * 255.0) as u8;
+                rgba[idx] = r_col;
+                rgba[idx + 1] = g_col;
+                rgba[idx + 2] = b_col;
                 rgba[idx + 3] = a_byte;
             }
         }
@@ -663,19 +690,23 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_tray_menu_bitmaps_creation_and_cleanup() {
-        let play_bmp = generate_play_menu_bitmap(16);
-        assert!(play_bmp.is_some(), "Play menu bitmap should be generated successfully");
-        if let Some(bmp) = play_bmp {
-            unsafe {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(bmp.into());
-            }
-        }
+        for is_dark in [true, false] {
+            for size in [16, 20, 24, 32] {
+                let open_bmp = generate_open_menu_bitmap(size, is_dark);
+                assert!(open_bmp.is_some(), "Open menu bitmap should be generated successfully for size {size}, dark={is_dark}");
+                if let Some(bmp) = open_bmp {
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::DeleteObject(bmp.into());
+                    }
+                }
 
-        let exit_bmp = generate_exit_menu_bitmap(16);
-        assert!(exit_bmp.is_some(), "Exit menu bitmap should be generated successfully");
-        if let Some(bmp) = exit_bmp {
-            unsafe {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(bmp.into());
+                let exit_bmp = generate_exit_menu_bitmap(size, is_dark);
+                assert!(exit_bmp.is_some(), "Exit menu bitmap should be generated successfully for size {size}, dark={is_dark}");
+                if let Some(bmp) = exit_bmp {
+                    unsafe {
+                        let _ = windows::Win32::Graphics::Gdi::DeleteObject(bmp.into());
+                    }
+                }
             }
         }
     }
