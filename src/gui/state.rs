@@ -220,6 +220,8 @@ pub struct GuiState {
     pub last_sync: Instant,
     pub toast: Option<(String, Instant)>,
     pub is_daemon_connected: bool,
+    pub has_connected_daemon: bool,
+    pub failed_daemon_syncs: u32,
     pub icon_cache: crate::gui::components::icons::ProcessIconCache,
     pub available_update: Option<crate::updater::ReleaseInfo>,
     pub is_checking_update: bool,
@@ -285,6 +287,8 @@ impl GuiState {
             last_sync: Instant::now() - std::time::Duration::from_secs(10),
             toast: None,
             is_daemon_connected: false,
+            has_connected_daemon: false,
+            failed_daemon_syncs: 0,
             icon_cache: crate::gui::components::icons::ProcessIconCache::new(),
             available_update: None,
             is_checking_update: false,
@@ -701,6 +705,8 @@ impl GuiState {
 
         match IpcClient::call(&IpcRequest::GetState) {
             Ok(IpcResponse::State(state)) => {
+                self.has_connected_daemon = true;
+                self.failed_daemon_syncs = 0;
                 let rules_action_counts: std::collections::HashMap<String, usize> = state
                     .config
                     .rules
@@ -719,11 +725,35 @@ impl GuiState {
                 for id in &state.active_test_rule_ids {
                     self.active_test_runs.entry(id.clone()).or_insert_with(Instant::now);
                 }
+
+                if let Some(ref update) = state.available_update {
+                    if self.available_update.as_ref().map(|u| &u.version) != Some(&update.version) {
+                        self.available_update = Some(update.clone());
+                    }
+                }
+                if let Some(pct) = state.update_progress {
+                    self.is_downloading_update = true;
+                    self.update_download_progress = pct;
+                } else if self.is_downloading_update {
+                    self.is_downloading_update = false;
+                }
+                if state.pending_open_update_modal {
+                    self.show_changelog_modal = true;
+                    let _ = IpcClient::call(&IpcRequest::AcknowledgeOpenUpdateModal);
+                }
+                if state.pending_auto_start_update && !self.is_downloading_update {
+                    if let Some(ref update) = state.available_update {
+                        let _ = IpcClient::call(&IpcRequest::AcknowledgeAutoStartUpdate);
+                        self.start_update(update.clone());
+                    }
+                }
+
                 self.daemon_state = Some(state);
                 self.is_daemon_connected = true;
             }
             _ => {
                 self.is_daemon_connected = false;
+                self.failed_daemon_syncs += 1;
             }
         }
 
@@ -1375,27 +1405,7 @@ impl GuiState {
         self.update_download_progress = 0.0;
         self.set_toast(self.loc().toast_update_downloading.replace("{}", &info.version));
 
-        let tx = self.update_event_tx.clone();
-        let asset_url = info.asset_url.clone();
-
-        std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = tx.send(crate::updater::UpdateEvent::DownloadComplete(Err(format!("Runtime error: {e}"))));
-                    return;
-                }
-            };
-
-            let tx_progress = tx.clone();
-            let result = rt.block_on(async move {
-                crate::updater::download_and_install(&asset_url, move |pct| {
-                    let _ = tx_progress.send(crate::updater::UpdateEvent::DownloadProgress(pct));
-                }).await
-            });
-
-            let _ = tx.send(crate::updater::UpdateEvent::DownloadComplete(result));
-        });
+        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::StartUpdate);
     }
 
     pub fn poll_update_events(&mut self) {
@@ -1409,12 +1419,14 @@ impl GuiState {
                     match result {
                         Ok(Some(info)) => {
                             let ver = info.version.clone();
+                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SetAvailableUpdate(Some(info.clone())));
                             self.available_update = Some(info);
                             if is_manual {
                                 self.set_toast(self.loc().toast_update_available.replace("{}", &ver));
                             }
                         }
                         Ok(None) => {
+                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SetAvailableUpdate(None));
                             if is_manual {
                                 self.set_toast(self.loc().toast_latest_version.replace("{}", env!("CARGO_PKG_VERSION")));
                             }
@@ -1739,6 +1751,11 @@ mod tests {
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
             analytics: Default::default(),
+            available_update: None,
+            update_progress: None,
+            update_status: None,
+            pending_open_update_modal: false,
+            pending_auto_start_update: false,
         });
 
         // Move rule-1 after rule-3

@@ -517,7 +517,16 @@ fn render_updates_content(
 
     widgets::hrule(ui);
 
-    // 2. Installed Version & Manual Check
+    // 2. Automatic Updates Toggle
+    render_setting_row(ui, loc.settings_updates_auto_install_title, loc.settings_updates_auto_install_desc, t, |ui| {
+        if widgets::toggle_switch(ui, &mut cfg.auto_install_updates).changed() {
+            *changed = true;
+        }
+    });
+
+    widgets::hrule(ui);
+
+    // 3. Installed Version & Manual Check
     let version_subtitle = format!("Process Handler v{}", env!("CARGO_PKG_VERSION"));
     render_setting_row(ui, loc.settings_updates_check_title, &version_subtitle, t, |ui| {
         let btn_label = if state.is_checking_update {
@@ -557,6 +566,11 @@ mod tests {
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
             analytics: Default::default(),
+            available_update: None,
+            update_progress: None,
+            update_status: None,
+            pending_open_update_modal: false,
+            pending_auto_start_update: false,
         });
 
         // Test rendering across all 3 tabs

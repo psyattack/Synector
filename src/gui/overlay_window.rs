@@ -190,6 +190,9 @@ pub struct OverlayWindowApp {
     pub hwnd: Option<isize>,
     pub last_window_track: Instant,
     pub frame_count: u32,
+    pub last_progress_query: Instant,
+    pub cached_progress: f32,
+    pub cached_status: Option<String>,
 }
 
 impl OverlayWindowApp {
@@ -263,6 +266,9 @@ impl OverlayWindowApp {
             hwnd: None,
             last_window_track: Instant::now(),
             frame_count: 0,
+            last_progress_query: Instant::now() - Duration::from_secs(1),
+            cached_progress: 0.0,
+            cached_status: None,
         };
 
         app.apply_win32_window_styles();
@@ -624,11 +630,11 @@ impl eframe::App for OverlayWindowApp {
                 } else {
                     self.current_opacity = 0.0;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    return;
+                    std::process::exit(0);
                 }
             } else {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                return;
+                std::process::exit(0);
             }
         } else if let Some(fi_dur) = self.fade_in_duration {
             if self.frame_count >= 2 {
@@ -695,6 +701,202 @@ impl eframe::App for OverlayWindowApp {
         let egui_render_opacity = 1.0;
         #[cfg(not(windows))]
         let egui_render_opacity = self.current_opacity;
+
+        if self.overlay.id == "overlay_update_notification" {
+            let version = self.override_text.as_deref().unwrap_or("latest");
+            let config = AppConfig::load_from_file(AppConfig::config_path());
+            let loc = crate::i18n::get(config.language);
+
+            let is_hovered = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| card_rect.contains(p));
+            if is_hovered {
+                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if is_hovered && ctx.input(|i| i.pointer.primary_clicked()) {
+                let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::TriggerUpdate);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+
+            let bg_color = Color32::from_rgba_premultiplied(16, 17, 23, 245);
+            let border_color = if is_hovered {
+                Color32::from_rgba_premultiplied(0, 215, 120, 160)
+            } else {
+                Color32::from_white_alpha(35)
+            };
+            painter.rect(
+                card_rect,
+                8.0,
+                bg_color,
+                egui::Stroke::new(if is_hovered { 1.5 } else { 1.0 }, border_color),
+                egui::StrokeKind::Inside,
+            );
+
+            // Left accent badge with download icon on high-contrast white card
+            let badge_rect = egui::Rect::from_min_size(
+                card_rect.min + egui::vec2(16.0, 18.0),
+                egui::vec2(48.0, 48.0),
+            );
+            let badge_bg = Color32::from_rgb(245, 248, 252);
+            let badge_border = Color32::from_rgb(220, 228, 238);
+            painter.rect(badge_rect, 10.0, badge_bg, egui::Stroke::new(1.0, badge_border), egui::StrokeKind::Inside);
+
+            let icon_text = egui_phosphor::regular::ARROW_FAT_LINES_DOWN;
+            let icon_color = Color32::from_rgb(0, 150, 75);
+            painter.text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon_text,
+                egui::FontId::new(26.0, crate::gui::theme::phosphor()),
+                icon_color,
+            );
+
+            let text_x = card_rect.min.x + 78.0;
+
+            // Header row: "Synector Update"
+            painter.text(
+                egui::pos2(text_x, card_rect.min.y + 16.0),
+                egui::Align2::LEFT_TOP,
+                loc.update_notification_title,
+                egui::FontId::proportional(13.5),
+                Color32::WHITE,
+            );
+
+            // Version text: "Version v{} is available"
+            let ver_text = loc.update_notification_available.replace("{}", version);
+            painter.text(
+                egui::pos2(text_x, card_rect.min.y + 36.0),
+                egui::Align2::LEFT_TOP,
+                &ver_text,
+                egui::FontId::proportional(12.0),
+                Color32::from_rgb(0, 215, 120),
+            );
+
+            // Hint text: "Click here or use tray to install"
+            painter.text(
+                egui::pos2(text_x, card_rect.min.y + 55.0),
+                egui::Align2::LEFT_TOP,
+                loc.update_notification_hint,
+                egui::FontId::proportional(10.5),
+                Color32::from_white_alpha(150),
+            );
+
+            ctx.request_repaint_after(Duration::from_millis(30));
+            return;
+        }
+
+        if self.overlay.id == "overlay_update_progress" {
+            if !crate::single_instance::is_daemon_running() || crate::single_instance::is_gui_running() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                std::process::exit(0);
+            }
+
+            let version = self.override_text.as_deref().unwrap_or("latest");
+            let config = AppConfig::load_from_file(AppConfig::config_path());
+            let loc = crate::i18n::get(config.language);
+
+            // Query daemon state every 50ms
+            if self.last_progress_query.elapsed() >= Duration::from_millis(50) {
+                self.last_progress_query = Instant::now();
+                if let Ok(crate::ipc::IpcResponse::State(state)) = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetState) {
+                    if let Some(p) = state.update_progress {
+                        self.cached_progress = p;
+                    }
+                    self.cached_status = state.update_status;
+                }
+            }
+
+            let progress = self.cached_progress;
+
+            let bg_color = Color32::from_rgba_premultiplied(16, 17, 23, 245);
+            let border_color = Color32::from_white_alpha(40);
+            painter.rect(
+                card_rect,
+                8.0,
+                bg_color,
+                egui::Stroke::new(1.0, border_color),
+                egui::StrokeKind::Inside,
+            );
+
+            // Left accent badge on high-contrast white card
+            let badge_rect = egui::Rect::from_min_size(
+                card_rect.min + egui::vec2(16.0, 20.0),
+                egui::vec2(48.0, 48.0),
+            );
+            let badge_bg = Color32::from_rgb(245, 248, 252);
+            let badge_border = Color32::from_rgb(220, 228, 238);
+            painter.rect(badge_rect, 10.0, badge_bg, egui::Stroke::new(1.0, badge_border), egui::StrokeKind::Inside);
+
+            let icon_text = egui_phosphor::regular::CLOUD_ARROW_DOWN;
+            let icon_color = Color32::from_rgb(20, 115, 225);
+            painter.text(
+                badge_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                icon_text,
+                egui::FontId::new(26.0, crate::gui::theme::phosphor()),
+                icon_color,
+            );
+
+            let text_x = card_rect.min.x + 78.0;
+
+            // Header row: "Synector Update" and Percentage
+            painter.text(
+                egui::pos2(text_x, card_rect.min.y + 17.0),
+                egui::Align2::LEFT_TOP,
+                loc.update_notification_title,
+                egui::FontId::proportional(13.5),
+                Color32::WHITE,
+            );
+
+            let pct_str = format!("{:.0}%", (progress * 100.0).clamp(0.0, 100.0));
+            painter.text(
+                egui::pos2(card_rect.max.x - 16.0, card_rect.min.y + 17.0),
+                egui::Align2::RIGHT_TOP,
+                &pct_str,
+                egui::FontId::monospace(12.5),
+                Color32::from_rgb(70, 160, 255),
+            );
+
+            // Status line
+            let display_status = if progress >= 1.0 {
+                loc.update_progress_applying.to_string()
+            } else if let Some(ref s) = self.cached_status {
+                s.clone()
+            } else {
+                loc.update_progress_downloading.replace("{}", version)
+            };
+
+            painter.text(
+                egui::pos2(text_x, card_rect.min.y + 38.0),
+                egui::Align2::LEFT_TOP,
+                &display_status,
+                egui::FontId::proportional(11.5),
+                Color32::from_white_alpha(180),
+            );
+
+            // Progress bar track at bottom
+            let bar_rect = egui::Rect::from_min_max(
+                egui::pos2(text_x, card_rect.min.y + 61.0),
+                egui::pos2(card_rect.max.x - 16.0, card_rect.min.y + 67.0),
+            );
+            painter.rect_filled(bar_rect, 3.0, Color32::from_white_alpha(20));
+
+            let fill_w = bar_rect.width() * progress.clamp(0.0, 1.0);
+            if fill_w > 0.0 {
+                let fill_rect = egui::Rect::from_min_max(
+                    bar_rect.min,
+                    egui::pos2(bar_rect.min.x + fill_w, bar_rect.max.y),
+                );
+                let fill_color = if progress >= 1.0 {
+                    Color32::from_rgb(0, 210, 120)
+                } else {
+                    Color32::from_rgb(60, 150, 255)
+                };
+                painter.rect_filled(fill_rect, 3.0, fill_color);
+            }
+
+            ctx.request_repaint_after(Duration::from_millis(30));
+            return;
+        }
 
         // Card background
         overlay_renderer::render_overlay_card_bg(

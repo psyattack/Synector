@@ -14,6 +14,8 @@ pub static STRINGS: Strings = Strings {
 
     // Tray Menu (tray.rs)
     tray_menu_open: "Открыть",
+    tray_menu_update: "Обновить до v{}",
+    tray_menu_updating: "Обновление...",
     tray_menu_exit: "Выход",
 
     // Footer (gui.rs)
@@ -136,6 +138,8 @@ pub static STRINGS: Strings = Strings {
     settings_theme_desc: "Цветовая палитра рабочего пространства",
     settings_updates_startup_title: "Проверка при запуске",
     settings_updates_startup_desc: "Автоматически проверять наличие новых релизов при старте",
+    settings_updates_auto_install_title: "Автоматическое обновление",
+    settings_updates_auto_install_desc: "Автоматически и незаметно скачивать и устанавливать обновления при обнаружении",
     settings_updates_check_title: "Установленная версия",
     settings_updates_check_desc: "Статус релизов на GitHub",
     settings_eyebrow_system: "ВХОД В WINDOWS И ИНТЕГРАЦИЯ С СИСТЕМОЙ",
@@ -613,6 +617,14 @@ pub static STRINGS: Strings = Strings {
     toast_update_check_failed: "Ошибка проверки обновлений: {}",
     toast_update_downloading: "Загрузка обновления v{}...",
     toast_update_failed: "Сбой при установке обновления: {}",
+
+    // Update Notifications & Overlays (overlay_window.rs)
+    update_notification_title: "Обновление Synector",
+    update_notification_available: "Доступна версия v{}",
+    update_notification_hint: "Нажмите здесь или в трее для установки",
+    update_progress_downloading: "Загрузка обновления v{}...",
+    update_progress_applying: "Применение обновления и перезапуск...",
+    update_progress_failed: "Сбой обновления: {}",
 
     // Actions & Catalog additions
     action_window_title: "Управление окном",

@@ -395,6 +395,42 @@ pub fn run_daemon() {
         }
     });
 
+    // Background update check on daemon startup
+    if config.check_updates_on_startup {
+        let engine_update = Arc::clone(&engine);
+        let is_daemon_cli = std::env::args().any(|a| a == "--daemon" || a == "-d" || a == "--service" || a == "-s")
+            && !std::env::args().any(|a| a == "--spawned-by-gui");
+        let auto_install = config.auto_install_updates;
+
+        rt.spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+            let current_ver = env!("CARGO_PKG_VERSION").to_string();
+            match crate::updater::check_github_release(crate::updater::GITHUB_REPO, &current_ver).await {
+                Ok(Some(info)) => {
+                    println!("[DAEMON] Update available: v{}", info.version);
+                    {
+                        let mut eng = engine_update.lock().await;
+                        eng.available_update = Some(info.clone());
+                    }
+                    crate::daemon::tray::set_available_update(Some(info.clone()));
+
+                    if auto_install {
+                        // Silent automatic update: no notification overlay, no progress overlay
+                        crate::daemon::tray::trigger_update_flow(true);
+                    } else if is_daemon_cli && !crate::single_instance::is_gui_running() {
+                        crate::daemon::overlay_manager::show_update_notification(&info.version);
+                    }
+                }
+                Ok(None) => {
+                    println!("[DAEMON] Synector is up to date (v{})", current_ver);
+                }
+                Err(err) => {
+                    eprintln!("[DAEMON] Update check failed: {err}");
+                }
+            }
+        });
+    }
+
     println!("[DAEMON] Service started. 0.0% CPU, listening on Named Pipe.");
 
     // Run native Win32 Tray on main thread
@@ -402,6 +438,8 @@ pub fn run_daemon() {
         config.tray_icon_path.clone(),
         config.hide_tray_icon,
         config.mask_daemon_process,
+        Arc::clone(&engine),
+        rt.handle().clone(),
     ) {
         Ok(tray) => {
             tray.run_message_loop();
@@ -410,6 +448,11 @@ pub fn run_daemon() {
             eprintln!("[DAEMON] Tray initialization error: {err}. Running headless loop.");
             std::thread::park();
         }
+    }
+
+    // Close GUI if daemon exits
+    if crate::single_instance::is_gui_running() {
+        crate::single_instance::close_existing_gui_window();
     }
 
     // Execute On App Close / Shutdown rules when tray message loop ends

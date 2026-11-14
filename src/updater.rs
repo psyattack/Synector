@@ -1,9 +1,9 @@
 use std::path::Path;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const GITHUB_REPO: &str = "psyattack/Synector";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseInfo {
     pub version: String,
     pub tag_name: String,
@@ -244,8 +244,12 @@ pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(
 }
 
 /// Downloads update package from `asset_url` with streaming progress updates,
-/// unpacks executable if zipped, terminates daemon, swaps executable in place, and restarts both daemon and GUI.
-pub async fn download_and_install<F>(asset_url: &str, progress_cb: F) -> Result<(), String>
+/// unpacks executable if zipped, swaps executable in place, and restarts processes.
+pub async fn download_and_install_internal<F>(
+    asset_url: &str,
+    is_daemon_caller: bool,
+    progress_cb: F,
+) -> Result<(), String>
 where
     F: Fn(f32) + Send + 'static,
 {
@@ -330,15 +334,60 @@ where
         return Err("Pending executable file is empty".to_string());
     }
 
-    // Stop daemon cleanly
-    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShutdownDaemon);
+    if !is_daemon_caller {
+        // Stop daemon cleanly from GUI caller
+        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShutdownDaemon);
 
-    // Give daemon process a moment to exit and release file/mutex handles
-    std::thread::sleep(std::time::Duration::from_millis(350));
+        // Give daemon process a moment to exit and release file/mutex handles
+        std::thread::sleep(std::time::Duration::from_millis(350));
+    } else {
+        let gui_running = crate::single_instance::is_gui_running();
+        set_gui_closed_during_update(!gui_running);
+        if gui_running {
+            crate::single_instance::close_existing_gui_window();
+        }
+        // Cleanly and synchronously dismiss all overlays before swapping binary
+        crate::daemon::overlay_manager::hide_all_sync();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 
     apply_update_and_restart(&exe_path, &pending_path)?;
 
     Ok(())
+}
+
+/// Downloads update package from GUI context, terminating background daemon before swap.
+pub async fn download_and_install<F>(asset_url: &str, progress_cb: F) -> Result<(), String>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    download_and_install_internal(asset_url, false, progress_cb).await
+}
+
+/// Downloads update package from daemon background context, restarting daemon with --daemon after swap.
+pub async fn download_and_install_daemon<F>(asset_url: &str, progress_cb: F) -> Result<(), String>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    download_and_install_internal(asset_url, true, progress_cb).await
+}
+
+/// Cleans up any leftover temporary update files (.download, .pending, .extracted).
+pub fn clean_temp_update_files() {
+    if let Ok(exe_path) = std::env::current_exe() {
+        let download = exe_path.with_extension("download");
+        if download.exists() {
+            let _ = std::fs::remove_file(download);
+        }
+        let pending = exe_path.with_extension("pending");
+        if pending.exists() {
+            let _ = std::fs::remove_file(pending);
+        }
+        let extracted = exe_path.with_extension("extracted");
+        if extracted.exists() {
+            let _ = std::fs::remove_dir_all(extracted);
+        }
+    }
 }
 
 static GUI_CLOSED_DURING_UPDATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -353,9 +402,9 @@ pub fn is_gui_closed_during_update() -> bool {
 
 /// Performs executable swap and restarts both daemon and GUI.
 pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<(), String> {
-    let old_path = exe_path.with_extension("old");
-    if old_path.exists() {
-        let _ = std::fs::remove_file(&old_path);
+    let mut old_path = exe_path.with_extension("old");
+    if old_path.exists() && std::fs::remove_file(&old_path).is_err() {
+        old_path = exe_path.with_extension(format!("old.{}", std::process::id()));
     }
 
     let gui_pid = std::process::id();
@@ -369,6 +418,12 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
         ""
     };
 
+    let focus_post_start = if is_gui_closed_during_update() {
+        "".to_string()
+    } else {
+        "; Start-Sleep -Milliseconds 700; (New-Object -ComObject WScript.Shell).AppActivate('Synector')".to_string()
+    };
+
     // Windows NTFS allows renaming a running executable file to .old and placing the new file at the original path.
     let in_place_renamed = std::fs::rename(exe_path, &old_path).is_ok()
         && std::fs::rename(pending_path, exe_path).is_ok();
@@ -378,26 +433,44 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
             "Wait-Process -Id {gui_pid} -Timeout 10 -ErrorAction SilentlyContinue; \
              Start-Sleep -Milliseconds 600; \
              Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
-             Start-Process -FilePath '{exe_str}'{restart_args}",
+             Start-Process -FilePath '{exe_str}'{restart_args}{focus_post_start}",
             gui_pid = gui_pid,
             old_str = old_str,
             exe_str = exe_str,
             restart_args = restart_args,
+            focus_post_start = focus_post_start,
         )
     } else {
         format!(
             "Wait-Process -Id {gui_pid} -Timeout 10 -ErrorAction SilentlyContinue; \
-             Start-Sleep -Milliseconds 600; \
-             Move-Item -LiteralPath '{exe_str}' -Destination '{old_str}' -Force -ErrorAction SilentlyContinue; \
-             Move-Item -LiteralPath '{pending_str}' -Destination '{exe_str}' -Force; \
-             Start-Process -FilePath '{exe_str}'{restart_args}",
+             Get-Process -Name 'Synector' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne $PID }} | Stop-Process -Force -ErrorAction SilentlyContinue; \
+             Start-Sleep -Milliseconds 400; \
+             $sw = [System.Diagnostics.Stopwatch]::StartNew(); \
+             while ($sw.ElapsedMilliseconds -lt 6000) {{ \
+                 if (Test-Path -LiteralPath '{pending_str}') {{ \
+                     Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
+                     Move-Item -LiteralPath '{exe_str}' -Destination '{old_str}' -Force -ErrorAction SilentlyContinue; \
+                     Move-Item -LiteralPath '{pending_str}' -Destination '{exe_str}' -Force -ErrorAction SilentlyContinue; \
+                 }} \
+                 if (Test-Path -LiteralPath '{exe_str}') {{ break; }} \
+                 Start-Sleep -Milliseconds 250; \
+             }} \
+             Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
+             Start-Process -FilePath '{exe_str}'{restart_args}{focus_post_start}",
             gui_pid = gui_pid,
             old_str = old_str,
             exe_str = exe_str,
             pending_str = pending_str,
             restart_args = restart_args,
+            focus_post_start = focus_post_start,
         )
     };
+
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    }
 
     #[cfg(windows)]
     {
@@ -420,6 +493,11 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clean_temp_update_files_no_panic() {
+        clean_temp_update_files();
+    }
 
     #[test]
     fn test_version_parsing() {

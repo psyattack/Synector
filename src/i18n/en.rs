@@ -14,6 +14,8 @@ pub static STRINGS: Strings = Strings {
 
     // Tray Menu (tray.rs)
     tray_menu_open: "Open",
+    tray_menu_update: "Update to v{}",
+    tray_menu_updating: "Updating...",
     tray_menu_exit: "Exit",
 
     // Footer (gui.rs)
@@ -136,6 +138,8 @@ pub static STRINGS: Strings = Strings {
     settings_theme_desc: "Select color scheme for the workspace",
     settings_updates_startup_title: "Check on Startup",
     settings_updates_startup_desc: "Automatically check for new releases when Synector starts",
+    settings_updates_auto_install_title: "Automatic Updates",
+    settings_updates_auto_install_desc: "Automatically download and install updates silently when available",
     settings_updates_check_title: "Installed Version",
     settings_updates_check_desc: "GitHub Releases update status",
     settings_eyebrow_system: "WINDOWS LOGON & SYSTEM INTEGRATION",
@@ -613,6 +617,14 @@ pub static STRINGS: Strings = Strings {
     toast_update_check_failed: "Failed to check for updates: {}",
     toast_update_downloading: "Downloading update v{}...",
     toast_update_failed: "Update failed: {}",
+
+    // Update Notifications & Overlays (overlay_window.rs)
+    update_notification_title: "Synector Update",
+    update_notification_available: "Version v{} is available",
+    update_notification_hint: "Click here or use tray to install",
+    update_progress_downloading: "Downloading update v{}...",
+    update_progress_applying: "Applying update and restarting...",
+    update_progress_failed: "Update failed: {}",
 
     // Actions & Catalog additions
     action_window_title: "Window Control",

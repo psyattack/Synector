@@ -32,6 +32,7 @@ pub struct SynectorApp {
     fonts_ready: bool,
     current_theme: Option<crate::config::AppTheme>,
     last_window_state: Option<WindowState>,
+    startup_focused_frames: u8,
 }
 
 impl SynectorApp {
@@ -43,15 +44,13 @@ impl SynectorApp {
         state.sync_with_daemon();
         let config = AppConfig::load_from_file(AppConfig::config_path());
         theme::apply_theme(&cc.egui_ctx, config.theme);
-        if config.check_updates_on_startup {
-            state.check_for_updates(false);
-        }
         let last_window_state = config.window;
         Self {
             state,
             fonts_ready: false,
             current_theme: Some(config.theme),
             last_window_state,
+            startup_focused_frames: 0,
         }
     }
 
@@ -87,7 +86,7 @@ impl SynectorApp {
                 } else if let Some(info) = self.state.available_update.clone() {
                     widgets::rule(ui, 14.0);
 
-                    if widgets::compact_button(ui, loc.footer_btn_update, widgets::Kind::Primary, 22.0)
+                    if widgets::compact_button(ui, loc.footer_btn_update, widgets::Kind::Secondary, 22.0)
                         .on_hover_text(loc.footer_btn_update_tip)
                         .clicked()
                     {
@@ -170,16 +169,40 @@ impl App for SynectorApp {
 
         // Sync with daemon state
         self.state.sync_with_daemon();
+
+        // If background daemon was closed/terminated, close GUI window immediately
+        if self.state.has_connected_daemon
+            && (!self.state.is_daemon_connected && self.state.failed_daemon_syncs >= 2
+                || !crate::single_instance::is_daemon_running())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            std::process::exit(0);
+        }
         self.state.poll_update_events();
         if self.state.is_any_rule_executing() {
             ctx.request_repaint();
         }
 
+        if self.startup_focused_frames < 3 {
+            self.startup_focused_frames += 1;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            #[cfg(windows)]
+            {
+                unsafe {
+                    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+                    use windows::core::w;
+                    if let Ok(hwnd) = FindWindowW(None, w!("Synector")) {
+                        if !hwnd.0.is_null() {
+                            crate::single_instance::force_foreground_window(hwnd);
+                        }
+                    }
+                }
+            }
+        }
+
         // Handle GUI window close while update is downloading:
-        // Cancel process termination, hide window, and allow download to finish in background.
+        // Background daemon handles the download seamlessly and will restart with --daemon when GUI is closed.
         if ctx.input(|i| i.viewport().close_requested()) && self.state.is_downloading_update {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.state.gui_closed_during_update = true;
             crate::updater::set_gui_closed_during_update(true);
         }

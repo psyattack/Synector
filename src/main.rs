@@ -18,34 +18,9 @@ use std::time::Duration;
 use ipc::IpcClient;
 
 fn main() {
-    // Clean up temporary update files if left from previous self-update
-    if let Ok(exe_path) = env::current_exe() {
-        let old = exe_path.with_extension("old");
-        if old.exists() {
-            let _ = std::fs::remove_file(old);
-        }
-        let pending = exe_path.with_extension("pending");
-        if pending.exists() {
-            let _ = std::fs::remove_file(pending);
-        }
-        let download = exe_path.with_extension("download");
-        if download.exists() {
-            let _ = std::fs::remove_file(download);
-        }
-        let extracted = exe_path.with_extension("extracted");
-        if extracted.exists() {
-            let _ = std::fs::remove_dir_all(extracted);
-        }
-    }
-
     let args: Vec<String> = env::args().collect();
 
-    let is_daemon_flag = args.iter().any(|a| {
-        a == "--daemon" || a == "-d" || a == "--service" || a == "-s"
-    });
-
-    let is_gui_flag = args.iter().any(|a| a == "--gui" || a == "-g");
-
+    // 1. Fast-path: standalone overlay window processes should NEVER touch update files or single instance mutexes
     if let Some(pos) = args.iter().position(|a| a == "--overlay-window" || a == "-o") {
         let overlay_id = args.get(pos + 1).cloned().unwrap_or_default();
         let calibration = args.iter().any(|a| a == "--calibration");
@@ -57,6 +32,21 @@ fn main() {
         }
         return;
     }
+
+    // Clean up temporary update files ONLY if daemon is not running (to avoid deleting active downloads)
+    if let Ok(exe_path) = env::current_exe() {
+        let old = exe_path.with_extension("old");
+        if old.exists() {
+            let _ = std::fs::remove_file(old);
+        }
+    }
+    if !single_instance::is_daemon_running() {
+        updater::clean_temp_update_files();
+    }
+
+    let is_daemon_flag = args.iter().any(|a| {
+        a == "--daemon" || a == "-d" || a == "--service" || a == "-s"
+    });
 
     if args.iter().any(|a| a == "--status") {
         match IpcClient::call(&ipc::IpcRequest::GetState) {
@@ -80,12 +70,8 @@ fn main() {
 
     if is_daemon_flag {
         daemon::run_daemon();
-    } else if is_gui_flag {
-        if let Err(e) = gui::run_gui() {
-            eprintln!("Failed to launch GUI: {e}");
-        }
     } else {
-        // Default execution (e.g. user clicked executable)
+        // Both default execution and --gui ensure background daemon is running before opening GUI
         ensure_daemon_running();
         if let Err(e) = gui::run_gui() {
             eprintln!("Failed to launch GUI: {e}");
@@ -108,6 +94,7 @@ pub fn ensure_daemon_running() {
     if exe_path.exists() {
         let mut cmd = Command::new(exe_path);
         cmd.arg("--daemon");
+        cmd.arg("--spawned-by-gui");
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());

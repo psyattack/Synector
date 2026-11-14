@@ -34,8 +34,10 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
                     ui.add_space(20.0);
 
                     ui.vertical(|ui| {
+                        let top_space = ((ui.available_height() - 35.0).max(0.0) / 2.0).round();
+                        ui.add_space(top_space);
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        widgets::eyebrow(ui, "01", loc.changelog_eyebrow);
+                        widgets::hud(ui, loc.changelog_eyebrow, t.muted);
                         ui.label(
                             RichText::new(&info.name)
                                 .family(theme::semibold())
@@ -73,13 +75,6 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 ui.ctx().open_url(egui::OpenUrl::same_tab(&info.html_url));
                             }
                         }
-
-                        // File size info
-                        let size_mb = info.asset_size as f64 / 1_048_576.0;
-                        if size_mb > 0.05 {
-                            ui.add_space(10.0);
-                            widgets::hud(ui, &format!("{:.1} MB", size_mb), t.faint);
-                        }
                     });
                 });
             });
@@ -96,7 +91,7 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
                             ui.set_width(ui.available_width());
                             ui.spacing_mut().item_spacing.y = 10.0;
 
-                            let body_text = info.body.trim();
+                            let body_text = info.body.trim_start_matches('\u{feff}').trim();
                             if body_text.is_empty() {
                                 widgets::hud(ui, loc.changelog_no_notes, t.muted);
                             } else {
@@ -123,6 +118,7 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
 /// and Markdown syntax (#, ##, bullets, `code`, **bold**, links).
 fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
     let clean = text
+        .trim_start_matches('\u{feff}')
         .replace("\r\n", "\n")
         .replace("<br>", "\n")
         .replace("<br/>", "\n")
@@ -159,18 +155,21 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        let trimmed = line.trim();
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
         if trimmed.is_empty() {
             ui.add_space(4.0);
             continue;
         }
 
-        // 3. Headings (Markdown: #, ##, ### or HTML: <h1>, <h2>, <h3>)
-        if trimmed.starts_with("### ") || trimmed.starts_with("<h4>") || trimmed.starts_with("<h3>") {
-            let title = strip_tags(trimmed.trim_start_matches("### "));
+        // 3. Headings (Markdown: #, ##, ### or HTML: <h1>, <h2>, <h3>, <h4>)
+        if let Some(title) = trimmed.strip_prefix("### ")
+            .or_else(|| trimmed.strip_prefix("<h4>"))
+            .or_else(|| trimmed.strip_prefix("<h3>"))
+        {
+            let clean_title = strip_tags(title);
             ui.add_space(4.0);
             ui.label(
-                RichText::new(title)
+                RichText::new(clean_title)
                     .family(theme::semibold())
                     .size(14.0)
                     .color(t.ink_strong),
@@ -178,11 +177,13 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        if trimmed.starts_with("## ") || trimmed.starts_with("<h2>") {
-            let title = strip_tags(trimmed.trim_start_matches("## "));
+        if let Some(title) = trimmed.strip_prefix("## ")
+            .or_else(|| trimmed.strip_prefix("<h2>"))
+        {
+            let clean_title = strip_tags(title);
             ui.add_space(6.0);
             ui.label(
-                RichText::new(title)
+                RichText::new(clean_title)
                     .family(theme::semibold())
                     .size(16.0)
                     .color(t.ink_strong),
@@ -190,11 +191,13 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        if trimmed.starts_with("# ") || trimmed.starts_with("<h1>") {
-            let title = strip_tags(trimmed.trim_start_matches("# "));
+        if let Some(title) = trimmed.strip_prefix("# ")
+            .or_else(|| trimmed.strip_prefix("<h1>"))
+        {
+            let clean_title = strip_tags(title);
             ui.add_space(8.0);
             ui.label(
-                RichText::new(title)
+                RichText::new(clean_title)
                     .family(theme::display())
                     .size(18.0)
                     .color(t.ink_strong),
@@ -203,18 +206,11 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
         }
 
         // 4. Bullet list items
-        let is_bullet = trimmed.starts_with("- ")
-            || trimmed.starts_with("* ")
-            || trimmed.starts_with("<li>")
-            || trimmed.starts_with("• ");
-
-        if is_bullet {
-            let item_text = trimmed
-                .trim_start_matches("- ")
-                .trim_start_matches("* ")
-                .trim_start_matches("• ")
-                .trim_start_matches("<li>");
-
+        if let Some(item_text) = trimmed.strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("• "))
+            .or_else(|| trimmed.strip_prefix("<li>"))
+        {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.label(RichText::new("•").family(theme::mono_bold()).color(t.accent_ink));
@@ -443,5 +439,14 @@ mod tests {
         assert_eq!(strip_tags("<a href=\"https://github.com\">Click here</a>"), "Click here");
         assert_eq!(strip_tags("Plain text with no tags"), "Plain text with no tags");
         assert_eq!(strip_tags("<code>let x = 10;</code>"), "let x = 10;");
+    }
+
+    #[test]
+    fn test_strip_bom_and_heading_prefix() {
+        let text_with_bom = "\u{feff}### Added\n- Feature 1";
+        let clean = text_with_bom.trim_start_matches('\u{feff}').trim();
+        let first_line = clean.lines().next().unwrap();
+        assert_eq!(first_line, "### Added");
+        assert_eq!(first_line.strip_prefix("### "), Some("Added"));
     }
 }

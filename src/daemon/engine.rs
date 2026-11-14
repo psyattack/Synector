@@ -90,6 +90,12 @@ pub struct DaemonEngine {
     pub hotkey_handle: Option<crate::daemon::hotkeys::HotkeyHandle>,
     pub resource_threshold_tracker: HashMap<(String, u32), Instant>,
     pub execution_abort_handles: HashMap<u64, (String, tokio::task::AbortHandle)>,
+    pub available_update: Option<crate::updater::ReleaseInfo>,
+    pub is_downloading_update: bool,
+    pub update_download_progress: f32,
+    pub update_status: Option<String>,
+    pub pending_open_update_modal: bool,
+    pub pending_auto_start_update: bool,
     action_tx: mpsc::UnboundedSender<ActionCompletionEvent>,
     action_rx: mpsc::UnboundedReceiver<ActionCompletionEvent>,
 }
@@ -168,6 +174,12 @@ impl DaemonEngine {
             hotkey_handle: None,
             resource_threshold_tracker: HashMap::new(),
             execution_abort_handles: HashMap::new(),
+            available_update: None,
+            is_downloading_update: false,
+            update_download_progress: 0.0,
+            update_status: None,
+            pending_open_update_modal: false,
+            pending_auto_start_update: false,
             action_tx,
             action_rx,
         }
@@ -2131,7 +2143,36 @@ impl DaemonEngine {
                 IpcResponse::Ok
             }
 
+            IpcRequest::SetAvailableUpdate(info) => {
+                self.available_update = info.clone();
+                crate::daemon::tray::set_available_update(info);
+                IpcResponse::Ok
+            }
+
+            IpcRequest::AcknowledgeOpenUpdateModal => {
+                self.pending_open_update_modal = false;
+                IpcResponse::Ok
+            }
+
+            IpcRequest::TriggerUpdate => {
+                crate::daemon::tray::trigger_update_flow(false);
+                IpcResponse::Ok
+            }
+
+            IpcRequest::StartUpdate => {
+                crate::daemon::tray::start_update_download(false);
+                IpcResponse::Ok
+            }
+
+            IpcRequest::AcknowledgeAutoStartUpdate => {
+                self.pending_auto_start_update = false;
+                IpcResponse::Ok
+            }
+
             IpcRequest::ShutdownDaemon => {
+                if crate::single_instance::is_gui_running() {
+                    crate::single_instance::close_existing_gui_window();
+                }
                 crate::daemon::actions::release_all_simulated_inputs();
                 crate::daemon::overlay_manager::hide_all();
                 self.execute_shutdown_rules().await;
@@ -2331,6 +2372,11 @@ impl DaemonEngine {
             active_overlay_ids,
             active_test_rule_ids,
             analytics: self.analytics.clone(),
+            available_update: self.available_update.clone(),
+            update_progress: if self.is_downloading_update { Some(self.update_download_progress) } else { None },
+            update_status: self.update_status.clone(),
+            pending_open_update_modal: self.pending_open_update_modal,
+            pending_auto_start_update: self.pending_auto_start_update,
         }
     }
 

@@ -31,6 +31,11 @@ pub enum IpcRequest {
     HideOverlayPreview(String),
     GetOverlayPosition(String),
     UpdateOverlayPosition { id: String, x: f32, y: f32 },
+    SetAvailableUpdate(Option<crate::updater::ReleaseInfo>),
+    AcknowledgeOpenUpdateModal,
+    TriggerUpdate,
+    StartUpdate,
+    AcknowledgeAutoStartUpdate,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +77,16 @@ pub struct DaemonState {
     pub active_test_rule_ids: std::collections::HashSet<String>,
     #[serde(default)]
     pub analytics: AnalyticsSummary,
+    #[serde(default)]
+    pub available_update: Option<crate::updater::ReleaseInfo>,
+    #[serde(default)]
+    pub update_progress: Option<f32>,
+    #[serde(default)]
+    pub update_status: Option<String>,
+    #[serde(default)]
+    pub pending_open_update_modal: bool,
+    #[serde(default)]
+    pub pending_auto_start_update: bool,
 }
 
 #[cfg(test)]
@@ -163,5 +178,71 @@ mod tests {
             IpcRequest::StopRuleExecution(id) => assert_eq!(id, "rule_1"),
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn test_ipc_update_requests_and_state_serde() {
+        let release = crate::updater::ReleaseInfo {
+            version: "2.0.0".to_string(),
+            tag_name: "v2.0.0".to_string(),
+            name: "Synector 2.0".to_string(),
+            body: "Big update".to_string(),
+            html_url: "https://github.com".to_string(),
+            asset_url: "https://github.com/asset.zip".to_string(),
+            asset_name: "asset.zip".to_string(),
+            asset_size: 1024,
+        };
+
+        let req = IpcRequest::SetAvailableUpdate(Some(release.clone()));
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("SetAvailableUpdate"));
+        let dec: IpcRequest = serde_json::from_str(&json).unwrap();
+        match dec {
+            IpcRequest::SetAvailableUpdate(Some(r)) => assert_eq!(r.version, "2.0.0"),
+            _ => panic!("Expected SetAvailableUpdate"),
+        }
+
+        let ack_req = IpcRequest::AcknowledgeOpenUpdateModal;
+        let json_ack = serde_json::to_string(&ack_req).unwrap();
+        assert!(json_ack.contains("AcknowledgeOpenUpdateModal"));
+
+        let trig_req = IpcRequest::TriggerUpdate;
+        let json_trig = serde_json::to_string(&trig_req).unwrap();
+        assert!(json_trig.contains("TriggerUpdate"));
+
+        let start_req = IpcRequest::StartUpdate;
+        let json_start = serde_json::to_string(&start_req).unwrap();
+        assert!(json_start.contains("StartUpdate"));
+
+        let ack_auto = IpcRequest::AcknowledgeAutoStartUpdate;
+        let json_auto = serde_json::to_string(&ack_auto).unwrap();
+        assert!(json_auto.contains("AcknowledgeAutoStartUpdate"));
+
+        let state = DaemonState {
+            autorun_enabled: false,
+            uptime_secs: 42,
+            daemon_memory_bytes: 5000,
+            daemon_cpu_usage: 0.1,
+            active_rules_count: 0,
+            total_rules_count: 0,
+            config: AppConfig::default(),
+            logs: vec![],
+            active_rule_executions: std::collections::HashMap::new(),
+            active_overlay_ids: std::collections::HashSet::new(),
+            active_test_rule_ids: std::collections::HashSet::new(),
+            analytics: AnalyticsSummary::default(),
+            available_update: Some(release),
+            update_progress: Some(0.75),
+            update_status: Some("75%".to_string()),
+            pending_open_update_modal: true,
+            pending_auto_start_update: true,
+        };
+
+        let state_json = serde_json::to_string(&state).unwrap();
+        let decoded_state: DaemonState = serde_json::from_str(&state_json).unwrap();
+        assert_eq!(decoded_state.available_update.unwrap().version, "2.0.0");
+        assert_eq!(decoded_state.update_progress, Some(0.75));
+        assert!(decoded_state.pending_open_update_modal);
+        assert!(decoded_state.pending_auto_start_update);
     }
 }

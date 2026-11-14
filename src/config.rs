@@ -72,6 +72,9 @@ pub struct AppConfig {
     pub check_updates_on_startup: bool,
 
     #[serde(default)]
+    pub auto_install_updates: bool,
+
+    #[serde(default)]
     pub theme: AppTheme,
 
     #[serde(default = "default_config_overlays")]
@@ -101,6 +104,7 @@ impl Default for AppConfig {
             autorun_configured: false,
             language: crate::i18n::Language::English,
             check_updates_on_startup: true,
+            auto_install_updates: false,
             theme: AppTheme::Dark,
             overlays: default_config_overlays(),
         }
@@ -204,6 +208,7 @@ mod tests {
         let cfg: AppConfig = serde_json::from_str(json).expect("deserialize");
         assert!(!cfg.autorun_configured);
         assert!(cfg.check_updates_on_startup);
+        assert!(!cfg.auto_install_updates);
         assert_eq!(cfg.overlays.len(), 3);
     }
 

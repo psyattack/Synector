@@ -237,6 +237,104 @@ pub fn hide_all() {
     }
 }
 
+pub fn hide_overlay_sync(id: &str) {
+    let mut lock = active_map().lock().unwrap();
+    if let Some(mut proc) = lock.remove(id) {
+        let fade_ms = proc.fade_out_ms.unwrap_or(0);
+        let pid = proc.child.as_ref().map(|c| c.id());
+
+        #[cfg(windows)]
+        let signaled = if fade_ms > 0 {
+            if let Some(hwnd) = find_overlay_hwnd(id, pid) {
+                unsafe {
+                    use windows::Win32::Foundation::{LPARAM, WPARAM};
+                    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        #[cfg(not(windows))]
+        let signaled = false;
+
+        if let Some(mut ch) = proc.child.take() {
+            if signaled && fade_ms > 0 {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(fade_ms as u64 + 150);
+                let mut exited = false;
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(_)) = ch.try_wait() {
+                        exited = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                if !exited {
+                    let _ = ch.kill();
+                    let _ = ch.wait();
+                }
+            } else {
+                let _ = ch.kill();
+                let _ = ch.wait();
+            }
+        }
+    }
+}
+
+pub fn hide_all_sync() {
+    let to_hide: Vec<String> = {
+        let lock = active_map().lock().unwrap();
+        lock.keys().cloned().collect()
+    };
+    for id in to_hide {
+        hide_overlay_sync(&id);
+    }
+}
+
+pub fn show_update_notification(version: &str) {
+    let mut overlay = OverlayDefinition::default_new_overlay();
+    overlay.id = "overlay_update_notification".to_string();
+    overlay.name = "Update Notification".to_string();
+    overlay.anchor = crate::models::OverlayAnchor::BottomRight;
+    overlay.rect = crate::models::OverlayRect {
+        x: 24.0,
+        y: 24.0,
+        width: 355.0,
+        height: 86.0,
+    };
+    overlay.fade_in_ms = Some(300);
+    overlay.fade_out_ms = Some(400);
+    overlay.auto_hide_seconds = Some(6.0);
+    overlay.click_through = false;
+    flash_overlay(&overlay, 6000, Some(version.to_string()));
+}
+
+pub fn show_update_progress_overlay(version: &str) {
+    let mut overlay = OverlayDefinition::default_new_overlay();
+    overlay.id = "overlay_update_progress".to_string();
+    overlay.name = "Update Progress".to_string();
+    overlay.anchor = crate::models::OverlayAnchor::BottomRight;
+    overlay.rect = crate::models::OverlayRect {
+        x: 24.0,
+        y: 24.0,
+        width: 355.0,
+        height: 88.0,
+    };
+    overlay.fade_in_ms = Some(250);
+    overlay.fade_out_ms = Some(350);
+    overlay.auto_hide_seconds = None;
+    overlay.click_through = true;
+    show_overlay(&overlay, false, Some(version.to_string()));
+}
+
+pub fn hide_update_progress_overlay() {
+    hide_overlay_sync("overlay_update_progress");
+}
+
 pub fn get_active_overlay_ids() -> HashSet<String> {
     let mut lock = active_map().lock().unwrap();
     let mut dead = Vec::new();
@@ -518,5 +616,23 @@ mod tests {
         hide_overlay("mgr_test_ov");
         let active_ids_after = get_active_overlay_ids();
         assert!(!active_ids_after.contains("mgr_test_ov"));
+    }
+
+    #[test]
+    fn test_update_notification_and_progress_overlays() {
+        init();
+
+        show_update_notification("2.5.0");
+        let active_ids = get_active_overlay_ids();
+        assert!(active_ids.contains("overlay_update_notification"));
+
+        hide_overlay("overlay_update_notification");
+        assert!(!get_active_overlay_ids().contains("overlay_update_notification"));
+
+        show_update_progress_overlay("2.5.0");
+        assert!(get_active_overlay_ids().contains("overlay_update_progress"));
+
+        hide_update_progress_overlay();
+        assert!(!get_active_overlay_ids().contains("overlay_update_progress"));
     }
 }

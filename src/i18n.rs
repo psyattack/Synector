@@ -34,6 +34,8 @@ pub struct Strings {
 
     // Tray Menu (tray.rs)
     pub tray_menu_open: &'static str,
+    pub tray_menu_update: &'static str,
+    pub tray_menu_updating: &'static str,
     pub tray_menu_exit: &'static str,
 
     // Footer (gui.rs)
@@ -156,6 +158,8 @@ pub struct Strings {
     pub settings_theme_desc: &'static str,
     pub settings_updates_startup_title: &'static str,
     pub settings_updates_startup_desc: &'static str,
+    pub settings_updates_auto_install_title: &'static str,
+    pub settings_updates_auto_install_desc: &'static str,
     pub settings_updates_check_title: &'static str,
     pub settings_updates_check_desc: &'static str,
     pub settings_eyebrow_system: &'static str,
@@ -630,6 +634,14 @@ pub struct Strings {
     pub toast_update_check_failed: &'static str,
     pub toast_update_downloading: &'static str,
     pub toast_update_failed: &'static str,
+
+    // Update Notifications & Overlays (overlay_window.rs)
+    pub update_notification_title: &'static str,
+    pub update_notification_available: &'static str,
+    pub update_notification_hint: &'static str,
+    pub update_progress_downloading: &'static str,
+    pub update_progress_applying: &'static str,
+    pub update_progress_failed: &'static str,
 
     // Actions & Catalog additions
     pub action_window_title: &'static str,
