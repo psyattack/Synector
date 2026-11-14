@@ -26,7 +26,7 @@ struct CatalogItem {
     constructor: fn() -> Action,
 }
 
-const CATALOG_ITEMS: [CatalogItem; 24] = [
+const CATALOG_ITEMS: [CatalogItem; 25] = [
     // 1. Process Management
     CatalogItem {
         category_idx: 1,
@@ -147,6 +147,22 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
     CatalogItem {
         category_idx: 2,
         badge: "AUDIO",
+        title: |loc| loc.action_default_device_title,
+        description: |loc| loc.action_default_device_desc,
+        glyph: egui_phosphor::regular::HEADPHONES,
+        tint: |t| t.warn,
+        keywords: &[
+            "audio device", "playback", "speakers", "headphones", "sound output", "default device", "microphone", "mic", "recording", "input",
+            "устройство", "вывод", "динамики", "наушники", "звук", "воспроизведение", "микрофон", "ввод", "запись",
+        ],
+        constructor: || Action::DefaultDevice {
+            target: crate::models::AudioTarget::Playback,
+            device_name: String::new(),
+        },
+    },
+    CatalogItem {
+        category_idx: 2,
+        badge: "AUDIO",
         title: |loc| loc.catalog_title_audio_format,
         description: |loc| loc.catalog_desc_audio_format,
         glyph: egui_phosphor::regular::EQUALIZER,
@@ -182,22 +198,57 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
         },
     },
 
-    // 3. Automation & Web
+    // 3. Automation & Logic
     CatalogItem {
         category_idx: 3,
-        badge: "SCRIPT",
-        title: |loc| loc.action_execute_script_title,
-        description: |loc| loc.action_execute_script_desc,
-        glyph: egui_phosphor::regular::CODE,
+        badge: "FLOW",
+        title: |loc| loc.catalog_title_wait,
+        description: |loc| loc.catalog_desc_wait,
+        glyph: egui_phosphor::regular::HOURGLASS,
+        tint: |t| t.faint,
+        keywords: &[
+            "wait", "delay", "pause", "sleep", "timeout", "seconds", "hold", "condition",
+            "ожидание", "задержка", "пауза", "ждать", "секунды", "таймаут", "время", "условие",
+        ],
+        constructor: || Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        },
+    },
+    CatalogItem {
+        category_idx: 3,
+        badge: "LOGIC",
+        title: |loc| loc.catalog_title_check,
+        description: |loc| loc.catalog_desc_check,
+        glyph: egui_phosphor::regular::CHECK_CIRCLE,
         tint: |t| t.accent_ink,
         keywords: &[
-            "powershell", "pwsh", "ps1", "script", "code", "cmd", "batch", "bat", "lua", "terminal", "console",
-            "павершелл", "скрипт", "код", "автоматизация", "сценарий", "батник", "терминал", "луа",
+            "check", "condition", "assert", "gate", "guard", "test", "filter",
+            "проверка", "условие", "фильтр", "проверить", "прервать",
         ],
-        constructor: || Action::ExecuteScript {
-            interpreter: crate::models::ScriptType::PowerShell,
-            script: String::new(),
-            run_in_window: false,
+        constructor: || Action::Check {
+            condition: crate::models::RuleCondition::default_process(),
+        },
+    },
+    CatalogItem {
+        category_idx: 3,
+        badge: "LOGIC",
+        title: |loc| loc.catalog_title_if_else,
+        description: |loc| loc.catalog_desc_if_else,
+        glyph: egui_phosphor::regular::GIT_FORK,
+        tint: |t| t.accent_ink,
+        keywords: &[
+            "if", "else", "condition", "branch", "logic", "toggle", "check", "flow",
+            "если", "иначе", "ветвление", "условие", "логика", "проверка",
+        ],
+        constructor: || Action::IfElse {
+            conditions: vec![crate::models::RuleConditionItem::new(crate::models::RuleCondition::default_process())],
+            then_actions: Vec::new(),
+            else_if_branches: Vec::new(),
+            else_actions: Vec::new(),
         },
     },
     CatalogItem {
@@ -216,6 +267,23 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
             repeat: 1,
             speed: 1.0,
             infinite: false,
+        },
+    },
+    CatalogItem {
+        category_idx: 3,
+        badge: "SCRIPT",
+        title: |loc| loc.action_execute_script_title,
+        description: |loc| loc.action_execute_script_desc,
+        glyph: egui_phosphor::regular::CODE,
+        tint: |t| t.accent_ink,
+        keywords: &[
+            "powershell", "pwsh", "ps1", "script", "code", "cmd", "batch", "bat", "lua", "terminal", "console",
+            "павершелл", "скрипт", "код", "автоматизация", "сценарий", "батник", "терминал", "луа",
+        ],
+        constructor: || Action::ExecuteScript {
+            interpreter: crate::models::ScriptType::PowerShell,
+            script: String::new(),
+            run_in_window: false,
         },
     },
     CatalogItem {
@@ -283,24 +351,6 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
     },
     CatalogItem {
         category_idx: 3,
-        badge: "LOGIC",
-        title: |loc| loc.catalog_title_if_else,
-        description: |loc| loc.catalog_desc_if_else,
-        glyph: egui_phosphor::regular::GIT_FORK,
-        tint: |t| t.accent_ink,
-        keywords: &[
-            "if", "else", "condition", "branch", "logic", "toggle", "check", "flow",
-            "если", "иначе", "ветвление", "условие", "логика", "проверка",
-        ],
-        constructor: || Action::IfElse {
-            conditions: vec![crate::models::RuleConditionItem::new(crate::models::RuleCondition::default_process())],
-            then_actions: Vec::new(),
-            else_if_branches: Vec::new(),
-            else_actions: Vec::new(),
-        },
-    },
-    CatalogItem {
-        category_idx: 3,
         badge: "DISCORD",
         title: |loc| loc.catalog_title_discord_rpc_set,
         description: |loc| loc.catalog_desc_discord_rpc_set,
@@ -337,7 +387,7 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
         constructor: || Action::DiscordRpcClear,
     },
 
-    // 4. System & Flow Control
+    // 4. System & Files
     CatalogItem {
         category_idx: 4,
         badge: "SYSTEM",
@@ -355,19 +405,6 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
     },
     CatalogItem {
         category_idx: 4,
-        badge: "FLOW",
-        title: |loc| loc.inspector_menu_delay,
-        description: |loc| loc.catalog_desc_delay,
-        glyph: egui_phosphor::regular::HOURGLASS,
-        tint: |t| t.faint,
-        keywords: &[
-            "delay", "pause", "wait", "sleep", "timeout", "seconds", "hold",
-            "задержка", "пауза", "ждать", "секунды", "таймаут", "время", "ожидание",
-        ],
-        constructor: || Action::Delay { seconds: 1.0 },
-    },
-    CatalogItem {
-        category_idx: 4,
         badge: "POWER",
         title: |loc| loc.action_power_plan_title,
         description: |loc| loc.action_power_plan_desc,
@@ -379,38 +416,6 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
         ],
         constructor: || Action::PowerPlan {
             plan: PowerPlanType::HighPerformance,
-        },
-    },
-    CatalogItem {
-        category_idx: 4,
-        badge: "SECURITY",
-        title: |loc| loc.action_firewall_title,
-        description: |loc| loc.action_firewall_desc,
-        glyph: egui_phosphor::regular::SHIELD_CHECK,
-        tint: |t| t.bad,
-        keywords: &[
-            "firewall", "block", "network", "internet", "security", "rule", "netsh",
-            "файрвол", "брандмауэр", "сеть", "интернет", "трафик", "блокировка",
-        ],
-        constructor: || Action::Firewall {
-            process_name: String::new(),
-            block: true,
-        },
-    },
-    CatalogItem {
-        category_idx: 2,
-        badge: "AUDIO",
-        title: |loc| loc.action_default_device_title,
-        description: |loc| loc.action_default_device_desc,
-        glyph: egui_phosphor::regular::HEADPHONES,
-        tint: |t| t.warn,
-        keywords: &[
-            "audio device", "playback", "speakers", "headphones", "sound output", "default device", "microphone", "mic", "recording", "input",
-            "устройство", "вывод", "динамики", "наушники", "звук", "воспроизведение", "микрофон", "ввод", "запись",
-        ],
-        constructor: || Action::DefaultDevice {
-            target: crate::models::AudioTarget::Playback,
-            device_name: String::new(),
         },
     },
     CatalogItem {
@@ -433,22 +438,18 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
     },
     CatalogItem {
         category_idx: 4,
-        badge: "ARCHIVE",
-        title: |loc| loc.catalog_title_archive,
-        description: |loc| loc.catalog_desc_archive,
-        glyph: egui_phosphor::regular::ARCHIVE,
-        tint: |t| t.warn,
+        badge: "SECURITY",
+        title: |loc| loc.action_firewall_title,
+        description: |loc| loc.action_firewall_desc,
+        glyph: egui_phosphor::regular::SHIELD_CHECK,
+        tint: |t| t.bad,
         keywords: &[
-            "archive", "zip", "rar", "7z", "tar", "compress", "extract", "unzip", "unpack", "pack",
-            "архив", "сжатие", "распаковка", "зип", "рар", "паковать", "распаковать",
+            "firewall", "block", "network", "internet", "security", "rule", "netsh",
+            "файрвол", "брандмауэр", "сеть", "интернет", "трафик", "блокировка",
         ],
-        constructor: || Action::Archive {
-            operation: crate::models::ArchiveOperation::Pack,
-            format: crate::models::ArchiveFormat::Zip,
-            source_path: String::new(),
-            destination_path: String::new(),
-            compression_level: None,
-            overwrite: true,
+        constructor: || Action::Firewall {
+            process_name: String::new(),
+            action: crate::models::FirewallAction::Block,
         },
     },
     CatalogItem {
@@ -468,6 +469,26 @@ const CATALOG_ITEMS: [CatalogItem; 24] = [
             target_path: None,
             content: None,
             create_parents: true,
+            overwrite: true,
+        },
+    },
+    CatalogItem {
+        category_idx: 4,
+        badge: "ARCHIVE",
+        title: |loc| loc.catalog_title_archive,
+        description: |loc| loc.catalog_desc_archive,
+        glyph: egui_phosphor::regular::ARCHIVE,
+        tint: |t| t.warn,
+        keywords: &[
+            "archive", "zip", "rar", "7z", "tar", "compress", "extract", "unzip", "unpack", "pack",
+            "архив", "сжатие", "распаковка", "зип", "рар", "паковать", "распаковать",
+        ],
+        constructor: || Action::Archive {
+            operation: crate::models::ArchiveOperation::Pack,
+            format: crate::models::ArchiveFormat::Zip,
+            source_path: String::new(),
+            destination_path: String::new(),
+            compression_level: None,
             overwrite: true,
         },
     },

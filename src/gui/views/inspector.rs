@@ -1156,7 +1156,8 @@ fn action_type_badge(action: &Action, loc: &crate::i18n::Strings) -> &'static st
         Action::KillProcess { .. } => loc.inspector_badge_kill_process,
         Action::Notification { .. } => loc.inspector_badge_notification,
         Action::SystemPower { .. } => loc.inspector_badge_system_power,
-        Action::Delay { .. } => loc.inspector_badge_delay,
+        Action::Wait { .. } => loc.inspector_badge_wait,
+        Action::Check { .. } => loc.inspector_badge_check,
         Action::HttpWebhook { .. } => loc.inspector_badge_webhook,
         Action::Window { .. } => loc.inspector_badge_window,
         Action::ProcessTuning { .. } => loc.inspector_badge_tuning,
@@ -1201,7 +1202,31 @@ fn action_summary_preview(action: &Action) -> String {
             }
         }
         Action::SystemPower { power_type } => format!("Power: {:?}", power_type),
-        Action::Delay { seconds } => format!("Wait {:.1} seconds", seconds),
+        Action::Wait { mode, seconds, condition, timeout_sec, .. } => match mode {
+            crate::models::WaitMode::Timer => format!("Wait {:.1} seconds", seconds),
+            crate::models::WaitMode::UntilCondition => match condition {
+                Some(crate::models::WaitCondition::WindowOpened { process_name, .. }) => format!("Wait window open: {}", process_name),
+                Some(crate::models::WaitCondition::WindowClosed { process_name, .. }) => format!("Wait window close: {}", process_name),
+                Some(crate::models::WaitCondition::ProcessStarted { process_name, .. }) => format!("Wait process start: {}", process_name),
+                Some(crate::models::WaitCondition::ProcessExited { process_name, .. }) => format!("Wait process exit: {}", process_name),
+                Some(crate::models::WaitCondition::Hotkey { key_combination }) => format!("Wait hotkey: {}", key_combination),
+                Some(crate::models::WaitCondition::File { path, condition }) => match condition {
+                    crate::models::WaitFileCondition::Exists => format!("Wait file exists: {}", path),
+                    crate::models::WaitFileCondition::Deleted => format!("Wait file deleted: {}", path),
+                },
+                None => format!("Wait until condition (timeout {:.0}s)", timeout_sec),
+            },
+        },
+        Action::Check { condition } => match condition {
+            crate::models::RuleCondition::ProcessRunning { process_name, must_be_running, .. } => {
+                if *must_be_running { format!("Check running: {}", process_name) } else { format!("Check not running: {}", process_name) }
+            }
+            crate::models::RuleCondition::WindowFocused { process_name, .. } => format!("Check window: {}", process_name),
+            crate::models::RuleCondition::FileWatcher { path, must_exist, .. } => {
+                if *must_exist { format!("Check file exists: {}", path) } else { format!("Check file deleted: {}", path) }
+            }
+            _ => "Check condition".to_string(),
+        },
         Action::HttpWebhook { url, method, .. } => {
             if url.is_empty() {
                 "HTTP Webhook".to_string()
@@ -1211,7 +1236,11 @@ fn action_summary_preview(action: &Action) -> String {
         }
         Action::Window { window_action, target_process, .. } => {
             let proc = target_process.as_deref().unwrap_or("Active window");
-            format!("{:?} {}", window_action, proc)
+            match window_action {
+                WindowActionType::ToggleMinimizeRestore => format!("Toggle Min/Restore {}", proc),
+                WindowActionType::ToggleShowHide => format!("Toggle Show/Hide {}", proc),
+                other => format!("{:?} {}", other, proc),
+            }
         }
         Action::ProcessTuning { target_process, .. } => {
             let proc = target_process.as_deref().unwrap_or("Trigger process");
@@ -1230,13 +1259,11 @@ fn action_summary_preview(action: &Action) -> String {
                 format!("Play sound: {}", f)
             }
         }
-        Action::Firewall { process_name, block } => {
-            if *block {
-                format!("Block network for {}", process_name)
-            } else {
-                format!("Allow network for {}", process_name)
-            }
-        }
+        Action::Firewall { process_name, action } => match action {
+            crate::models::FirewallAction::Block => format!("Block network for {}", process_name),
+            crate::models::FirewallAction::Allow => format!("Allow network for {}", process_name),
+            crate::models::FirewallAction::Toggle => format!("Toggle network for {}", process_name),
+        },
         Action::Display { width, height, refresh_rate, monitor_index } => {
             let res = match (width, height) {
                 (Some(w), Some(h)) => format!("{}x{}", w, h),
@@ -2164,11 +2191,220 @@ fn render_action_parameter_fields(
                         widgets::cells(ui, power_type, &power_options);
                     }
 
-                    Action::Delay { seconds } => {
-                        ui.horizontal_wrapped(|ui| {
-                            widgets::hud(ui, loc.inspector_field_pause_delay, t.muted);
-                            ui.add(egui::DragValue::new(seconds).speed(0.1).range(0.1..=120.0).suffix(" s"));
-                        });
+                    Action::Wait { mode, seconds, condition, timeout_sec, timeout_policy } => {
+                        widgets::hud(ui, loc.inspector_wait_mode, t.muted);
+                        let mode_options = [
+                            (crate::models::WaitMode::Timer, Cell::new(loc.inspector_wait_timer, "")),
+                            (crate::models::WaitMode::UntilCondition, Cell::new(loc.inspector_wait_until_condition, "")),
+                        ];
+                        widgets::cells(ui, mode, &mode_options);
+
+                        match mode {
+                            crate::models::WaitMode::Timer => {
+                                ui.add_space(4.0);
+                                widgets::hud(ui, loc.inspector_wait_seconds, t.muted);
+                                ui.add(egui::DragValue::new(seconds).speed(0.1).range(0.05..=86400.0).suffix(" s"));
+                            }
+                            crate::models::WaitMode::UntilCondition => {
+                                ui.add_space(4.0);
+                                widgets::hud(ui, loc.inspector_wait_condition_type, t.muted);
+
+                                #[derive(Clone, Copy, PartialEq, Eq)]
+                                enum WaitCondKind {
+                                    WindowOpened,
+                                    WindowClosed,
+                                    ProcessStarted,
+                                    ProcessExited,
+                                    Hotkey,
+                                    File,
+                                }
+
+                                let mut current_kind = match condition {
+                                    Some(crate::models::WaitCondition::WindowOpened { .. }) => WaitCondKind::WindowOpened,
+                                    Some(crate::models::WaitCondition::WindowClosed { .. }) => WaitCondKind::WindowClosed,
+                                    Some(crate::models::WaitCondition::ProcessStarted { .. }) => WaitCondKind::ProcessStarted,
+                                    Some(crate::models::WaitCondition::ProcessExited { .. }) => WaitCondKind::ProcessExited,
+                                    Some(crate::models::WaitCondition::Hotkey { .. }) => WaitCondKind::Hotkey,
+                                    Some(crate::models::WaitCondition::File { .. }) => WaitCondKind::File,
+                                    None => WaitCondKind::WindowOpened,
+                                };
+
+                                let combo_id = ui.id().with(idx).with("wait_cond_combo");
+                                let kind_label = match current_kind {
+                                    WaitCondKind::WindowOpened => loc.inspector_wait_window_opened,
+                                    WaitCondKind::WindowClosed => loc.inspector_wait_window_closed,
+                                    WaitCondKind::ProcessStarted => loc.inspector_wait_process_started,
+                                    WaitCondKind::ProcessExited => loc.inspector_wait_process_exited,
+                                    WaitCondKind::Hotkey => loc.inspector_wait_hotkey,
+                                    WaitCondKind::File => loc.inspector_wait_file,
+                                };
+
+                                let mut changed_kind = false;
+                                egui::ComboBox::from_id_salt(combo_id)
+                                    .selected_text(kind_label)
+                                    .width(ui.available_width())
+                                    .show_ui(ui, |ui| {
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::WindowOpened, loc.inspector_wait_window_opened).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::WindowClosed, loc.inspector_wait_window_closed).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::ProcessStarted, loc.inspector_wait_process_started).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::ProcessExited, loc.inspector_wait_process_exited).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::Hotkey, loc.inspector_wait_hotkey).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::File, loc.inspector_wait_file).clicked() { changed_kind = true; }
+                                    });
+
+                                if changed_kind || condition.is_none() {
+                                    *condition = Some(match current_kind {
+                                        WaitCondKind::WindowOpened => crate::models::WaitCondition::WindowOpened { process_name: String::new(), match_mode: crate::models::ProcessMatchMode::Exact },
+                                        WaitCondKind::WindowClosed => crate::models::WaitCondition::WindowClosed { process_name: String::new(), match_mode: crate::models::ProcessMatchMode::Exact },
+                                        WaitCondKind::ProcessStarted => crate::models::WaitCondition::ProcessStarted { process_name: String::new(), match_mode: crate::models::ProcessMatchMode::Exact },
+                                        WaitCondKind::ProcessExited => crate::models::WaitCondition::ProcessExited { process_name: String::new(), match_mode: crate::models::ProcessMatchMode::Exact },
+                                        WaitCondKind::Hotkey => crate::models::WaitCondition::Hotkey { key_combination: "Ctrl+Shift+W".into() },
+                                        WaitCondKind::File => crate::models::WaitCondition::File { path: String::new(), condition: crate::models::WaitFileCondition::Exists },
+                                    });
+                                }
+
+                                ui.add_space(4.0);
+                                if let Some(cond) = condition {
+                                    match cond {
+                                        crate::models::WaitCondition::WindowOpened { process_name, match_mode }
+                                        | crate::models::WaitCondition::WindowClosed { process_name, match_mode }
+                                        | crate::models::WaitCondition::ProcessStarted { process_name, match_mode }
+                                        | crate::models::WaitCondition::ProcessExited { process_name, match_mode } => {
+                                            widgets::hud(ui, loc.inspector_field_target_process, t.muted);
+                                            ui.horizontal(|ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    if render_process_picker(ui, loc) {
+                                                        resp.pick_target = Some(default_picker_target);
+                                                    }
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(process_name)
+                                                            .hint_text("Application .exe or window title")
+                                                            .desired_width(ui.available_width())
+                                                            .min_size(vec2(0.0, theme::CONTROL_H))
+                                                            .vertical_align(egui::Align::Center)
+                                                            .margin(vec2(10.0, 8.0)),
+                                                    );
+                                                });
+                                            });
+
+                                            ui.add_space(4.0);
+                                            widgets::hud(ui, loc.inspector_field_match_mode, t.muted);
+                                            let match_options = [
+                                                (crate::models::ProcessMatchMode::Exact, Cell::new(loc.inspector_match_mode_exact, "")),
+                                                (crate::models::ProcessMatchMode::Wildcard, Cell::new(loc.inspector_match_mode_wildcard, "")),
+                                                (crate::models::ProcessMatchMode::Regex, Cell::new("Regex", "")),
+                                            ];
+                                            widgets::cells(ui, match_mode, &match_options);
+                                        }
+                                        crate::models::WaitCondition::Hotkey { key_combination } => {
+                                            widgets::hud(ui, loc.inspector_trigger_hotkey, t.muted);
+                                            ui.add(
+                                                egui::TextEdit::singleline(key_combination)
+                                                    .hint_text("e.g. Ctrl+Alt+F12")
+                                                    .desired_width(ui.available_width())
+                                                    .min_size(vec2(0.0, theme::CONTROL_H))
+                                                    .vertical_align(egui::Align::Center)
+                                                    .margin(vec2(10.0, 8.0)),
+                                            );
+                                        }
+                                        crate::models::WaitCondition::File { path, condition: file_cond } => {
+                                            widgets::hud(ui, loc.inspector_field_watch_path, t.muted);
+                                            ui.horizontal(|ui| {
+                                                ui.set_width(ui.available_width());
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    let btn_w = widgets::button_width(ui, loc.inspector_btn_choose_file, 0.0);
+                                                    if widgets::button(ui, loc.inspector_btn_choose_file, Kind::Secondary, btn_w).clicked() {
+                                                        if let Some(f) = rfd::FileDialog::new().pick_file() {
+                                                            *path = f.to_string_lossy().to_string();
+                                                        }
+                                                    }
+                                                    ui.add(
+                                                        egui::TextEdit::singleline(path)
+                                                            .hint_text("C:\\path\\to\\file.ext")
+                                                            .desired_width(ui.available_width())
+                                                            .min_size(vec2(0.0, theme::CONTROL_H))
+                                                            .vertical_align(egui::Align::Center)
+                                                            .margin(vec2(10.0, 8.0)),
+                                                    );
+                                                });
+                                            });
+
+                                            ui.add_space(4.0);
+                                            let file_opts = [
+                                                (crate::models::WaitFileCondition::Exists, Cell::new(loc.inspector_wait_file_exists, "")),
+                                                (crate::models::WaitFileCondition::Deleted, Cell::new(loc.inspector_wait_file_deleted, "")),
+                                            ];
+                                            widgets::cells(ui, file_cond, &file_opts);
+                                        }
+                                    }
+                                }
+
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    widgets::hud(ui, loc.inspector_wait_timeout, t.muted);
+                                    ui.add(egui::DragValue::new(timeout_sec).speed(0.5).range(0.0..=3600.0).suffix(" s"));
+                                    ui.label(egui::RichText::new("(0 = infinite)").size(11.0).color(t.muted));
+                                });
+
+                                ui.add_space(4.0);
+                                widgets::hud(ui, loc.inspector_wait_timeout_policy, t.muted);
+                                let policy_options = [
+                                    (crate::models::WaitTimeoutPolicy::Abort, Cell::new(loc.inspector_wait_policy_abort, "")),
+                                    (crate::models::WaitTimeoutPolicy::Continue, Cell::new(loc.inspector_wait_policy_continue, "")),
+                                ];
+                                widgets::cells(ui, timeout_policy, &policy_options);
+                            }
+                        }
+                    }
+
+                    Action::Check { condition } => {
+                        widgets::hud(ui, loc.catalog_title_check, t.muted);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(loc.inspector_check_desc)
+                                    .size(11.5)
+                                    .color(t.muted),
+                            ).wrap(),
+                        );
+                        ui.add_space(4.0);
+
+                        let mut kind = ConditionKind::from_condition(condition);
+                        let combo_id = ui.id().with(idx).with("check_cond_kind");
+                        let mut changed_kind = false;
+                        egui::ComboBox::from_id_salt(combo_id)
+                            .selected_text(kind.label(loc))
+                            .width(ui.available_width())
+                            .show_ui(ui, |ui| {
+                                for k in [
+                                    ConditionKind::Process,
+                                    ConditionKind::Window,
+                                    ConditionKind::Time,
+                                    ConditionKind::Event,
+                                    ConditionKind::Resource,
+                                    ConditionKind::FileWatcher,
+                                ] {
+                                    if ui.selectable_value(&mut kind, k, k.label(loc)).clicked() {
+                                        changed_kind = true;
+                                    }
+                                }
+                            });
+
+                        if changed_kind {
+                            *condition = match kind {
+                                ConditionKind::Process => RuleCondition::default_process(),
+                                ConditionKind::Window => RuleCondition::WindowFocused { process_name: String::new(), match_mode: ProcessMatchMode::Exact, must_be_focused: true },
+                                ConditionKind::Time => RuleCondition::TimeRange { start_time: "09:00".into(), end_time: "18:00".into(), days_of_week: vec![1, 2, 3, 4, 5] },
+                                ConditionKind::Event => RuleCondition::Event { event_type: SystemEventType::SessionLock, idle_duration_sec: 300 },
+                                ConditionKind::Resource => RuleCondition::ResourceThreshold { process_name: String::new(), cpu_percent: Some(80.0), ram_mb: None, duration_sec: 5 },
+                                ConditionKind::FileWatcher => RuleCondition::FileWatcher { path: String::new(), filter_extension: None, must_exist: true },
+                            };
+                        }
+
+                        ui.add_space(4.0);
+                        render_single_condition_editor(ui, loc, condition, || {
+                            resp.pick_target = Some(default_picker_target);
+                        }, t);
                     }
 
                     Action::HttpWebhook { url, method, payload, .. } => {
@@ -2246,8 +2482,10 @@ fn render_action_parameter_fields(
                             WindowActionType::Minimize => "Minimize",
                             WindowActionType::Maximize => "Maximize",
                             WindowActionType::Restore => "Restore",
+                            WindowActionType::ToggleMinimizeRestore => loc.inspector_win_toggle_min_restore,
                             WindowActionType::Hide => "Hide",
                             WindowActionType::Show => "Show",
+                            WindowActionType::ToggleShowHide => loc.inspector_win_toggle_show_hide,
                             WindowActionType::Close => "Close",
                             WindowActionType::AlwaysOnTop => "Always On Top",
                             WindowActionType::RemoveAlwaysOnTop => "Disable Always On Top",
@@ -2262,8 +2500,10 @@ fn render_action_parameter_fields(
                                 ui.selectable_value(window_action, WindowActionType::Minimize, "Minimize");
                                 ui.selectable_value(window_action, WindowActionType::Maximize, "Maximize");
                                 ui.selectable_value(window_action, WindowActionType::Restore, "Restore");
+                                ui.selectable_value(window_action, WindowActionType::ToggleMinimizeRestore, loc.inspector_win_toggle_min_restore);
                                 ui.selectable_value(window_action, WindowActionType::Hide, "Hide");
                                 ui.selectable_value(window_action, WindowActionType::Show, "Show");
+                                ui.selectable_value(window_action, WindowActionType::ToggleShowHide, loc.inspector_win_toggle_show_hide);
                                 ui.selectable_value(window_action, WindowActionType::Close, "Close");
                                 ui.selectable_value(window_action, WindowActionType::AlwaysOnTop, "Always On Top");
                                 ui.selectable_value(window_action, WindowActionType::RemoveAlwaysOnTop, "Disable Always On Top");
@@ -2421,7 +2661,7 @@ fn render_action_parameter_fields(
                         }
                     }
 
-                    Action::Firewall { process_name, block } => {
+                    Action::Firewall { process_name, action } => {
                         widgets::hud(ui, loc.inspector_field_target_process, t.muted);
                         ui.horizontal(|ui| {
                             ui.set_width(ui.available_width());
@@ -2442,10 +2682,11 @@ fn render_action_parameter_fields(
 
                         ui.add_space(4.0);
                         let fw_options = [
-                            (true, Cell::new(loc.inspector_cell_block_traffic, "")),
-                            (false, Cell::new(loc.inspector_cell_allow_traffic, "")),
+                            (crate::models::FirewallAction::Block, Cell::new(loc.inspector_cell_block_traffic, "")),
+                            (crate::models::FirewallAction::Allow, Cell::new(loc.inspector_cell_allow_traffic, "")),
+                            (crate::models::FirewallAction::Toggle, Cell::new(loc.inspector_cell_toggle_traffic, "")),
                         ];
-                        widgets::cells(ui, block, &fw_options);
+                        widgets::cells(ui, action, &fw_options);
                     }
 
                     Action::Display { width, height, refresh_rate, monitor_index } => {

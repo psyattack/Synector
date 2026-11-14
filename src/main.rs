@@ -9,6 +9,7 @@ mod ipc;
 pub mod models;
 pub mod sharing;
 pub mod single_instance;
+pub mod shortcut;
 pub mod updater;
 
 use std::env;
@@ -59,6 +60,15 @@ fn main() {
             Err(e) => println!("DAEMON STATUS: Offline ({e})"),
         }
         return;
+    }
+
+    // Direct rule execution via CLI or Windows shortcut: --run-rule <rule_id>
+    if let Some(pos) = args.iter().position(|a| a == "--run-rule" || a == "-r") {
+        let rule_id = args.get(pos + 1).cloned().unwrap_or_default();
+        if !rule_id.is_empty() {
+            run_rule_cli(&rule_id);
+            return;
+        }
     }
 
     // Auto-elevate to Administrator rights by default for system-wide ETW & UIPI input control
@@ -158,5 +168,51 @@ fn try_self_elevate() -> bool {
 
     unsafe {
         ShellExecuteExW(&mut info).is_ok()
+    }
+}
+
+pub fn run_rule_cli(rule_id: &str) {
+    // 1. Try sending via IPC if background daemon is already running
+    if single_instance::is_daemon_running() || IpcClient::is_daemon_running() {
+        if let Ok(ipc::IpcResponse::Ok) = IpcClient::call(&ipc::IpcRequest::TestRunRule {
+            id: rule_id.to_string(),
+            rule: None,
+        }) {
+            println!("Rule '{rule_id}' sent to running daemon for execution.");
+            return;
+        }
+    }
+
+    // 2. Autonomous execution when daemon is offline
+    let cfg = config::AppConfig::load();
+    if let Some(rule) = cfg.rules.iter().find(|r| r.id == rule_id) {
+        println!("Running rule '{}' ({}) autonomously...", rule.name, rule.id);
+        if let Ok(rt) = tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+            rt.block_on(async {
+                let mut ctx = std::collections::HashMap::new();
+                for (step_idx, action) in rule.actions.iter().enumerate() {
+                    match daemon::actions::ActionRunner::execute_with_output(action, &ctx).await {
+                        Ok(daemon::actions::ActionOutcome::Continue(out_opt)) => {
+                            if let Some(out) = out_opt {
+                                ctx.insert("PrevOutput".to_string(), out.clone());
+                                ctx.insert(format!("Step{}.Output", step_idx + 1), out);
+                            }
+                        }
+                        Ok(daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
+                            println!("Pipeline gracefully halted at step {}: {}", step_idx + 1, reason);
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("Action at step {} failed: {}", step_idx + 1, err);
+                            if rule.stop_on_error {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    } else {
+        eprintln!("Rule with ID '{rule_id}' was not found in configuration.");
     }
 }

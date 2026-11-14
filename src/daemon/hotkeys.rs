@@ -40,6 +40,19 @@ pub fn is_hotkey_repeat_held(rule_id: &str) -> bool {
     false
 }
 
+pub fn is_hotkey_combination_pressed(vkeys: &[i32]) -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        !vkeys.is_empty() && vkeys.iter().all(|&vk| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = vkeys;
+        false
+    }
+}
+
 #[derive(Clone)]
 pub struct HotkeyHandle {
     _private: (),

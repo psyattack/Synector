@@ -1498,7 +1498,7 @@ impl DaemonEngine {
                     });
 
                     match ActionRunner::execute_with_output(action, &ctx).await {
-                        Ok(out_opt) => {
+                        Ok(crate::daemon::actions::ActionOutcome::Continue(out_opt)) => {
                             if let Some(out) = out_opt {
                                 ctx.insert("PrevOutput".to_string(), out.clone());
                                 ctx.insert(format!("Step{}.Output", step_idx + 1), out);
@@ -1520,6 +1520,14 @@ impl DaemonEngine {
                                     overlay_id: resolved_id,
                                 }));
                             }
+                        }
+                        Ok(crate::daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
+                            let _ = tx.send(ActionCompletionEvent::Log {
+                                level: "INFO".to_string(),
+                                category: "RULE".to_string(),
+                                message: format!("Pipeline gracefully halted for rule '{}' at step {}: {}", rule_name, step_idx + 1, reason),
+                            });
+                            break;
                         }
                         Err(err) => {
                             let _ = tx.send(ActionCompletionEvent::Log {
@@ -1628,11 +1636,19 @@ impl DaemonEngine {
                     });
 
                     match ActionRunner::execute_with_output(action, &ctx).await {
-                        Ok(out_opt) => {
+                        Ok(crate::daemon::actions::ActionOutcome::Continue(out_opt)) => {
                             if let Some(out) = out_opt {
                                 ctx.insert("PrevOutput".to_string(), out.clone());
                                 ctx.insert(format!("Step{}.Output", step_idx + 1), out);
                             }
+                        }
+                        Ok(crate::daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
+                            let _ = tx.send(ActionCompletionEvent::Log {
+                                level: "INFO".to_string(),
+                                category: "RULE".to_string(),
+                                message: format!("Exit pipeline gracefully halted for rule '{}' at step {}: {}", rule_name, step_idx + 1, reason),
+                            });
+                            break;
                         }
                         Err(err) => {
                             let _ = tx.send(ActionCompletionEvent::Log {
@@ -1856,11 +1872,20 @@ impl DaemonEngine {
                             });
 
                             match ActionRunner::execute_with_output(action, &ctx).await {
-                                Ok(out_opt) => {
+                                Ok(crate::daemon::actions::ActionOutcome::Continue(out_opt)) => {
                                     if let Some(out) = out_opt {
                                         ctx.insert("PrevOutput".to_string(), out.clone());
                                         ctx.insert(format!("Step{}.Output", step_idx + 1), out);
                                     }
+                                }
+                                Ok(crate::daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
+                                    let _ = tx.send(ActionCompletionEvent::Log {
+                                        level: "INFO".to_string(),
+                                        category: "RULE".to_string(),
+                                        message: format!("Pipeline gracefully halted for rule '{}' at step {}: {}", rule_name, step_idx + 1, reason),
+                                    });
+                                    had_error = true;
+                                    break;
                                 }
                                 Err(err) => {
                                     let _ = tx.send(ActionCompletionEvent::Log {
@@ -2065,16 +2090,22 @@ impl DaemonEngine {
             }
 
             IpcRequest::TestStep { action, context } => {
-                let res = ActionRunner::execute(&action, &context).await.map_err(|e| e.to_string());
-                match &res {
-                    Ok(()) => {
+                let res = ActionRunner::execute(&action, &context).await;
+                let step_res = match res {
+                    Ok(crate::daemon::actions::ActionOutcome::Continue(_)) => {
                         self.log("INFO", "TEST", "Step test executed successfully");
+                        Ok(())
+                    }
+                    Ok(crate::daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
+                        self.log("INFO", "TEST", &format!("Pipeline check halted: {reason}"));
+                        Ok(())
                     }
                     Err(err) => {
                         self.log("ERROR", "TEST", &format!("Step test failed: {err}"));
+                        Err(err)
                     }
-                }
-                IpcResponse::TestStepResult(res)
+                };
+                IpcResponse::TestStepResult(step_res)
             }
 
             IpcRequest::SaveOverlay(overlay) => {
@@ -2593,7 +2624,8 @@ mod tests {
                     "volume_level": 100
                 },
                 {
-                    "$action_type": "delay",
+                    "$action_type": "wait",
+                    "mode": "timer",
                     "seconds": 5.0
                 },
                 {
@@ -2618,10 +2650,10 @@ mod tests {
             panic!("Expected AudioControl Process Mute");
         }
 
-        if let Action::Delay { seconds } = &rule.actions[1] {
+        if let Action::Wait { seconds, .. } = &rule.actions[1] {
             assert_eq!(*seconds, 5.0);
         } else {
-            panic!("Expected Delay");
+            panic!("Expected Wait");
         }
 
         if let Action::AudioControl { target, process_name, action_type, .. } = &rule.actions[2] {
@@ -3046,7 +3078,13 @@ mod tests {
             cooldown_seconds: 0.0,
             trigger: None,
             actions: vec![
-                Action::Delay { seconds: 0.5 },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.5,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
                 Action::Notification {
                     title: "Test".into(),
                     message: "Completed".into(),
@@ -3094,7 +3132,13 @@ mod tests {
             is_enabled: true,
             cooldown_seconds: 0.0,
             trigger: None,
-            actions: vec![Action::Delay { seconds: 0.4 }],
+            actions: vec![Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 0.4,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
             on_exit_actions: Vec::new(),
             execution_count: 0,
             custom_icon_path: None,
@@ -3108,7 +3152,13 @@ mod tests {
             is_enabled: true,
             cooldown_seconds: 0.0,
             trigger: None,
-            actions: vec![Action::Delay { seconds: 0.1 }],
+            actions: vec![Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 0.1,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
             on_exit_actions: Vec::new(),
             execution_count: 0,
             custom_icon_path: None,
@@ -3144,8 +3194,20 @@ mod tests {
             cooldown_seconds: 0.0,
             trigger: None,
             actions: vec![
-                Action::Delay { seconds: 0.2 },
-                Action::Delay { seconds: 0.2 },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.2,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.2,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
             ],
             on_exit_actions: Vec::new(),
             execution_count: 0,
@@ -3200,7 +3262,13 @@ mod tests {
             cooldown_seconds: 0.0,
             trigger: None,
             actions: vec![
-                Action::Delay { seconds: 5.0 },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 5.0,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
             ],
             ..Default::default()
         };
@@ -3383,7 +3451,13 @@ mod tests {
                 }),
             ],
             actions: vec![
-                Action::Delay { seconds: 0.05 },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.05,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
             ],
             ..Default::default()
         };
@@ -3428,7 +3502,13 @@ mod tests {
                 target_datetime: None,
             }),
             actions: vec![
-                Action::Delay { seconds: 0.05 },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.05,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
             ],
             ..Default::default()
         };
@@ -3673,6 +3753,44 @@ mod tests {
 
         engine.tick_schedule().await;
         assert!(!engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("Daily Catchup Rule")), "Rule should not re-run if already executed today");
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_check_step_halts_subsequent_actions() {
+        let mut config = AppConfig::default();
+        let rule = Rule {
+            id: "check_halt_rule".into(),
+            name: "Check Halt Rule".into(),
+            description: "".into(),
+            is_enabled: true,
+            cooldown_seconds: 0.0,
+            trigger: None,
+            actions: vec![
+                Action::Check {
+                    condition: RuleCondition::FileWatcher {
+                        path: "C:\\definitely_non_existent_file_xyz_123.tmp".into(),
+                        filter_extension: None,
+                        must_exist: true,
+                    },
+                },
+                Action::Notification {
+                    title: "ShouldNotRun".into(),
+                    message: "Never".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        config.rules.push(rule.clone());
+
+        let mut engine = DaemonEngine::new(config);
+        let h = engine.try_execute_rule(&rule, "MANUAL_TEST", 0).await;
+        if let Some(handle) = h {
+            let _ = handle.await;
+        }
+        engine.drain_action_events();
+
+        assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("gracefully halted")), "Check failure must gracefully halt pipeline");
+        assert!(!engine.logs.iter().any(|l| l.message.contains("ShouldNotRun")), "Subsequent actions must be skipped");
     }
 }
 

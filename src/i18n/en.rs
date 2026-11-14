@@ -1056,4 +1056,44 @@ pub static STRINGS: Strings = Strings {
     inspector_file_event_modified: "On Modified",
     inspector_file_event_deleted: "On Deleted",
     inspector_webhook_copy_url: "Click to copy endpoint URL",
+
+    // Universal Wait Action
+    catalog_title_wait: "Wait",
+    catalog_desc_wait: "Timer pause or wait until a condition is met before continuing",
+    inspector_badge_wait: "WAIT",
+    inspector_wait_mode: "WAIT MODE",
+    inspector_wait_timer: "Timer",
+    inspector_wait_until_condition: "Until Condition",
+    inspector_wait_seconds: "PAUSE DURATION",
+    inspector_wait_condition_type: "EVENT / CONDITION",
+    inspector_wait_window_opened: "Window Opened",
+    inspector_wait_window_closed: "Window Closed",
+    inspector_wait_process_started: "Process Started",
+    inspector_wait_process_exited: "Process Exited",
+    inspector_wait_hotkey: "Hotkey Pressed",
+    inspector_wait_file: "File Event",
+    inspector_wait_file_exists: "File Exists",
+    inspector_wait_file_deleted: "File Deleted",
+    inspector_wait_timeout: "TIMEOUT",
+    inspector_wait_timeout_policy: "ON TIMEOUT",
+    inspector_wait_policy_abort: "Abort Pipeline",
+    inspector_wait_policy_continue: "Continue",
+
+    // Check Action
+    catalog_title_check: "Check Condition",
+    catalog_desc_check: "Check condition mid-pipeline; stops steps if not met",
+    inspector_badge_check: "CHECK",
+    inspector_check_desc: "If condition is not met, subsequent pipeline steps are skipped without error",
+    summary_action_check: "CHECK",
+
+    // Toggle Modes
+    inspector_cell_toggle_traffic: "TOGGLE",
+    inspector_win_toggle_min_restore: "Toggle Minimize / Restore",
+    inspector_win_toggle_show_hide: "Toggle Show / Hide",
+
+    // Windows Shortcuts
+    rules_btn_create_shortcut_tip: "Create Windows shortcut (.lnk)",
+    dialog_select_shortcut_folder: "Select Folder for Shortcut",
+    toast_shortcut_created: "Shortcut created: {}",
+    toast_shortcut_failed: "Failed to create shortcut: {}",
 };

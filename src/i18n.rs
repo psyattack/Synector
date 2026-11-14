@@ -1073,6 +1073,46 @@ pub struct Strings {
     pub inspector_file_event_modified: &'static str,
     pub inspector_file_event_deleted: &'static str,
     pub inspector_webhook_copy_url: &'static str,
+
+    // Universal Wait Action
+    pub catalog_title_wait: &'static str,
+    pub catalog_desc_wait: &'static str,
+    pub inspector_badge_wait: &'static str,
+    pub inspector_wait_mode: &'static str,
+    pub inspector_wait_timer: &'static str,
+    pub inspector_wait_until_condition: &'static str,
+    pub inspector_wait_seconds: &'static str,
+    pub inspector_wait_condition_type: &'static str,
+    pub inspector_wait_window_opened: &'static str,
+    pub inspector_wait_window_closed: &'static str,
+    pub inspector_wait_process_started: &'static str,
+    pub inspector_wait_process_exited: &'static str,
+    pub inspector_wait_hotkey: &'static str,
+    pub inspector_wait_file: &'static str,
+    pub inspector_wait_file_exists: &'static str,
+    pub inspector_wait_file_deleted: &'static str,
+    pub inspector_wait_timeout: &'static str,
+    pub inspector_wait_timeout_policy: &'static str,
+    pub inspector_wait_policy_abort: &'static str,
+    pub inspector_wait_policy_continue: &'static str,
+
+    // Check Action
+    pub catalog_title_check: &'static str,
+    pub catalog_desc_check: &'static str,
+    pub inspector_badge_check: &'static str,
+    pub inspector_check_desc: &'static str,
+    pub summary_action_check: &'static str,
+
+    // Toggle Modes
+    pub inspector_cell_toggle_traffic: &'static str,
+    pub inspector_win_toggle_min_restore: &'static str,
+    pub inspector_win_toggle_show_hide: &'static str,
+
+    // Windows Shortcuts
+    pub rules_btn_create_shortcut_tip: &'static str,
+    pub dialog_select_shortcut_folder: &'static str,
+    pub toast_shortcut_created: &'static str,
+    pub toast_shortcut_failed: &'static str,
 }
 
 pub fn get(lang: Language) -> &'static Strings {

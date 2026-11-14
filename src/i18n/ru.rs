@@ -75,9 +75,9 @@ pub static STRINGS: Strings = Strings {
     summary_action_kill: "ЗАВЕРШЕНИЕ",
     summary_action_mute: "ЗАГЛУШИТЬ",
     summary_action_unmute: "ВКЛ. ЗВУК",
-    summary_action_toggle: "ПЕРЕКЛ. ЗВУК",
+    summary_action_toggle: "ПЕРЕКЛЮЧИТЬ",
     summary_action_vol: "ГРОМКОСТЬ",
-    summary_action_wait: "ПАУЗА",
+    summary_action_wait: "ЖДАТЬ",
     summary_action_power: "ПИТАНИЕ",
 
     // Process Hunter View (processes_view.rs)
@@ -1056,4 +1056,44 @@ pub static STRINGS: Strings = Strings {
     inspector_file_event_modified: "При изменении",
     inspector_file_event_deleted: "При удалении",
     inspector_webhook_copy_url: "Нажмите для копирования URL",
+
+    // Universal Wait Action
+    catalog_title_wait: "Ожидание",
+    catalog_desc_wait: "Пауза по таймеру или ожидание события перед продолжением",
+    inspector_badge_wait: "ОЖИДАНИЕ",
+    inspector_wait_mode: "РЕЖИМ ОЖИДАНИЯ",
+    inspector_wait_timer: "Таймер",
+    inspector_wait_until_condition: "До события / условия",
+    inspector_wait_seconds: "ДЛИТЕЛЬНОСТЬ ПАУЗЫ",
+    inspector_wait_condition_type: "СОБЫТИЕ / УСЛОВИЕ",
+    inspector_wait_window_opened: "Окно открыто",
+    inspector_wait_window_closed: "Окно закрыто",
+    inspector_wait_process_started: "Процесс запущен",
+    inspector_wait_process_exited: "Процесс завершен",
+    inspector_wait_hotkey: "Нажат хоткей",
+    inspector_wait_file: "Событие файла",
+    inspector_wait_file_exists: "Файл существует",
+    inspector_wait_file_deleted: "Файл удален",
+    inspector_wait_timeout: "ТАЙМАУТ",
+    inspector_wait_timeout_policy: "ПРИ ИСТЕЧЕНИИ ТАЙМАУТА",
+    inspector_wait_policy_abort: "Прервать пайплайн",
+    inspector_wait_policy_continue: "Продолжить",
+
+    // Check Action
+    catalog_title_check: "Проверка условия",
+    catalog_desc_check: "Мгновенная проверка условия; прерывает шаги, если не соблюдено",
+    inspector_badge_check: "ПРОВЕРКА",
+    inspector_check_desc: "Если условие не соблюдено, последующие шаги пайплайна пропускаются без ошибки",
+    summary_action_check: "ПРОВЕРКА",
+
+    // Toggle Modes
+    inspector_cell_toggle_traffic: "ПЕРЕКЛЮЧИТЬ",
+    inspector_win_toggle_min_restore: "Свернуть / Восстановить",
+    inspector_win_toggle_show_hide: "Скрыть / Показать",
+
+    // Windows Shortcuts
+    rules_btn_create_shortcut_tip: "Создать Windows-ярлык (.lnk)",
+    dialog_select_shortcut_folder: "Выберите папку для ярлыка",
+    toast_shortcut_created: "Ярлык создан: {}",
+    toast_shortcut_failed: "Ошибка создания ярлыка: {}",
 };

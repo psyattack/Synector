@@ -612,6 +612,11 @@ fn render_track_row(
                             state.copy_single_rule_to_clipboard(ui.ctx(), rule);
                         }
 
+                        // 3.5. Shortcut
+                        if widgets::glyph_button_custom(ui, Glyph::Shortcut, 26.0, false, loc.rules_btn_create_shortcut_tip).clicked() {
+                            state.create_shortcut_dialog(rule);
+                        }
+
                         // 4. Clone
                         if widgets::glyph_button_custom(ui, Glyph::Clone, 26.0, false, loc.rules_btn_clone).clicked() {
                             state.clone_rule(rule);
@@ -1068,11 +1073,38 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
         }
         Action::Notification { title, .. } => format!("NOTIFY \"{}\"", title),
         Action::SystemPower { power_type } => format!("{} {:?}", loc.summary_action_power, power_type),
-        Action::Delay { seconds } => format!("{} {:.1}S", loc.summary_action_wait, seconds),
+        Action::Wait { mode, seconds, condition, .. } => match mode {
+            crate::models::WaitMode::Timer => format!("{} {:.1}S", loc.summary_action_wait, seconds),
+            crate::models::WaitMode::UntilCondition => {
+                let desc = match condition {
+                    Some(crate::models::WaitCondition::WindowOpened { process_name, .. }) => format!("WIN OPEN {}", process_name),
+                    Some(crate::models::WaitCondition::WindowClosed { process_name, .. }) => format!("WIN CLOSE {}", process_name),
+                    Some(crate::models::WaitCondition::ProcessStarted { process_name, .. }) => format!("PROC START {}", process_name),
+                    Some(crate::models::WaitCondition::ProcessExited { process_name, .. }) => format!("PROC EXIT {}", process_name),
+                    Some(crate::models::WaitCondition::Hotkey { key_combination }) => format!("KEY {}", key_combination),
+                    Some(crate::models::WaitCondition::File { path, condition }) => {
+                        let fname = std::path::Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
+                        match condition {
+                            crate::models::WaitFileCondition::Exists => format!("FILE +{}", fname),
+                            crate::models::WaitFileCondition::Deleted => format!("FILE -{}", fname),
+                        }
+                    }
+                    None => "UNTIL".to_string(),
+                };
+                format!("{} [{}]", loc.summary_action_wait, desc)
+            }
+        },
+        Action::Check { condition } => {
+            format!("{} {}", loc.summary_action_check, format_single_condition_brief(condition))
+        }
         Action::HttpWebhook { .. } => "WEBHOOK".to_string(),
         Action::Window { window_action, target_process, .. } => {
             let proc = target_process.as_deref().unwrap_or("ACTIVE");
-            format!("{:?} {}", window_action, proc)
+            match window_action {
+                crate::models::WindowActionType::ToggleMinimizeRestore => format!("TOGGLE MIN/RESTORE {}", proc),
+                crate::models::WindowActionType::ToggleShowHide => format!("TOGGLE SHOW/HIDE {}", proc),
+                other => format!("{:?} {}", other, proc),
+            }
         }
         Action::ProcessTuning { target_process, .. } => {
             let proc = target_process.as_deref().unwrap_or("ACTIVE");
@@ -1080,7 +1112,11 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
         }
         Action::PowerPlan { plan } => format!("{:?} POWER", plan),
         Action::PlaySound { .. } => "PLAY SOUND".to_string(),
-        Action::Firewall { process_name, block } => if *block { format!("BLOCK {}", process_name) } else { format!("ALLOW {}", process_name) },
+        Action::Firewall { process_name, action } => match action {
+            crate::models::FirewallAction::Block => format!("BLOCK {}", process_name),
+            crate::models::FirewallAction::Allow => format!("ALLOW {}", process_name),
+            crate::models::FirewallAction::Toggle => format!("{} {}", loc.summary_action_toggle, process_name),
+        },
         Action::Display { width, height, refresh_rate, monitor_index } => {
             let res = match (width, height) {
                 (Some(w), Some(h)) => format!("{}x{}", w, h),
@@ -1276,7 +1312,8 @@ fn action_icon_glyph(action: &Action) -> &'static str {
         Action::Firewall { .. } => egui_phosphor::regular::SHIELD,
         Action::Notification { .. } => egui_phosphor::regular::BELL,
         Action::SystemPower { .. } => egui_phosphor::regular::POWER,
-        Action::Delay { .. } => egui_phosphor::regular::HOURGLASS,
+        Action::Wait { .. } => egui_phosphor::regular::HOURGLASS,
+        Action::Check { .. } => egui_phosphor::regular::CHECK_CIRCLE,
         Action::HttpWebhook { .. } => egui_phosphor::regular::GLOBE,
         Action::Display { .. } => egui_phosphor::regular::MONITOR,
         Action::IfElse { .. } => egui_phosphor::regular::GIT_FORK,
@@ -1421,14 +1458,35 @@ mod tests {
         r1.name = "Beta Work".into();
         r1.is_enabled = true;
         r1.tags = vec![tag_work.clone()];
-        r1.actions = vec![Action::Delay { seconds: 1.0 }];
+        r1.actions = vec![Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
 
         let mut r2 = Rule::default();
         r2.id = "r2".into();
         r2.name = "Alpha Dev".into();
         r2.is_enabled = false;
         r2.tags = vec![tag_dev.clone()];
-        r2.actions = vec![Action::Delay { seconds: 1.0 }, Action::Delay { seconds: 2.0 }];
+        r2.actions = vec![
+            Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 1.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            },
+            Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 2.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            },
+        ];
 
         let mut r3 = Rule::default();
         r3.id = "r3".into();
@@ -1493,13 +1551,25 @@ mod tests {
         rule_with_tags.name = "Rule with Tags".into();
         rule_with_tags.is_enabled = true;
         rule_with_tags.tags = vec![tag_work];
-        rule_with_tags.actions = vec![Action::Delay { seconds: 1.0 }];
+        rule_with_tags.actions = vec![Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
 
         let mut rule_no_tags = Rule::default();
         rule_no_tags.id = "r_no_tags".into();
         rule_no_tags.name = "Rule without Tags".into();
         rule_no_tags.is_enabled = false;
-        rule_no_tags.actions = vec![Action::Delay { seconds: 1.0 }];
+        rule_no_tags.actions = vec![Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
 
         let mut rect_with_tags = Rect::NOTHING;
         let mut rect_no_tags = Rect::NOTHING;

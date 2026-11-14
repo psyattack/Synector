@@ -46,24 +46,30 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 #[cfg(windows)]
 use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME};
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActionOutcome {
+    Continue(Option<String>),
+    AbortPipeline { reason: String },
+}
+
 pub struct ActionRunner;
 
 impl ActionRunner {
-    pub async fn execute(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
-        Self::execute_with_output(action, context).await.map(|_| ())
+    pub async fn execute(action: &Action, context: &HashMap<String, String>) -> Result<ActionOutcome, String> {
+        Self::execute_with_output(action, context).await
     }
 
     pub async fn execute_with_output(
         action: &Action,
         context: &HashMap<String, String>,
-    ) -> Result<Option<String>, String> {
+    ) -> Result<ActionOutcome, String> {
         match action {
             Action::ExecuteScript { interpreter, script, run_in_window } => {
-                Self::run_script_internal(interpreter, script, *run_in_window, context)
+                let res = Self::run_script_internal(interpreter, script, *run_in_window, context)?;
+                Ok(ActionOutcome::Continue(res))
             }
             other => {
-                Self::execute_void_action(other, context).await?;
-                Ok(None)
+                Self::execute_void_action(other, context).await
             }
         }
     }
@@ -131,7 +137,142 @@ impl ActionRunner {
         }
     }
 
-    pub async fn execute_void_action(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
+    pub async fn execute_void_action(action: &Action, context: &HashMap<String, String>) -> Result<ActionOutcome, String> {
+        match action {
+            Action::Wait { mode, seconds, condition, timeout_sec, timeout_policy } => {
+                match mode {
+                    crate::models::WaitMode::Timer => {
+                        tokio::time::sleep(std::time::Duration::from_secs_f64(seconds.max(0.001))).await;
+                        Ok(ActionOutcome::Continue(None))
+                    }
+                    crate::models::WaitMode::UntilCondition => {
+                        let timeout = std::time::Duration::from_secs_f64(*timeout_sec);
+                        let has_timeout = *timeout_sec > 0.0;
+                        let start = std::time::Instant::now();
+
+                        loop {
+                            let satisfied = match condition {
+                                Some(crate::models::WaitCondition::ProcessStarted { process_name, match_mode }) => {
+                                    let proc = Self::interpolate_tokens(process_name, context);
+                                    let map = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
+                                    map.values().any(|name| crate::daemon::engine::DaemonEngine::matches_process(&proc, name, *match_mode))
+                                }
+                                Some(crate::models::WaitCondition::ProcessExited { process_name, match_mode }) => {
+                                    let proc = Self::interpolate_tokens(process_name, context);
+                                    let map = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
+                                    !map.values().any(|name| crate::daemon::engine::DaemonEngine::matches_process(&proc, name, *match_mode))
+                                }
+                                Some(crate::models::WaitCondition::WindowOpened { process_name, match_mode }) => {
+                                    let proc = Self::interpolate_tokens(process_name, context);
+                                    has_matching_window(&proc, *match_mode)
+                                }
+                                Some(crate::models::WaitCondition::WindowClosed { process_name, match_mode }) => {
+                                    let proc = Self::interpolate_tokens(process_name, context);
+                                    !has_matching_window(&proc, *match_mode)
+                                }
+                                Some(crate::models::WaitCondition::Hotkey { key_combination }) => {
+                                    let combo = Self::interpolate_tokens(key_combination, context);
+                                    crate::daemon::hotkeys::parse_hotkey_vkeys(&combo)
+                                        .map(|vkeys| crate::daemon::hotkeys::is_hotkey_combination_pressed(&vkeys))
+                                        .unwrap_or(false)
+                                }
+                                Some(crate::models::WaitCondition::File { path, condition }) => {
+                                    let p = Self::interpolate_tokens(path, context);
+                                    match condition {
+                                        crate::models::WaitFileCondition::Exists => std::path::Path::new(&p).exists(),
+                                        crate::models::WaitFileCondition::Deleted => !std::path::Path::new(&p).exists(),
+                                    }
+                                }
+                                None => true,
+                            };
+
+                            if satisfied {
+                                return Ok(ActionOutcome::Continue(None));
+                            }
+
+                            if has_timeout && start.elapsed() >= timeout {
+                                match timeout_policy {
+                                    crate::models::WaitTimeoutPolicy::Abort => {
+                                        return Ok(ActionOutcome::AbortPipeline {
+                                            reason: format!("Wait condition timed out after {:.1}s", timeout_sec),
+                                        });
+                                    }
+                                    crate::models::WaitTimeoutPolicy::Continue => {
+                                        return Ok(ActionOutcome::Continue(None));
+                                    }
+                                }
+                            }
+
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+            }
+
+            Action::Check { condition } => {
+                let satisfied = crate::daemon::engine::DaemonEngine::evaluate_condition(condition);
+                if satisfied {
+                    Ok(ActionOutcome::Continue(None))
+                } else {
+                    Ok(ActionOutcome::AbortPipeline {
+                        reason: "Check condition not met".to_string(),
+                    })
+                }
+            }
+
+            Action::Firewall { process_name, action } => {
+                let proc_name = Self::interpolate_tokens(process_name, context);
+                set_firewall_rule(&proc_name, *action)?;
+                Ok(ActionOutcome::Continue(None))
+            }
+
+            Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
+                let is_true = if !conditions.is_empty() {
+                    crate::daemon::engine::DaemonEngine::evaluate_rule_conditions(conditions)
+                } else {
+                    true
+                };
+                if is_true {
+                    for sub_action in then_actions {
+                        match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                            ActionOutcome::Continue(_) => {},
+                            ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                        }
+                    }
+                } else {
+                    let mut matched = false;
+                    for branch in else_if_branches {
+                        if !branch.conditions.is_empty() && crate::daemon::engine::DaemonEngine::evaluate_rule_conditions(&branch.conditions) {
+                            for sub_action in &branch.actions {
+                                match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                                    ActionOutcome::Continue(_) => {},
+                                    ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                                }
+                            }
+                            matched = true;
+                            break;
+                        }
+                    }
+                    if !matched {
+                        for sub_action in else_actions {
+                            match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                                ActionOutcome::Continue(_) => {},
+                                ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                            }
+                        }
+                    }
+                }
+                Ok(ActionOutcome::Continue(None))
+            }
+
+            other => {
+                Self::execute_standard_void_action(other, context).await?;
+                Ok(ActionOutcome::Continue(None))
+            }
+        }
+    }
+
+    pub async fn execute_standard_void_action(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
         match action {
             Action::StartProcess {
                 file_path,
@@ -306,12 +447,6 @@ impl ActionRunner {
                 Ok(())
             }
 
-            Action::Firewall { process_name, block } => {
-                let proc_name = Self::interpolate_tokens(process_name, context);
-                set_firewall_rule(&proc_name, *block)?;
-                Ok(())
-            }
-
             Action::Notification { title, message } => {
                 let t = Self::interpolate_tokens(title, context);
                 let m = Self::interpolate_tokens(message, context);
@@ -403,11 +538,6 @@ impl ActionRunner {
                         let _ = cmd.spawn();
                     }
                 }
-                Ok(())
-            }
-
-            Action::Delay { seconds } => {
-                tokio::time::sleep(std::time::Duration::from_secs_f64(*seconds)).await;
                 Ok(())
             }
 
@@ -524,36 +654,6 @@ impl ActionRunner {
                         execute_macro_event(ev, *speed, context).await?;
                     }
                     count += 1;
-                }
-                Ok(())
-            }
-
-            Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
-                let is_true = if !conditions.is_empty() {
-                    crate::daemon::engine::DaemonEngine::evaluate_rule_conditions(conditions)
-                } else {
-                    true
-                };
-                if is_true {
-                    for sub_action in then_actions {
-                        Box::pin(Self::execute(sub_action, context)).await?;
-                    }
-                } else {
-                    let mut matched = false;
-                    for branch in else_if_branches {
-                        if !branch.conditions.is_empty() && crate::daemon::engine::DaemonEngine::evaluate_rule_conditions(&branch.conditions) {
-                            for sub_action in &branch.actions {
-                                Box::pin(Self::execute(sub_action, context)).await?;
-                            }
-                            matched = true;
-                            break;
-                        }
-                    }
-                    if !matched {
-                        for sub_action in else_actions {
-                            Box::pin(Self::execute(sub_action, context)).await?;
-                        }
-                    }
                 }
                 Ok(())
             }
@@ -710,6 +810,7 @@ impl ActionRunner {
                 }
                 Ok(())
             }
+            _ => Ok(()),
         }
     }
 
@@ -872,7 +973,7 @@ fn window_control(
 ) -> Result<(), String> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, ShowWindowAsync, SWP_NOACTIVATE, GWL_STYLE, WS_CHILD,
+        GetWindowRect, ShowWindowAsync, IsIconic, SWP_NOACTIVATE, GWL_STYLE, WS_CHILD,
     };
 
     let target_proc_clean = target_process.trim();
@@ -1038,6 +1139,20 @@ fn window_control(
                 }
                 WindowActionType::Close => {
                     let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+                }
+                WindowActionType::ToggleMinimizeRestore => {
+                    if IsIconic(hwnd).as_bool() {
+                        let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+                    } else {
+                        let _ = ShowWindowAsync(hwnd, SW_MINIMIZE);
+                    }
+                }
+                WindowActionType::ToggleShowHide => {
+                    if IsWindowVisible(hwnd).as_bool() {
+                        let _ = ShowWindow(hwnd, SW_HIDE);
+                    } else {
+                        let _ = ShowWindowAsync(hwnd, SW_SHOW);
+                    }
                 }
                 WindowActionType::ToggleAlwaysOnTop => {
                     let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
@@ -2372,12 +2487,17 @@ fn play_sound_file(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn set_firewall_rule(proc_name: &str, block: bool) -> Result<(), String> {
+fn set_firewall_rule(proc_name: &str, action: crate::models::FirewallAction) -> Result<(), String> {
     let rule_name = format!("Synector_{}", proc_name);
     let exe_path = crate::daemon::watcher::ProcessWatcher::find_exe_path_by_name(proc_name)
         .unwrap_or_else(|| proc_name.to_string());
+    let should_block = match action {
+        crate::models::FirewallAction::Block => true,
+        crate::models::FirewallAction::Allow => false,
+        crate::models::FirewallAction::Toggle => !is_firewall_rule_active(&rule_name),
+    };
     let mut cmd = Command::new("netsh");
-    if block {
+    if should_block {
         cmd.args([
             "advfirewall", "firewall", "add", "rule",
             &format!("name={}", rule_name),
@@ -2395,6 +2515,118 @@ fn set_firewall_rule(proc_name: &str, block: bool) -> Result<(), String> {
     }
     let _ = cmd.spawn();
     Ok(())
+}
+
+pub fn is_firewall_rule_active(rule_name: &str) -> bool {
+    let mut cmd = Command::new("netsh");
+    cmd.args(["advfirewall", "firewall", "show", "rule", &format!("name={}", rule_name)]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    match cmd.output() {
+        Ok(out) => out.status.success(),
+        Err(_) => false,
+    }
+}
+
+pub fn has_matching_window(process_name: &str, match_mode: crate::models::ProcessMatchMode) -> bool {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+            GetWindowLongW, GetWindow, GetWindowRect,
+            GWL_STYLE, GWL_EXSTYLE, GW_OWNER, WS_CHILD, WS_EX_TOOLWINDOW,
+        };
+        use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+
+        let target = process_name.trim().to_lowercase();
+        if target.is_empty() {
+            return false;
+        }
+
+        struct SearchCtx {
+            target: String,
+            match_mode: crate::models::ProcessMatchMode,
+            found: bool,
+        }
+
+        unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+            let ctx = &mut *(lparam.0 as *mut SearchCtx);
+
+            let style = GetWindowLongW(hwnd, GWL_STYLE);
+            if (style & (WS_CHILD.0 as i32)) != 0 {
+                return BOOL(1);
+            }
+            if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
+                if !owner.0.is_null() {
+                    return BOOL(1);
+                }
+            }
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            if (ex & (WS_EX_TOOLWINDOW.0 as i32)) != 0 {
+                return BOOL(1);
+            }
+            let mut r = RECT::default();
+            if GetWindowRect(hwnd, &mut r).is_err() {
+                return BOOL(1);
+            }
+            let w = (r.right - r.left).max(0);
+            let h = (r.bottom - r.top).max(0);
+            if w < 20 || h < 20 {
+                return BOOL(1);
+            }
+
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == 0 || pid == std::process::id() {
+                return BOOL(1);
+            }
+
+            if let Some(img) = crate::daemon::watcher::ProcessWatcher::get_process_image_path(pid) {
+                let name = std::path::Path::new(&img)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if crate::daemon::engine::DaemonEngine::matches_process(&ctx.target, &name, ctx.match_mode) {
+                    ctx.found = true;
+                    return BOOL(0);
+                }
+            }
+
+            let title_len = GetWindowTextLengthW(hwnd);
+            if title_len > 0 {
+                let mut buf = [0u16; 256];
+                let len = GetWindowTextW(hwnd, &mut buf);
+                if len > 0 {
+                    let title = String::from_utf16_lossy(&buf[..len as usize]);
+                    if crate::daemon::engine::DaemonEngine::matches_process(&ctx.target, &title, ctx.match_mode) {
+                        ctx.found = true;
+                        return BOOL(0);
+                    }
+                }
+            }
+
+            BOOL(1)
+        }
+
+        let mut ctx = SearchCtx {
+            target,
+            match_mode,
+            found: false,
+        };
+        unsafe {
+            let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
+        }
+        ctx.found
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (process_name, match_mode);
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -2822,23 +3054,107 @@ mod tests {
                 filter_extension: None,
                 must_exist: true,
             })],
-            then_actions: vec![crate::models::Action::Delay { seconds: 0.001 }],
+            then_actions: vec![crate::models::Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 0.001,
+                condition: None,
+                timeout_sec: 1.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
             else_if_branches: vec![crate::models::ElseIfBranch {
                 conditions: vec![crate::models::RuleConditionItem::new(crate::models::RuleCondition::FileWatcher {
                     path: existing_path.to_string_lossy().to_string(),
                     filter_extension: None,
                     must_exist: true,
                 })],
-                actions: vec![crate::models::Action::Delay { seconds: 0.001 }],
+                actions: vec![crate::models::Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 0.001,
+                    condition: None,
+                    timeout_sec: 1.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                }],
             }],
             else_actions: vec![],
         };
 
         let context = std::collections::HashMap::new();
         let res = ActionRunner::execute(&action, &context).await;
-        assert!(res.is_ok());
+        assert!(matches!(res, Ok(ActionOutcome::Continue(_))));
 
         let _ = std::fs::remove_file(&existing_path);
+    }
+
+    #[tokio::test]
+    async fn test_check_action_met_and_unmet() {
+        let temp_dir = std::env::temp_dir();
+        let existing_path = temp_dir.join("synector_check_test.tmp");
+        std::fs::write(&existing_path, b"data").unwrap();
+
+        let check_pass = Action::Check {
+            condition: crate::models::RuleCondition::FileWatcher {
+                path: existing_path.to_string_lossy().to_string(),
+                filter_extension: None,
+                must_exist: true,
+            },
+        };
+        let ctx = HashMap::new();
+        let res_pass = ActionRunner::execute(&check_pass, &ctx).await;
+        assert_eq!(res_pass, Ok(ActionOutcome::Continue(None)));
+
+        let check_fail = Action::Check {
+            condition: crate::models::RuleCondition::FileWatcher {
+                path: temp_dir.join("non_existent_file.tmp").to_string_lossy().to_string(),
+                filter_extension: None,
+                must_exist: true,
+            },
+        };
+        let res_fail = ActionRunner::execute(&check_fail, &ctx).await;
+        assert!(matches!(res_fail, Ok(ActionOutcome::AbortPipeline { .. })));
+
+        let _ = std::fs::remove_file(&existing_path);
+    }
+
+    #[tokio::test]
+    async fn test_wait_action_timer_and_timeout() {
+        let wait_timer = Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 0.005,
+            condition: None,
+            timeout_sec: 1.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        let ctx = HashMap::new();
+        let res = ActionRunner::execute(&wait_timer, &ctx).await;
+        assert_eq!(res, Ok(ActionOutcome::Continue(None)));
+
+        // Test timeout abort
+        let wait_timeout_abort = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::File {
+                path: "C:\\non_existent_path_never_created.tmp".into(),
+                condition: crate::models::WaitFileCondition::Exists,
+            }),
+            timeout_sec: 0.05,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        let res_abort = ActionRunner::execute(&wait_timeout_abort, &ctx).await;
+        assert!(matches!(res_abort, Ok(ActionOutcome::AbortPipeline { .. })));
+
+        // Test timeout continue
+        let wait_timeout_continue = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::File {
+                path: "C:\\non_existent_path_never_created.tmp".into(),
+                condition: crate::models::WaitFileCondition::Exists,
+            }),
+            timeout_sec: 0.05,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Continue,
+        };
+        let res_cont = ActionRunner::execute(&wait_timeout_continue, &ctx).await;
+        assert_eq!(res_cont, Ok(ActionOutcome::Continue(None)));
     }
 
     #[tokio::test]

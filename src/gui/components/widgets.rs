@@ -516,6 +516,7 @@ pub enum Glyph {
     Stop,
     Edit,
     Share,
+    Shortcut,
     Trash,
     Question,
 }
@@ -622,6 +623,16 @@ pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, t
                 m,
                 egui::Align2::CENTER_CENTER,
                 egui_phosphor::regular::SHARE_NETWORK,
+                egui::FontId::new(font_size, theme::phosphor()),
+                c,
+            );
+        }
+        Glyph::Shortcut => {
+            let font_size = (size * 0.48).clamp(12.0, 15.0);
+            p.text(
+                m,
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::ARROW_SQUARE_OUT,
                 egui::FontId::new(font_size, theme::phosphor()),
                 c,
             );

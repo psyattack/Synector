@@ -776,6 +776,25 @@ impl GuiState {
         }
     }
 
+    pub fn create_shortcut_dialog(&mut self, rule: &crate::models::Rule) {
+        let desktop = dirs_desktop().or_else(|| std::env::var_os("USERPROFILE").map(|u| std::path::PathBuf::from(u).join("Desktop")));
+        let mut dialog = rfd::FileDialog::new().set_title(self.loc().dialog_select_shortcut_folder);
+        if let Some(d) = desktop {
+            dialog = dialog.set_directory(d);
+        }
+        if let Some(folder) = dialog.pick_folder() {
+            match crate::shortcut::create_rule_shortcut(rule, &folder) {
+                Ok(path) => {
+                    let path_str = path.to_string_lossy();
+                    self.set_toast(self.loc().toast_shortcut_created.replace("{}", &path_str));
+                }
+                Err(err) => {
+                    self.set_toast(self.loc().toast_shortcut_failed.replace("{}", &err));
+                }
+            }
+        }
+    }
+
     pub fn copy_all_rules_to_clipboard(&mut self, ctx: &egui::Context) {
         let rules = self.daemon_state.as_ref().map(|s| s.config.rules.clone()).unwrap_or_default();
         if rules.is_empty() {
@@ -1481,7 +1500,24 @@ fn apply_process_to_action(action: &mut crate::models::Action, proc_name: &str) 
         crate::models::Action::ProcessTuning { target_process, .. } => {
             *target_process = Some(proc_name.to_string());
         }
+        crate::models::Action::Wait { condition: Some(crate::models::WaitCondition::ProcessStarted { process_name, .. } | crate::models::WaitCondition::ProcessExited { process_name, .. } | crate::models::WaitCondition::WindowOpened { process_name, .. } | crate::models::WaitCondition::WindowClosed { process_name, .. }), .. } => {
+            *process_name = proc_name.to_string();
+        }
+        crate::models::Action::Check { condition } => {
+            apply_process_to_condition(condition, proc_name);
+        }
         _ => {}
+    }
+}
+
+fn dirs_desktop() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(|u| std::path::PathBuf::from(u).join("Desktop"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Desktop"))
     }
 }
 

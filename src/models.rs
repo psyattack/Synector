@@ -335,7 +335,8 @@ pub enum Action {
     #[serde(rename = "firewall")]
     Firewall {
         process_name: String,
-        block: bool,
+        #[serde(default)]
+        action: FirewallAction,
     },
     #[serde(rename = "notification")]
     Notification {
@@ -408,9 +409,22 @@ pub enum Action {
     SystemPower {
         power_type: SystemPowerType,
     },
-    #[serde(rename = "delay")]
-    Delay {
+    #[serde(rename = "wait")]
+    Wait {
+        #[serde(default)]
+        mode: WaitMode,
+        #[serde(default = "default_wait_seconds")]
         seconds: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        condition: Option<WaitCondition>,
+        #[serde(default = "default_wait_timeout")]
+        timeout_sec: f64,
+        #[serde(default)]
+        timeout_policy: WaitTimeoutPolicy,
+    },
+    #[serde(rename = "check")]
+    Check {
+        condition: RuleCondition,
     },
     #[serde(rename = "display")]
     Display {
@@ -730,6 +744,86 @@ fn default_http_method() -> String {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum FirewallAction {
+    #[default]
+    Block,
+    Allow,
+    Toggle,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitMode {
+    #[default]
+    Timer,
+    UntilCondition,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitTimeoutPolicy {
+    #[default]
+    Abort,
+    Continue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WaitCondition {
+    WindowOpened {
+        #[serde(default)]
+        process_name: String,
+        #[serde(default)]
+        match_mode: ProcessMatchMode,
+    },
+    WindowClosed {
+        #[serde(default)]
+        process_name: String,
+        #[serde(default)]
+        match_mode: ProcessMatchMode,
+    },
+    ProcessStarted {
+        #[serde(default)]
+        process_name: String,
+        #[serde(default)]
+        match_mode: ProcessMatchMode,
+    },
+    ProcessExited {
+        #[serde(default)]
+        process_name: String,
+        #[serde(default)]
+        match_mode: ProcessMatchMode,
+    },
+    Hotkey {
+        #[serde(default)]
+        key_combination: String,
+    },
+    File {
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        condition: WaitFileCondition,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitFileCondition {
+    #[default]
+    Exists,
+    Deleted,
+}
+
+pub fn default_wait_seconds() -> f64 {
+    1.0
+}
+
+pub fn default_wait_timeout() -> f64 {
+    30.0
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowActionType {
     #[default]
     Minimize,
@@ -743,6 +837,8 @@ pub enum WindowActionType {
     RemoveAlwaysOnTop,
     SetTransparency,
     SnapToPosition,
+    ToggleMinimizeRestore,
+    ToggleShowHide,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -978,7 +1074,8 @@ impl Rule {
                 Action::Firewall { .. } => egui_phosphor::regular::SHIELD,
                 Action::Notification { .. } => egui_phosphor::regular::BELL,
                 Action::SystemPower { .. } => egui_phosphor::regular::POWER,
-                Action::Delay { .. } => egui_phosphor::regular::HOURGLASS,
+                Action::Wait { .. } => egui_phosphor::regular::HOURGLASS,
+                Action::Check { .. } => egui_phosphor::regular::CHECK_CIRCLE,
                 Action::HttpWebhook { .. } => egui_phosphor::regular::GLOBE,
                 Action::Display { .. } => egui_phosphor::regular::MONITOR,
                 Action::IfElse { .. } => egui_phosphor::regular::GIT_FORK,
@@ -2170,8 +2267,19 @@ mod tests {
         }];
         assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::CODE);
 
-        rule.actions = vec![Action::Delay { seconds: 5.0 }];
+        rule.actions = vec![Action::Wait {
+            mode: WaitMode::Timer,
+            seconds: 5.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: WaitTimeoutPolicy::Abort,
+        }];
         assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::HOURGLASS);
+
+        rule.actions = vec![Action::Check {
+            condition: RuleCondition::default_process(),
+        }];
+        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::CHECK_CIRCLE);
 
         rule.actions = vec![Action::AudioControl {
             target: AudioTarget::Microphone,
@@ -2256,7 +2364,7 @@ mod tests {
                 },
                 Action::Firewall {
                     process_name: "telemetry.exe".into(),
-                    block: true,
+                    action: FirewallAction::Block,
                 },
                 Action::Display {
                     width: Some(1920),
@@ -2278,13 +2386,25 @@ mod tests {
                         match_mode: ProcessMatchMode::Exact,
                         must_be_running: true,
                     })],
-                    then_actions: vec![Action::Delay { seconds: 1.0 }],
+                    then_actions: vec![Action::Wait {
+                        mode: WaitMode::Timer,
+                        seconds: 1.0,
+                        condition: None,
+                        timeout_sec: 30.0,
+                        timeout_policy: WaitTimeoutPolicy::Abort,
+                    }],
                     else_if_branches: vec![ElseIfBranch {
                         conditions: vec![RuleConditionItem::new(RuleCondition::Event {
                             event_type: SystemEventType::PowerSourceAc,
                             idle_duration_sec: 300,
                         })],
-                        actions: vec![Action::Delay { seconds: 2.0 }],
+                        actions: vec![Action::Wait {
+                            mode: WaitMode::Timer,
+                            seconds: 2.0,
+                            condition: None,
+                            timeout_sec: 30.0,
+                            timeout_policy: WaitTimeoutPolicy::Abort,
+                        }],
                     }],
                     else_actions: vec![],
                 },
@@ -2791,5 +2911,78 @@ mod tests {
         } else {
             panic!("Expected KeyVisualizer");
         }
+    }
+
+    #[test]
+    fn test_wait_check_toggle_serde() {
+        let wait_timer = Action::Wait {
+            mode: WaitMode::Timer,
+            seconds: 3.5,
+            condition: None,
+            timeout_sec: 10.0,
+            timeout_policy: WaitTimeoutPolicy::Continue,
+        };
+        let json_timer = serde_json::to_string(&wait_timer).unwrap();
+        let dec_timer: Action = serde_json::from_str(&json_timer).unwrap();
+        assert_eq!(dec_timer, wait_timer);
+
+        let wait_until = Action::Wait {
+            mode: WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(WaitCondition::WindowOpened {
+                process_name: "notepad.exe".into(),
+                match_mode: ProcessMatchMode::Exact,
+            }),
+            timeout_sec: 45.0,
+            timeout_policy: WaitTimeoutPolicy::Abort,
+        };
+        let json_until = serde_json::to_string(&wait_until).unwrap();
+        let dec_until: Action = serde_json::from_str(&json_until).unwrap();
+        assert_eq!(dec_until, wait_until);
+
+        let check_act = Action::Check {
+            condition: RuleCondition::ProcessRunning {
+                process_name: "game.exe".into(),
+                match_mode: ProcessMatchMode::Exact,
+                must_be_running: true,
+            },
+        };
+        let json_check = serde_json::to_string(&check_act).unwrap();
+        let dec_check: Action = serde_json::from_str(&json_check).unwrap();
+        assert_eq!(dec_check, check_act);
+
+        let fw_toggle = Action::Firewall {
+            process_name: "app.exe".into(),
+            action: FirewallAction::Toggle,
+        };
+        let json_fw = serde_json::to_string(&fw_toggle).unwrap();
+        let dec_fw: Action = serde_json::from_str(&json_fw).unwrap();
+        assert_eq!(dec_fw, fw_toggle);
+
+        let win_min_restore = Action::Window {
+            target_process: Some("app.exe".into()),
+            window_action: WindowActionType::ToggleMinimizeRestore,
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            transparency: None,
+        };
+        let json_wmr = serde_json::to_string(&win_min_restore).unwrap();
+        let dec_wmr: Action = serde_json::from_str(&json_wmr).unwrap();
+        assert_eq!(dec_wmr, win_min_restore);
+
+        let win_show_hide = Action::Window {
+            target_process: Some("app.exe".into()),
+            window_action: WindowActionType::ToggleShowHide,
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            transparency: None,
+        };
+        let json_wsh = serde_json::to_string(&win_show_hide).unwrap();
+        let dec_wsh: Action = serde_json::from_str(&json_wsh).unwrap();
+        assert_eq!(dec_wsh, win_show_hide);
     }
 }
