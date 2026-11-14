@@ -61,6 +61,7 @@ pub enum ActionCompletionEvent {
     RuleExecutionFinished {
         execution_id: u64,
         _rule_id: String,
+        is_manual: bool,
     },
     SetRuleCustomIcon {
         rule_id: String,
@@ -298,6 +299,56 @@ impl DaemonEngine {
 
         self.active_bound_overlays.retain(|bo| bo.rule_id != rule_id);
 
+        // Force stop and remove any active bound processes for this rule
+        let to_kill: Vec<BoundProcess> = self
+            .active_bound_processes
+            .iter()
+            .filter(|bp| bp.rule_id == rule_id)
+            .cloned()
+            .collect();
+        self.active_bound_processes.retain(|bp| bp.rule_id != rule_id);
+
+        for bp in to_kill {
+            let mut target_name = std::path::Path::new(&bp.target_executable)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(&bp.target_executable)
+                .to_string();
+            if !target_name.to_lowercase().ends_with(".exe") && !target_name.contains('.') {
+                target_name.push_str(".exe");
+            }
+
+            self.log(
+                "ACTION",
+                "RULE",
+                &format!(
+                    "Force terminating bound satellite process '{}' upon stopping rule '{}'",
+                    target_name, rule_id
+                ),
+            );
+
+            let action = Action::KillProcess {
+                process_name: target_name.clone(),
+                kill_tree: true,
+                force: true,
+            };
+            let ctx = HashMap::new();
+            let log_tx = self.action_tx.clone();
+            let rule_id_str = rule_id.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = ActionRunner::execute(&action, &ctx).await {
+                    let _ = log_tx.send(ActionCompletionEvent::Log {
+                        level: "WARN".to_string(),
+                        category: "ACTION".to_string(),
+                        message: format!(
+                            "Failed to force terminate bound satellite process '{}' (rule: {}): {}",
+                            target_name, rule_id_str, e
+                        ),
+                    });
+                }
+            });
+        }
+
         crate::daemon::actions::release_all_simulated_inputs();
     }
 
@@ -329,13 +380,71 @@ impl DaemonEngine {
                         item.is_exit = is_exit;
                     }
                 }
-                ActionCompletionEvent::RuleExecutionFinished { execution_id, _rule_id } => {
+                ActionCompletionEvent::RuleExecutionFinished { execution_id, _rule_id, is_manual } => {
                     self.active_executions.remove(&execution_id);
                     self.execution_abort_handles.remove(&execution_id);
                     if let Some((_, e_id)) = self.active_test_recurring_rules.get(&_rule_id) {
                         if *e_id == execution_id {
                             self.active_test_recurring_rules.remove(&_rule_id);
                         }
+                    }
+
+                    if is_manual {
+                        let to_kill: Vec<BoundProcess> = self
+                            .active_bound_processes
+                            .iter()
+                            .filter(|bp| bp.rule_id == _rule_id)
+                            .cloned()
+                            .collect();
+                        self.active_bound_processes.retain(|bp| bp.rule_id != _rule_id);
+
+                        for bp in to_kill {
+                            let mut target_name = std::path::Path::new(&bp.target_executable)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .unwrap_or(&bp.target_executable)
+                                .to_string();
+                            if !target_name.to_lowercase().ends_with(".exe") && !target_name.contains('.') {
+                                target_name.push_str(".exe");
+                            }
+
+                            self.log(
+                                "ACTION",
+                                "RULE",
+                                &format!(
+                                    "Force terminating bound satellite process '{}' after manual execution of rule '{}'",
+                                    target_name, _rule_id
+                                ),
+                            );
+
+                            let action = Action::KillProcess {
+                                process_name: target_name.clone(),
+                                kill_tree: true,
+                                force: true,
+                            };
+                            let ctx = HashMap::new();
+                            let log_tx = self.action_tx.clone();
+                            let rule_id_str = _rule_id.clone();
+                            tokio::spawn(async move {
+                                if let Err(e) = ActionRunner::execute(&action, &ctx).await {
+                                    let _ = log_tx.send(ActionCompletionEvent::Log {
+                                        level: "WARN".to_string(),
+                                        category: "ACTION".to_string(),
+                                        message: format!(
+                                            "Failed to force terminate bound satellite process '{}' after manual execution (rule: {}): {}",
+                                            target_name, rule_id_str, e
+                                        ),
+                                    });
+                                }
+                            });
+                        }
+
+                        for bo in &self.active_bound_overlays {
+                            if bo.rule_id == _rule_id {
+                                crate::daemon::overlay_manager::hide_overlay(&bo.overlay_id);
+                            }
+                        }
+                        self.active_bound_overlays.retain(|bo| bo.rule_id != _rule_id);
                     }
                 }
                 ActionCompletionEvent::SetRuleCustomIcon { rule_id, icon_path } => {
@@ -433,26 +542,43 @@ impl DaemonEngine {
         had_events
     }
 
+    #[inline]
+    pub fn strip_exe_suffix(name: &str) -> &str {
+        if name.len() >= 4 && name[name.len() - 4..].eq_ignore_ascii_case(".exe") {
+            &name[..name.len() - 4]
+        } else {
+            name
+        }
+    }
+
     pub fn matches_process(pattern: &str, actual: &str, mode: ProcessMatchMode) -> bool {
         if pattern == "*" {
             return true;
         }
         match mode {
-            ProcessMatchMode::Exact => pattern.eq_ignore_ascii_case(actual),
-            ProcessMatchMode::Wildcard => {
-                let pat = pattern.to_lowercase();
-                let act = actual.to_lowercase();
-                if pat.starts_with('*') && pat.ends_with('*') && pat.len() >= 2 {
-                    act.contains(&pat[1..pat.len() - 1])
-                } else if let Some(stripped) = pat.strip_prefix('*') {
-                    act.ends_with(stripped)
-                } else if let Some(stripped) = pat.strip_suffix('*') {
-                    act.starts_with(stripped)
-                } else {
-                    act == pat
-                }
+            ProcessMatchMode::Exact => {
+                pattern.eq_ignore_ascii_case(actual)
+                    || Self::strip_exe_suffix(pattern).eq_ignore_ascii_case(Self::strip_exe_suffix(actual))
             }
-            ProcessMatchMode::Regex => match_cached_regex(pattern, actual),
+            ProcessMatchMode::Wildcard => {
+                let match_wildcard = |p: &str, a: &str| -> bool {
+                    let pat = p.to_lowercase();
+                    let act = a.to_lowercase();
+                    if pat.starts_with('*') && pat.ends_with('*') && pat.len() >= 2 {
+                        act.contains(&pat[1..pat.len() - 1])
+                    } else if let Some(stripped) = pat.strip_prefix('*') {
+                        act.ends_with(stripped)
+                    } else if let Some(stripped) = pat.strip_suffix('*') {
+                        act.starts_with(stripped)
+                    } else {
+                        act == pat || Self::strip_exe_suffix(&act) == Self::strip_exe_suffix(&pat)
+                    }
+                };
+                match_wildcard(pattern, actual) || match_wildcard(pattern, Self::strip_exe_suffix(actual))
+            }
+            ProcessMatchMode::Regex => {
+                match_cached_regex(pattern, actual) || match_cached_regex(pattern, Self::strip_exe_suffix(actual))
+            }
         }
     }
 
@@ -707,11 +833,14 @@ impl DaemonEngine {
             });
 
             for bp in to_kill {
-                let target_name = std::path::Path::new(&bp.target_executable)
+                let mut target_name = std::path::Path::new(&bp.target_executable)
                     .file_name()
                     .and_then(|f| f.to_str())
                     .unwrap_or(&bp.target_executable)
                     .to_string();
+                if !target_name.to_lowercase().ends_with(".exe") && !target_name.contains('.') {
+                    target_name.push_str(".exe");
+                }
 
                 self.log(
                     "ACTION",
@@ -911,17 +1040,31 @@ impl DaemonEngine {
                                 continue;
                             }
 
-                            let cur_time_hms = now_local.format("%H:%M:%S").to_string();
-                            let cur_time_hm = now_local.format("%H:%M").to_string();
-                            let target_matches = cur_time_hms == *t_str
-                                || cur_time_hm == *t_str
-                                || format!("{}:00", cur_time_hm) == *t_str;
-                            if target_matches {
-                                let already_ran = match self.rule_last_triggered.get(&rule.id) {
-                                    Some(last) => last.elapsed().as_secs() < 3,
-                                    None => false,
+                            let today = now_local.format("%Y-%m-%d").to_string();
+                            let already_executed_today = match &rule.last_executed_at {
+                                Some(ts) => ts.starts_with(&today),
+                                None => false,
+                            };
+
+                            let already_ran_mem = match self.rule_last_triggered.get(&rule.id) {
+                                Some(last) => last.elapsed().as_secs() < 3,
+                                None => false,
+                            };
+
+                            if !already_executed_today && !already_ran_mem {
+                                let cur_time_hms = now_local.format("%H:%M:%S").to_string();
+                                let cur_time_hm = now_local.format("%H:%M").to_string();
+                                let target_time_str = if t_str.len() == 5 {
+                                    format!("{}:00", t_str)
+                                } else {
+                                    t_str.clone()
                                 };
-                                if !already_ran {
+
+                                let target_passed = cur_time_hms >= target_time_str
+                                    || cur_time_hm.as_str() >= t_str.as_str();
+
+                                if target_passed {
+                                    self.rule_last_triggered.insert(rule.id.clone(), now_instant);
                                     let _ = self.try_execute_rule(rule, &format!("Daily Schedule {}", t_str), 0).await;
                                 }
                             }
@@ -985,110 +1128,176 @@ impl DaemonEngine {
             }
         }
 
-        #[cfg(windows)]
-        {
-            use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
-            let hwnd = unsafe { GetForegroundWindow() };
-            if !hwnd.0.is_null() {
-                let mut fg_pid = 0u32;
-                unsafe { GetWindowThreadProcessId(hwnd, Some(&mut fg_pid)) };
-                if fg_pid != 0 && self.last_foreground_pid != Some(fg_pid) {
-                    let old_pid = self.last_foreground_pid;
-                    self.last_foreground_pid = Some(fg_pid);
+    }
 
-                    let snap = ProcessWatcher::snapshot_process_map();
-                    if let Some(fg_name) = snap.get(&fg_pid).cloned() {
-                        for rule in &rules {
-                            if !rule.is_enabled {
-                                continue;
-                            }
-                            if let Some(Trigger::WindowFocus {
-                                process_name,
-                                on_focus_gained,
-                                ..
-                            }) = &rule.trigger
+    #[cfg(windows)]
+    pub async fn tick_window_focus(&mut self) {
+        let has_focus_rules = self.config.rules.iter().any(|r| {
+            r.is_enabled && matches!(r.trigger, Some(Trigger::WindowFocus { .. }))
+        });
+        if !has_focus_rules {
+            self.last_foreground_pid = None;
+            return;
+        }
+
+        use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+        let hwnd = unsafe { GetForegroundWindow() };
+        let (fg_pid, is_null) = if hwnd.0.is_null() {
+            (0, true)
+        } else {
+            let mut pid = 0u32;
+            unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+            (pid, pid == 0)
+        };
+
+        if is_null {
+            if let Some(old_id) = self.last_foreground_pid.take() {
+                let snap = ProcessWatcher::snapshot_process_map();
+                if let Some(old_name) = snap.get(&old_id).cloned() {
+                    let rules = self.config.rules.clone();
+                    for rule in &rules {
+                        if !rule.is_enabled {
+                            continue;
+                        }
+                        if let Some(Trigger::WindowFocus {
+                            process_name,
+                            on_focus_lost,
+                            ..
+                        }) = &rule.trigger
+                        {
+                            if *on_focus_lost
+                                && Self::matches_process(
+                                    process_name,
+                                    &old_name,
+                                    ProcessMatchMode::Exact,
+                                )
                             {
-                                if *on_focus_gained
-                                    && Self::matches_process(
-                                        process_name,
-                                        &fg_name,
-                                        ProcessMatchMode::Exact,
+                                let _ = self
+                                    .try_execute_rule(
+                                        rule,
+                                        &format!("WindowFocus Lost {}", old_name),
+                                        old_id,
                                     )
-                                {
-                                    let _ = self
-                                        .try_execute_rule(
-                                            rule,
-                                            &format!("WindowFocus Gained {}", fg_name),
-                                            fg_pid,
-                                        )
-                                        .await;
-                                }
+                                    .await;
                             }
                         }
                     }
+                }
+            }
+            return;
+        }
 
-                    if let Some(old_id) = old_pid {
-                        if let Some(old_name) = snap.get(&old_id).cloned() {
-                            for rule in &rules {
-                                if !rule.is_enabled {
-                                    continue;
-                                }
-                                if let Some(Trigger::WindowFocus {
+        if fg_pid != 0 && self.last_foreground_pid != Some(fg_pid) {
+            let old_pid = self.last_foreground_pid;
+            self.last_foreground_pid = Some(fg_pid);
+
+            let snap = ProcessWatcher::snapshot_process_map();
+            let rules = self.config.rules.clone();
+            if let Some(fg_name) = snap.get(&fg_pid).cloned() {
+                for rule in &rules {
+                    if !rule.is_enabled {
+                        continue;
+                    }
+                    if let Some(Trigger::WindowFocus {
+                        process_name,
+                        on_focus_gained,
+                        ..
+                    }) = &rule.trigger
+                    {
+                        if *on_focus_gained
+                            && Self::matches_process(
+                                process_name,
+                                &fg_name,
+                                ProcessMatchMode::Exact,
+                            )
+                        {
+                            let _ = self
+                                .try_execute_rule(
+                                    rule,
+                                    &format!("WindowFocus Gained {}", fg_name),
+                                    fg_pid,
+                                )
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            if let Some(old_id) = old_pid {
+                if let Some(old_name) = snap.get(&old_id).cloned() {
+                    for rule in &rules {
+                        if !rule.is_enabled {
+                            continue;
+                        }
+                        if let Some(Trigger::WindowFocus {
+                            process_name,
+                            on_focus_lost,
+                            ..
+                        }) = &rule.trigger
+                        {
+                            if *on_focus_lost
+                                && Self::matches_process(
                                     process_name,
-                                    on_focus_lost,
-                                    ..
-                                }) = &rule.trigger
-                                {
-                                    if *on_focus_lost
-                                        && Self::matches_process(
-                                            process_name,
-                                            &old_name,
-                                            ProcessMatchMode::Exact,
-                                        )
-                                    {
-                                        let _ = self
-                                            .try_execute_rule(
-                                                rule,
-                                                &format!("WindowFocus Lost {}", old_name),
-                                                old_id,
-                                            )
-                                            .await;
-                                    }
-                                }
+                                    &old_name,
+                                    ProcessMatchMode::Exact,
+                                )
+                            {
+                                let _ = self
+                                    .try_execute_rule(
+                                        rule,
+                                        &format!("WindowFocus Lost {}", old_name),
+                                        old_id,
+                                    )
+                                    .await;
                             }
                         }
                     }
                 }
             }
         }
+    }
 
-        // Evaluate ResourceThreshold rules
+    #[cfg(not(windows))]
+    pub async fn tick_window_focus(&mut self) {}
+
+    pub async fn tick_resource_threshold(&mut self) {
+        let rules = self.config.rules.clone();
         let has_resource_rules = rules.iter().any(|r| r.is_enabled && matches!(r.trigger, Some(Trigger::ResourceThreshold { .. })));
-        if has_resource_rules {
-            let snap = ProcessWatcher::get_detailed_snapshot();
-            for rule in &rules {
-                if !rule.is_enabled {
-                    continue;
-                }
-                if let Some(Trigger::ResourceThreshold { process_name, ram_mb, cpu_percent: _, duration_sec }) = &rule.trigger {
-                    for proc in &snap {
-                        if Self::matches_process(process_name, &proc.name, ProcessMatchMode::Exact) {
-                            let mem_mb = proc.memory_bytes / (1024 * 1024);
-                            let over_mem = ram_mb.is_some_and(|limit| mem_mb >= limit);
-                            let key = (rule.id.clone(), proc.pid);
+        if !has_resource_rules {
+            if !self.resource_threshold_tracker.is_empty() {
+                self.resource_threshold_tracker.clear();
+            }
+            return;
+        }
 
-                            if over_mem {
-                                let start = self.resource_threshold_tracker.entry(key).or_insert_with(Instant::now);
-                                if start.elapsed().as_secs() >= *duration_sec {
-                                    let _ = self.try_execute_rule(
-                                        rule,
-                                        &format!("Resource Threshold: {} ({} MB)", proc.name, mem_mb),
-                                        proc.pid,
-                                    ).await;
-                                }
-                            } else {
-                                self.resource_threshold_tracker.remove(&key);
+        let snap = ProcessWatcher::get_detailed_snapshot();
+        let active_pids: HashSet<u32> = snap.iter().map(|p| p.pid).collect();
+        let active_rule_ids: HashSet<&str> = rules.iter().filter(|r| r.is_enabled).map(|r| r.id.as_str()).collect();
+        self.resource_threshold_tracker.retain(|(r_id, pid), _| active_rule_ids.contains(r_id.as_str()) && active_pids.contains(pid));
+
+        for rule in &rules {
+            if !rule.is_enabled {
+                continue;
+            }
+            if let Some(Trigger::ResourceThreshold { process_name, ram_mb, cpu_percent: _, duration_sec }) = &rule.trigger {
+                for proc in &snap {
+                    if Self::matches_process(process_name, &proc.name, ProcessMatchMode::Exact) {
+                        let mem_mb = proc.memory_bytes / (1024 * 1024);
+                        let over_mem = ram_mb.is_some_and(|limit| mem_mb >= limit);
+                        let key = (rule.id.clone(), proc.pid);
+
+                        if over_mem {
+                            let start = self.resource_threshold_tracker.entry(key.clone()).or_insert_with(Instant::now);
+                            if start.elapsed().as_secs() >= *duration_sec {
+                                *start = Instant::now();
+                                let _ = self.try_execute_rule(
+                                    rule,
+                                    &format!("Resource Threshold: {} ({} MB)", proc.name, mem_mb),
+                                    proc.pid,
+                                ).await;
                             }
+                        } else {
+                            self.resource_threshold_tracker.remove(&key);
                         }
                     }
                 }
@@ -1113,6 +1322,12 @@ impl DaemonEngine {
         extra_ctx: HashMap<String, String>,
     ) -> Option<tokio::task::JoinHandle<()>> {
         self.drain_action_events();
+
+        let is_manual = pid == 0 || context_name == "Manual Run" || context_name == "MANUAL_TEST";
+        if is_manual {
+            self.active_bound_processes.retain(|bp| bp.rule_id != rule.id);
+            self.active_bound_overlays.retain(|bo| bo.rule_id != rule.id);
+        }
 
         if let Some(limit) = rule.max_executions {
             if rule.execution_count >= limit {
@@ -1240,10 +1455,12 @@ impl DaemonEngine {
         let execution_rule_id = rule_id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let spawn_rule_id = rule_id.clone();
+            let is_manual_exec = is_manual;
             let join_handle = handle.spawn(async move {
                 struct ExecGuard {
                     id: u64,
                     r_id: String,
+                    is_manual: bool,
                     tx: mpsc::UnboundedSender<ActionCompletionEvent>,
                 }
                 impl Drop for ExecGuard {
@@ -1252,10 +1469,11 @@ impl DaemonEngine {
                         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                             execution_id: self.id,
                             _rule_id: self.r_id.clone(),
+                            is_manual: self.is_manual,
                         });
                     }
                 }
-                let _guard = ExecGuard { id: execution_id, r_id: spawn_rule_id.clone(), tx: tx.clone() };
+                let _guard = ExecGuard { id: execution_id, r_id: spawn_rule_id.clone(), is_manual: is_manual_exec, tx: tx.clone() };
                 let mut ctx = ctx;
 
                 for (step_idx, action) in actions.iter().enumerate() {
@@ -1315,6 +1533,7 @@ impl DaemonEngine {
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
+                is_manual,
             });
             None
         }
@@ -1380,6 +1599,7 @@ impl DaemonEngine {
                         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                             execution_id: self.id,
                             _rule_id: self.r_id.clone(),
+                            is_manual: false,
                         });
                     }
                 }
@@ -1421,6 +1641,7 @@ impl DaemonEngine {
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
+                is_manual: false,
             });
             None
         }
@@ -1435,6 +1656,9 @@ impl DaemonEngine {
         if self.is_rule_executing(&rule.id) {
             self.stop_rule_execution(&rule.id);
         }
+
+        self.active_bound_processes.retain(|bp| bp.rule_id != rule.id);
+        self.active_bound_overlays.retain(|bo| bo.rule_id != rule.id);
 
         let ov_ids = Self::extract_rule_overlay_ids(rule);
         if !ov_ids.is_empty() {
@@ -1484,7 +1708,9 @@ impl DaemonEngine {
                     .find(|(_, name)| Self::matches_process(process_name, name, *match_mode))
                     .map(|(p, _)| p)
                     .unwrap_or(0);
-                self.try_execute_rule_with_context(rule, process_name, pid, HashMap::new()).await
+                let mut extra = HashMap::new();
+                extra.insert("ProcessName".to_string(), process_name.clone());
+                self.try_execute_rule_with_context(rule, "Manual Run", pid, extra).await
             }
             Some(Trigger::WindowFocus { process_name, .. }) => {
                 let pid = ProcessWatcher::snapshot_process_map()
@@ -1492,7 +1718,9 @@ impl DaemonEngine {
                     .find(|(_, name)| Self::matches_process(process_name, name, ProcessMatchMode::Exact))
                     .map(|(p, _)| p)
                     .unwrap_or(0);
-                self.try_execute_rule_with_context(rule, process_name, pid, HashMap::new()).await
+                let mut extra = HashMap::new();
+                extra.insert("ProcessName".to_string(), process_name.clone());
+                self.try_execute_rule_with_context(rule, "Manual Run", pid, extra).await
             }
             Some(Trigger::ResourceThreshold { process_name, .. }) => {
                 let pid = ProcessWatcher::snapshot_process_map()
@@ -1500,7 +1728,9 @@ impl DaemonEngine {
                     .find(|(_, name)| Self::matches_process(process_name, name, ProcessMatchMode::Exact))
                     .map(|(p, _)| p)
                     .unwrap_or(0);
-                self.try_execute_rule_with_context(rule, process_name, pid, HashMap::new()).await
+                let mut extra = HashMap::new();
+                extra.insert("ProcessName".to_string(), process_name.clone());
+                self.try_execute_rule_with_context(rule, "Manual Run", pid, extra).await
             }
             Some(Trigger::SystemEvent { event_type, .. }) => {
                 let ctx_name = format!("System Event ({:?})", event_type);
@@ -1569,6 +1799,7 @@ impl DaemonEngine {
                         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                             execution_id: self.id,
                             _rule_id: self.r_id.clone(),
+                            is_manual: false,
                         });
                     }
                 }
@@ -1666,6 +1897,7 @@ impl DaemonEngine {
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
+                is_manual: false,
             });
             None
         }
@@ -3244,6 +3476,157 @@ mod tests {
         engine.tick_schedule().await;
         assert!(!engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("Persisted Interval Rule")));
         assert!(engine.rule_last_triggered.contains_key("persisted_interval_rule"));
+    }
+
+    #[test]
+    fn test_matches_process_extension_normalization() {
+        // Exact mode: automatically normalizes with/without .exe
+        assert!(DaemonEngine::matches_process("notepad", "notepad.exe", ProcessMatchMode::Exact));
+        assert!(DaemonEngine::matches_process("notepad.exe", "notepad", ProcessMatchMode::Exact));
+        assert!(DaemonEngine::matches_process("notepad", "notepad", ProcessMatchMode::Exact));
+        assert!(DaemonEngine::matches_process("NOTEPAD", "notepad.exe", ProcessMatchMode::Exact));
+        assert!(DaemonEngine::matches_process("notepad.exe", "NOTEPAD.EXE", ProcessMatchMode::Exact));
+        assert!(!DaemonEngine::matches_process("notepad", "calc.exe", ProcessMatchMode::Exact));
+        assert!(!DaemonEngine::matches_process("notepad.exe", "calc", ProcessMatchMode::Exact));
+
+        // Wildcard mode: supports with/without .exe
+        assert!(DaemonEngine::matches_process("note*", "notepad.exe", ProcessMatchMode::Wildcard));
+        assert!(DaemonEngine::matches_process("note*", "notepad", ProcessMatchMode::Wildcard));
+        assert!(DaemonEngine::matches_process("*pad", "notepad.exe", ProcessMatchMode::Wildcard));
+        assert!(DaemonEngine::matches_process("notepad", "notepad.exe", ProcessMatchMode::Wildcard));
+
+        // Regex mode: supports matching process name without .exe
+        assert!(DaemonEngine::matches_process(r"^notepad$", "notepad.exe", ProcessMatchMode::Regex));
+        assert!(DaemonEngine::matches_process(r"^notepad\.exe$", "notepad.exe", ProcessMatchMode::Regex));
+        assert!(!DaemonEngine::matches_process(r"^calc$", "notepad.exe", ProcessMatchMode::Regex));
+    }
+
+    #[tokio::test]
+    async fn test_stop_rule_execution_terminates_and_clears_bound_processes() {
+        let mut config = AppConfig::default();
+        let rule = Rule {
+            id: "companion_rule".into(),
+            name: "Companion Rule".into(),
+            description: String::new(),
+            is_enabled: true,
+            cooldown_seconds: 0.0,
+            trigger: None,
+            actions: vec![
+                Action::StartProcess {
+                    file_path: "satellite_tool.exe".into(),
+                    arguments: String::new(),
+                    working_directory: None,
+                    run_as_admin: false,
+                    only_if_not_running: false,
+                    run_hidden: false,
+                    close_on_exit: true,
+                },
+            ],
+            ..Default::default()
+        };
+        config.rules.push(rule);
+
+        let mut engine = DaemonEngine::new(config);
+        // Simulate active bound companion process registered for this rule
+        engine.active_bound_processes.push(BoundProcess {
+            rule_id: "companion_rule".into(),
+            primary_process_name: "game.exe".into(),
+            primary_pid: 1234,
+            target_executable: "satellite_tool.exe".into(),
+        });
+
+        assert!(engine.is_rule_executing("companion_rule"), "Rule must report executing while bound processes are active");
+
+        // Stop rule execution
+        engine.stop_rule_execution("companion_rule");
+
+        assert_eq!(engine.active_bound_processes.len(), 0, "Bound processes must be cleared upon stopping rule");
+        assert!(!engine.is_rule_executing("companion_rule"), "is_rule_executing must be false after stopping rule");
+    }
+
+    #[tokio::test]
+    async fn test_manual_run_clears_and_ignores_bound_processes() {
+        let mut config = AppConfig::default();
+        let rule = Rule {
+            id: "manual_companion_rule".into(),
+            name: "Manual Companion Rule".into(),
+            description: String::new(),
+            is_enabled: true,
+            cooldown_seconds: 0.0,
+            trigger: None,
+            actions: vec![
+                Action::StartProcess {
+                    file_path: "cmd.exe".into(),
+                    arguments: "/c exit 0".into(),
+                    working_directory: None,
+                    run_as_admin: false,
+                    only_if_not_running: false,
+                    run_hidden: false,
+                    close_on_exit: true,
+                },
+            ],
+            ..Default::default()
+        };
+        config.rules.push(rule.clone());
+
+        let mut engine = DaemonEngine::new(config);
+        // Pre-populate stale bound process from earlier
+        engine.active_bound_processes.push(BoundProcess {
+            rule_id: "manual_companion_rule".into(),
+            primary_process_name: "old_game.exe".into(),
+            primary_pid: 9999,
+            target_executable: "satellite_tool.exe".into(),
+        });
+
+        // Trigger manual run (pid == 0 / "Manual Run")
+        let h = engine.try_execute_rule(&rule, "Manual Run", 0).await;
+        if let Some(handle) = h {
+            let _ = handle.await;
+        }
+        engine.drain_action_events();
+
+        assert_eq!(engine.active_bound_processes.len(), 0, "Manual run must clear leftover bound processes and avoid registering new ones without host PID");
+        assert!(!engine.is_rule_executing("manual_companion_rule"), "Manual run must not hang in executing state");
+        assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("after manual execution of rule 'manual_companion_rule'")), "Must log force terminating bound satellite after manual run");
+    }
+
+    #[tokio::test]
+    async fn test_schedule_trigger_daily_catch_up() {
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "daily_catchup_rule".into(),
+            name: "Daily Catchup Rule".into(),
+            description: String::new(),
+            is_enabled: true,
+            cooldown_seconds: 0.0,
+            trigger: Some(Trigger::Schedule {
+                schedule_type: ScheduleType::Daily,
+                interval_sec: 0,
+                daily_time: Some("00:00:00".into()),
+                days_of_week: Vec::new(),
+                day_of_month: None,
+                delay_sec: 0,
+                target_datetime: None,
+            }),
+            actions: vec![Action::Notification {
+                title: "Daily Catchup".into(),
+                message: "Run".into(),
+            }],
+            last_executed_at: None,
+            ..Default::default()
+        });
+
+        let mut engine = DaemonEngine::new(config);
+        engine.tick_schedule().await;
+        assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("Daily Catchup Rule")), "Rule should catch up when started after scheduled daily time");
+
+        // Set last_executed_at to today so it won't re-run
+        let today = chrono::Local::now().format("%Y-%m-%d 10:00:00").to_string();
+        engine.config.rules[0].last_executed_at = Some(today);
+        engine.logs.clear();
+
+        engine.tick_schedule().await;
+        assert!(!engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("Daily Catchup Rule")), "Rule should not re-run if already executed today");
     }
 }
 

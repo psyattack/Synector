@@ -1,10 +1,10 @@
+use crate::daemon::engine::DaemonEngine;
+use crate::models::Trigger;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
-use crate::daemon::engine::DaemonEngine;
-use crate::models::Trigger;
 
 pub struct FileWatcherService {
     engine: Arc<Mutex<DaemonEngine>>,
@@ -25,9 +25,9 @@ impl FileWatcherService {
             eng.config.rules.clone()
         };
 
-        let has_file_rules = rules.iter().any(|r| {
-            r.is_enabled && matches!(r.trigger, Some(Trigger::FileWatcher { .. }))
-        });
+        let has_file_rules = rules
+            .iter()
+            .any(|r| r.is_enabled && matches!(r.trigger, Some(Trigger::FileWatcher { .. })));
 
         if !has_file_rules {
             if !self.known_dir_states.is_empty() {
@@ -35,6 +35,18 @@ impl FileWatcherService {
             }
             return 5000; // Dormant mode: sleep 5s when no file watcher rules exist
         }
+
+        // Prune tracked paths for rules that were deleted or disabled
+        let active_paths: std::collections::HashSet<PathBuf> = rules
+            .iter()
+            .filter(|r| r.is_enabled)
+            .filter_map(|r| match &r.trigger {
+                Some(Trigger::FileWatcher { folder_path, .. }) => Some(PathBuf::from(folder_path)),
+                _ => None,
+            })
+            .collect();
+        self.known_dir_states
+            .retain(|p, _| active_paths.contains(p));
 
         for rule in &rules {
             if !rule.is_enabled {
@@ -97,10 +109,22 @@ impl FileWatcherService {
         1500
     }
 
-    async fn trigger_file_event(&self, rule: &crate::models::Rule, event_type: &str, file_path: &Path) {
+    async fn trigger_file_event(
+        &self,
+        rule: &crate::models::Rule,
+        event_type: &str,
+        file_path: &Path,
+    ) {
         let file_str = file_path.to_string_lossy().to_string();
-        let file_name = file_path.file_name().and_then(|f| f.to_str()).unwrap_or_default().to_string();
-        let file_dir = file_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let file_name = file_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let file_dir = file_path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
 
         let mut eng = self.engine.lock().await;
         let mut custom_ctx = HashMap::new();
@@ -108,7 +132,9 @@ impl FileWatcherService {
         custom_ctx.insert("FileName".to_string(), file_name);
         custom_ctx.insert("FileDir".to_string(), file_dir);
 
-        let _ = eng.try_execute_rule_with_context(rule, event_type, 0, custom_ctx).await;
+        let _ = eng
+            .try_execute_rule_with_context(rule, event_type, 0, custom_ctx)
+            .await;
     }
 
     fn scan_file(file: &Path) -> HashMap<PathBuf, (SystemTime, u64)> {
@@ -137,7 +163,10 @@ impl FileWatcherService {
                         let matches_name = path
                             .file_name()
                             .and_then(|f| f.to_str())
-                            .map(|f| f.eq_ignore_ascii_case(clean) || f.to_lowercase().contains(&clean.to_lowercase()))
+                            .map(|f| {
+                                f.eq_ignore_ascii_case(clean)
+                                    || f.to_lowercase().contains(&clean.to_lowercase())
+                            })
                             .unwrap_or(false);
                         if !matches_ext && !matches_name {
                             continue;

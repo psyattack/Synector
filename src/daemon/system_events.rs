@@ -1,17 +1,18 @@
 use crate::models::SystemEventType;
 
 #[cfg(windows)]
+use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+#[cfg(windows)]
 use windows::Win32::System::SystemInformation::GetTickCount;
 #[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
-#[cfg(windows)]
-use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
 
 pub struct SystemEventsWatcher {
     last_idle_state: bool,
     idle_threshold_ms: u32,
     last_power_is_ac: Option<bool>,
     last_network_is_connected: Option<bool>,
+    last_session_locked: Option<bool>,
 }
 
 impl SystemEventsWatcher {
@@ -21,6 +22,7 @@ impl SystemEventsWatcher {
             idle_threshold_ms: 300_000, // default 5 minutes
             last_power_is_ac: None,
             last_network_is_connected: None,
+            last_session_locked: None,
         }
     }
 }
@@ -32,7 +34,6 @@ impl Default for SystemEventsWatcher {
 }
 
 impl SystemEventsWatcher {
-
     pub fn check_events(&mut self) -> Vec<SystemEventType> {
         let mut events = Vec::new();
 
@@ -94,6 +95,23 @@ impl SystemEventsWatcher {
                 }
                 _ => {}
             }
+
+            // 4. Check Session Lock / Unlock
+            let is_locked = is_session_locked();
+            match self.last_session_locked {
+                Some(prev) if prev != is_locked => {
+                    self.last_session_locked = Some(is_locked);
+                    if is_locked {
+                        events.push(SystemEventType::SessionLock);
+                    } else {
+                        events.push(SystemEventType::SessionUnlock);
+                    }
+                }
+                None => {
+                    self.last_session_locked = Some(is_locked);
+                }
+                _ => {}
+            }
         }
 
         events
@@ -102,16 +120,25 @@ impl SystemEventsWatcher {
 
 pub fn is_network_connected() -> bool {
     #[cfg(windows)]
-    unsafe {
-        use windows::core::s;
-        use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-        if let Ok(h) = LoadLibraryA(s!("wininet.dll")) {
-            if let Some(proc) = GetProcAddress(h, s!("InternetGetConnectedState")) {
-                type FnInternetGetConnectedState = unsafe extern "system" fn(*mut u32, u32) -> i32;
-                let func: FnInternetGetConnectedState = std::mem::transmute(proc);
-                let mut flags = 0u32;
-                return func(&mut flags, 0) != 0;
-            }
+    {
+        type FnInternetGetConnectedState = unsafe extern "system" fn(*mut u32, u32) -> i32;
+        static FUNC: std::sync::LazyLock<Option<FnInternetGetConnectedState>> =
+            std::sync::LazyLock::new(|| {
+                use windows::core::s;
+                use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+                unsafe {
+                    if let Ok(h) = LoadLibraryA(s!("wininet.dll")) {
+                        if let Some(proc) = GetProcAddress(h, s!("InternetGetConnectedState")) {
+                            return Some(std::mem::transmute(proc));
+                        }
+                    }
+                    None
+                }
+            });
+
+        if let Some(func) = *FUNC {
+            let mut flags = 0u32;
+            return unsafe { func(&mut flags, 0) != 0 };
         }
     }
     true
@@ -146,10 +173,46 @@ pub fn is_ac_power() -> Option<bool> {
 
 pub fn is_session_locked() -> bool {
     #[cfg(windows)]
-    unsafe {
-        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
-        let hwnd = GetForegroundWindow();
-        hwnd.0.is_null()
+    {
+        type FnOpenInputDesktop =
+            unsafe extern "system" fn(u32, i32, u32) -> windows::Win32::Foundation::HANDLE;
+        type FnCloseDesktop = unsafe extern "system" fn(windows::Win32::Foundation::HANDLE) -> i32;
+
+        static DESKTOP_FNS: std::sync::LazyLock<Option<(FnOpenInputDesktop, FnCloseDesktop)>> =
+            std::sync::LazyLock::new(|| {
+                use windows::core::s;
+                use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+                unsafe {
+                    if let Ok(h) = LoadLibraryA(s!("user32.dll")) {
+                        if let (Some(open_p), Some(close_p)) = (
+                            GetProcAddress(h, s!("OpenInputDesktop")),
+                            GetProcAddress(h, s!("CloseDesktop")),
+                        ) {
+                            return Some((
+                                std::mem::transmute(open_p),
+                                std::mem::transmute(close_p),
+                            ));
+                        }
+                    }
+                    None
+                }
+            });
+
+        if let Some((open_desk, close_desk)) = *DESKTOP_FNS {
+            unsafe {
+                let hdesk = open_desk(0, 0, 0x0001); // 0x0001 = DESKTOP_READOBJECTS
+                if !hdesk.is_invalid() && hdesk.0 != std::ptr::null_mut() {
+                    let _ = close_desk(hdesk);
+                    false
+                } else {
+                    true
+                }
+            }
+        } else {
+            use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+            let hwnd = unsafe { GetForegroundWindow() };
+            hwnd.0.is_null()
+        }
     }
     #[cfg(not(windows))]
     {

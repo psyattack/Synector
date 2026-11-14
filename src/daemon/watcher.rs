@@ -1,30 +1,30 @@
-use std::collections::HashMap;
 use crate::models::ProcessSnapshotItem;
+use std::collections::HashMap;
 
 #[cfg(windows)]
 use windows::core::BOOL;
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
 #[cfg(windows)]
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-};
-#[cfg(windows)]
-use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
-};
-#[cfg(windows)]
-use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-#[cfg(windows)]
-use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
-};
-#[cfg(windows)]
 use windows::Win32::System::Diagnostics::Etw::{
     CloseTrace, ControlTraceW, EnableTraceEx2, OpenTraceW, ProcessTrace, StartTraceW,
     CONTROLTRACE_HANDLE, EVENT_RECORD, EVENT_TRACE_CONTROL_STOP, EVENT_TRACE_LOGFILEW,
     EVENT_TRACE_PROPERTIES, EVENT_TRACE_REAL_TIME_MODE, PROCESSTRACE_HANDLE,
     PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, WNODE_FLAG_TRACED_GUID,
+};
+#[cfg(windows)]
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+#[cfg(windows)]
+use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+#[cfg(windows)]
+use windows::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+};
+#[cfg(windows)]
+use windows::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +127,11 @@ impl EtwSession {
             let mut session_handle = CONTROLTRACE_HANDLE::default();
             let mut buf = EtwPropertiesBuffer::new(&session_name_wide);
 
-            let mut err = StartTraceW(&mut session_handle, PCWSTR(session_name_wide.as_ptr()), &mut buf.props);
+            let mut err = StartTraceW(
+                &mut session_handle,
+                PCWSTR(session_name_wide.as_ptr()),
+                &mut buf.props,
+            );
             if err.0 == 183 {
                 // ERROR_ALREADY_EXISTS: close stale session from earlier run and retry
                 let mut stop_buf = EtwPropertiesBuffer::new(&session_name_wide);
@@ -137,7 +141,11 @@ impl EtwSession {
                     &mut stop_buf.props,
                     EVENT_TRACE_CONTROL_STOP,
                 );
-                err = StartTraceW(&mut session_handle, PCWSTR(session_name_wide.as_ptr()), &mut buf.props);
+                err = StartTraceW(
+                    &mut session_handle,
+                    PCWSTR(session_name_wide.as_ptr()),
+                    &mut buf.props,
+                );
             }
 
             if err.0 != 0 {
@@ -156,20 +164,31 @@ impl EtwSession {
             );
             if enable_err.0 != 0 {
                 let mut stop_buf = EtwPropertiesBuffer::new(&session_name_wide);
-                let _ = ControlTraceW(session_handle, PCWSTR(session_name_wide.as_ptr()), &mut stop_buf.props, EVENT_TRACE_CONTROL_STOP);
+                let _ = ControlTraceW(
+                    session_handle,
+                    PCWSTR(session_name_wide.as_ptr()),
+                    &mut stop_buf.props,
+                    EVENT_TRACE_CONTROL_STOP,
+                );
                 return None;
             }
 
             let mut logfile = EVENT_TRACE_LOGFILEW::default();
             let mut logger_name_wide = session_name_wide.clone();
             logfile.LoggerName = windows::core::PWSTR(logger_name_wide.as_mut_ptr());
-            logfile.Anonymous1.ProcessTraceMode = PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
+            logfile.Anonymous1.ProcessTraceMode =
+                PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
             logfile.Anonymous2.EventRecordCallback = Some(etw_event_record_callback);
 
             let trace_handle = OpenTraceW(&mut logfile);
             if trace_handle.Value == 0 || trace_handle.Value == u64::MAX {
                 let mut stop_buf = EtwPropertiesBuffer::new(&session_name_wide);
-                let _ = ControlTraceW(session_handle, PCWSTR(session_name_wide.as_ptr()), &mut stop_buf.props, EVENT_TRACE_CONTROL_STOP);
+                let _ = ControlTraceW(
+                    session_handle,
+                    PCWSTR(session_name_wide.as_ptr()),
+                    &mut stop_buf.props,
+                    EVENT_TRACE_CONTROL_STOP,
+                );
                 return None;
             }
 
@@ -183,7 +202,12 @@ impl EtwSession {
             {
                 let _ = CloseTrace(trace_handle);
                 let mut stop_buf = EtwPropertiesBuffer::new(&session_name_wide);
-                let _ = ControlTraceW(session_handle, PCWSTR(session_name_wide.as_ptr()), &mut stop_buf.props, EVENT_TRACE_CONTROL_STOP);
+                let _ = ControlTraceW(
+                    session_handle,
+                    PCWSTR(session_name_wide.as_ptr()),
+                    &mut stop_buf.props,
+                    EVENT_TRACE_CONTROL_STOP,
+                );
                 return None;
             }
 
@@ -276,7 +300,10 @@ impl ProcessWatcher {
                 if ev.is_started {
                     if ev.process_name.is_empty() {
                         if let Some(path) = Self::get_process_image_path(ev.pid) {
-                            if let Some(name) = std::path::Path::new(&path).file_name().and_then(|f| f.to_str()) {
+                            if let Some(name) = std::path::Path::new(&path)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                            {
                                 ev.process_name = name.to_lowercase();
                             }
                         }
@@ -298,9 +325,12 @@ impl ProcessWatcher {
                 self.last_reconcile = std::time::Instant::now();
                 let current = Self::snapshot_process_map();
                 for (&pid, name) in &current {
-                    self.known_processes.entry(pid).or_insert_with(|| name.clone());
+                    self.known_processes
+                        .entry(pid)
+                        .or_insert_with(|| name.clone());
                 }
-                self.known_processes.retain(|pid, _| current.contains_key(pid));
+                self.known_processes
+                    .retain(|pid, _| current.contains_key(pid));
             }
 
             return out;
@@ -351,8 +381,13 @@ impl ProcessWatcher {
 
             if Process32FirstW(handle, &mut entry).is_ok() {
                 loop {
-                    let name_len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                    let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]).to_lowercase();
+                    let name_len = entry
+                        .szExeFile
+                        .iter()
+                        .position(|&c| c == 0)
+                        .unwrap_or(entry.szExeFile.len());
+                    let name =
+                        String::from_utf16_lossy(&entry.szExeFile[..name_len]).to_lowercase();
                     map.insert(entry.th32ProcessID, name);
 
                     if Process32NextW(handle, &mut entry).is_err() {
@@ -398,9 +433,12 @@ impl ProcessWatcher {
 
     pub fn find_exe_path_by_name(process_name: &str) -> Option<String> {
         let lower = process_name.to_lowercase();
+        let stripped_lower = lower.strip_suffix(".exe").unwrap_or(&lower);
         let map = Self::snapshot_process_map();
         for (&pid, name) in &map {
-            if name.to_lowercase() == lower {
+            let name_lower = name.to_lowercase();
+            let name_stripped = name_lower.strip_suffix(".exe").unwrap_or(&name_lower);
+            if name_lower == lower || name_stripped == stripped_lower {
                 if let Some(path) = Self::get_process_image_path(pid) {
                     return Some(path);
                 }
@@ -410,7 +448,12 @@ impl ProcessWatcher {
             .or_else(|| std::env::var_os("WINDIR"))
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("C:\\Windows"));
-        let sys32_candidate = sys_root.join("System32").join(process_name);
+        let exe_name = if lower.ends_with(".exe") {
+            process_name.to_string()
+        } else {
+            format!("{}.exe", process_name)
+        };
+        let sys32_candidate = sys_root.join("System32").join(&exe_name);
         if sys32_candidate.exists() {
             return Some(sys32_candidate.to_string_lossy().to_string());
         }
@@ -435,11 +478,17 @@ impl ProcessWatcher {
                 loop {
                     let pid = entry.th32ProcessID;
                     if pid != 0 {
-                        let name_len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                        let name_len = entry
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(entry.szExeFile.len());
                         let name = String::from_utf16_lossy(&entry.szExeFile[..name_len]);
 
                         let mut mem_bytes = 0u64;
-                        if let Ok(h_proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                        if let Ok(h_proc) =
+                            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+                        {
                             let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
                             pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
                             if K32GetProcessMemoryInfo(h_proc, &mut pmc, pmc.cb).as_bool() {
@@ -509,7 +558,9 @@ impl ProcessWatcher {
 #[cfg(windows)]
 pub fn is_elevated() -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {
@@ -523,7 +574,8 @@ pub fn is_elevated() -> bool {
                 Some(&mut elevation as *mut _ as *mut _),
                 std::mem::size_of::<TOKEN_ELEVATION>() as u32,
                 &mut ret_len,
-            ).is_ok();
+            )
+            .is_ok();
             let _ = CloseHandle(token);
             if success {
                 return elevation.TokenIsElevated != 0;

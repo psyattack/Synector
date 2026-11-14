@@ -8,18 +8,18 @@ pub mod lua_runner;
 pub mod overlay_manager;
 pub mod pe_mask;
 pub mod system_events;
-pub mod tray;
 pub mod telemetry;
+pub mod tray;
 pub mod watcher;
 pub mod webhook_server;
 
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use crate::config::AppConfig;
 use crate::daemon::engine::DaemonEngine;
 use crate::daemon::ipc_server::IpcServer;
 use crate::daemon::system_events::SystemEventsWatcher;
 use crate::daemon::tray::TrayManager;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub fn run_daemon() {
     let _instance_guard = match crate::single_instance::SingleInstanceGuard::acquire_daemon() {
@@ -61,8 +61,9 @@ pub fn run_daemon() {
 
     // Spawn Global Hotkey Event Loop (supports Normal toggle, Hold mode, and Infinite macro cancellation)
     let engine_hotkey = Arc::clone(&engine);
-    let hold_tasks: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>> =
-        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let hold_tasks: Arc<
+        tokio::sync::Mutex<std::collections::HashMap<String, tokio::task::AbortHandle>>,
+    > = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
 
     let hold_tasks_loop = Arc::clone(&hold_tasks);
     rt.spawn(async move {
@@ -70,7 +71,8 @@ pub fn run_daemon() {
             let mut eng = engine_hotkey.lock().await;
             match ev {
                 hotkeys::HotkeyEvent::Trigger(rule_id) => {
-                    let was_looping = if let Some(h) = hold_tasks_loop.lock().await.remove(&rule_id) {
+                    let was_looping = if let Some(h) = hold_tasks_loop.lock().await.remove(&rule_id)
+                    {
                         h.abort();
                         true
                     } else {
@@ -80,10 +82,19 @@ pub fn run_daemon() {
                     if eng.is_rule_executing(&rule_id) || was_looping {
                         eng.stop_rule_execution(&rule_id);
                         crate::daemon::actions::release_all_simulated_inputs();
-                        eng.rule_last_triggered.insert(rule_id.clone(), std::time::Instant::now());
-                    } else if let Some(rule) = eng.config.rules.iter().find(|r| r.id == rule_id).cloned() {
+                        eng.rule_last_triggered
+                            .insert(rule_id.clone(), std::time::Instant::now());
+                    } else if let Some(rule) =
+                        eng.config.rules.iter().find(|r| r.id == rule_id).cloned()
+                    {
                         if rule.is_enabled {
-                            let is_repeat = matches!(rule.trigger, Some(crate::models::Trigger::GlobalHotkey { repeat_while_held: true, .. }));
+                            let is_repeat = matches!(
+                                rule.trigger,
+                                Some(crate::models::Trigger::GlobalHotkey {
+                                    repeat_while_held: true,
+                                    ..
+                                })
+                            );
                             if is_repeat {
                                 let engine_for_loop = Arc::clone(&engine_hotkey);
                                 let rule_id_clone = rule_id.clone();
@@ -93,11 +104,18 @@ pub fn run_daemon() {
                                     loop {
                                         let handle_opt = {
                                             let mut eng = engine_for_loop.lock().await;
-                                            if let Some(r) = eng.config.rules.iter().find(|r| r.id == rule_id_clone).cloned() {
+                                            if let Some(r) = eng
+                                                .config
+                                                .rules
+                                                .iter()
+                                                .find(|r| r.id == rule_id_clone)
+                                                .cloned()
+                                            {
                                                 if !r.is_enabled {
                                                     break;
                                                 }
-                                                eng.try_execute_rule(&r, "Global Hotkey (Loop)", 0).await
+                                                eng.try_execute_rule(&r, "Global Hotkey (Loop)", 0)
+                                                    .await
                                             } else {
                                                 break;
                                             }
@@ -105,7 +123,7 @@ pub fn run_daemon() {
 
                                         if let Some(handle) = handle_opt {
                                             match handle.await {
-                                                Ok(()) => {},
+                                                Ok(()) => {}
                                                 Err(_) => {
                                                     break;
                                                 }
@@ -116,7 +134,10 @@ pub fn run_daemon() {
                                     }
                                     hold_tasks_inner.lock().await.remove(&rule_id_clone);
                                 });
-                                hold_tasks_loop.lock().await.insert(rule_id, task.abort_handle());
+                                hold_tasks_loop
+                                    .lock()
+                                    .await
+                                    .insert(rule_id, task.abort_handle());
                             } else {
                                 let _ = eng.try_execute_rule(&rule, "Global Hotkey", 0).await;
                             }
@@ -129,7 +150,9 @@ pub fn run_daemon() {
                     }
 
                     if !eng.is_rule_executing(&rule_id) {
-                        if let Some(rule) = eng.config.rules.iter().find(|r| r.id == rule_id).cloned() {
+                        if let Some(rule) =
+                            eng.config.rules.iter().find(|r| r.id == rule_id).cloned()
+                        {
                             if rule.is_enabled {
                                 let engine_for_hold = Arc::clone(&engine_hotkey);
                                 let rule_id_clone = rule_id.clone();
@@ -143,11 +166,18 @@ pub fn run_daemon() {
 
                                         let handle_opt = {
                                             let mut eng = engine_for_hold.lock().await;
-                                            if let Some(r) = eng.config.rules.iter().find(|r| r.id == rule_id_clone).cloned() {
+                                            if let Some(r) = eng
+                                                .config
+                                                .rules
+                                                .iter()
+                                                .find(|r| r.id == rule_id_clone)
+                                                .cloned()
+                                            {
                                                 if !r.is_enabled {
                                                     break;
                                                 }
-                                                eng.try_execute_rule(&r, "Global Hotkey (Hold)", 0).await
+                                                eng.try_execute_rule(&r, "Global Hotkey (Hold)", 0)
+                                                    .await
                                             } else {
                                                 break;
                                             }
@@ -155,7 +185,7 @@ pub fn run_daemon() {
 
                                         if let Some(handle) = handle_opt {
                                             match handle.await {
-                                                Ok(()) => {},
+                                                Ok(()) => {}
                                                 Err(_) => {
                                                     // Rule execution task was cancelled / aborted; stop loop immediately!
                                                     break;
@@ -165,7 +195,9 @@ pub fn run_daemon() {
                                             break;
                                         }
 
-                                        if !crate::daemon::hotkeys::is_hotkey_repeat_held(&rule_id_clone) {
+                                        if !crate::daemon::hotkeys::is_hotkey_repeat_held(
+                                            &rule_id_clone,
+                                        ) {
                                             break;
                                         }
 
@@ -174,14 +206,18 @@ pub fn run_daemon() {
                                         }
 
                                         // Yield brief pause between loop cycles so input queue & events can breathe
-                                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(25))
+                                            .await;
                                     }
 
                                     let mut tasks = hold_tasks_inner.lock().await;
                                     tasks.remove(&rule_id_clone);
                                 });
 
-                                hold_tasks_loop.lock().await.insert(rule_id.clone(), task.abort_handle());
+                                hold_tasks_loop
+                                    .lock()
+                                    .await
+                                    .insert(rule_id.clone(), task.abort_handle());
                             }
                         }
                     }
@@ -208,7 +244,14 @@ pub fn run_daemon() {
         rt.block_on(async {
             let mut eng = engine_clone.lock().await;
             let mode = eng.watcher.get_mode_name();
-            eng.log("INFO", "DAEMON", &format!("Daemon initialized (autorun: {}, watcher: {})", autorun_status, mode));
+            eng.log(
+                "INFO",
+                "DAEMON",
+                &format!(
+                    "Daemon initialized (autorun: {}, watcher: {})",
+                    autorun_status, mode
+                ),
+            );
         });
     }
 
@@ -226,15 +269,22 @@ pub fn run_daemon() {
                 let mut eng = engine_process.lock().await;
                 let had_events = eng.tick_process_events().await;
                 let has_proc_rules = eng.config.rules.iter().any(|r| {
-                    r.is_enabled && matches!(r.trigger, Some(
-                        crate::models::Trigger::Process { .. }
-                        | crate::models::Trigger::WindowFocus { .. }
-                        | crate::models::Trigger::ResourceThreshold { .. }
-                    ))
+                    r.is_enabled
+                        && matches!(
+                            r.trigger,
+                            Some(
+                                crate::models::Trigger::Process { .. }
+                                    | crate::models::Trigger::ResourceThreshold { .. }
+                            )
+                        )
                 }) || !eng.active_bound_processes.is_empty();
 
                 if eng.watcher.is_etw_active() {
-                    if has_proc_rules { 50 } else { 500 }
+                    if has_proc_rules {
+                        50
+                    } else {
+                        500
+                    }
                 } else if had_events {
                     150
                 } else if has_proc_rules {
@@ -244,6 +294,17 @@ pub fn run_daemon() {
                 }
             };
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+        }
+    });
+
+    // Spawn Window Focus Watcher Loop (Independent regular polling cycle 150ms)
+    let engine_window = Arc::clone(&engine);
+    rt.spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(150));
+        loop {
+            interval.tick().await;
+            let mut eng = engine_window.lock().await;
+            eng.tick_window_focus().await;
         }
     });
 
@@ -264,7 +325,7 @@ pub fn run_daemon() {
         }
     });
 
-    // Spawn Schedule Watcher Loop (Dormant when no schedule rules exist)
+    // Spawn Schedule & Resource Watcher Loop (Dormant when no schedule or resource rules exist)
     let engine_sched = Arc::clone(&engine);
     rt.spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
@@ -273,7 +334,11 @@ pub fn run_daemon() {
             let rules = eng.config.rules.clone();
             for rule in &rules {
                 if rule.is_enabled {
-                    if let Some(crate::models::Trigger::Schedule { schedule_type: crate::models::ScheduleType::AppStartup, .. }) = &rule.trigger {
+                    if let Some(crate::models::Trigger::Schedule {
+                        schedule_type: crate::models::ScheduleType::AppStartup,
+                        ..
+                    }) = &rule.trigger
+                    {
                         let _ = eng.try_execute_rule(rule, "App Startup", 0).await;
                     }
                 }
@@ -284,13 +349,26 @@ pub fn run_daemon() {
             let delay_ms = {
                 let mut eng = engine_sched.lock().await;
                 let has_schedules = eng.config.rules.iter().any(|r| {
-                    r.is_enabled && matches!(r.trigger, Some(crate::models::Trigger::Schedule { .. }))
+                    r.is_enabled
+                        && matches!(r.trigger, Some(crate::models::Trigger::Schedule { .. }))
+                });
+                let has_resource_rules = eng.config.rules.iter().any(|r| {
+                    r.is_enabled
+                        && matches!(
+                            r.trigger,
+                            Some(crate::models::Trigger::ResourceThreshold { .. })
+                        )
                 });
                 if has_schedules {
                     eng.tick_schedule().await;
+                }
+                if has_resource_rules {
+                    eng.tick_resource_threshold().await;
+                }
+                if has_schedules || has_resource_rules {
                     1000
                 } else {
-                    5000 // Dormant mode: 5s interval when no schedule rules exist
+                    5000 // Dormant mode: 5s interval when no schedule or resource rules exist
                 }
             };
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
@@ -320,7 +398,11 @@ pub fn run_daemon() {
     println!("[DAEMON] Service started. 0.0% CPU, listening on Named Pipe.");
 
     // Run native Win32 Tray on main thread
-    match TrayManager::new(config.tray_icon_path.clone(), config.hide_tray_icon, config.mask_daemon_process) {
+    match TrayManager::new(
+        config.tray_icon_path.clone(),
+        config.hide_tray_icon,
+        config.mask_daemon_process,
+    ) {
         Ok(tray) => {
             tray.run_message_loop();
         }

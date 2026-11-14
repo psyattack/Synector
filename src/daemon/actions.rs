@@ -203,7 +203,10 @@ impl ActionRunner {
                 kill_tree,
                 force,
             } => {
-                let name = Self::interpolate_tokens(process_name, context);
+                let mut name = Self::interpolate_tokens(process_name, context);
+                if !name.to_lowercase().ends_with(".exe") && !name.contains('.') {
+                    name.push_str(".exe");
+                }
                 let mut cmd = Command::new("taskkill");
                 if *force {
                     cmd.arg("/F");
