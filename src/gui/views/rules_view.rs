@@ -534,11 +534,21 @@ fn render_track_row(
                     );
                 }
 
-                // Spacing from title/tags to trigger badge
-                ui.add_space(2.0);
+                // Spacing from title/tags to trigger badge (symmetric 8px margin on both sides of pipeline container)
+                const PIPELINE_SIDE_MARGIN: f32 = 8.0;
+                let left_extra_gap = (PIPELINE_SIDE_MARGIN - ui.spacing().item_spacing.x).max(0.0);
+                if left_extra_gap > 0.0 {
+                    ui.add_space(left_extra_gap);
+                }
 
                 // 4. Center Pipeline Stream in Horizontal ScrollArea (Pixel-perfect vertical centering)
-                let right_controls_w = if is_manual { 165.0 } else { 205.0 };
+                // 6 action buttons (26px each) + 5 gaps (4px each) = 176px.
+                // Toggle switch (38px) + add_space (4px) + 2 gaps (8px) = 50px.
+                // Symmetric PIPELINE_SIDE_MARGIN (8px) matches the gap on the left of the pipeline container.
+                const BTNS_W: f32 = 6.0 * 26.0 + 5.0 * 4.0; // 176.0
+                const TOGGLE_W: f32 = 38.0 + 4.0 + 4.0 + 4.0; // 50.0
+                let controls_w = if is_manual { BTNS_W } else { BTNS_W + TOGGLE_W };
+                let right_controls_w = controls_w + PIPELINE_SIDE_MARGIN;
                 let center_w = (ui.available_width() - right_controls_w).max(40.0);
 
                 ui.allocate_ui_with_layout(
@@ -1595,8 +1605,21 @@ mod tests {
             timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
         }];
 
+        let mut rule_manual = Rule::default();
+        rule_manual.id = "r_manual".into();
+        rule_manual.name = "Manual Rule".into();
+        rule_manual.trigger = Some(Trigger::Manual);
+        rule_manual.actions = vec![Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
+
         let mut rect_with_tags = Rect::NOTHING;
         let mut rect_no_tags = Rect::NOTHING;
+        let mut rect_manual = Rect::NOTHING;
 
         let mut out = ctx.run_ui(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -1605,11 +1628,14 @@ mod tests {
                 rect_with_tags = r1;
                 let (r2, _) = render_track_row(ui, &mut state, &rule_no_tags, 1, false, false, true, false, &tokens);
                 rect_no_tags = r2;
+                let (r3, _) = render_track_row(ui, &mut state, &rule_manual, 2, false, false, true, false, &tokens);
+                rect_manual = r3;
             });
         });
         out.textures_delta.clear();
 
         assert_eq!(rect_with_tags.height(), rect_no_tags.height(), "Card height must remain strictly fixed and identical regardless of tags presence");
+        assert_eq!(rect_with_tags.height(), rect_manual.height(), "Card height must remain strictly fixed and identical for manual rules");
         assert!(rect_with_tags.height() > 0.0);
     }
 }
