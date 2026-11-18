@@ -176,6 +176,7 @@ Synector/
 │   ├── daemon.rs                          # Daemon entrypoint & service lifecycle
 │   ├── gui.rs                             # GUI entrypoint & eframe application loop
 │   ├── i18n.rs                            # Internationalization loader & language switcher
+│   ├── logging.rs                         # Process-wide daily file logging (rotation, SYNECTOR_LOG levels, panics)
 │   ├── models.rs                          # Domain data models (Rule, Trigger, Action, Process)
 │   ├── sharing.rs                         # Portable automation compression, encoding & clipboard sharing
 │   ├── shortcut.rs                        # Windows shell link (.lnk) desktop shortcut generator
@@ -195,6 +196,25 @@ described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ## Configuration
 
 All files are located in: **`%LOCALAPPDATA%\Synector\`**
+
+## Logs
+
+Every Synector process - the GUI, the background daemon and command-line tooling - writes a
+diagnostic log:
+
+- **Files:** `%LOCALAPPDATA%\Synector\logs\synector-YYYY-MM-DD.log`, one file per local day. The file
+  works like a ring: at **8 MiB** the oldest half is discarded in place (same file, no extra files),
+  a notice line marks the restart and the newest events stay; it then grows back towards 8 MiB.
+- **Rotation:** a new file starts at local midnight; files older than **7 days** are deleted
+  automatically, so the directory always holds today plus the previous six days.
+- **Level:** set the `SYNECTOR_LOG` environment variable to `off`, `error`, `warn`, `info`
+  (default), `debug` or `trace`. Unknown values fall back to `info` and are reported in the log.
+- **Panics:** recorded with the thread name, source location and message. Set `RUST_BACKTRACE=1`
+  to add a backtrace.
+- **Content:** each line carries a timestamp, level, category (`DAEMON`, `RULE`, `UPDATER`, `CLI`,
+  `IPC`, `PANIC`, ...) and the event. Logging call sites record identifiers and outcomes - never
+  rule script bodies, webhook payloads or credentials. Action errors that can embed script
+  stdout/stderr are summarized in the file; the full message stays in the in-app Logs view.
 
 ## Rule authoring from the command line
 

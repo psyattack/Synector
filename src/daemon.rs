@@ -25,11 +25,25 @@ pub fn run_daemon() {
     let _instance_guard = match crate::single_instance::SingleInstanceGuard::acquire_daemon() {
         Some(guard) => guard,
         None => {
+            crate::logging::warn(
+                "DAEMON",
+                "Another instance of the Synector daemon is already running",
+            );
             eprintln!("[DAEMON] Another instance of Synector daemon is already running.");
             return;
         }
     };
 
+    crate::logging::info(
+        "DAEMON",
+        &format!(
+            "Daemon starting: version {}, pid {}, log level {}, log file {}",
+            env!("CARGO_PKG_VERSION"),
+            std::process::id(),
+            crate::logging::level().as_str(),
+            crate::logging::current_log_path().display()
+        ),
+    );
     println!("[DAEMON] Initializing Synector background daemon...");
 
     // Pre-initialize overlay manager and install bundled fonts
@@ -39,11 +53,20 @@ pub fn run_daemon() {
     let engine = Arc::new(Mutex::new(DaemonEngine::new(config.clone())));
 
     // Create multi-threaded Tokio runtime for background tasks
-    let rt = tokio::runtime::Builder::new_multi_thread()
+    let rt = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .expect("Failed to create Tokio runtime for daemon");
+    {
+        Ok(rt) => rt,
+        Err(err) => {
+            crate::logging::error(
+                "DAEMON",
+                &format!("Failed to create the Tokio runtime: {err}"),
+            );
+            return;
+        }
+    };
 
     // Initialize Global Hotkey Listener
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::unbounded_channel::<hotkeys::HotkeyEvent>();
@@ -407,7 +430,13 @@ pub fn run_daemon() {
             let current_ver = env!("CARGO_PKG_VERSION").to_string();
             match crate::updater::check_github_release(crate::updater::GITHUB_REPO, &current_ver).await {
                 Ok(Some(info)) => {
-                    println!("[DAEMON] Update available: v{}", info.version);
+                    crate::logging::debug(
+                        "DAEMON",
+                        &format!(
+                            "Update available: v{} (auto-install: {auto_install})",
+                            info.version
+                        ),
+                    );
                     {
                         let mut eng = engine_update.lock().await;
                         eng.available_update = Some(info.clone());
@@ -422,15 +451,23 @@ pub fn run_daemon() {
                     }
                 }
                 Ok(None) => {
-                    println!("[DAEMON] Synector is up to date (v{})", current_ver);
+                    crate::logging::debug(
+                        "DAEMON",
+                        &format!("Synector is up to date (v{current_ver})"),
+                    );
                 }
                 Err(err) => {
+                    crate::logging::warn("DAEMON", &format!("Update check failed: {err}"));
                     eprintln!("[DAEMON] Update check failed: {err}");
                 }
             }
         });
     }
 
+    crate::logging::info(
+        "DAEMON",
+        "Service started, listening on the Synector named pipe",
+    );
     println!("[DAEMON] Service started. 0.0% CPU, listening on Named Pipe.");
 
     // Run native Win32 Tray on main thread
@@ -445,10 +482,16 @@ pub fn run_daemon() {
             tray.run_message_loop();
         }
         Err(err) => {
+            crate::logging::error(
+                "DAEMON",
+                &format!("Tray initialization failed: {err}; running headless"),
+            );
             eprintln!("[DAEMON] Tray initialization error: {err}. Running headless loop.");
             std::thread::park();
         }
     }
+
+    crate::logging::info("DAEMON", "Daemon shutting down");
 
     // Close GUI if daemon exits
     if crate::single_instance::is_gui_running() {

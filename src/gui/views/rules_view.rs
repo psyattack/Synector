@@ -1487,47 +1487,53 @@ mod tests {
         let tag_work = RuleTag::new("Work").with_color("#3B82F6");
         let tag_dev = RuleTag::new("Dev").with_color("#10B981");
 
-        let mut r1 = Rule::default();
-        r1.id = "r1".into();
-        r1.name = "Beta Work".into();
-        r1.is_enabled = true;
-        r1.tags = vec![tag_work.clone()];
-        r1.actions = vec![Action::Wait {
-            mode: crate::models::WaitMode::Timer,
-            seconds: 1.0,
-            condition: None,
-            timeout_sec: 30.0,
-            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-        }];
-
-        let mut r2 = Rule::default();
-        r2.id = "r2".into();
-        r2.name = "Alpha Dev".into();
-        r2.is_enabled = false;
-        r2.tags = vec![tag_dev.clone()];
-        r2.actions = vec![
-            Action::Wait {
+        let r1 = Rule {
+            id: "r1".into(),
+            name: "Beta Work".into(),
+            is_enabled: true,
+            tags: vec![tag_work.clone()],
+            actions: vec![Action::Wait {
                 mode: crate::models::WaitMode::Timer,
                 seconds: 1.0,
                 condition: None,
                 timeout_sec: 30.0,
                 timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            },
-            Action::Wait {
-                mode: crate::models::WaitMode::Timer,
-                seconds: 2.0,
-                condition: None,
-                timeout_sec: 30.0,
-                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            },
-        ];
+            }],
+            ..Default::default()
+        };
 
-        let mut r3 = Rule::default();
-        r3.id = "r3".into();
-        r3.name = "Gamma Work & Dev".into();
-        r3.is_enabled = true;
-        r3.tags = vec![tag_work, tag_dev];
-        r3.trigger = Some(Trigger::Manual);
+        let r2 = Rule {
+            id: "r2".into(),
+            name: "Alpha Dev".into(),
+            is_enabled: false,
+            tags: vec![tag_dev.clone()],
+            actions: vec![
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 1.0,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 2.0,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let r3 = Rule {
+            id: "r3".into(),
+            name: "Gamma Work & Dev".into(),
+            is_enabled: true,
+            tags: vec![tag_work, tag_dev],
+            trigger: Some(Trigger::Manual),
+            ..Default::default()
+        };
 
         let rules = vec![r1.clone(), r2.clone(), r3.clone()];
 
@@ -1580,42 +1586,48 @@ mod tests {
         let tokens = Tokens::get(&ctx);
 
         let tag_work = crate::models::RuleTag::new("Work").with_color("#3B82F6");
-        let mut rule_with_tags = Rule::default();
-        rule_with_tags.id = "r_tags".into();
-        rule_with_tags.name = "Rule with Tags".into();
-        rule_with_tags.is_enabled = true;
-        rule_with_tags.tags = vec![tag_work];
-        rule_with_tags.actions = vec![Action::Wait {
-            mode: crate::models::WaitMode::Timer,
-            seconds: 1.0,
-            condition: None,
-            timeout_sec: 30.0,
-            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-        }];
+        let rule_with_tags = Rule {
+            id: "r_tags".into(),
+            name: "Rule with Tags".into(),
+            is_enabled: true,
+            tags: vec![tag_work],
+            actions: vec![Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 1.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
+            ..Default::default()
+        };
 
-        let mut rule_no_tags = Rule::default();
-        rule_no_tags.id = "r_no_tags".into();
-        rule_no_tags.name = "Rule without Tags".into();
-        rule_no_tags.is_enabled = false;
-        rule_no_tags.actions = vec![Action::Wait {
-            mode: crate::models::WaitMode::Timer,
-            seconds: 1.0,
-            condition: None,
-            timeout_sec: 30.0,
-            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-        }];
+        let rule_no_tags = Rule {
+            id: "r_no_tags".into(),
+            name: "Rule without Tags".into(),
+            is_enabled: false,
+            actions: vec![Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 1.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
+            ..Default::default()
+        };
 
-        let mut rule_manual = Rule::default();
-        rule_manual.id = "r_manual".into();
-        rule_manual.name = "Manual Rule".into();
-        rule_manual.trigger = Some(Trigger::Manual);
-        rule_manual.actions = vec![Action::Wait {
-            mode: crate::models::WaitMode::Timer,
-            seconds: 1.0,
-            condition: None,
-            timeout_sec: 30.0,
-            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-        }];
+        let rule_manual = Rule {
+            id: "r_manual".into(),
+            name: "Manual Rule".into(),
+            trigger: Some(Trigger::Manual),
+            actions: vec![Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds: 1.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            }],
+            ..Default::default()
+        };
 
         let mut rect_with_tags = Rect::NOTHING;
         let mut rect_no_tags = Rect::NOTHING;

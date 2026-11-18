@@ -1,7 +1,26 @@
 use std::path::Path;
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 
 pub const GITHUB_REPO: &str = "psyattack/Synector";
+
+static TLS_PROVIDER: OnceLock<()> = OnceLock::new();
+
+/// Installs the rustls `ring` crypto provider that the update client needs.
+///
+/// `reqwest` is built with `rustls-no-provider` so the aws-lc-rs backend is not linked: on
+/// Windows its vendored jitterentropy marks internal symbols `__declspec(dllexport)`, which
+/// makes the MSVC linker export them and emit an import library for `Synector.exe`. `ring` is
+/// already part of the dependency tree (the image loaders use it), so installing it here keeps
+/// rustls as the TLS implementation without that linker side effect.
+pub fn init_tls() {
+    TLS_PROVIDER.get_or_init(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+    });
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseInfo {
@@ -73,6 +92,30 @@ struct GhAsset {
 
 /// Queries GitHub releases API for the latest release and checks if a newer version is available.
 pub async fn check_github_release(repo: &str, current_version: &str) -> Result<Option<ReleaseInfo>, String> {
+    init_tls();
+    crate::logging::debug(
+        "UPDATER",
+        &format!("Checking GitHub releases for {repo} (current v{current_version})"),
+    );
+    let result = check_github_release_inner(repo, current_version).await;
+    match &result {
+        Ok(Some(info)) => crate::logging::info(
+            "UPDATER",
+            &format!(
+                "Update available: v{} (asset {}, {} bytes)",
+                info.version, info.asset_name, info.asset_size
+            ),
+        ),
+        Ok(None) => crate::logging::debug(
+            "UPDATER",
+            &format!("No update available (current v{current_version})"),
+        ),
+        Err(err) => crate::logging::warn("UPDATER", &format!("Update check failed: {err}")),
+    }
+    result
+}
+
+async fn check_github_release_inner(repo: &str, current_version: &str) -> Result<Option<ReleaseInfo>, String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let client = reqwest::Client::builder()
         .user_agent(concat!("Synector-Updater/", env!("CARGO_PKG_VERSION")))
@@ -253,6 +296,24 @@ pub async fn download_and_install_internal<F>(
 where
     F: Fn(f32) + Send + 'static,
 {
+    let result = download_and_install_impl(asset_url, is_daemon_caller, progress_cb).await;
+    match &result {
+        Ok(()) => crate::logging::info("UPDATER", "Update package downloaded and applied"),
+        Err(err) => crate::logging::error("UPDATER", &format!("Update failed: {err}")),
+    }
+    result
+}
+
+async fn download_and_install_impl<F>(
+    asset_url: &str,
+    is_daemon_caller: bool,
+    progress_cb: F,
+) -> Result<(), String>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    crate::logging::info("UPDATER", "Downloading update package");
+    init_tls();
     let client = reqwest::Client::builder()
         .user_agent(concat!("Synector-Updater/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(300))
@@ -334,6 +395,14 @@ where
         return Err("Pending executable file is empty".to_string());
     }
 
+    crate::logging::debug(
+        "UPDATER",
+        &format!(
+            "Update package verified ({} bytes); preparing installation",
+            pending_meta.len()
+        ),
+    );
+
     if !is_daemon_caller {
         // Stop daemon cleanly from GUI caller
         let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShutdownDaemon);
@@ -377,15 +446,27 @@ pub fn clean_temp_update_files() {
     if let Ok(exe_path) = std::env::current_exe() {
         let download = exe_path.with_extension("download");
         if download.exists() {
-            let _ = std::fs::remove_file(download);
+            let _ = std::fs::remove_file(&download);
+            crate::logging::debug(
+                "UPDATER",
+                &format!("Removed leftover update file {}", download.display()),
+            );
         }
         let pending = exe_path.with_extension("pending");
         if pending.exists() {
-            let _ = std::fs::remove_file(pending);
+            let _ = std::fs::remove_file(&pending);
+            crate::logging::debug(
+                "UPDATER",
+                &format!("Removed leftover update file {}", pending.display()),
+            );
         }
         let extracted = exe_path.with_extension("extracted");
         if extracted.exists() {
-            let _ = std::fs::remove_dir_all(extracted);
+            let _ = std::fs::remove_dir_all(&extracted);
+            crate::logging::debug(
+                "UPDATER",
+                &format!("Removed leftover update directory {}", extracted.display()),
+            );
         }
     }
 }
@@ -402,6 +483,7 @@ pub fn is_gui_closed_during_update() -> bool {
 
 /// Performs executable swap and restarts both daemon and GUI.
 pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<(), String> {
+    crate::logging::info("UPDATER", "Applying update and restarting Synector");
     let mut old_path = exe_path.with_extension("old");
     if old_path.exists() && std::fs::remove_file(&old_path).is_err() {
         old_path = exe_path.with_extension(format!("old.{}", std::process::id()));

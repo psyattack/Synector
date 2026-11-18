@@ -155,6 +155,10 @@ impl AppConfig {
         Self::config_dir().join("config.json")
     }
 
+    pub fn logs_dir() -> PathBuf {
+        Self::config_dir().join("logs")
+    }
+
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Self {
         let path = path.as_ref();
         let is_app_config = !cfg!(test) && (path == Self::config_path() || path.ends_with("config.json"));
@@ -190,11 +194,19 @@ impl AppConfig {
                 }
                 Err(err) => {
                     eprintln!("Failed to parse config.json: {err}. Using default.");
+                    crate::logging::error(
+                        "CONFIG",
+                        &format!("Failed to parse config.json: {err}; using defaults"),
+                    );
                     Self::default()
                 }
             },
             Err(err) => {
                 eprintln!("Failed to read config.json: {err}. Using default.");
+                crate::logging::error(
+                    "CONFIG",
+                    &format!("Failed to read config.json: {err}; using defaults"),
+                );
                 Self::default()
             }
         }

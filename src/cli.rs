@@ -106,7 +106,34 @@ pub fn run(args: &[String]) -> bool {
         return false;
     }
     ensure_console();
-    std::process::exit(dispatch(args))
+    let command = log_invocation(args);
+    let exit_code = dispatch(args);
+    if exit_code == 0 {
+        crate::logging::info("CLI", &format!("{command} completed"));
+    } else {
+        crate::logging::error("CLI", &format!("{command} exited with code {exit_code}"));
+    }
+    std::process::exit(exit_code)
+}
+
+/// Records which command was requested. Only the flag and its path/id argument are logged, never
+/// rule JSON, script bodies or other content read from the file.
+fn log_invocation(args: &[String]) -> String {
+    let is_known = |arg: &String| KNOWN_FLAGS.contains(&arg.as_str());
+    let is_modifier = |arg: &String| matches!(arg.as_str(), "--json" | "--dry-run" | "-h");
+    let command = args
+        .iter()
+        .find(|arg| is_known(arg) && !is_modifier(arg))
+        .or_else(|| args.iter().find(|arg| is_known(arg)));
+    let Some(command) = command else {
+        return "unknown command".to_string();
+    };
+    let label = match flag_optional_value(args, command) {
+        Some(value) if !value.is_empty() => format!("{command} {value}"),
+        _ => command.clone(),
+    };
+    crate::logging::info("CLI", &format!("Invoked {label}"));
+    label
 }
 
 fn dispatch(args: &[String]) -> i32 {
@@ -198,6 +225,7 @@ fn cmd_validate(path: &str, json_output: bool) -> i32 {
         }
     };
     let errors = validate_rules(&rules);
+    log_warnings(&warnings);
 
     if json_output {
         emit_json(json!({
@@ -214,6 +242,7 @@ fn cmd_validate(path: &str, json_output: bool) -> i32 {
             for error in &errors {
                 eprintln!("error: {error}");
             }
+            log_errors(&errors);
             eprintln!("{} rule(s) checked, {} error(s)", rules.len(), errors.len());
         } else {
             println!("OK: {} rule(s) valid", rules.len());
@@ -252,7 +281,9 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
     };
     let warnings = rule_warnings(&rules, &cfg);
     let errors = validate_rules(&rules);
+    log_warnings(&warnings);
     if !errors.is_empty() {
+        log_errors(&errors);
         if json_output {
             emit_json(json!({ "ok": false, "errors": errors, "warnings": warnings }));
         } else {
@@ -339,7 +370,9 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
     };
     let warnings = rule_warnings(&rules, &cfg);
     let errors = validate_rules(&rules);
+    log_warnings(&warnings);
     if !errors.is_empty() {
+        log_errors(&errors);
         if json_output {
             emit_json(json!({ "ok": false, "errors": errors, "warnings": warnings }));
         } else {
@@ -1609,10 +1642,23 @@ fn emit_json(value: Value) {
 
 fn fail_with(json_output: bool, message: &str) -> i32 {
     if json_output {
+        crate::logging::error("CLI", message);
         emit_json(json!({ "ok": false, "error": message, "errors": [message] }));
         1
     } else {
         fail(message)
+    }
+}
+
+fn log_warnings(warnings: &[String]) {
+    for warning in warnings {
+        crate::logging::warn("CLI", warning);
+    }
+}
+
+fn log_errors(errors: &[String]) {
+    for error in errors {
+        crate::logging::error("CLI", error);
     }
 }
 
@@ -1749,6 +1795,7 @@ fn flag_optional_value(args: &[String], flag: &str) -> Option<String> {
 }
 
 fn fail(message: &str) -> i32 {
+    crate::logging::error("CLI", message);
     eprintln!("error: {message}");
     1
 }

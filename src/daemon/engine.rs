@@ -42,6 +42,15 @@ pub enum ActionCompletionEvent {
         category: String,
         message: String,
     },
+    /// Like [`Self::Log`] in the UI, but `file_message` is written to the daily file log instead of
+    /// `message`: action errors can embed script stdout/stderr or HTTP response bodies, and those
+    /// must not leave the in-app log.
+    SensitiveLog {
+        level: String,
+        category: String,
+        message: String,
+        file_message: String,
+    },
     AddBoundProcess(BoundProcess),
     AddBoundOverlay(BoundOverlay),
     RuleExecutionStarted {
@@ -349,12 +358,16 @@ impl DaemonEngine {
             let rule_id_str = rule_id.to_string();
             tokio::spawn(async move {
                 if let Err(e) = ActionRunner::execute(&action, &ctx).await {
-                    let _ = log_tx.send(ActionCompletionEvent::Log {
+                    let _ = log_tx.send(ActionCompletionEvent::SensitiveLog {
                         level: "WARN".to_string(),
                         category: "ACTION".to_string(),
                         message: format!(
                             "Failed to force terminate bound satellite process '{}' (rule: {}): {}",
                             target_name, rule_id_str, e
+                        ),
+                        file_message: format!(
+                            "Failed to force terminate bound satellite process '{}' (rule: {})",
+                            target_name, rule_id_str
                         ),
                     });
                 }
@@ -369,6 +382,9 @@ impl DaemonEngine {
             match event {
                 ActionCompletionEvent::Log { level, category, message } => {
                     self.log(&level, &category, &message);
+                }
+                ActionCompletionEvent::SensitiveLog { level, category, message, file_message } => {
+                    self.log_with_file_message(&level, &category, &message, Some(&file_message));
                 }
                 ActionCompletionEvent::AddBoundProcess(bp) => {
                     self.active_bound_processes.push(bp);
@@ -439,12 +455,16 @@ impl DaemonEngine {
                             let rule_id_str = _rule_id.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = ActionRunner::execute(&action, &ctx).await {
-                                    let _ = log_tx.send(ActionCompletionEvent::Log {
+                                    let _ = log_tx.send(ActionCompletionEvent::SensitiveLog {
                                         level: "WARN".to_string(),
                                         category: "ACTION".to_string(),
                                         message: format!(
                                             "Failed to force terminate bound satellite process '{}' after manual execution (rule: {}): {}",
                                             target_name, rule_id_str, e
+                                        ),
+                                        file_message: format!(
+                                            "Failed to force terminate bound satellite process '{}' after manual execution (rule: {})",
+                                            target_name, rule_id_str
                                         ),
                                     });
                                 }
@@ -499,6 +519,18 @@ impl DaemonEngine {
     }
 
     pub fn log(&mut self, level: &str, category: &str, message: &str) {
+        self.log_with_file_message(level, category, message, None);
+    }
+
+    /// Shared implementation of [`Self::log`]. `file_message` overrides the text mirrored into the
+    /// daily file log when the in-app message may carry user data (script output, HTTP bodies).
+    fn log_with_file_message(
+        &mut self,
+        level: &str,
+        category: &str,
+        message: &str,
+        file_message: Option<&str>,
+    ) {
         let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
 
         if let Some(last) = self.logs.last_mut() {
@@ -542,6 +574,9 @@ impl DaemonEngine {
             category: category.to_string(),
             message: message.to_string(),
         });
+        // Mirror the engine event stream into the daily file log. Consecutive duplicates are
+        // already collapsed above, so a chatty rule cannot flood the file.
+        crate::logging::engine_log(level, category, file_message.unwrap_or(message));
     }
 
     pub async fn tick_process_events(&mut self) -> bool {
@@ -1530,10 +1565,14 @@ impl DaemonEngine {
                             break;
                         }
                         Err(err) => {
-                            let _ = tx.send(ActionCompletionEvent::Log {
+                            let _ = tx.send(ActionCompletionEvent::SensitiveLog {
                                 level: "ERROR".to_string(),
                                 category: "ACTION".to_string(),
                                 message: format!("Action failed in '{}': {}", rule_name, err),
+                                file_message: format!(
+                                    "Action failed in '{}' at step {} (details omitted from the file log)",
+                                    rule_name, step_idx + 1
+                                ),
                             });
                             if stop_on_error {
                                 let _ = tx.send(ActionCompletionEvent::Log {
@@ -1651,10 +1690,14 @@ impl DaemonEngine {
                             break;
                         }
                         Err(err) => {
-                            let _ = tx.send(ActionCompletionEvent::Log {
+                            let _ = tx.send(ActionCompletionEvent::SensitiveLog {
                                 level: "ERROR".to_string(),
                                 category: "ACTION".to_string(),
                                 message: format!("Exit action failed in '{}': {}", rule_name, err),
+                                file_message: format!(
+                                    "Exit action failed in '{}' at step {} (details omitted from the file log)",
+                                    rule_name, step_idx + 1
+                                ),
                             });
                             if stop_on_error {
                                 break;
@@ -1888,10 +1931,14 @@ impl DaemonEngine {
                                     break;
                                 }
                                 Err(err) => {
-                                    let _ = tx.send(ActionCompletionEvent::Log {
+                                    let _ = tx.send(ActionCompletionEvent::SensitiveLog {
                                         level: "ERROR".to_string(),
                                         category: "ACTION".to_string(),
                                         message: format!("Action failed in '{}': {}", rule_name, err),
+                                        file_message: format!(
+                                            "Action failed in '{}' at step {} (details omitted from the file log)",
+                                            rule_name, step_idx + 1
+                                        ),
                                     });
                                     if stop_on_error {
                                         let _ = tx.send(ActionCompletionEvent::Log {
@@ -2526,6 +2573,30 @@ mod tests {
         assert_eq!(engine.logs.len(), 500);
         assert_eq!(engine.logs[0].message, "Log message 101");
         assert_eq!(engine.logs[499].message, "Log message 600");
+    }
+
+    #[test]
+    fn test_sensitive_action_log_keeps_details_in_app_log() {
+        let mut engine = DaemonEngine::new(AppConfig::default());
+        engine
+            .action_tx
+            .send(ActionCompletionEvent::SensitiveLog {
+                level: "ERROR".to_string(),
+                category: "ACTION".to_string(),
+                message: "Action failed in 'Rule': script output with SECRET".to_string(),
+                file_message: "Action failed in 'Rule' at step 2 (details omitted from the file log)"
+                    .to_string(),
+            })
+            .expect("engine event channel is open");
+        engine.drain_action_events();
+
+        let entry = engine.logs.last().expect("action log entry");
+        assert_eq!(entry.level, "ERROR");
+        assert_eq!(entry.category, "ACTION");
+        assert!(
+            entry.message.contains("SECRET"),
+            "the in-app log must keep the full action error"
+        );
     }
 
     #[test]

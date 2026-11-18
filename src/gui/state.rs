@@ -1819,16 +1819,14 @@ mod tests {
     #[test]
     fn test_reorder_rule_by_id() {
         let mut state = GuiState::new();
-        let mut r1 = Rule::default();
-        r1.id = "rule-1".into();
-        let mut r2 = Rule::default();
-        r2.id = "rule-2".into();
-        let mut r3 = Rule::default();
-        r3.id = "rule-3".into();
-        let mut r4 = Rule::default();
-        r4.id = "rule-4".into();
-        let mut config = crate::config::AppConfig::default();
-        config.rules = vec![r1, r2, r3, r4];
+        let r1 = Rule { id: "rule-1".into(), ..Rule::default() };
+        let r2 = Rule { id: "rule-2".into(), ..Rule::default() };
+        let r3 = Rule { id: "rule-3".into(), ..Rule::default() };
+        let r4 = Rule { id: "rule-4".into(), ..Rule::default() };
+        let config = crate::config::AppConfig {
+            rules: vec![r1, r2, r3, r4],
+            ..Default::default()
+        };
         state.daemon_state = Some(DaemonState {
             autorun_enabled: false,
             uptime_secs: 0,

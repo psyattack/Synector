@@ -38,6 +38,7 @@ Synector is grateful to the open-source community and the authors of the followi
 | **mlua** | 0.12.2 | MIT | [github.com/khvzak/mlua](https://github.com/khvzak/mlua) |
 | **reqwest** | 0.13.5 | MIT OR Apache-2.0 | [github.com/seanmonstar/reqwest](https://github.com/seanmonstar/reqwest) |
 | **rfd** | 0.15.4 | MIT | [github.com/PolyMeilex/rfd](https://github.com/PolyMeilex/rfd) |
+| **rustls** | 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | **serde** | 1.0.229 | MIT OR Apache-2.0 | [github.com/serde-rs/serde](https://github.com/serde-rs/serde) |
 | **serde_json** | 1.0.154 | MIT OR Apache-2.0 | [github.com/serde-rs/json](https://github.com/serde-rs/json) |
 | **tokio** | 1.53.3 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
@@ -103,6 +104,10 @@ Synector is grateful to the open-source community and the authors of the followi
 ### rfd
 - **Copyright**: (c) 2020 Polyakov Boris
 - **License**: MIT
+
+### rustls
+- **Copyright**: (c) 2016 Joseph Birr-Pixton and rustls contributors
+- **License**: Apache-2.0 OR ISC OR MIT
 
 ### serde / serde_json
 - **Copyright**: (c) 2014-2017 Erick Tryzelaar, David Tolnay

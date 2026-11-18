@@ -253,10 +253,31 @@ impl ProcessWatcher {
         let initial = Self::snapshot_process_map();
         #[cfg(windows)]
         let etw = if is_elevated() {
-            EtwSession::try_start()
+            match EtwSession::try_start() {
+                Some(session) => {
+                    crate::logging::info(
+                        "WATCHER",
+                        "Kernel ETW real-time process tracing is active",
+                    );
+                    Some(session)
+                }
+                None => {
+                    crate::logging::warn(
+                        "WATCHER",
+                        "Kernel ETW tracing could not start; falling back to Toolhelp32 snapshot polling",
+                    );
+                    None
+                }
+            }
         } else {
+            crate::logging::info(
+                "WATCHER",
+                "Process tracing is not elevated; using Toolhelp32 snapshot polling",
+            );
             None
         };
+        #[cfg(not(windows))]
+        crate::logging::info("WATCHER", "Process tracing uses Toolhelp32 snapshot polling");
 
         Self {
             known_processes: initial,
