@@ -460,10 +460,7 @@ pub fn render_trigger_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
                             }
                         }
 
-                        if modal_state.selected_category != 0 && query_lower.is_empty() && item.category_idx != modal_state.selected_category {
-                            return false;
-                        }
-                        true
+                        !(modal_state.selected_category != 0 && query_lower.is_empty() && item.category_idx != modal_state.selected_category)
                     })
                     .collect();
 

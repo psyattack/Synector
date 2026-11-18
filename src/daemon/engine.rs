@@ -864,10 +864,7 @@ impl DaemonEngine {
                         }
                     }
                 }
-                if (ram_mb.is_none() && cpu_percent.is_none()) && matched_any {
-                    return true;
-                }
-                false
+                (ram_mb.is_none() && cpu_percent.is_none()) && matched_any
             }
         }
     }

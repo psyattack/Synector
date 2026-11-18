@@ -566,10 +566,7 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
                             ui.spacing_mut().item_spacing.y = 4.0;
 
                             let is_item_allowed = |item: &CatalogItem| -> bool {
-                                if modal_state.ifelse_target.is_some() && item.badge == "LOGIC" {
-                                    return false;
-                                }
-                                true
+                                !(modal_state.ifelse_target.is_some() && item.badge == "LOGIC")
                             };
 
                             let count_for = |cat_idx: usize| -> usize {
@@ -634,10 +631,7 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
                 // Filter actions
                 let query_lower = modal_state.search_query.trim().to_lowercase();
                 let is_item_allowed = |item: &CatalogItem| -> bool {
-                    if modal_state.ifelse_target.is_some() && item.badge == "LOGIC" {
-                        return false;
-                    }
-                    true
+                    !(modal_state.ifelse_target.is_some() && item.badge == "LOGIC")
                 };
 
                 let filtered_items: Vec<&CatalogItem> = CATALOG_ITEMS
@@ -657,10 +651,7 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
                             }
                         }
 
-                        if modal_state.selected_category != 0 && query_lower.is_empty() && item.category_idx != modal_state.selected_category {
-                            return false;
-                        }
-                        true
+                        !(modal_state.selected_category != 0 && query_lower.is_empty() && item.category_idx != modal_state.selected_category)
                     })
                     .collect();
 
