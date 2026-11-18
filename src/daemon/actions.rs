@@ -63,7 +63,7 @@ fn macro_cancellations() -> &'static Mutex<HashMap<String, Vec<Arc<AtomicBool>>>
 
 pub fn stop_macro_by_id_or_name(id_or_name: &str) {
     let mut lock = macro_cancellations().lock().unwrap();
-    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let config = crate::config::Library::shared();
     let resolved_id = config.find_macro(id_or_name).map(|p| p.id.as_str()).unwrap_or(id_or_name);
 
     if let Some(tokens) = lock.get_mut(resolved_id) {
@@ -89,7 +89,7 @@ pub fn stop_all_active_macros() {
 
 pub fn is_macro_running(id_or_name: &str) -> bool {
     let mut lock = macro_cancellations().lock().unwrap();
-    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let config = crate::config::Library::shared();
     let resolved_id = config.find_macro(id_or_name).map(|p| p.id.as_str()).unwrap_or(id_or_name);
 
     if let Some(tokens) = lock.get_mut(resolved_id) {
@@ -720,7 +720,7 @@ impl ActionRunner {
                 speed,
                 infinite,
             } => {
-                let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                let config = crate::config::Library::shared();
                 let interp_preset_id = preset_id.as_ref().map(|p| Self::interpolate_tokens(p, context));
 
                 match operation {
@@ -929,7 +929,7 @@ impl ActionRunner {
                 let id = Self::interpolate_tokens(overlay_id, context);
                 let text = override_text.as_ref().map(|t| Self::interpolate_tokens(t, context));
 
-                let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                let config = crate::config::Library::shared();
                 let mut found_overlay = custom_overlay.as_deref().cloned().or_else(|| {
                     config.find_overlay(&id).cloned()
                 });

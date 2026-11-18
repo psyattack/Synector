@@ -1521,7 +1521,7 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                     // Presets List
                     let all_presets = state.daemon_state.as_ref()
                         .map(|s| s.config.macro_presets.clone())
-                        .unwrap_or_else(|| crate::config::AppConfig::load().macro_presets);
+                        .unwrap_or_else(|| crate::config::Library::read().macro_presets);
 
                     let q = state.macro_preset_search_query.trim().to_lowercase();
                     let filtered: Vec<_> = all_presets.into_iter()
@@ -1607,10 +1607,19 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(del_id.clone()));
-                                    let mut cfg = crate::config::AppConfig::load();
-                                    cfg.macro_presets.retain(|p| p.id != del_id);
-                                    let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+                                    let deleted = matches!(
+                                        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(del_id.clone())),
+                                        Ok(crate::ipc::IpcResponse::Ok)
+                                    );
+                                    // The daemon owns library.json while reachable; write directly
+                                    // only as an offline fallback.
+                                    if !deleted {
+                                        let mut library = crate::config::Library::read();
+                                        library.macro_presets.retain(|p| p.id != del_id);
+                                        if let Err(err) = library.save() {
+                                            crate::logging::error("CONFIG", &format!("Failed to save macro presets: {err}"));
+                                        }
+                                    }
                                     if let Some(ds) = &mut state.daemon_state {
                                         ds.config.macro_presets.retain(|p| p.id != del_id);
                                     }
@@ -1652,14 +1661,21 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                 infinite,
             };
 
-            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(saved_preset.clone()));
-            let mut cfg = crate::config::AppConfig::load();
-            if let Some(existing) = cfg.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
-                *existing = saved_preset.clone();
-            } else {
-                cfg.macro_presets.push(saved_preset.clone());
+            let saved = matches!(
+                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(saved_preset.clone())),
+                Ok(crate::ipc::IpcResponse::Ok)
+            );
+            if !saved {
+                let mut library = crate::config::Library::read();
+                if let Some(existing) = library.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
+                    *existing = saved_preset.clone();
+                } else {
+                    library.macro_presets.push(saved_preset.clone());
+                }
+                if let Err(err) = library.save() {
+                    crate::logging::error("CONFIG", &format!("Failed to save macro presets: {err}"));
+                }
             }
-            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
             if let Some(ds) = &mut state.daemon_state {
                 if let Some(existing) = ds.config.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
                     *existing = saved_preset.clone();

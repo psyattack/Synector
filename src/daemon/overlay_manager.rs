@@ -36,7 +36,7 @@ pub fn get_overlay_text(id: &str) -> Option<String> {
 }
 
 pub fn update_overlay_text(id_or_name: &str, text: &str) {
-    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+    let config = crate::config::Library::shared();
     let resolved = config.find_overlay(id_or_name).cloned();
     let resolved_id = resolved.as_ref().map(|o| o.id.clone()).unwrap_or_else(|| id_or_name.to_string());
     texts_map().lock().unwrap().insert(resolved_id.clone(), text.to_string());

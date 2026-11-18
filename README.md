@@ -27,21 +27,20 @@
 
 ## Features
 
-**Synector** is a lightweight, high-performance Windows automation suite and process supervisor built in 100% pure Rust. It decouples background execution from user interaction, giving you full control over your apps, workflows, and system performance with near-zero resource utilization.
+Two tiers, one executable: a silent tray daemon runs automation 24/7, while the hardware-accelerated
+desktop GUI is only needed to author and monitor rules. All of it is native Windows API — no browser
+engine, no polling loops, no telemetry.
 
-* **Dual-Tier Architecture**: A silent, low-overhead system tray daemon executes rules and monitors events 24/7 in the background, while the hardware-accelerated desktop GUI opens only when you need to configure or monitor tasks.
-* **Instant & Reactive**: Built on native Windows event hooks to react instantaneously to process launches, window focus, hardware changes, and hotkeys without battery-draining polling loops.
-* **Accessible Yet Deep**: Create automated pipelines visually with drag-and-drop actions and full undo/redo, or take full programmatic control with embedded Lua 5.4, PowerShell, and Batch scripting.
-* **Companion Process Mode**: Bind helper tools, custom overlays, or performance recorders to primary games and applications—they launch automatically on start and cleanly terminate upon exit.
-* **Overlay Studio (HUD)**: Build GPU-accelerated on-screen HUDs, custom crosshairs, telemetry badges, and interactive widgets with anti-capture streaming protection.
-* **Macro Studio**: Record and replay precise keyboard and mouse sequences with 3D camera rotation support, humanized motion jitter, and game-compatible DirectInput scancodes.
-* **Resource Optimization**: Protect your system from rogue memory leaks by automatically trimming process working sets and dynamically adjusting CPU priorities and affinity.
-* **Audio & Device Automation**: Control master and per-app volumes, balance channels, switch audio endpoints, or trigger automations from hardware and power events.
-* **Wait Conditions & Smart Flow**: Pause pipelines with timers or await dynamic events (window, process, hotkey, file changes) with timeout policies, mid-pipeline checks, and If/Else branching.
-* **Presets & Quick Operations**: Modular template presets for overlays and macros with instant operations (Run, Stop, Toggle) and dynamic runtime text updates.
-* **Desktop Shortcuts & CLI Runner**: Generate Windows `.lnk` shortcuts to launch any rule from desktop, run automations directly via `--run-rule`, or author rules from JSON files with the built-in CLI (`--rules-apply`).
-* **Silent Background Updates**: Daemon-managed GitHub release monitoring, auto-install, tray progress indicators, and overlay alerts.
-* **Portable Sharing**: Export and import complete automations instantly via compact clipboard codes for effortless backup and sharing.
+* **Dual-tier, pure Rust** — the tray daemon owns rules, triggers and system monitoring; close the GUI and automation keeps running with near-zero CPU.
+* **Event-driven, not polling** — kernel ETW process tracing (elevated), low-level global hotkeys, window focus, file, webhook, power and hardware events.
+* **Visual rule pipelines** — drag-and-drop actions with undo/redo, timers and event waits with timeout policies, mid-pipeline checks, If/Else branching, per-rule quotas and cooldowns.
+* **Companion process mode** — bind helper tools, HUDs or recorders to a primary game or app: they start with it, are supervised while it runs, and are terminated when it exits.
+* **Overlay Studio (HUD)** — WYSIWYG GPU-accelerated overlays: crosshairs, telemetry badges, interactive widgets, multi-monitor placement and anti-capture streaming protection.
+* **Macro Studio** — keyboard and mouse recording with DirectInput-compatible scan codes, humanized motion jitter, camera-rotation support, and reusable presets with Run/Stop/Toggle operations.
+* **Scripting and CLI automation** — embedded Lua 5.4 with a `ph` API, PowerShell and Batch actions; JSON rule authoring via `--rules-apply`/`--rules-sync` with schema, template and reference discovery ([CLI reference](docs/RULE_AUTHORING.md)), desktop `.lnk` shortcuts and `--run-rule`.
+* **System and device control** — working-set trimming, CPU priority and affinity, firewall toggles, window actions, master/per-app volume, channel balance and audio endpoint switching.
+* **Observability** — live analytics dashboard with KPI cards, real-time in-app log stream, and daily rotating log files with configurable verbosity.
+* **Portable sharing and silent updates** — compact clipboard codes for whole automation sets; daemon-managed GitHub release checks, tray progress and optional auto-install.
 
 ## Installation
 
@@ -172,7 +171,7 @@ Synector/
 │   │   └── protocol.rs                    # Request & response message types (Serde)
 │   ├── autorun.rs                         # Windows Task Scheduler autorun integration
 │   ├── cli.rs                             # Command-line rule authoring (validate, apply, list, export)
-│   ├── config.rs                          # JSON configuration persistence & validation (theme, language, updates)
+│   ├── config.rs                          # Split JSON configuration persistence (settings, rules, library, runtime)
 │   ├── daemon.rs                          # Daemon entrypoint & service lifecycle
 │   ├── gui.rs                             # GUI entrypoint & eframe application loop
 │   ├── i18n.rs                            # Internationalization loader & language switcher
@@ -195,48 +194,18 @@ described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Configuration
 
-All files are located in: **`%LOCALAPPDATA%\Synector\`**
+All user files live in **`%LOCALAPPDATA%\Synector\`**:
 
-## Logs
+| File / folder | Contents |
+|---|---|
+| `settings.json` | Window, tray, language, theme and update preferences |
+| `rules.json` | Automation rules |
+| `library.json` | Overlay and macro presets |
+| `runtime.json` | Execution counters and last-run timestamps |
+| `logs\` | Daily diagnostic logs, one file per day |
 
-Every Synector process - the GUI, the background daemon and command-line tooling - writes a
-diagnostic log:
-
-- **Files:** `%LOCALAPPDATA%\Synector\logs\synector-YYYY-MM-DD.log`, one file per local day. The file
-  works like a ring: at **8 MiB** the oldest half is discarded in place (same file, no extra files),
-  a notice line marks the restart and the newest events stay; it then grows back towards 8 MiB.
-- **Rotation:** a new file starts at local midnight; files older than **7 days** are deleted
-  automatically, so the directory always holds today plus the previous six days.
-- **Level:** set the `SYNECTOR_LOG` environment variable to `off`, `error`, `warn`, `info`
-  (default), `debug` or `trace`. Unknown values fall back to `info` and are reported in the log.
-- **Panics:** recorded with the thread name, source location and message. Set `RUST_BACKTRACE=1`
-  to add a backtrace.
-- **Content:** each line carries a timestamp, level, category (`DAEMON`, `RULE`, `UPDATER`, `CLI`,
-  `IPC`, `PANIC`, ...) and the event. Logging call sites record identifiers and outcomes - never
-  rule script bodies, webhook payloads or credentials. Action errors that can embed script
-  stdout/stderr are summarized in the file; the full message stays in the in-app Logs view.
-
-## Rule authoring from the command line
-
-Rules are plain JSON files that can be authored, validated and applied without the GUI — through the
-running daemon over IPC, or directly into `config.json` when it is not running.
-
-```powershell
-Synector.exe --rules-validate rules.json
-Synector.exe --rules-apply rules.json      # create or update (upsert by id)
-Synector.exe --rules-sync rules.json       # declarative: also delete rules missing from the file
-Synector.exe --rules-list
-Synector.exe --rules-export rules.json
-```
-
-`--rules-schema` prints a draft-07 JSON Schema, `--rules-reference` a human-readable catalogue and
-`--rules-template <trigger>[:<action>]` a ready-to-edit skeleton, so the format is discoverable
-without the source. Full command reference, file format and examples:
-[docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md).
-
-> [!NOTE]
-> Release builds are Windows GUI-subsystem executables, so PowerShell does not wait for them; use
-> `cmd /c` when scripting. Agents that spawn the process with piped stdio and wait work directly.
+These files are managed by the daemon and rewritten as you make changes — back them up or edit them
+only while Synector is stopped.
 
 ## License
 

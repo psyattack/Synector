@@ -2,7 +2,8 @@
 //!
 //! Rule files are plain JSON in the [`Rule`] serde shape: one rule object, an array of rules, or
 //! `{"rules": [...]}`. Applying upserts by `id`; when the daemon is running the change goes
-//! through IPC so it takes effect immediately, otherwise `config.json` is edited directly.
+//! through IPC so it takes effect immediately, otherwise `rules.json` is edited directly.
+//! Runtime counters stay in the daemon-owned `runtime.json`, never in rule files.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +12,7 @@ use serde_json::{json, Value};
 
 use schemars::schema::{InstanceType, RootSchema, Schema, SchemaObject, SingleOrVec};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RulesFile, RuntimeState};
 use crate::ipc::{IpcClient, IpcRequest, IpcResponse};
 use crate::models::{Action, Rule, ScheduleType, Trigger};
 
@@ -22,7 +23,7 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
   --rules-list [--json]       List configured rules and their triggers
   --rules-export [<file>]     Print all rules as JSON, optionally to a file
   --rules-delete <id>         Delete one rule by id
-  --rules-sync <file|->       Make the config match the file exactly (upsert and delete missing)
+  --rules-sync <file|->       Make the configured rules match the file exactly (upsert and delete missing)
   --rules-enable <id>         Enable one rule
   --rules-disable <id>        Disable one rule
   --rules-reset <id>          Reset a rule's execution counter and re-enable it
@@ -36,9 +37,9 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
 
 A rule file is one rule object, an array of rules, or {"rules": [...]}. Every rule
 needs an "id" (the upsert key) and a "name". Rules are applied to the running daemon
-over IPC; without a daemon the same upsert is written to config.json and takes effect
-on the next daemon start. Runtime counters (execution_count, last_executed_at) are
-preserved when an existing rule is updated.
+over IPC; without a daemon the same upsert is written to rules.json and takes effect
+on the next daemon start. Runtime counters (execution_count, last_executed_at) live in
+runtime.json and are preserved when an existing rule is updated.
 
 Use --rules-schema for machine-readable discovery (AI agents, IDE, validators) and
 --rules-reference for a compact human-readable catalogue.
@@ -215,15 +216,7 @@ fn cmd_validate(path: &str, json_output: bool) -> i32 {
         Err(err) => return fail_with(json_output, &format!("invalid rule file: {err}")),
     };
 
-    let warnings = match load_config_for_cli() {
-        Ok(cfg) => rule_warnings(&rules, &cfg),
-        Err(err) => {
-            if !json_output {
-                eprintln!("warning: cannot check preset references: {err}");
-            }
-            Vec::new()
-        }
-    };
+    let warnings = rule_warnings(&rules, &load_config_for_cli());
     let errors = validate_rules(&rules);
     log_warnings(&warnings);
 
@@ -270,7 +263,7 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
         Ok(raw) => raw,
         Err(err) => return fail_with(json_output, &err),
     };
-    let mut rules = match parse_rules_json(&raw) {
+    let rules = match parse_rules_json(&raw) {
         Ok(rules) => rules,
         Err(err) => return fail_with(json_output, &format!("invalid rule file: {err}")),
     };
@@ -303,7 +296,6 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
         }
     }
 
-    preserve_runtime_state(&mut rules, &cfg.rules);
     let report = classify_rules(&cfg.rules, &rules);
     if dry_run {
         if json_output {
@@ -337,15 +329,15 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
         }
     } else {
         let report = upsert_rules(&mut cfg.rules, &rules);
-        if let Err(err) = save_config(&cfg) {
+        if let Err(err) = save_rules(&cfg.rules) {
             return fail_with(json_output, &err);
         }
         if json_output {
-            emit_json(report_json(true, "config", &report, &[], false, &warnings));
+            emit_json(report_json(true, "rules", &report, &[], false, &warnings));
         } else {
             println!(
                 "Daemon is offline: rules written to {}",
-                AppConfig::config_path().display()
+                RulesFile::path().display()
             );
             println!("They take effect on the next daemon start.");
             print_report(&report);
@@ -359,7 +351,7 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         Ok(raw) => raw,
         Err(err) => return fail_with(json_output, &err),
     };
-    let mut rules = match parse_rules_json(&raw) {
+    let rules = match parse_rules_json(&raw) {
         Ok(rules) => rules,
         Err(err) => return fail_with(json_output, &format!("invalid rule file: {err}")),
     };
@@ -392,7 +384,6 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         }
     }
 
-    preserve_runtime_state(&mut rules, &cfg.rules);
     let (report, deleted) = plan_sync(&cfg.rules, &rules);
     if dry_run {
         if json_output {
@@ -413,56 +404,39 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
     }
 
     if from_daemon {
-        match IpcClient::call(&IpcRequest::ImportRules(rules)) {
-            Ok(IpcResponse::Ok) => {}
+        // One declarative request: the daemon replaces the set atomically, persists once
+        // and reloads hotkeys once, instead of an upsert followed by a delete per rule.
+        match IpcClient::call(&IpcRequest::SyncRules(rules)) {
+            Ok(IpcResponse::Ok) => {
+                if json_output {
+                    emit_json(report_json(true, "daemon", &report, &deleted, false, &warnings));
+                } else {
+                    println!("Synced to the running daemon.");
+                    print_report(&report);
+                    print_deleted(&deleted);
+                }
+                0
+            }
             Ok(IpcResponse::Error(err)) => {
-                return fail_with(json_output, &format!("daemon rejected the rules: {err}"));
+                fail_with(json_output, &format!("daemon rejected the rules: {err}"))
             }
-            Ok(other) => {
-                return fail_with(
-                    json_output,
-                    &format!("unexpected daemon response: {other:?}"),
-                );
-            }
-            Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
+            Ok(other) => fail_with(
+                json_output,
+                &format!("unexpected daemon response: {other:?}"),
+            ),
+            Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
         }
-        for id in &deleted {
-            match IpcClient::call(&IpcRequest::DeleteRule(id.clone())) {
-                Ok(IpcResponse::Ok) => {}
-                Ok(IpcResponse::Error(err)) => {
-                    return fail_with(
-                        json_output,
-                        &format!("daemon could not delete \"{id}\": {err}"),
-                    );
-                }
-                Ok(other) => {
-                    return fail_with(
-                        json_output,
-                        &format!("unexpected daemon response: {other:?}"),
-                    );
-                }
-                Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
-            }
-        }
-        if json_output {
-            emit_json(report_json(true, "daemon", &report, &deleted, false, &warnings));
-        } else {
-            println!("Synced to the running daemon.");
-            print_report(&report);
-            print_deleted(&deleted);
-        }
-        0
     } else {
         cfg.rules = rules;
-        if let Err(err) = save_config(&cfg) {
+        if let Err(err) = save_rules(&cfg.rules) {
             return fail_with(json_output, &err);
         }
         if json_output {
-            emit_json(report_json(true, "config", &report, &deleted, false, &warnings));
+            emit_json(report_json(true, "rules", &report, &deleted, false, &warnings));
         } else {
             println!(
                 "Daemon is offline: rules written to {}",
-                AppConfig::config_path().display()
+                RulesFile::path().display()
             );
             println!("They take effect on the next daemon start.");
             print_report(&report);
@@ -1148,24 +1122,21 @@ fn cmd_delete(id: &str, json_output: bool) -> i32 {
         };
     }
 
-    let mut cfg = match load_config_for_cli() {
-        Ok(cfg) => cfg,
-        Err(err) => return fail_with(json_output, &err),
-    };
+    let mut cfg = load_config_for_cli();
     let before = cfg.rules.len();
     cfg.rules.retain(|rule| rule.id != id);
     if cfg.rules.len() == before {
         return fail_with(json_output, &format!("rule \"{id}\" not found"));
     }
-    if let Err(err) = save_config(&cfg) {
+    if let Err(err) = save_rules(&cfg.rules) {
         return fail_with(json_output, &err);
     }
     if json_output {
-        emit_json(json!({ "ok": true, "id": id, "target": "config" }));
+        emit_json(json!({ "ok": true, "id": id, "target": "rules" }));
     } else {
         println!(
             "Deleted rule \"{id}\" from {}",
-            AppConfig::config_path().display()
+            RulesFile::path().display()
         );
     }
     0
@@ -1195,7 +1166,7 @@ fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
             }
             Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
         }
-    } else if let Err(err) = save_config(&cfg) {
+    } else if let Err(err) = save_rules(&cfg.rules) {
         return fail_with(json_output, &err);
     }
     if json_output {
@@ -1223,12 +1194,11 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
         Ok(value) => value,
         Err(err) => return fail_with(json_output, &err),
     };
-    let rule = match reset_rule_runtime(&mut cfg.rules, id) {
-        Ok(rule) => rule.clone(),
-        Err(err) => return fail_with(json_output, &err),
-    };
+    if reset_rule_runtime(&mut cfg.rules, id).is_err() {
+        return fail_with(json_output, &format!("rule \"{id}\" not found"));
+    }
     if from_daemon {
-        match IpcClient::call(&IpcRequest::ImportRules(vec![rule])) {
+        match IpcClient::call(&IpcRequest::ResetRule(id.to_string())) {
             Ok(IpcResponse::Ok) => {}
             Ok(IpcResponse::Error(err)) => return fail_with(json_output, &err),
             Ok(other) => {
@@ -1236,8 +1206,13 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
             }
             Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
         }
-    } else if let Err(err) = save_config(&cfg) {
-        return fail_with(json_output, &err);
+    } else {
+        if let Err(err) = save_rules(&cfg.rules) {
+            return fail_with(json_output, &err);
+        }
+        if let Err(err) = forget_runtime_counters(&[id]) {
+            return fail_with(json_output, &err);
+        }
     }
     if json_output {
         emit_json(json!({
@@ -1540,16 +1515,6 @@ pub fn classify_rules(existing: &[Rule], incoming: &[Rule]) -> ApplyReport {
     report
 }
 
-/// Keeps daemon-owned runtime counters when a rule is updated from a file.
-pub fn preserve_runtime_state(incoming: &mut [Rule], existing: &[Rule]) {
-    for rule in incoming {
-        if let Some(previous) = existing.iter().find(|candidate| candidate.id == rule.id) {
-            rule.execution_count = previous.execution_count;
-            rule.last_executed_at = previous.last_executed_at.clone();
-        }
-    }
-}
-
 fn print_report(report: &ApplyReport) {
     for id in &report.created {
         println!("  created  {id}");
@@ -1610,7 +1575,7 @@ fn target_name(from_daemon: bool) -> &'static str {
     if from_daemon {
         "daemon"
     } else {
-        "config"
+        "rules"
     }
 }
 
@@ -1666,21 +1631,29 @@ fn log_errors(errors: &[String]) {
 // Config access
 // ---------------------------------------------------------------------------
 
-/// Reads `config.json` without the side effects of [`AppConfig::load`] (autorun registration).
-fn load_config_for_cli() -> Result<AppConfig, String> {
-    let path = AppConfig::config_path();
-    if !path.exists() {
-        return Ok(AppConfig::default());
-    }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|err| format!("cannot read {}: {err}", path.display()))?;
-    serde_json::from_str(&raw)
-        .map_err(|err| format!("{} is not valid JSON: {err}", path.display()))
+/// Reads the split config sections without the side effects of [`AppConfig::load`]
+/// (file creation and autostart registration).
+fn load_config_for_cli() -> AppConfig {
+    AppConfig::read()
 }
 
-fn save_config(cfg: &AppConfig) -> Result<(), String> {
-    cfg.save_to_file(AppConfig::config_path())
-        .map_err(|err| format!("cannot write {}: {err}", AppConfig::config_path().display()))
+fn save_rules(rules: &[Rule]) -> Result<(), String> {
+    RulesFile::save_rules(rules)
+        .map_err(|err| format!("cannot write {}: {err}", RulesFile::path().display()))
+}
+
+/// Drops daemon-owned runtime counters of deleted or reset rules.
+fn forget_runtime_counters(ids: &[&str]) -> Result<(), String> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut runtime = RuntimeState::read();
+    for id in ids {
+        runtime.forget(id);
+    }
+    runtime
+        .save()
+        .map_err(|err| format!("cannot write {}: {err}", RuntimeState::path().display()))
 }
 
 fn daemon_config() -> Result<AppConfig, String> {
@@ -1697,7 +1670,7 @@ fn current_config() -> Result<(AppConfig, bool), String> {
     if IpcClient::is_daemon_running() {
         Ok((daemon_config()?, true))
     } else {
-        Ok((load_config_for_cli()?, false))
+        Ok((load_config_for_cli(), false))
     }
 }
 
@@ -1705,7 +1678,7 @@ fn config_source(from_daemon: bool) -> String {
     if from_daemon {
         "the running daemon".to_string()
     } else {
-        AppConfig::config_path().display().to_string()
+        RulesFile::path().display().to_string()
     }
 }
 
@@ -1995,21 +1968,19 @@ mod tests {
     }
 
     #[test]
-    fn test_preserve_runtime_state() {
-        let mut existing_rule = rule_with_notification("runtime");
-        existing_rule.execution_count = 17;
-        existing_rule.last_executed_at = Some("2026-01-01 00:00:00".to_string());
+    fn test_updates_replace_rule_definitions() {
+        let mut existing = vec![rule_with_notification("runtime")];
+        existing[0].execution_count = 17;
+        existing[0].last_executed_at = Some("2026-01-01 00:00:00".to_string());
 
-        let mut incoming = vec![rule_with_notification("runtime")];
-        incoming[0].execution_count = 0;
-        incoming[0].last_executed_at = None;
-
-        preserve_runtime_state(&mut incoming, &[existing_rule]);
-        assert_eq!(incoming[0].execution_count, 17);
-        assert_eq!(
-            incoming[0].last_executed_at.as_deref(),
-            Some("2026-01-01 00:00:00")
-        );
+        let mut incoming = rule_with_notification("runtime");
+        incoming.name = "Renamed".to_string();
+        let report = upsert_rules(&mut existing, std::slice::from_ref(&incoming));
+        assert_eq!(report.updated, vec!["runtime".to_string()]);
+        assert_eq!(existing[0].name, "Renamed");
+        // A rule file never carries counters; runtime.json stays the daemon's business.
+        assert_eq!(existing[0].execution_count, 0);
+        assert!(existing[0].last_executed_at.is_none());
     }
 
     #[test]

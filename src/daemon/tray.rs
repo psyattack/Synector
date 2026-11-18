@@ -249,7 +249,7 @@ impl TrayManager {
             WM_TASKBAR_CREATED.store(msg_id, Ordering::SeqCst);
             TRAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
-            let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+            let config = crate::config::Settings::read();
             let is_dark = config.theme != crate::config::AppTheme::Light;
             apply_menu_theme(Some(hwnd), is_dark);
 
@@ -385,7 +385,7 @@ unsafe extern "system" fn tray_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             if event == WM_LBUTTONDBLCLK {
                 spawn_or_show_gui();
             } else if event == WM_RBUTTONUP {
-                let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+                let config = crate::config::Settings::read();
                 let is_dark = config.theme != crate::config::AppTheme::Light;
                 apply_menu_theme(Some(hwnd), is_dark);
 

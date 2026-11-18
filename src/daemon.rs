@@ -49,7 +49,7 @@ pub fn run_daemon() {
     // Pre-initialize overlay manager and install bundled fonts
     overlay_manager::init();
 
-    let config = AppConfig::load_from_file(AppConfig::config_path());
+    let config = AppConfig::load();
     let engine = Arc::new(Mutex::new(DaemonEngine::new(config.clone())));
 
     // Create multi-threaded Tokio runtime for background tasks
@@ -284,6 +284,19 @@ pub fn run_daemon() {
         ipc_server.run().await;
     });
 
+    // Flush coalesced runtime counters (execution counts, last-run timestamps) and
+    // overlay drag positions so hot paths write at a bounded rate instead of per event.
+    let engine_runtime = Arc::clone(&engine);
+    rt.spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
+        loop {
+            interval.tick().await;
+            let mut eng = engine_runtime.lock().await;
+            eng.persist_runtime_if_due();
+            eng.persist_overlay_positions_if_due();
+        }
+    });
+
     // Spawn Process Watcher Loop (Hybrid: ETW 50ms queue drain under admin; Adaptive 150-300ms snapshot polling; Dormant when no rules)
     let engine_process = Arc::clone(&engine);
     rt.spawn(async move {
@@ -502,5 +515,7 @@ pub fn run_daemon() {
     rt.block_on(async {
         let mut eng = engine.lock().await;
         eng.execute_shutdown_rules().await;
+        eng.persist_overlay_positions_now();
+        eng.persist_runtime_now();
     });
 }

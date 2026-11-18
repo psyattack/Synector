@@ -25,13 +25,22 @@ use views::rules_view::render_rules_view;
 use views::script_modal::render_script_editor_canvas;
 use views::settings_view::render_settings_view;
 use views::trigger_catalog_modal::render_trigger_catalog_modal;
-use crate::config::{AppConfig, WindowState};
+use crate::config::{Settings, WindowState};
+
+/// Window geometry is streamed by every frame of a drag/resize; writing it that often would
+/// cost an IPC round-trip plus fsync per frame. The latest state is still tracked every frame
+/// and persisted at this rate, and `on_exit`/`Drop` always write the exact final geometry.
+const WINDOW_STATE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
 pub struct SynectorApp {
     state: GuiState,
     fonts_ready: bool,
     current_theme: Option<crate::config::AppTheme>,
+    /// Latest geometry observed in this frame (used for change detection and exit persistence).
     last_window_state: Option<WindowState>,
+    /// Geometry that is already on disk; compared against to decide what needs a write.
+    persisted_window_state: Option<WindowState>,
+    last_window_persist: std::time::Instant,
     startup_focused_frames: u8,
 }
 
@@ -42,14 +51,17 @@ impl SynectorApp {
 
         let mut state = GuiState::new();
         state.sync_with_daemon();
-        let config = AppConfig::load_from_file(AppConfig::config_path());
+        let config = Settings::read();
         theme::apply_theme(&cc.egui_ctx, config.theme);
         let last_window_state = config.window;
         Self {
             state,
             fonts_ready: false,
             current_theme: Some(config.theme),
+            persisted_window_state: last_window_state.clone(),
             last_window_state,
+            // Persist the first change immediately instead of waiting out the first window.
+            last_window_persist: std::time::Instant::now() - WINDOW_STATE_SAVE_INTERVAL,
             startup_focused_frames: 0,
         }
     }
@@ -311,7 +323,7 @@ impl App for SynectorApp {
         }
 
         if let Some(new_ws) = new_state {
-            let changed = match &self.last_window_state {
+            let changed = match &self.persisted_window_state {
                 Some(old) => {
                     (old.x - new_ws.x).abs() > 2.0
                         || (old.y - new_ws.y).abs() > 2.0
@@ -321,10 +333,13 @@ impl App for SynectorApp {
                 }
                 None => true,
             };
-            if changed {
+            if changed && self.last_window_persist.elapsed() >= WINDOW_STATE_SAVE_INTERVAL {
                 persist_window_state(&new_ws);
-                self.last_window_state = Some(new_ws);
+                self.last_window_persist = std::time::Instant::now();
+                self.persisted_window_state = Some(new_ws.clone());
             }
+            // Always keep the latest geometry so on_exit/Drop can persist the final rect.
+            self.last_window_state = Some(new_ws);
         }
 
         // Repaint periodically for telemetry
@@ -352,7 +367,7 @@ fn persist_window_state(ws: &WindowState) {
     if let Ok(crate::ipc::IpcResponse::Ok) = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::UpdateWindowState(ws.clone())) {
         return;
     }
-    AppConfig::save_window_state(ws);
+    Settings::save_window_state(ws);
 }
 
 pub fn run_gui() -> eframe::Result<()> {
@@ -364,7 +379,7 @@ pub fn run_gui() -> eframe::Result<()> {
         }
     };
 
-    let config = AppConfig::load_from_file(AppConfig::config_path());
+    let config = Settings::read();
     let saved_state = config.window;
 
     let mut viewport = egui::ViewportBuilder::default()

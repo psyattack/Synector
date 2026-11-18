@@ -48,7 +48,7 @@ owner of runtime state, the GUI keeps a draft copy for editing and reconciliatio
 | `--overlay-window <id>` | Standalone borderless overlay window for one overlay |
 | `--run-rule <id_or_title>` | Invoke a rule directly (IPC when the daemon runs, otherwise an autonomous runner fallback) |
 | `--rules-validate <file>` | Parse and validate a JSON rule file without changing anything |
-| `--rules-apply <file>` | Upsert rules from JSON (IPC when the daemon runs, direct `config.json` edit otherwise) |
+| `--rules-apply <file>` | Upsert rules from JSON (IPC when the daemon runs, direct `rules.json` edit otherwise) |
 | `--rules-list`, `--rules-export [<file>]`, `--rules-delete <id>` | Inspect, export or delete rules from the command line |
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation is what enables kernel
@@ -64,7 +64,7 @@ highest-privilege logon autostart through Task Scheduler.
 | `src/ipc/` | Named pipe client/server and the shared request/response protocol |
 | `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, tags, overlays |
 | `src/cli.rs` | Command-line rule authoring: JSON parsing, validation, upsert and IPC dispatch |
-| `src/config.rs` | `AppConfig` persistence and validation (JSON) |
+| `src/config.rs` | Split configuration persistence: settings, rules, presets and runtime counters (JSON) |
 | `src/i18n.rs`, `src/i18n/` | Locale registry and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
 | `src/updater.rs` | GitHub release check, streaming download, self-replacement |
@@ -75,12 +75,46 @@ highest-privilege logon autostart through Task Scheduler.
 ## Data flow
 
 1. The GUI reads state over IPC and holds an editable draft with undo/redo history.
-2. Mutations are sent as `IpcRequest` values; the daemon validates them, applies them to
-   `AppConfig` and persists to `%LOCALAPPDATA%\Synector\`.
+2. Mutations are sent as `IpcRequest` values; the daemon validates them, applies them to its
+   in-memory `AppConfig` aggregate and persists only the affected config section under
+   `%LOCALAPPDATA%\Synector\`.
 3. The daemon executes rules and streams status, telemetry and execution snapshots back, so
    the GUI reflects engine state without owning it.
 4. Overlay windows are separate GPU-accelerated processes supervised by the daemon; the GUI
    only edits their definitions.
+
+## Configuration storage
+
+The configuration is split into four independent, versioned JSON files in
+`%LOCALAPPDATA%\Synector\` (relocatable through `SYNECTOR_CONFIG_DIR` for portable or isolated
+runs). `AppConfig` exists only in memory: it is assembled from the sections on load and exchanged
+over IPC, never written as one document. This keeps write volume proportional to what changed.
+
+| File | Contents | Written by |
+|---|---|---|
+| `settings.json` | Window geometry, tray icon, language, theme, update preferences | Settings changes |
+| `rules.json` | Rule definitions; counter fields are written zeroed | Rule create/update/delete/reorder |
+| `library.json` | Overlay and macro presets | Preset save/delete, overlay calibration |
+| `runtime.json` | Per-rule `execution_count` and `last_executed_at` | Coalesced daemon flush |
+
+Every write goes through a temporary file that is flushed and renamed over the target, so a crash
+mid-write cannot truncate user data, and every file carries a schema version that is re-stamped on
+each save. A section that fails to parse is renamed to `<name>.corrupt-<timestamp>` before defaults
+replace it, so a hand-edited file is never silently destroyed by the next save.
+
+The daemon is the only writer while it is reachable; the GUI sends section-scoped requests
+(`SaveSettings`, `SaveRule`, `ReorderRules`, `ResetRule`, `SaveOverlay`, ...) and only falls back to
+a direct file write when IPC is unavailable, so the two processes cannot race on a read-modify-write
+of the same file. `--rules-sync` is a single `SyncRules` request that replaces the rule set, persists
+once, reloads hotkeys once and prunes counters of removed rules in one step.
+
+Hot sections are read through a process-local cache (`settings.json`, `library.json`) that validates
+the cached value against the file's size and modification time: action steps, Lua `ph.overlay_*`
+calls and overlay windows avoid re-reading and re-parsing the file, while an externally written file
+is still picked up immediately. Runtime counters, overlay drag positions and main-window geometry
+are written coalesced (bounded intervals, plus a forced flush on quota pause, reset, window exit and
+shutdown), so a fast-firing rule, a dragged HUD or a resized window does not turn every event into
+a disk write.
 
 ## Subsystems
 
@@ -155,15 +189,17 @@ through IPC; filtered or sorted modes disable reordering with an explanatory too
 ### Rule authoring without the GUI
 
 `src/cli.rs` validates and applies JSON rule files: upserts go through `IpcRequest::ImportRules`
-while the daemon runs, or directly into `config.json` when it does not, with daemon-owned runtime
-counters preserved. The format is self-describing (`--rules-schema` is a `schemars`-derived draft-07
-schema, plus `--rules-reference` and `--rules-template`), and the CLI supports declarative
-`--rules-sync`, single-rule enable/disable/reset, `--json` reports and `--dry-run`. The full command
-reference lives in [RULE_AUTHORING.md](RULE_AUTHORING.md).
+while the daemon runs, or directly into `rules.json` when it does not, with daemon-owned runtime
+counters kept in `runtime.json` and preserved across updates. Declarative `--rules-sync` is one
+`SyncRules` request that replaces the whole set atomically instead of an upsert followed by a delete
+per rule. The format is self-describing (`--rules-schema` is a `schemars`-derived draft-07 schema,
+plus `--rules-reference` and `--rules-template`), and the CLI supports single-rule
+enable/disable/reset, `--json` reports and `--dry-run`. The full command reference lives in
+[RULE_AUTHORING.md](RULE_AUTHORING.md).
 
 ### Presets and dynamic operations
 
-Overlay and macro templates are modular presets stored in `AppConfig` and synchronized between
+Overlay and macro templates are modular presets stored in `library.json` and synchronized between
 daemon and GUI over IPC. Rules either reference a preset or detach it into an inline copy.
 Macros can be driven by `Run`, `Stop` and `Toggle` operations with cancellation tracking, and
 `Action::Overlay` supports `SetText` to update HUD strings at runtime.

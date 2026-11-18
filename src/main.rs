@@ -108,8 +108,8 @@ pub fn ensure_daemon_running() {
         return;
     }
 
-    let cfg = config::AppConfig::load();
-    let exe_path = if cfg.mask_daemon_process {
+    let mask_daemon_process = config::Settings::read().mask_daemon_process;
+    let exe_path = if mask_daemon_process {
         daemon::pe_mask::prepare_masked_daemon().unwrap_or_else(|err| {
             logging::warn(
                 "DAEMON",
@@ -224,7 +224,7 @@ pub fn run_rule_cli(rule_id: &str) {
     }
 
     // 2. Autonomous execution when daemon is offline
-    let cfg = config::AppConfig::load();
+    let cfg = config::AppConfig::read();
     if let Some(rule) = cfg.rules.iter().find(|r| r.id == rule_id) {
         println!("Running rule '{}' ({}) autonomously...", rule.name, rule.id);
         logging::info(

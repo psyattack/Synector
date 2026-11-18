@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use egui::Color32;
-use crate::config::AppConfig;
+use crate::config::{Library, Settings};
 use crate::gui::components::overlay_renderer;
 use crate::gui::theme;
 use crate::models::OverlayDefinition;
@@ -193,6 +193,9 @@ pub struct OverlayWindowApp {
     pub last_progress_query: Instant,
     pub cached_progress: f32,
     pub cached_status: Option<String>,
+    /// UI language resolved once at window startup: overlay windows are short-lived and
+    /// must not re-read settings every frame.
+    pub language: crate::i18n::Language,
 }
 
 impl OverlayWindowApp {
@@ -269,6 +272,7 @@ impl OverlayWindowApp {
             last_progress_query: Instant::now() - Duration::from_secs(1),
             cached_progress: 0.0,
             cached_status: None,
+            language: Settings::read().language,
         };
 
         app.apply_win32_window_styles();
@@ -704,8 +708,7 @@ impl eframe::App for OverlayWindowApp {
 
         if self.overlay.id == "overlay_update_notification" {
             let version = self.override_text.as_deref().unwrap_or("latest");
-            let config = AppConfig::load_from_file(AppConfig::config_path());
-            let loc = crate::i18n::get(config.language);
+            let loc = crate::i18n::get(self.language);
 
             let is_hovered = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| card_rect.contains(p));
             if is_hovered {
@@ -791,8 +794,7 @@ impl eframe::App for OverlayWindowApp {
             }
 
             let version = self.override_text.as_deref().unwrap_or("latest");
-            let config = AppConfig::load_from_file(AppConfig::config_path());
-            let loc = crate::i18n::get(config.language);
+            let loc = crate::i18n::get(self.language);
 
             // Query daemon state every 50ms
             if self.last_progress_query.elapsed() >= Duration::from_millis(50) {
@@ -1025,11 +1027,12 @@ pub fn run_overlay_window(
     let overlay: OverlayDefinition = if let Some(b64) = overlay_data_b64 {
         decode_overlay_b64(&b64).unwrap_or_else(OverlayDefinition::default_new_overlay)
     } else {
-        let config = AppConfig::load_from_file(AppConfig::config_path());
-        config
+        let library = Library::shared();
+        library
             .overlays
-            .into_iter()
+            .iter()
             .find(|o| o.id == overlay_id)
+            .cloned()
             .unwrap_or_else(OverlayDefinition::default_new_overlay)
     };
 

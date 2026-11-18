@@ -2992,7 +2992,7 @@ fn render_action_parameter_fields(
                     Action::Macro { preset_id, operation, events, repeat, speed, infinite } => {
                         let all_macro_presets = state.daemon_state.as_ref()
                             .map(|s| s.config.macro_presets.clone())
-                            .unwrap_or_else(|| crate::config::AppConfig::load().macro_presets);
+                            .unwrap_or_else(|| crate::config::Library::read().macro_presets);
 
                         // 1. Operation selector (Play / Stop / Toggle)
                         widgets::hud(ui, loc.inspector_macro_operation, t.muted);
@@ -3840,7 +3840,7 @@ fn render_action_parameter_fields(
         } => {
             let all_overlays = state.daemon_state.as_ref()
                 .map(|s| s.config.overlays.clone())
-                .unwrap_or_else(|| crate::config::AppConfig::load().overlays);
+                .unwrap_or_else(|| crate::config::Library::read().overlays);
 
             if overlay_id.is_empty() {
                 if let Some(first) = all_overlays.first() {

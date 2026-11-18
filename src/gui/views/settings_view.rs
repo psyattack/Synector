@@ -12,7 +12,7 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
     let loc = state.loc();
 
     let (mut cfg, current_autorun) = match &state.daemon_state {
-        Some(ds) => (ds.config.clone(), ds.autorun_enabled),
+        Some(ds) => (ds.config.settings(), ds.autorun_enabled),
         None => {
             ui.add_space(32.0);
             widgets::hud(ui, loc.settings_daemon_offline, t.bad);
@@ -102,9 +102,30 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
     if changed {
         crate::daemon::tray::update_tray_icon(cfg.tray_icon_path.clone());
         crate::daemon::tray::set_tray_visible(!cfg.hide_tray_icon);
-        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveConfig(cfg));
+        // The daemon is the only writer of settings.json while it is reachable; a direct
+        // write is the offline fallback so the GUI cannot race the daemon on a read-modify-
+        // write of the same file.
+        let saved = matches!(
+            crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())),
+            Ok(crate::ipc::IpcResponse::Ok)
+        );
+        if !saved {
+            persist_settings_fallback(&cfg);
+        }
         state.set_toast(loc.toast_config_saved);
         state.sync_with_daemon();
+    }
+}
+
+/// Offline fallback for settings persistence. Window geometry is preserved from the file
+/// because the settings view never edits it and the GUI owns it through `UpdateWindowState`.
+fn persist_settings_fallback(cfg: &crate::config::Settings) {
+    let mut current = crate::config::Settings::read();
+    let window = current.window.clone();
+    current = cfg.clone();
+    current.window = window;
+    if let Err(err) = current.save() {
+        crate::logging::error("CONFIG", &format!("Failed to save settings: {err}"));
     }
 }
 
@@ -168,7 +189,7 @@ fn render_sidebar(ui: &mut Ui, state: &mut GuiState, loc: &crate::i18n::Strings,
 fn render_content_panel(
     ui: &mut Ui,
     state: &mut GuiState,
-    cfg: &mut crate::config::AppConfig,
+    cfg: &mut crate::config::Settings,
     changed: &mut bool,
     current_autorun: bool,
     t: &Tokens,
@@ -188,7 +209,7 @@ fn render_content_panel(
                     render_general_content(ui, state, cfg, changed, current_autorun, t, loc);
                 }
                 SettingsTab::Appearance => {
-                    render_appearance_content(ui, state, cfg, t, loc);
+                    render_appearance_content(ui, state, cfg, changed, t, loc);
                 }
                 SettingsTab::Updates => {
                     render_updates_content(ui, state, cfg, changed, t, loc);
@@ -237,7 +258,7 @@ fn render_setting_row<F: FnOnce(&mut Ui)>(
 fn render_general_content(
     ui: &mut Ui,
     state: &mut GuiState,
-    cfg: &mut crate::config::AppConfig,
+    cfg: &mut crate::config::Settings,
     changed: &mut bool,
     current_autorun: bool,
     t: &Tokens,
@@ -360,7 +381,15 @@ fn render_general_content(
     render_setting_row(ui, loc.settings_mask_daemon_title, loc.settings_mask_daemon_desc, t, |ui| {
         if widgets::toggle_switch(ui, &mut cfg.mask_daemon_process).changed() {
             *changed = true;
-            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+            // The restart below reads settings.json, so persist now: through the daemon,
+            // or directly when it is already unreachable.
+            let saved = matches!(
+                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())),
+                Ok(crate::ipc::IpcResponse::Ok)
+            );
+            if !saved {
+                persist_settings_fallback(cfg);
+            }
             #[cfg(windows)]
             {
                 let mask = cfg.mask_daemon_process;
@@ -406,7 +435,8 @@ fn render_general_content(
 fn render_appearance_content(
     ui: &mut Ui,
     state: &mut GuiState,
-    cfg: &mut crate::config::AppConfig,
+    cfg: &mut crate::config::Settings,
+    changed: &mut bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,
 ) {
@@ -429,7 +459,7 @@ fn render_appearance_content(
             };
             state.set_language(new_lang);
             cfg.language = new_lang;
-            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveConfig(cfg.clone()));
+            *changed = true;
         }
     });
 
@@ -472,7 +502,7 @@ fn render_appearance_content(
                     state.set_theme(thm);
                     crate::gui::theme::apply_theme(ui.ctx(), thm);
                     cfg.theme = thm;
-                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveConfig(cfg.clone()));
+                    *changed = true;
                 }
 
                 let hovered = resp.hovered();
@@ -503,7 +533,7 @@ fn render_appearance_content(
 fn render_updates_content(
     ui: &mut Ui,
     state: &mut GuiState,
-    cfg: &mut crate::config::AppConfig,
+    cfg: &mut crate::config::Settings,
     changed: &mut bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,

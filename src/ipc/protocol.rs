@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Settings};
 use crate::models::{Action, AnalyticsSummary, LogItem, ProcessSnapshotItem, Rule};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -7,8 +7,10 @@ use crate::models::{Action, AnalyticsSummary, LogItem, ProcessSnapshotItem, Rule
 pub enum IpcRequest {
     Ping,
     GetState,
-    SaveConfig(AppConfig),
+    SaveSettings(Settings),
     SaveRule(Rule),
+    ReorderRules(Vec<String>),
+    ResetRule(String),
     DeleteRule(String),
     ToggleRule { id: String, enabled: bool },
     TestRunRule {
@@ -25,6 +27,9 @@ pub enum IpcRequest {
     ClearLogs,
     ShutdownDaemon,
     ImportRules(Vec<Rule>),
+    /// Declarative replace of the whole rule set (CLI `--rules-sync`), applied and
+    /// persisted in one step.
+    SyncRules(Vec<Rule>),
     SaveOverlay(crate::models::OverlayDefinition),
     DeleteOverlay(String),
     SaveMacroPreset(crate::models::MacroPreset),
@@ -156,6 +161,25 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("ImportRules"));
         assert!(json.contains("Imported Rule"));
+    }
+
+    #[test]
+    fn test_ipc_sync_rules_request_serde() {
+        let req = IpcRequest::SyncRules(vec![Rule {
+            id: "r_sync".into(),
+            name: "Synced Rule".into(),
+            ..Default::default()
+        }]);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("SyncRules"));
+        let decoded: IpcRequest = serde_json::from_str(&json).unwrap();
+        match decoded {
+            IpcRequest::SyncRules(rules) => {
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0].id, "r_sync");
+            }
+            _ => panic!("wrong req variant"),
+        }
     }
 
     #[test]

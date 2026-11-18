@@ -256,7 +256,7 @@ pub struct GuiState {
 
 impl GuiState {
     pub fn new() -> Self {
-        let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
+        let settings = crate::config::Settings::read();
         let (update_event_tx, update_event_rx) = std::sync::mpsc::channel();
         Self {
             active_view: ActiveView::Rules,
@@ -291,8 +291,8 @@ impl GuiState {
             last_condition_catalog: None,
             element_catalog: None,
             last_element_catalog: None,
-            language: config.language,
-            theme: config.theme,
+            language: settings.language,
+            theme: settings.theme,
             last_sync: Instant::now() - std::time::Duration::from_secs(10),
             toast: None,
             is_daemon_connected: false,
@@ -351,22 +351,20 @@ impl GuiState {
         crate::i18n::get(self.language)
     }
 
+    /// Updates the in-memory language only. Persistence is the daemon's job: the
+    /// settings view sends the change over IPC, which keeps the GUI from racing the
+    /// daemon on `settings.json` (the daemon also owns window geometry there).
     pub fn set_language(&mut self, lang: crate::i18n::Language) {
         if self.language != lang {
             self.language = lang;
-            let mut cfg = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-            cfg.language = lang;
-            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
             self.set_toast(self.loc().toast_lang_changed);
         }
     }
 
+    /// Updates the in-memory theme only; persisted through `IpcRequest::SaveSettings`.
     pub fn set_theme(&mut self, theme: crate::config::AppTheme) {
         if self.theme != theme {
             self.theme = theme;
-            let mut cfg = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-            cfg.theme = theme;
-            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
             self.set_toast(self.loc().toast_theme_changed);
         }
     }
@@ -395,8 +393,8 @@ impl GuiState {
             let actions = if is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
             if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(step_idx) {
                 if events.is_empty() {
-                    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-                    if let Some(preset) = config.find_macro(pid) {
+                    let library = crate::config::Library::read();
+                    if let Some(preset) = library.find_macro(pid) {
                         *events = preset.events.clone();
                         *repeat = preset.repeat;
                         *speed = preset.speed;
@@ -425,8 +423,8 @@ impl GuiState {
             if let Some(rule) = &mut self.editing_rule {
                 let actions = if edit_info.is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
                 if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(edit_info.step_idx) {
-                    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-                    let preset_name = config.find_macro(pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.clone());
+                    let library = crate::config::Library::read();
+                    let preset_name = library.find_macro(pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.clone());
                     let preset = crate::models::MacroPreset {
                         id: pid.clone(),
                         name: preset_name,
@@ -444,8 +442,8 @@ impl GuiState {
     }
 
     pub fn open_overlay_studio(&mut self, overlay_id: &str) {
-        let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-        let overlay = config.overlays.iter().find(|o| o.id == overlay_id).cloned().unwrap_or_else(|| {
+        let library = crate::config::Library::read();
+        let overlay = library.overlays.iter().find(|o| o.id == overlay_id).cloned().unwrap_or_else(|| {
             match overlay_id {
                 "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                 "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
@@ -482,8 +480,8 @@ impl GuiState {
                 let overlay = if let Some(cust) = custom_overlay {
                     *cust.clone()
                 } else {
-                    let config = crate::config::AppConfig::load_from_file(crate::config::AppConfig::config_path());
-                    config.overlays.iter().find(|o| o.id == *overlay_id).cloned().unwrap_or_else(|| {
+                    let library = crate::config::Library::read();
+                    library.overlays.iter().find(|o| o.id == *overlay_id).cloned().unwrap_or_else(|| {
                         match overlay_id.as_str() {
                             "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                             "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
@@ -1381,7 +1379,8 @@ impl GuiState {
                 };
                 let insert_idx = insert_idx.min(ds.config.rules.len());
                 ds.config.rules.insert(insert_idx, rule);
-                let _ = IpcClient::call(&IpcRequest::SaveConfig(ds.config.clone()));
+                let order: Vec<String> = ds.config.rules.iter().map(|rule| rule.id.clone()).collect();
+                let _ = IpcClient::call(&IpcRequest::ReorderRules(order));
             }
         }
     }

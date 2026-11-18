@@ -105,6 +105,15 @@ pub struct DaemonEngine {
     pub update_status: Option<String>,
     pub pending_open_update_modal: bool,
     pub pending_auto_start_update: bool,
+    /// Set when daemon-owned rule counters changed; `runtime.json` is flushed
+    /// coalesced so a fast-firing rule cannot rewrite the file on every execution.
+    runtime_dirty: bool,
+    last_runtime_save: Instant,
+    /// Overlay drags stream position updates; persisting presets on every frame would
+    /// hammer `library.json`, so those saves are coalesced separately.
+    overlay_position_library_dirty: bool,
+    overlay_position_rules_dirty: bool,
+    last_overlay_position_save: Instant,
     action_tx: mpsc::UnboundedSender<ActionCompletionEvent>,
     action_rx: mpsc::UnboundedReceiver<ActionCompletionEvent>,
 }
@@ -163,6 +172,11 @@ fn match_cached_regex(pattern: &str, actual: &str) -> bool {
 
 impl DaemonEngine {
     pub const MAX_LOGS: usize = 500;
+    /// Coalescing window for `runtime.json`; counters may lag the daemon by this much
+    /// after a hard kill, which is acceptable for execution quotas.
+    const RUNTIME_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+    /// Coalescing window for overlay positions streamed while dragging an overlay.
+    const OVERLAY_POSITION_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
     pub fn new(config: AppConfig) -> Self {
         let (action_tx, action_rx) = mpsc::unbounded_channel();
@@ -189,8 +203,103 @@ impl DaemonEngine {
             update_status: None,
             pending_open_update_modal: false,
             pending_auto_start_update: false,
+            runtime_dirty: false,
+            last_runtime_save: Instant::now(),
+            overlay_position_library_dirty: false,
+            overlay_position_rules_dirty: false,
+            last_overlay_position_save: Instant::now(),
             action_tx,
             action_rx,
+        }
+    }
+
+    /// Persists the hot runtime counters at most once per window instead of on every
+    /// execution. Quota pauses and shutdown force an immediate flush.
+    pub fn persist_runtime_if_due(&mut self) {
+        if !self.runtime_dirty {
+            return;
+        }
+        if self.last_runtime_save.elapsed() < Self::RUNTIME_SAVE_INTERVAL {
+            return;
+        }
+        self.persist_runtime_now();
+    }
+
+    /// Forces `runtime.json` to disk now.
+    pub fn persist_runtime_now(&mut self) {
+        if !self.runtime_dirty {
+            return;
+        }
+        match self.config.runtime_state().save() {
+            Ok(()) => {
+                self.runtime_dirty = false;
+                self.last_runtime_save = Instant::now();
+            }
+            Err(err) => {
+                self.log(
+                    "ERROR",
+                    "CONFIG",
+                    &format!("Failed to save runtime counters: {err}"),
+                );
+            }
+        }
+    }
+
+    fn mark_runtime_dirty(&mut self) {
+        self.runtime_dirty = true;
+    }
+
+    /// Persists positions streamed by an overlay drag at most once per window; the
+    /// in-memory position is always current, only the disk write is deferred.
+    pub fn persist_overlay_positions_if_due(&mut self) {
+        if !self.overlay_position_library_dirty && !self.overlay_position_rules_dirty {
+            return;
+        }
+        if self.last_overlay_position_save.elapsed() < Self::OVERLAY_POSITION_SAVE_INTERVAL {
+            return;
+        }
+        self.persist_overlay_positions_now();
+    }
+
+    /// Forces deferred overlay positions to disk (daemon shutdown, calibration end).
+    pub fn persist_overlay_positions_now(&mut self) {
+        if self.overlay_position_library_dirty && self.persist_library() {
+            self.overlay_position_library_dirty = false;
+        }
+        if self.overlay_position_rules_dirty && self.persist_rules() {
+            self.overlay_position_rules_dirty = false;
+        }
+        self.last_overlay_position_save = Instant::now();
+    }
+
+    fn mark_overlay_position_dirty(&mut self, library_changed: bool, rules_changed: bool) {
+        self.overlay_position_library_dirty |= library_changed;
+        self.overlay_position_rules_dirty |= rules_changed;
+    }
+
+    fn persist_rules(&mut self) -> bool {
+        match self.config.save_rules() {
+            Ok(()) => true,
+            Err(err) => {
+                self.log("ERROR", "CONFIG", &format!("Failed to save rules: {err}"));
+                false
+            }
+        }
+    }
+
+    fn persist_library(&mut self) -> bool {
+        match self.config.save_library() {
+            Ok(()) => true,
+            Err(err) => {
+                self.log("ERROR", "CONFIG", &format!("Failed to save presets: {err}"));
+                false
+            }
+        }
+    }
+
+    fn persist_settings(&mut self) {
+        if let Err(err) = self.config.save_settings() {
+            self.log("ERROR", "CONFIG", &format!("Failed to save settings: {err}"));
         }
     }
 
@@ -299,7 +408,7 @@ impl DaemonEngine {
             Self::hide_rule_overlays(rule);
         }
         if disabled_in_config {
-            let _ = self.config.save_to_file(AppConfig::config_path());
+            self.persist_rules();
             if let Some(h) = &self.hotkey_handle {
                 h.reload(&self.config.rules);
             }
@@ -488,26 +597,31 @@ impl DaemonEngine {
                         }
                     }
                     if let Some(name) = updated_name {
-                        let _ = self.config.save_to_file(AppConfig::config_path());
+                        self.persist_rules();
                         self.log("INFO", "RULE", &format!("Set custom icon for rule '{}' from process: {}", name, icon_path));
                     }
                 }
                 ActionCompletionEvent::IncrementExecutionCount { rule_id, max_executions } => {
                     self.analytics.total_executions += 1;
                     let mut quota_msg = None;
+                    let mut quota_paused = false;
                     if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule_id) {
                         r.execution_count += 1;
                         r.last_executed_at = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
                         if let Some(limit) = max_executions {
                             if r.execution_count >= limit {
                                 r.is_enabled = false;
+                                quota_paused = true;
                                 quota_msg = Some(format!(
                                     "Rule '{}' completed quota ({}/{}) and has been auto-paused.",
                                     r.name, r.execution_count, limit
                                 ));
                             }
                         }
-                        let _ = self.config.save_to_file(AppConfig::config_path());
+                    }
+                    self.mark_runtime_dirty();
+                    if quota_paused {
+                        self.persist_rules();
                     }
                     if let Some(msg) = quota_msg {
                         self.stop_rule_execution(&rule_id);
@@ -516,6 +630,7 @@ impl DaemonEngine {
                 }
             }
         }
+        self.persist_runtime_if_due();
     }
 
     pub fn log(&mut self, level: &str, category: &str, message: &str) {
@@ -1159,9 +1274,13 @@ impl DaemonEngine {
                                 let already_ran = self.rule_last_triggered.contains_key(&rule.id);
                                 if !already_ran {
                                     let _ = self.try_execute_rule(rule, &format!("One-Shot Schedule {}", target), 0).await;
+                                    let mut disabled = false;
                                     if let Some(stored) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
                                         stored.is_enabled = false;
-                                        let _ = self.config.save_to_file(AppConfig::config_path());
+                                        disabled = true;
+                                    }
+                                    if disabled {
+                                        self.persist_rules();
                                     }
                                 }
                             }
@@ -1383,9 +1502,13 @@ impl DaemonEngine {
                     "RULE",
                     &format!("Rule '{}' reached execution limit ({}/{}). Pausing.", rule.name, rule.execution_count, limit),
                 );
+                let mut disabled = false;
                 if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
                     r.is_enabled = false;
-                    let _ = self.config.save_to_file(AppConfig::config_path());
+                    disabled = true;
+                }
+                if disabled {
+                    self.persist_rules();
                 }
                 return None;
             }
@@ -1474,16 +1597,21 @@ impl DaemonEngine {
         let total_steps = actions.len();
 
         let mut quota_msg = None;
+        let mut quota_paused = false;
         if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
             r.execution_count += 1;
             r.last_executed_at = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
             if let Some(limit) = r.max_executions {
                 if r.execution_count >= limit {
                     r.is_enabled = false;
+                    quota_paused = true;
                     quota_msg = Some(format!("Rule '{}' completed quota ({}/{}) and has been auto-paused.", r.name, r.execution_count, limit));
                 }
             }
-            let _ = self.config.save_to_file(AppConfig::config_path());
+        }
+        self.mark_runtime_dirty();
+        if quota_paused {
+            self.persist_rules();
         }
         if let Some(msg) = quota_msg {
             self.log("INFO", "RULE", &msg);
@@ -1998,32 +2126,68 @@ impl DaemonEngine {
             }
 
 
-            IpcRequest::SaveConfig(cfg) => {
-                let tray_changed = self.config.tray_icon_path != cfg.tray_icon_path;
-                let new_tray_path = cfg.tray_icon_path.clone();
-                self.config = cfg;
-                let _ = self.config.save_to_file(AppConfig::config_path());
+            IpcRequest::SaveSettings(settings) => {
+                let tray_changed = self.config.tray_icon_path != settings.tray_icon_path;
+                let new_tray_path = settings.tray_icon_path.clone();
+                // Window geometry is owned by the daemon through UpdateWindowState; a
+                // settings snapshot from the GUI may be older, so it never overrides it.
+                let mut settings = settings;
+                settings.window = self.config.window.clone();
+                self.config.apply_settings(settings);
+                self.persist_settings();
                 if tray_changed {
                     crate::daemon::tray::update_tray_icon(new_tray_path);
                 }
                 crate::daemon::tray::set_tray_visible(!self.config.hide_tray_icon);
-                if let Some(h) = &self.hotkey_handle {
-                    h.reload(&self.config.rules);
-                }
-                self.log("INFO", "CONFIG", "Configuration updated and saved");
+                self.log("INFO", "CONFIG", "Settings updated and saved");
                 IpcResponse::Ok
             }
 
-            IpcRequest::SaveRule(rule) => {
+            IpcRequest::SaveRule(mut rule) => {
                 if let Some(existing) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
+                    // Counters belong to the daemon: the GUI edits drafts, it does not
+                    // own execution history.
+                    rule.execution_count = existing.execution_count;
+                    rule.last_executed_at = existing.last_executed_at.clone();
                     *existing = rule;
                 } else {
                     self.config.rules.push(rule);
                 }
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_rules();
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
+                IpcResponse::Ok
+            }
+
+            IpcRequest::ReorderRules(order) => {
+                let mut remaining = std::mem::take(&mut self.config.rules);
+                let mut ordered = Vec::with_capacity(remaining.len());
+                for id in order {
+                    if let Some(position) = remaining.iter().position(|rule| rule.id == id) {
+                        ordered.push(remaining.remove(position));
+                    }
+                }
+                ordered.append(&mut remaining);
+                self.config.rules = ordered;
+                self.persist_rules();
+                IpcResponse::Ok
+            }
+
+            IpcRequest::ResetRule(id) => {
+                let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == id) else {
+                    return IpcResponse::Error(format!("rule \"{id}\" not found"));
+                };
+                rule.execution_count = 0;
+                rule.last_executed_at = None;
+                rule.is_enabled = true;
+                self.persist_rules();
+                self.mark_runtime_dirty();
+                self.persist_runtime_now();
+                if let Some(h) = &self.hotkey_handle {
+                    h.reload(&self.config.rules);
+                }
+                self.log("INFO", "RULE", &format!("Reset rule '{id}': counter cleared, rule enabled"));
                 IpcResponse::Ok
             }
 
@@ -2033,7 +2197,9 @@ impl DaemonEngine {
                     Self::hide_rule_overlays(rule);
                 }
                 self.config.rules.retain(|r| r.id != id);
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_rules();
+                self.mark_runtime_dirty();
+                self.persist_runtime_now();
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
@@ -2046,8 +2212,8 @@ impl DaemonEngine {
                 }
                 if let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == id) {
                     rule.is_enabled = enabled;
-                    let _ = self.config.save_to_file(AppConfig::config_path());
                 }
+                self.persist_rules();
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
@@ -2095,8 +2261,6 @@ impl DaemonEngine {
             IpcRequest::SetAutorun(enable) => {
                 match crate::autorun::set_autorun(crate::autorun::APP_NAME, enable) {
                     Ok(()) => {
-                        self.config.autorun_configured = true;
-                        let _ = self.config.save_to_file(AppConfig::config_path());
                         self.log("INFO", "CONFIG", &format!("Autorun set to: {enable}"));
                         IpcResponse::Ok
                     }
@@ -2109,7 +2273,7 @@ impl DaemonEngine {
 
             IpcRequest::UpdateWindowState(ws) => {
                 self.config.window = Some(ws);
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_settings();
                 IpcResponse::Ok
             }
 
@@ -2120,19 +2284,47 @@ impl DaemonEngine {
 
             IpcRequest::ImportRules(imported) => {
                 let mut count = 0;
-                for rule in imported {
+                for mut rule in imported {
                     if let Some(existing) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
+                        // Imported definitions never carry execution history: counters stay
+                        // with the daemon and the rule keeps running where it left off.
+                        rule.execution_count = existing.execution_count;
+                        rule.last_executed_at = existing.last_executed_at.clone();
                         *existing = rule;
                     } else {
                         self.config.rules.push(rule);
                     }
                     count += 1;
                 }
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_rules();
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
                 self.log("INFO", "CONFIG", &format!("Imported {count} automations"));
+                IpcResponse::Ok
+            }
+
+            IpcRequest::SyncRules(incoming) => {
+                // Declarative replace: the file is the full desired rule set. Counters of
+                // surviving rules stay with the daemon; removed rules lose theirs on the
+                // runtime flush below. One persist + one hotkey reload for the whole sync.
+                let mut synced = Vec::with_capacity(incoming.len());
+                for mut rule in incoming {
+                    if let Some(existing) = self.config.rules.iter().find(|r| r.id == rule.id) {
+                        rule.execution_count = existing.execution_count;
+                        rule.last_executed_at = existing.last_executed_at.clone();
+                    }
+                    synced.push(rule);
+                }
+                let count = synced.len();
+                self.config.rules = synced;
+                self.persist_rules();
+                self.mark_runtime_dirty();
+                self.persist_runtime_now();
+                if let Some(h) = &self.hotkey_handle {
+                    h.reload(&self.config.rules);
+                }
+                self.log("INFO", "CONFIG", &format!("Synchronized {count} rules"));
                 IpcResponse::Ok
             }
 
@@ -2161,14 +2353,14 @@ impl DaemonEngine {
                 } else {
                     self.config.overlays.push(overlay);
                 }
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_library();
                 IpcResponse::Ok
             }
 
             IpcRequest::DeleteOverlay(id) => {
                 crate::daemon::overlay_manager::hide_overlay(&id);
                 self.config.overlays.retain(|o| o.id != id && !o.name.eq_ignore_ascii_case(&id));
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_library();
                 IpcResponse::Ok
             }
 
@@ -2178,13 +2370,13 @@ impl DaemonEngine {
                 } else {
                     self.config.macro_presets.push(preset);
                 }
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_library();
                 IpcResponse::Ok
             }
 
             IpcRequest::DeleteMacroPreset(id) => {
                 self.config.macro_presets.retain(|p| p.id != id && !p.name.eq_ignore_ascii_case(&id));
-                let _ = self.config.save_to_file(AppConfig::config_path());
+                self.persist_library();
                 IpcResponse::Ok
             }
 
@@ -2211,7 +2403,8 @@ impl DaemonEngine {
             IpcRequest::UpdateOverlayPosition { id, x, y } => {
                 crate::daemon::overlay_manager::save_calibrated_position(&id, x, y);
                 let monitors = crate::daemon::overlay_manager::get_system_monitors();
-                let mut changed = false;
+                let mut library_changed = false;
+                let mut rules_changed = false;
                 if let Some(ov) = self.config.overlays.iter_mut().find(|o| o.id == id) {
                     let mon = ov.monitor_index
                         .and_then(|idx| monitors.iter().find(|m| m.index == idx))
@@ -2219,7 +2412,7 @@ impl DaemonEngine {
                     let (mon_x, mon_y) = mon.map(|m| (m.x as f32, m.y as f32)).unwrap_or((0.0, 0.0));
                     ov.rect.x = x - mon_x;
                     ov.rect.y = y - mon_y;
-                    changed = true;
+                    library_changed = true;
                 }
                 for rule in &mut self.config.rules {
                     for action in &mut rule.actions {
@@ -2231,14 +2424,12 @@ impl DaemonEngine {
                                 let (mon_x, mon_y) = mon.map(|m| (m.x as f32, m.y as f32)).unwrap_or((0.0, 0.0));
                                 ov.rect.x = x - mon_x;
                                 ov.rect.y = y - mon_y;
-                                changed = true;
+                                rules_changed = true;
                             }
                         }
                     }
                 }
-                if changed {
-                    let _ = self.config.save_to_file(crate::config::AppConfig::config_path());
-                }
+                self.mark_overlay_position_dirty(library_changed, rules_changed);
                 IpcResponse::Ok
             }
 
@@ -3883,6 +4074,78 @@ mod tests {
 
         assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("gracefully halted")), "Check failure must gracefully halt pipeline");
         assert!(!engine.logs.iter().any(|l| l.message.contains("ShouldNotRun")), "Subsequent actions must be skipped");
+    }
+
+    #[test]
+    fn test_runtime_counter_flush_is_coalesced() {
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "runtime_rule".into(),
+            name: "Runtime Rule".into(),
+            ..Default::default()
+        });
+        let mut engine = DaemonEngine::new(config);
+        engine.config.rules[0].execution_count = 3;
+
+        engine.mark_runtime_dirty();
+        engine.persist_runtime_if_due();
+        assert!(
+            engine.runtime_dirty,
+            "the first flush must wait for the coalescing window"
+        );
+
+        engine.last_runtime_save = Instant::now() - DaemonEngine::RUNTIME_SAVE_INTERVAL - std::time::Duration::from_millis(1);
+        engine.persist_runtime_if_due();
+        assert!(!engine.runtime_dirty, "a flushed runtime must be clean again");
+        assert_eq!(engine.config.runtime_state().rules["runtime_rule"].execution_count, 3);
+
+        // A forced flush (quota pause, reset, shutdown) ignores the window.
+        engine.mark_runtime_dirty();
+        engine.persist_runtime_now();
+        assert!(!engine.runtime_dirty);
+    }
+
+    #[tokio::test]
+    async fn test_sync_rules_replaces_set_preserves_counters_and_reloads_once() {
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "keep".into(),
+            name: "Keep".into(),
+            execution_count: 4,
+            last_executed_at: Some("2026-01-01 00:00:00".into()),
+            ..Default::default()
+        });
+        config.rules.push(Rule {
+            id: "drop".into(),
+            name: "Drop".into(),
+            ..Default::default()
+        });
+        let mut engine = DaemonEngine::new(config);
+
+        let synced = vec![
+            Rule {
+                id: "keep".into(),
+                name: "Keep renamed".into(),
+                ..Default::default()
+            },
+            Rule {
+                id: "new".into(),
+                name: "New".into(),
+                ..Default::default()
+            },
+        ];
+        let response = engine.handle_request(IpcRequest::SyncRules(synced)).await;
+        assert!(matches!(response, IpcResponse::Ok));
+
+        let ids: Vec<&str> = engine.config.rules.iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(ids, vec!["keep", "new"]);
+        assert_eq!(engine.config.rules[0].name, "Keep renamed");
+        assert_eq!(engine.config.rules[0].execution_count, 4);
+        assert_eq!(
+            engine.config.rules[0].last_executed_at.as_deref(),
+            Some("2026-01-01 00:00:00")
+        );
+        assert_eq!(engine.config.rules[1].execution_count, 0);
     }
 }
 

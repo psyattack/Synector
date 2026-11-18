@@ -2,7 +2,7 @@
 
 Synector rules are plain JSON files. The CLI validates, applies, exports and maintains them without
 opening the GUI. While the daemon is running changes go through IPC and take effect immediately; when
-it is not, the same upsert is written to `%LOCALAPPDATA%\Synector\config.json` and applied on the
+it is not, the same upsert is written to `%LOCALAPPDATA%\Synector\rules.json` and applied on the
 next daemon start.
 
 ## Commands
@@ -11,7 +11,7 @@ next daemon start.
 |---|---|
 | `--rules-validate <file\|->` | Parse and validate a rule file; no changes are made |
 | `--rules-apply <file\|->` | Create or update rules from a file (upsert by `id`) |
-| `--rules-sync <file\|->` | Make the config match the file exactly (upsert + delete missing) |
+| `--rules-sync <file\|->` | Make the configured rules match the file exactly (upsert + delete missing) |
 | `--rules-list [--json]` | List rules with state, execution counter and trigger |
 | `--rules-export [<file>]` | Export all rules as JSON |
 | `--rules-delete <id>` | Delete one rule |
@@ -30,10 +30,10 @@ rule file from stdin.
 ## File format
 
 A rule file is one rule object, an array of rules, or `{"rules": [...]}`. `id` is the upsert key and
-must be unique and stable, `name` is required. Applying a file never resets the daemon-owned runtime
-counters (`execution_count`, `last_executed_at`) of rules it updates, so editing a rule file does not
-reset its quota progress. `--rules-schema` describes a single rule object; the array and wrapper
-forms are only file containers.
+must be unique and stable, `name` is required. Rule files never carry runtime state: the daemon keeps
+`execution_count` and `last_executed_at` in `runtime.json`, and applying a file does not reset the
+quota progress of the rules it updates. `--rules-schema` describes a single rule object; the array and
+wrapper forms are only file containers.
 
 Minimal example:
 
@@ -89,16 +89,17 @@ Synector.exe --rules-apply rule.json
 ## Config as code
 
 `--rules-apply` only upserts the rules present in the file: rules missing from it stay in the
-configuration. `--rules-sync` is the declarative variant and makes the configuration match the file
-exactly, deleting rules that are absent. Use `--dry-run` to preview the result and `--json` for a
-machine-readable report:
+configuration. `--rules-sync` is the declarative variant and makes the configured rules match the
+file exactly, deleting rules that are absent. While the daemon is running it applies the sync as a
+single replace: surviving rules keep their runtime counters and hotkeys are reloaded once. Use
+`--dry-run` to preview the result and `--json` for a machine-readable report:
 
 ```powershell
 Synector.exe --rules-sync rules.json --dry-run --json
 Synector.exe --rules-sync rules.json --json
 ```
 
-A JSON report has the shape `{"ok": true, "target": "daemon"|"config", "dry_run": false,
+A JSON report has the shape `{"ok": true, "target": "daemon"|"rules", "dry_run": false,
 "created": [...], "updated": [...], "deleted": [...], "warnings": [...]}`. Failures report
 `{"ok": false, "error": "...", "errors": ["..."]}` and exit with a non-zero status.
 

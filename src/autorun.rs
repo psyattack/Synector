@@ -60,17 +60,7 @@ pub fn set_autorun_with_mask(app_name: &str, enable: bool, mask_daemon_process: 
 pub fn set_autorun(app_name: &str, enable: bool) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let mask = {
-            let path = crate::config::AppConfig::config_path();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                serde_json::from_str::<serde_json::Value>(&content)
-                    .ok()
-                    .and_then(|v| v.get("mask_daemon_process").and_then(|m| m.as_bool()))
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        };
+        let mask = crate::config::Settings::read().mask_daemon_process;
         set_autorun_with_mask(app_name, enable, mask)
     }
     #[cfg(not(windows))]

@@ -663,7 +663,7 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                     // 3. Presets List
                     let all_presets = state.daemon_state.as_ref()
                         .map(|s| s.config.overlays.clone())
-                        .unwrap_or_else(|| crate::config::AppConfig::load().overlays);
+                        .unwrap_or_else(|| crate::config::Library::read().overlays);
 
                     let q = studio.preset_search_query.trim().to_lowercase();
                     let filtered: Vec<_> = all_presets.into_iter()
@@ -735,10 +735,19 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(del_id.clone()));
-                                    let mut cfg = crate::config::AppConfig::load();
-                                    cfg.overlays.retain(|o| o.id != del_id);
-                                    let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
+                                    let deleted = matches!(
+                                        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(del_id.clone())),
+                                        Ok(crate::ipc::IpcResponse::Ok)
+                                    );
+                                    // The daemon owns library.json while reachable; write directly
+                                    // only as an offline fallback.
+                                    if !deleted {
+                                        let mut library = crate::config::Library::read();
+                                        library.overlays.retain(|o| o.id != del_id);
+                                        if let Err(err) = library.save() {
+                                            crate::logging::error("CONFIG", &format!("Failed to save overlay presets: {err}"));
+                                        }
+                                    }
                                     if let Some(ds) = &mut state.daemon_state {
                                         ds.config.overlays.retain(|o| o.id != del_id);
                                     }
@@ -769,14 +778,21 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
             saved_def.id = fresh_id;
             saved_def.name = name.clone();
 
-            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(saved_def.clone()));
-            let mut cfg = crate::config::AppConfig::load();
-            if let Some(existing) = cfg.overlays.iter_mut().find(|o| o.id == saved_def.id) {
-                *existing = saved_def.clone();
-            } else {
-                cfg.overlays.push(saved_def.clone());
+            let saved = matches!(
+                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(saved_def.clone())),
+                Ok(crate::ipc::IpcResponse::Ok)
+            );
+            if !saved {
+                let mut library = crate::config::Library::read();
+                if let Some(existing) = library.overlays.iter_mut().find(|o| o.id == saved_def.id) {
+                    *existing = saved_def.clone();
+                } else {
+                    library.overlays.push(saved_def.clone());
+                }
+                if let Err(err) = library.save() {
+                    crate::logging::error("CONFIG", &format!("Failed to save overlay presets: {err}"));
+                }
             }
-            let _ = cfg.save_to_file(crate::config::AppConfig::config_path());
             if let Some(ds) = &mut state.daemon_state {
                 if let Some(existing) = ds.config.overlays.iter_mut().find(|o| o.id == saved_def.id) {
                     *existing = saved_def.clone();
