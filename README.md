@@ -182,6 +182,10 @@ Synector/
 └── Cargo.toml                             # Rust manifest & dependencies
 ```
 
+How these pieces behave and interact — the two tiers, the data flow, and the design
+conventions behind the rule engine, overlays, input simulation and process monitoring — is
+described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
 </details>
 
 ## Configuration
