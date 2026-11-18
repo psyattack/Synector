@@ -50,6 +50,14 @@ pub fn run_daemon() {
     overlay_manager::init();
 
     let config = AppConfig::load();
+
+    // Reconcile state that can outlive an update or an installation: a stale masked daemon copy
+    // and an autostart task pointing at an old portable location.
+    if config.mask_daemon_process {
+        let _ = pe_mask::prepare_masked_daemon();
+    }
+    crate::autorun::ensure_autorun_target_current(config.mask_daemon_process);
+
     let engine = Arc::new(Mutex::new(DaemonEngine::new(config.clone())));
 
     // Create multi-threaded Tokio runtime for background tasks

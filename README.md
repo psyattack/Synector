@@ -40,14 +40,15 @@ engine, no polling loops, no telemetry.
 * **Scripting and CLI automation** — embedded Lua 5.4 with a `ph` API, PowerShell and Batch actions; JSON rule authoring via `--rules-apply`/`--rules-sync` with schema, template and reference discovery ([CLI reference](docs/RULE_AUTHORING.md)), desktop `.lnk` shortcuts and `--run-rule`.
 * **System and device control** — working-set trimming, CPU priority and affinity, firewall toggles, window actions, master/per-app volume, channel balance and audio endpoint switching.
 * **Observability** — live analytics dashboard with KPI cards, real-time in-app log stream, and daily rotating log files with configurable verbosity.
-* **Portable sharing and silent updates** — compact clipboard codes for whole automation sets; daemon-managed GitHub release checks, tray progress and optional auto-install.
+* **Installer and portable builds** — a native Windows installer with an uninstaller, Start Menu shortcut and `App Paths` integration, or a single portable executable; both update themselves through daemon-managed GitHub release checks, tray progress and optional auto-install.
 
 ## Installation
 
-#### Prerequisites
-- **Windows 10 / 11** (x64)
+Requires Windows 10 / 11 (x64).
 
-To install, download the latest release from [**GitHub Releases**](https://github.com/psyattack/Synector/releases) and extract the downloaded archive to a convenient location on your drive.
+- **Setup** — `Synector-Setup-<version>-Windows-x64.exe` from [**GitHub Releases**](https://github.com/psyattack/Synector/releases/latest).
+- **Portable** — `Synector-v<version>-Windows-x64.zip`: extract anywhere and run `Synector.exe`.
+- **Installer script** — one line in PowerShell: `irm https://raw.githubusercontent.com/psyattack/Synector/main/installer/install.ps1 | iex`.
 
 > [!IMPORTANT]
 > **Administrator Privileges**: Synector launches elevated by default (override with `--no-elevate`). Required for:
@@ -117,6 +118,10 @@ Synector/
 │   ├── app.ico                            # Win32 application icon
 │   ├── app.png                            # High-res RGBA icon
 │   └── app.svg                            # Vector logo
+├── installer/
+│   ├── install.cmd                        # Console bootstrap (Setup / Portable / Uninstall)
+│   ├── install.ps1                        # Bootstrap logic, release download and SHA-256 check
+│   └── synector.iss                       # Inno Setup installer script (built in CI)
 ├── docs/
 │   ├── ARCHITECTURE.md                    # Subsystem behavior and design conventions
 │   └── RULE_AUTHORING.md                  # Command-line rule authoring reference

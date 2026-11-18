@@ -587,7 +587,6 @@ pub fn start_update_download(show_overlay: bool) {
             if let Ok(rt_lock) = GLOBAL_RT.lock() {
                 if let Some(rt) = rt_lock.as_ref() {
                     let eng_clone = Arc::clone(engine);
-                    let asset_url = update_info.asset_url.clone();
                     let ver = version.clone();
                     let handle = rt.spawn(async move {
                         {
@@ -599,7 +598,7 @@ pub fn start_update_download(show_overlay: bool) {
 
                         let eng_progress = Arc::clone(&eng_clone);
                         let ver_for_overlay = ver.clone();
-                        let res = crate::updater::download_and_install_daemon(&asset_url, move |pct| {
+                        let res = crate::updater::download_and_install_daemon(&update_info, move |pct| {
                             set_updating(true, Some(pct));
                             let gui_open = crate::single_instance::is_gui_running();
                             let active = crate::daemon::overlay_manager::get_active_overlay_ids();
@@ -1025,9 +1024,8 @@ mod tests {
             name: "v3.0.0".to_string(),
             body: "".to_string(),
             html_url: "".to_string(),
-            asset_url: "".to_string(),
-            asset_name: "".to_string(),
-            asset_size: 100,
+            portable: None,
+            installer: None,
         };
 
         set_available_update(Some(release.clone()));

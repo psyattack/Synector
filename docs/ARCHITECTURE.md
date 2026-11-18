@@ -67,7 +67,7 @@ highest-privilege logon autostart through Task Scheduler.
 | `src/config.rs` | Split configuration persistence: settings, rules, presets and runtime counters (JSON) |
 | `src/i18n.rs`, `src/i18n/` | Locale registry and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
-| `src/updater.rs` | GitHub release check, streaming download, self-replacement |
+| `src/updater.rs` | GitHub release check, asset selection, SHA-256 verification, portable self-replacement and silent installer updates |
 | `src/sharing.rs` | Base64 + Deflate rule export/import codes |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
@@ -204,11 +204,28 @@ daemon and GUI over IPC. Rules either reference a preset or detach it into an in
 Macros can be driven by `Run`, `Stop` and `Toggle` operations with cancellation tracking, and
 `Action::Overlay` supports `SetText` to update HUD strings at runtime.
 
-### Updates, tray and notifications
+### Installation forms and updates
 
-The daemon owns update work: it checks GitHub releases, streams and verifies the download, and
-can install silently in place with automatic restarts. Progress and status surface through the
-tray menu and overlay notifications. Optional auto-install is a setting, not a default.
+Synector ships in two forms. The portable zip is a single `Synector.exe`; the installer
+(`installer/synector.iss`, built only in CI) installs the same executable into `Program Files`,
+adds Start Menu/`App Paths` integration and registers an uninstaller. A console bootstrap
+(`installer/install.cmd`, or the same script fetched with `irm <url> | iex`) covers machine-driven
+installs: it resolves the latest release, verifies the chosen artifact's SHA-256 and runs Setup,
+extracts the portable archive or calls the uninstaller. Both the installer and the bootstrap are
+build-time/distribution tooling, not runtime dependencies; user data always stays in
+`%LOCALAPPDATA%\Synector\` and survives updates and uninstalls.
+
+The daemon owns update work: it checks GitHub releases, streams and verifies the download against
+the SHA-256 digest published by the GitHub API, and applies it according to the install mode. A
+portable copy replaces its own executable in place; an installed copy downloads the release's
+setup and starts it silently with `/VERYSILENT`, letting the installer replace files, refresh the
+uninstaller metadata and restart Synector. The restart follows the update origin: a background
+update keeps the daemon-only or GUI state that was active before. Progress and status surface
+through the tray menu and overlay notifications, and optional auto-install is a setting.
+
+The installer closes running instances and, when it runs as an update, removes a stale masked
+daemon copy so it is rebuilt from the new binary. On uninstall it removes the autostart task, the
+masked copy and the application files while keeping the user configuration directory.
 
 ## Design conventions
 

@@ -1450,7 +1450,7 @@ impl GuiState {
                 Ok(rt) => rt,
                 Err(e) => {
                     let _ = tx.send(crate::updater::UpdateEvent::CheckComplete {
-                        result: Err(format!("Runtime error: {e}")),
+                        result: Box::new(Err(format!("Runtime error: {e}"))),
                         is_manual,
                     });
                     return;
@@ -1462,7 +1462,7 @@ impl GuiState {
             });
 
             let _ = tx.send(crate::updater::UpdateEvent::CheckComplete {
-                result,
+                result: Box::new(result),
                 is_manual,
             });
         });
@@ -1489,7 +1489,7 @@ impl GuiState {
                 }
                 crate::updater::UpdateEvent::CheckComplete { result, is_manual } => {
                     self.is_checking_update = false;
-                    match result {
+                    match *result {
                         Ok(Some(info)) => {
                             let ver = info.version.clone();
                             let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SetAvailableUpdate(Some(info.clone())));
@@ -1637,9 +1637,13 @@ mod tests {
             name: "v1.4.0".into(),
             body: "Notes".into(),
             html_url: "http://example.com".into(),
-            asset_url: "http://example.com/asset.zip".into(),
-            asset_name: "asset.zip".into(),
-            asset_size: 1024,
+            portable: Some(crate::updater::UpdateAsset {
+                name: "Synector-v1.4.0-Windows-x64.zip".into(),
+                url: "http://example.com/asset.zip".into(),
+                size: 1024,
+                sha256: None,
+            }),
+            installer: None,
         });
         assert!(state.is_modal_open());
         state.show_changelog_modal = false;

@@ -215,9 +215,18 @@ mod tests {
             name: "Synector 2.0".to_string(),
             body: "Big update".to_string(),
             html_url: "https://github.com".to_string(),
-            asset_url: "https://github.com/asset.zip".to_string(),
-            asset_name: "asset.zip".to_string(),
-            asset_size: 1024,
+            portable: Some(crate::updater::UpdateAsset {
+                name: "Synector-v2.0.0-Windows-x64.zip".to_string(),
+                url: "https://github.com/asset.zip".to_string(),
+                size: 1024,
+                sha256: Some("a".repeat(64)),
+            }),
+            installer: Some(crate::updater::UpdateAsset {
+                name: "Synector-Setup-2.0.0-Windows-x64.exe".to_string(),
+                url: "https://github.com/setup.exe".to_string(),
+                size: 2048,
+                sha256: Some("b".repeat(64)),
+            }),
         };
 
         let req = IpcRequest::SetAvailableUpdate(Some(release.clone()));

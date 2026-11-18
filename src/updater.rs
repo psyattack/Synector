@@ -1,9 +1,18 @@
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub const GITHUB_REPO: &str = "psyattack/Synector";
+
+/// Inno Setup `AppId` of the installer, braces included. The installer registers the uninstaller
+/// under `...\Uninstall\{AppId}_is1`; `installer/synector.iss` and this constant must stay in sync.
+pub const INSTALLER_APP_ID: &str = "{4A0D9C42-7B31-4E5A-A6F2-3F8D1C2B7E90}";
+
+const UNINSTALL_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+const UPDATE_TEMP_PREFIX: &str = "Synector-update-";
 
 static TLS_PROVIDER: OnceLock<()> = OnceLock::new();
 
@@ -22,6 +31,35 @@ pub fn init_tls() {
     });
 }
 
+/// One file published with a GitHub release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateAsset {
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+    /// Lowercase SHA-256 hex digest reported by the GitHub API for the asset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+}
+
+/// How this copy of Synector was put on disk, which decides how an update is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallMode {
+    /// A stand-alone executable: the update replaces the file in place.
+    Portable,
+    /// Files placed by the Inno Setup installer: the update runs the new setup silently.
+    Installed,
+}
+
+impl InstallMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Portable => "portable",
+            Self::Installed => "installed",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseInfo {
     pub version: String,
@@ -29,16 +67,31 @@ pub struct ReleaseInfo {
     pub name: String,
     pub body: String,
     pub html_url: String,
-    pub asset_url: String,
-    pub asset_name: String,
-    pub asset_size: u64,
+    /// `Synector-v<version>-Windows-x64.zip` — used by portable copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub portable: Option<UpdateAsset>,
+    /// `Synector-Setup-<version>-Windows-x64.exe` — used by installed copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installer: Option<UpdateAsset>,
+}
+
+impl ReleaseInfo {
+    /// Picks the asset that matches how the application is installed. An installed copy never
+    /// falls back to the portable archive: replacing a single file there would leave the
+    /// uninstaller metadata and shortcuts out of date.
+    pub fn asset_for_mode(&self, mode: InstallMode) -> Option<&UpdateAsset> {
+        match mode {
+            InstallMode::Portable => self.portable.as_ref(),
+            InstallMode::Installed => self.installer.as_ref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum UpdateEvent {
     CheckStarted,
     CheckComplete {
-        result: Result<Option<ReleaseInfo>, String>,
+        result: Box<Result<Option<ReleaseInfo>, String>>,
         is_manual: bool,
     },
     DownloadProgress(f32),
@@ -88,6 +141,85 @@ struct GhAsset {
     name: String,
     browser_download_url: String,
     size: u64,
+    /// GitHub publishes `sha256:<hex>` for uploaded release assets.
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+impl UpdateAsset {
+    fn from_github(asset: &GhAsset) -> Self {
+        Self {
+            name: asset.name.clone(),
+            url: asset.browser_download_url.clone(),
+            size: asset.size,
+            sha256: asset.digest.as_deref().and_then(parse_sha256_digest),
+        }
+    }
+}
+
+/// Extracts a lowercase SHA-256 hex digest from the GitHub `digest` field (`sha256:<hex>`).
+fn parse_sha256_digest(digest: &str) -> Option<String> {
+    let lower = digest.trim().to_ascii_lowercase();
+    let hex = lower.strip_prefix("sha256:").unwrap_or(&lower);
+    (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| hex.to_string())
+}
+
+fn is_portable_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".zip") && lower.contains("synector")
+}
+
+fn is_installer_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".exe") && lower.contains("synector-setup")
+}
+
+fn describe_assets(info: &ReleaseInfo) -> String {
+    let mut parts = Vec::new();
+    if let Some(asset) = &info.portable {
+        parts.push(format!("portable {} ({} bytes)", asset.name, asset.size));
+    }
+    if let Some(asset) = &info.installer {
+        parts.push(format!("installer {} ({} bytes)", asset.name, asset.size));
+    }
+    parts.join(", ")
+}
+
+/// Turns a parsed GitHub release into update info, or `None` when it is not newer.
+fn release_from_gh(release: GhRelease, current_version: &str) -> Result<Option<ReleaseInfo>, String> {
+    if !is_newer_version(current_version, &release.tag_name) {
+        return Ok(None);
+    }
+
+    let remote_ver = release.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
+    let portable = release
+        .assets
+        .iter()
+        .find(|a| is_portable_asset(&a.name))
+        .map(UpdateAsset::from_github);
+    let installer = release
+        .assets
+        .iter()
+        .find(|a| is_installer_asset(&a.name))
+        .map(UpdateAsset::from_github);
+
+    if portable.is_none() && installer.is_none() {
+        return Err(format!(
+            "Release v{remote_ver} contains neither a portable archive nor an installer"
+        ));
+    }
+
+    let tag_name = release.tag_name.clone();
+    let name = release.name.unwrap_or_else(|| format!("v{tag_name}"));
+    Ok(Some(ReleaseInfo {
+        version: remote_ver,
+        tag_name,
+        name,
+        body: release.body.unwrap_or_default(),
+        html_url: release.html_url,
+        portable,
+        installer,
+    }))
 }
 
 /// Queries GitHub releases API for the latest release and checks if a newer version is available.
@@ -101,10 +233,7 @@ pub async fn check_github_release(repo: &str, current_version: &str) -> Result<O
     match &result {
         Ok(Some(info)) => crate::logging::info(
             "UPDATER",
-            &format!(
-                "Update available: v{} (asset {}, {} bytes)",
-                info.version, info.asset_name, info.asset_size
-            ),
+            &format!("Update available: v{} ({})", info.version, describe_assets(info)),
         ),
         Ok(None) => crate::logging::debug(
             "UPDATER",
@@ -142,43 +271,93 @@ async fn check_github_release_inner(repo: &str, current_version: &str) -> Result
         .await
         .map_err(|e| format!("Failed to parse release metadata: {e}"))?;
 
-    let remote_ver = release.tag_name.trim().trim_start_matches(['v', 'V']).to_string();
+    release_from_gh(release, current_version)
+}
 
-    if !is_newer_version(current_version, &release.tag_name) {
-        return Ok(None);
-    }
+/// Returns the installation directory recorded by the Inno Setup installer.
+#[cfg(windows)]
+fn installer_install_location() -> Option<PathBuf> {
+    use windows::core::{PCWSTR, HSTRING};
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
 
-    // Find the release asset (prioritizing portable zip archive Synector-*-Windows-x64.zip)
-    let asset = release
-        .assets
-        .iter()
-        .find(|a| {
-            let name = a.name.to_lowercase();
-            name.ends_with(".zip") && name.contains("synector")
-        })
-        .or_else(|| release.assets.iter().find(|a| a.name.to_lowercase().ends_with(".zip")))
-        .or_else(|| release.assets.iter().find(|a| a.name.eq_ignore_ascii_case("Synector.exe")))
-        .or_else(|| release.assets.iter().find(|a| a.name.to_lowercase().ends_with(".exe")))
-        .or_else(|| release.assets.first());
-
-    let (asset_url, asset_name, asset_size) = match asset {
-        Some(a) => (a.browser_download_url.clone(), a.name.clone(), a.size),
-        None => return Err(format!("Release v{} does not contain a suitable asset", remote_ver)),
+    let subkey = HSTRING::from(format!("{UNINSTALL_KEY}\\{INSTALLER_APP_ID}_is1"));
+    let value = HSTRING::from("InstallLocation");
+    let mut buffer = [0u16; 512];
+    let mut size = (buffer.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(value.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buffer.as_mut_ptr() as *mut std::ffi::c_void),
+            Some(&mut size),
+        )
     };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = ((size as usize) / 2).saturating_sub(1).min(buffer.len());
+    let location = String::from_utf16_lossy(&buffer[..len]);
+    (!location.trim().is_empty()).then(|| PathBuf::from(location))
+}
 
-    let tag_name = release.tag_name.clone();
-    let name = release.name.unwrap_or_else(|| format!("v{}", tag_name));
+#[cfg(not(windows))]
+fn installer_install_location() -> Option<PathBuf> {
+    None
+}
 
-    Ok(Some(ReleaseInfo {
-        version: remote_ver,
-        tag_name: release.tag_name,
-        name,
-        body: release.body.unwrap_or_default(),
-        html_url: release.html_url,
-        asset_url,
-        asset_name,
-        asset_size,
-    }))
+/// Directory holding the masked daemon copy (`WindowsServiceHost.exe`).
+fn masked_daemon_dir() -> PathBuf {
+    crate::config::AppConfig::config_dir().join("bin")
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+fn same_path(a: &Path, b: &Path) -> bool {
+    !a.as_os_str().is_empty() && !b.as_os_str().is_empty() && normalized_path(a) == normalized_path(b)
+}
+
+/// Classifies an executable as a portable copy or as part of an installed application.
+fn resolve_install_mode(exe: &Path, install_location: Option<&Path>, masked_dir: &Path) -> InstallMode {
+    let (Some(exe_dir), Some(location)) = (exe.parent(), install_location) else {
+        return InstallMode::Portable;
+    };
+    if same_path(exe_dir, location) {
+        return InstallMode::Installed;
+    }
+    // The masked daemon runs from a user-config copy; it still belongs to the installed
+    // application when the installer's directory holds the main executable.
+    if same_path(exe_dir, masked_dir) && location.join("Synector.exe").is_file() {
+        return InstallMode::Installed;
+    }
+    InstallMode::Portable
+}
+
+/// Detects whether the running executable belongs to an Inno Setup installation.
+pub fn current_install_mode() -> InstallMode {
+    let Ok(exe) = std::env::current_exe() else {
+        return InstallMode::Portable;
+    };
+    let install_location = installer_install_location();
+    if install_location.is_none() {
+        // Defensive fallback: an Inno Setup uninstaller next to the executable is a reliable
+        // marker that this copy was installed rather than unzipped.
+        if exe
+            .parent()
+            .is_some_and(|dir| dir.join("unins000.exe").is_file())
+        {
+            return InstallMode::Installed;
+        }
+    }
+    resolve_install_mode(&exe, install_location.as_deref(), &masked_daemon_dir())
 }
 
 /// Unpacks a zip archive into a temporary folder and extracts the main executable into `target_exe_path`.
@@ -286,33 +465,12 @@ pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(
     Ok(())
 }
 
-/// Downloads update package from `asset_url` with streaming progress updates,
-/// unpacks executable if zipped, swaps executable in place, and restarts processes.
-pub async fn download_and_install_internal<F>(
-    asset_url: &str,
-    is_daemon_caller: bool,
-    progress_cb: F,
-) -> Result<(), String>
+/// Downloads one update asset into `dest_dir`, streaming progress and verifying the size and
+/// the SHA-256 digest published by the GitHub API.
+async fn download_asset<F>(asset: &UpdateAsset, dest_dir: &Path, progress_cb: &F) -> Result<PathBuf, String>
 where
-    F: Fn(f32) + Send + 'static,
+    F: Fn(f32),
 {
-    let result = download_and_install_impl(asset_url, is_daemon_caller, progress_cb).await;
-    match &result {
-        Ok(()) => crate::logging::info("UPDATER", "Update package downloaded and applied"),
-        Err(err) => crate::logging::error("UPDATER", &format!("Update failed: {err}")),
-    }
-    result
-}
-
-async fn download_and_install_impl<F>(
-    asset_url: &str,
-    is_daemon_caller: bool,
-    progress_cb: F,
-) -> Result<(), String>
-where
-    F: Fn(f32) + Send + 'static,
-{
-    crate::logging::info("UPDATER", "Downloading update package");
     init_tls();
     let client = reqwest::Client::builder()
         .user_agent(concat!("Synector-Updater/", env!("CARGO_PKG_VERSION")))
@@ -321,7 +479,7 @@ where
         .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
     let mut response = client
-        .get(asset_url)
+        .get(&asset.url)
         .send()
         .await
         .map_err(|e| format!("Failed to start download: {e}"))?;
@@ -330,118 +488,266 @@ where
         return Err(format!("Download failed with HTTP {}", response.status()));
     }
 
-    let total_size = response.content_length().unwrap_or(0);
-    let exe_path = std::env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {e}"))?;
-    let pending_path = exe_path.with_extension("pending");
-    let download_path = exe_path.with_extension("download");
-
-    if download_path.exists() {
-        let _ = std::fs::remove_file(&download_path);
-    }
+    let file_name = Path::new(&asset.name)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "Synector-update.bin".to_string());
+    let download_path = dest_dir.join(file_name);
+    let total_size = response.content_length().unwrap_or(asset.size);
 
     let mut file = std::fs::File::create(&download_path)
         .map_err(|e| format!("Failed to create download file {:?}: {e}", download_path))?;
-
-    use std::io::Write;
+    let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
 
     while let Some(chunk) = response.chunk().await.map_err(|e| format!("Error during download: {e}"))? {
         file.write_all(&chunk).map_err(|e| format!("Failed to write chunk: {e}"))?;
+        hasher.update(&chunk);
         downloaded += chunk.len() as u64;
         if total_size > 0 {
-            let pct = (downloaded as f32 / total_size as f32).clamp(0.0, 1.0);
-            progress_cb(pct);
+            progress_cb((downloaded as f32 / total_size as f32).clamp(0.0, 1.0));
         }
     }
 
     file.flush().map_err(|e| format!("Failed to flush download file: {e}"))?;
     drop(file);
 
-    let metadata = std::fs::metadata(&download_path).map_err(|e| format!("Failed to verify downloaded file: {e}"))?;
-    if metadata.len() == 0 {
+    if downloaded == 0 {
         let _ = std::fs::remove_file(&download_path);
         return Err("Downloaded file is empty".to_string());
     }
-
-    // Detect if downloaded file is a zip archive
-    let is_zip = {
-        let mut header = [0u8; 4];
-        if let Ok(mut f) = std::fs::File::open(&download_path) {
-            use std::io::Read;
-            let read_bytes = f.read(&mut header).unwrap_or(0);
-            (read_bytes >= 2 && &header[0..2] == b"PK") || asset_url.to_lowercase().contains(".zip")
-        } else {
-            asset_url.to_lowercase().contains(".zip")
-        }
-    };
-
-    if is_zip {
-        if let Err(e) = extract_exe_from_zip(&download_path, &pending_path) {
-            let _ = std::fs::remove_file(&download_path);
-            return Err(e);
-        }
+    if asset.size > 0 && downloaded != asset.size {
         let _ = std::fs::remove_file(&download_path);
-    } else {
-        if pending_path.exists() {
-            let _ = std::fs::remove_file(&pending_path);
+        return Err(format!(
+            "Update package size mismatch: expected {} bytes, received {downloaded}",
+            asset.size
+        ));
+    }
+
+    let digest = hex_encode(&hasher.finalize());
+    match &asset.sha256 {
+        Some(expected) if !expected.eq_ignore_ascii_case(&digest) => {
+            let _ = std::fs::remove_file(&download_path);
+            return Err(format!(
+                "Update package checksum mismatch: expected {expected}, received {digest}"
+            ));
         }
-        std::fs::rename(&download_path, &pending_path)
-            .map_err(|e| format!("Failed to prepare pending binary: {e}"))?;
-    }
-
-    let pending_meta = std::fs::metadata(&pending_path).map_err(|e| format!("Failed to verify pending executable: {e}"))?;
-    if pending_meta.len() == 0 {
-        let _ = std::fs::remove_file(&pending_path);
-        return Err("Pending executable file is empty".to_string());
-    }
-
-    crate::logging::debug(
-        "UPDATER",
-        &format!(
-            "Update package verified ({} bytes); preparing installation",
-            pending_meta.len()
+        Some(_) => crate::logging::debug("UPDATER", "Update package checksum verified (SHA-256)"),
+        None => crate::logging::warn(
+            "UPDATER",
+            "Update asset has no published SHA-256 digest; the download cannot be verified",
         ),
-    );
-
-    if !is_daemon_caller {
-        // Stop daemon cleanly from GUI caller
-        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShutdownDaemon);
-
-        // Give daemon process a moment to exit and release file/mutex handles
-        std::thread::sleep(std::time::Duration::from_millis(350));
-    } else {
-        let gui_running = crate::single_instance::is_gui_running();
-        set_gui_closed_during_update(!gui_running);
-        if gui_running {
-            crate::single_instance::close_existing_gui_window();
-        }
-        // Cleanly and synchronously dismiss all overlays before swapping binary
-        crate::daemon::overlay_manager::hide_all_sync();
-        std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    apply_update_and_restart(&exe_path, &pending_path)?;
+    Ok(download_path)
+}
 
+fn hex_encode(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
+fn update_temp_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("{UPDATE_TEMP_PREFIX}{}", std::process::id()))
+}
+
+fn prepare_update_temp_dir() -> Result<PathBuf, String> {
+    let dir = update_temp_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create the update directory {:?}: {e}", dir))?;
+    Ok(dir)
+}
+
+fn remove_dir_quietly(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+fn is_zip_archive(path: &Path) -> bool {
+    let mut header = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut header))
+        .is_ok()
+        && &header == b"PK"
+}
+
+/// Stops Synector processes before an update replaces files. Returns true when the GUI was running
+/// and should be restored, false for a daemon-only restart. The daemon is the only update
+/// initiator: the GUI triggers updates over IPC, so the caller always runs in the daemon.
+fn shutdown_for_update() -> bool {
+    let gui_running = crate::single_instance::is_gui_running();
+    set_gui_closed_during_update(!gui_running);
+    if gui_running {
+        crate::single_instance::close_existing_gui_window();
+    }
+    // Cleanly and synchronously dismiss all overlays before replacing binaries.
+    crate::daemon::overlay_manager::hide_all_sync();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    gui_running
+}
+
+#[cfg(windows)]
+fn launch_installer_process(setup_path: &Path, parameters: &str) -> Result<(), String> {
+    use windows::core::{PCWSTR, HSTRING};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW, SEE_MASK_NOASYNC};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let file = HSTRING::from(setup_path.to_string_lossy().to_string());
+    let params = HSTRING::from(parameters.to_string());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOASYNC,
+        // No explicit verb: the installer manifest requests administrator privileges, so Windows
+        // elevates it when needed and starts it directly when Synector is already elevated.
+        lpVerb: PCWSTR::null(),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    unsafe {
+        ShellExecuteExW(&mut info).map_err(|err| {
+            format!(
+                "Failed to start the update installer (administrator elevation may have been declined): {err}"
+            )
+        })?;
+    }
     Ok(())
 }
 
-/// Downloads update package from GUI context, terminating background daemon before swap.
-pub async fn download_and_install<F>(asset_url: &str, progress_cb: F) -> Result<(), String>
+#[cfg(not(windows))]
+fn launch_installer_process(setup_path: &Path, parameters: &str) -> Result<(), String> {
+    std::process::Command::new(setup_path)
+        .args(parameters.split_whitespace())
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to start the update installer: {e}"))
+}
+
+/// Runs the downloaded setup silently and exits: the installer replaces the files, refreshes the
+/// uninstaller metadata and restarts Synector in the mode requested by `UpdateMode`.
+fn install_with_installer(setup_path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    if !crate::daemon::watcher::is_elevated() {
+        return Err("Installing an update requires administrator rights".to_string());
+    }
+
+    let restart_gui = shutdown_for_update();
+    let mode = if restart_gui { "gui" } else { "daemon" };
+    let log_path = std::env::temp_dir().join(format!("{UPDATE_TEMP_PREFIX}{}.log", std::process::id()));
+    let parameters = format!(
+        "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /UpdateMode={mode} /LOG=\"{}\"",
+        log_path.display()
+    );
+    crate::logging::info(
+        "UPDATER",
+        &format!("Starting the silent update installer ({mode} restart)"),
+    );
+    launch_installer_process(setup_path, &parameters)?;
+    std::process::exit(0);
+}
+
+async fn download_and_install_impl<F>(info: &ReleaseInfo, progress_cb: F) -> Result<(), String>
 where
     F: Fn(f32) + Send + 'static,
 {
-    download_and_install_internal(asset_url, false, progress_cb).await
+    let mode = current_install_mode();
+    let asset = info.asset_for_mode(mode).cloned().ok_or_else(|| match mode {
+        InstallMode::Portable => "This release does not publish a portable archive".to_string(),
+        InstallMode::Installed => {
+            "This release does not publish an installer; install the update manually".to_string()
+        }
+    })?;
+
+    crate::logging::info(
+        "UPDATER",
+        &format!(
+            "Downloading v{} update ({}, {}, {})",
+            info.version,
+            asset.name,
+            asset.size,
+            mode.label()
+        ),
+    );
+
+    let temp_dir = prepare_update_temp_dir()?;
+    let downloaded = match download_asset(&asset, &temp_dir, &progress_cb).await {
+        Ok(path) => path,
+        Err(err) => {
+            remove_dir_quietly(&temp_dir);
+            return Err(err);
+        }
+    };
+
+    match mode {
+        InstallMode::Installed => {
+            let result = install_with_installer(&downloaded);
+            if result.is_err() {
+                remove_dir_quietly(&temp_dir);
+            }
+            result
+        }
+        InstallMode::Portable => {
+            let exe_path =
+                std::env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {e}"))?;
+            let pending_path = exe_path.with_extension("pending");
+
+            if !is_zip_archive(&downloaded) {
+                remove_dir_quietly(&temp_dir);
+                return Err("The portable update package is not a zip archive".to_string());
+            }
+            let extract_result = extract_exe_from_zip(&downloaded, &pending_path);
+            remove_dir_quietly(&temp_dir);
+            extract_result?;
+
+            let pending_meta = std::fs::metadata(&pending_path)
+                .map_err(|e| format!("Failed to verify pending executable: {e}"))?;
+            if pending_meta.len() == 0 {
+                let _ = std::fs::remove_file(&pending_path);
+                return Err("Pending executable file is empty".to_string());
+            }
+
+            crate::logging::debug(
+                "UPDATER",
+                &format!(
+                    "Portable update verified ({} bytes); preparing installation",
+                    pending_meta.len()
+                ),
+            );
+            shutdown_for_update();
+            apply_update_and_restart(&exe_path, &pending_path)
+        }
+    }
 }
 
-/// Downloads update package from daemon background context, restarting daemon with --daemon after swap.
-pub async fn download_and_install_daemon<F>(asset_url: &str, progress_cb: F) -> Result<(), String>
+async fn download_and_install_internal<F>(info: &ReleaseInfo, progress_cb: F) -> Result<(), String>
 where
     F: Fn(f32) + Send + 'static,
 {
-    download_and_install_internal(asset_url, true, progress_cb).await
+    let result = download_and_install_impl(info, progress_cb).await;
+    match &result {
+        Ok(()) => crate::logging::info("UPDATER", "Update package downloaded and applied"),
+        Err(err) => crate::logging::error("UPDATER", &format!("Update failed: {err}")),
+    }
+    result
 }
 
-/// Cleans up any leftover temporary update files (.download, .pending, .extracted).
+/// Downloads and applies an update triggered from the background daemon.
+pub async fn download_and_install_daemon<F>(info: &ReleaseInfo, progress_cb: F) -> Result<(), String>
+where
+    F: Fn(f32) + Send + 'static,
+{
+    download_and_install_internal(info, progress_cb).await
+}
+
+/// Cleans up leftover update files: staged packages next to the executable and the temporary
+/// update directories a previous, interrupted download may have left behind.
 pub fn clean_temp_update_files() {
     if let Ok(exe_path) = std::env::current_exe() {
         let download = exe_path.with_extension("download");
@@ -466,6 +772,25 @@ pub fn clean_temp_update_files() {
             crate::logging::debug(
                 "UPDATER",
                 &format!("Removed leftover update directory {}", extracted.display()),
+            );
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if !name.to_string_lossy().starts_with(UPDATE_TEMP_PREFIX) {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                let _ = std::fs::remove_dir_all(&path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+            crate::logging::debug(
+                "UPDATER",
+                &format!("Removed leftover update file {}", path.display()),
             );
         }
     }
@@ -576,6 +901,39 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
 mod tests {
     use super::*;
 
+    const ZIP_SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const SETUP_SHA: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    fn release_json() -> String {
+        format!(
+            r###"{{
+            "tag_name": "v2.9.0",
+            "name": "Synector v2.9.0",
+            "body": "## What's Changed\n* Added installer",
+            "html_url": "https://github.com/psyattack/Synector/releases/tag/v2.9.0",
+            "assets": [
+                {{
+                    "name": "checksums.txt",
+                    "browser_download_url": "https://github.com/psyattack/Synector/releases/download/v2.9.0/checksums.txt",
+                    "size": 128
+                }},
+                {{
+                    "name": "Synector-v2.9.0-Windows-x64.zip",
+                    "browser_download_url": "https://github.com/psyattack/Synector/releases/download/v2.9.0/Synector-v2.9.0-Windows-x64.zip",
+                    "size": 15728640,
+                    "digest": "sha256:{ZIP_SHA}"
+                }},
+                {{
+                    "name": "Synector-Setup-2.9.0-Windows-x64.exe",
+                    "browser_download_url": "https://github.com/psyattack/Synector/releases/download/v2.9.0/Synector-Setup-2.9.0-Windows-x64.exe",
+                    "size": 16777216,
+                    "digest": "sha256:{SETUP_SHA}"
+                }}
+            ]
+        }}"###
+        )
+    }
+
     #[test]
     fn test_clean_temp_update_files_no_panic() {
         clean_temp_update_files();
@@ -607,40 +965,151 @@ mod tests {
     }
 
     #[test]
-    fn test_github_release_deserialization() {
-        let json = r###"{
-            "tag_name": "v1.2.0",
-            "name": "Synector v1.2.0 - Studio Update",
-            "body": "## What's Changed\n* Added auto-updater\n* Improved performance",
-            "html_url": "https://github.com/psyattack/Synector/releases/tag/v1.2.0",
+    fn test_github_release_deserialization_and_asset_selection() {
+        let release: GhRelease = serde_json::from_str(&release_json()).expect("failed to deserialize release");
+        let info = release_from_gh(release, "2.8.0")
+            .expect("newer release should parse")
+            .expect("release should be newer than 2.8.0");
+
+        assert_eq!(info.version, "2.9.0");
+        assert_eq!(info.tag_name, "v2.9.0");
+
+        let portable = info.portable.as_ref().expect("portable asset");
+        assert_eq!(portable.name, "Synector-v2.9.0-Windows-x64.zip");
+        assert_eq!(portable.size, 15_728_640);
+        assert_eq!(portable.sha256.as_deref(), Some(ZIP_SHA));
+
+        let installer = info.installer.as_ref().expect("installer asset");
+        assert_eq!(installer.name, "Synector-Setup-2.9.0-Windows-x64.exe");
+        assert_eq!(installer.size, 16_777_216);
+        assert_eq!(installer.sha256.as_deref(), Some(SETUP_SHA));
+
+        assert_eq!(
+            info.asset_for_mode(InstallMode::Portable).map(|a| a.name.as_str()),
+            Some("Synector-v2.9.0-Windows-x64.zip")
+        );
+        assert_eq!(
+            info.asset_for_mode(InstallMode::Installed).map(|a| a.name.as_str()),
+            Some("Synector-Setup-2.9.0-Windows-x64.exe")
+        );
+
+        let same_release: GhRelease = serde_json::from_str(&release_json()).unwrap();
+        assert!(
+            release_from_gh(same_release, "2.9.0").unwrap().is_none(),
+            "an equal version must not be offered as an update"
+        );
+    }
+
+    #[test]
+    fn test_github_release_without_update_assets_is_rejected() {
+        let json = r#"{
+            "tag_name": "v3.0.0",
+            "name": "Synector v3.0.0",
+            "body": "",
+            "html_url": "https://github.com/psyattack/Synector/releases/tag/v3.0.0",
             "assets": [
-                {
-                    "name": "checksums.txt",
-                    "browser_download_url": "https://github.com/psyattack/Synector/releases/download/v1.2.0/checksums.txt",
-                    "size": 128
-                },
-                {
-                    "name": "Synector-v1.2.0-Windows-x64.zip",
-                    "browser_download_url": "https://github.com/psyattack/Synector/releases/download/v1.2.0/Synector-v1.2.0-Windows-x64.zip",
-                    "size": 15728640
-                }
+                {"name": "checksums.txt", "browser_download_url": "https://example.com/checksums.txt", "size": 10}
             ]
-        }"###;
+        }"#;
+        let release: GhRelease = serde_json::from_str(json).unwrap();
+        assert!(release_from_gh(release, "2.9.0").is_err());
+    }
 
-        let release: GhRelease = serde_json::from_str(json).expect("failed to deserialize release");
-        assert_eq!(release.tag_name, "v1.2.0");
-        assert_eq!(release.assets.len(), 2);
+    #[test]
+    fn test_parse_sha256_digest() {
+        assert_eq!(
+            parse_sha256_digest(&format!("sha256:{}", ZIP_SHA.to_uppercase())),
+            Some(ZIP_SHA.to_string())
+        );
+        assert_eq!(parse_sha256_digest(&format!("  SHA256:{ZIP_SHA}  ")), Some(ZIP_SHA.to_string()));
+        assert_eq!(parse_sha256_digest("sha256:abc"), None);
+        assert_eq!(parse_sha256_digest("md5:0123"), None);
+        assert_eq!(parse_sha256_digest(""), None);
+    }
 
-        let zip_asset = release.assets.iter()
-            .find(|a| {
-                let name = a.name.to_lowercase();
-                name.ends_with(".zip") && name.contains("synector")
-            })
-            .expect("should find Synector zip");
+    #[test]
+    fn test_hex_encode() {
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+        assert_eq!(hex_encode(&[]), "");
+    }
 
-        assert_eq!(zip_asset.name, "Synector-v1.2.0-Windows-x64.zip");
-        assert_eq!(zip_asset.size, 15728640);
-        assert!(is_newer_version("1.0.0", &release.tag_name));
+    #[test]
+    fn test_resolve_install_mode() {
+        let masked_dir = Path::new("C:\\Users\\u\\AppData\\Local\\Synector\\bin");
+        let program_files = Path::new("C:\\Program Files\\Synector");
+
+        assert_eq!(
+            resolve_install_mode(
+                &program_files.join("Synector.exe"),
+                Some(program_files),
+                masked_dir
+            ),
+            InstallMode::Installed
+        );
+        assert_eq!(
+            resolve_install_mode(
+                Path::new("d:\\apps\\synector\\SYNECTOR.EXE"),
+                Some(Path::new("D:\\Apps\\Synector\\")),
+                masked_dir
+            ),
+            InstallMode::Installed,
+            "paths compare case-insensitively and ignore a trailing separator"
+        );
+        assert_eq!(
+            resolve_install_mode(
+                Path::new("D:\\Tools\\Portable\\Synector.exe"),
+                Some(program_files),
+                masked_dir
+            ),
+            InstallMode::Portable
+        );
+        assert_eq!(
+            resolve_install_mode(Path::new("D:\\Tools\\Synector.exe"), None, masked_dir),
+            InstallMode::Portable,
+            "no installer registration means a portable copy"
+        );
+
+        // The masked daemon of an installed application is recognized by the copied executable
+        // it runs next to the user configuration.
+        let temp = std::env::temp_dir().join(format!("synector_mode_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        std::fs::write(temp.join("Synector.exe"), b"MZ").unwrap();
+        assert_eq!(
+            resolve_install_mode(
+                &masked_dir.join("WindowsServiceHost.exe"),
+                Some(&temp),
+                masked_dir
+            ),
+            InstallMode::Installed
+        );
+        assert_eq!(
+            resolve_install_mode(
+                &masked_dir.join("WindowsServiceHost.exe"),
+                Some(&temp.join("missing")),
+                masked_dir
+            ),
+            InstallMode::Portable
+        );
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_is_zip_archive() {
+        let temp = std::env::temp_dir().join(format!("synector_zip_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+
+        let zip = temp.join("archive.zip");
+        std::fs::write(&zip, b"PK\x03\x04rest").unwrap();
+        assert!(is_zip_archive(&zip));
+
+        let plain = temp.join("plain.bin");
+        std::fs::write(&plain, b"MZbinary").unwrap();
+        assert!(!is_zip_archive(&plain));
+        assert!(!is_zip_archive(&temp.join("missing.zip")));
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]

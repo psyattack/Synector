@@ -43,13 +43,44 @@ jobs:
 
           $exePath = "target/release/Synector.exe"
           if (Test-Path $exePath) {
-              # Portable Zip archive (only release artifact)
+              # Portable zip archive
               $zipTarget = "$distDir/Synector-v$ver-Windows-x64.zip"
               Compress-Archive -Path $exePath -DestinationPath $zipTarget -Force
               Write-Host "Created $zipTarget"
           } else {
               Write-Error "Release executable not found at $exePath"
               exit 1
+          }
+
+      - name: Prepare Inno Setup
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe'
+          $exe = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          $dir = Join-Path $env:RUNNER_TEMP 'inno-setup'
+          # /PORTABLE=1 extracts the compiler without installing it or touching the registry.
+          Start-Process -FilePath $exe -ArgumentList @('/PORTABLE=1', '/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir") -Wait
+          $iscc = Join-Path $dir 'ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+              throw 'Inno Setup compiler was not extracted'
+          }
+          "INNO_ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Build Installer
+        shell: pwsh
+        run: |
+          $cargoToml = Get-Content Cargo.toml -Raw
+          if ($cargoToml -notmatch 'version\s*=\s*"([^"]+)"') {
+              throw 'Unable to read the version from Cargo.toml'
+          }
+          $ver = $matches[1]
+          & $env:INNO_ISCC "installer/synector.iss" "/DAppVersion=$ver" "/DAppVersion4=$ver.0" "--messages-jsonl"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Inno Setup compiler failed with exit code $LASTEXITCODE"
+          }
+          if (-not (Test-Path "dist_artifacts/Synector-Setup-$ver-Windows-x64.exe")) {
+              throw 'Installer artifact was not created'
           }
 
       - name: Extract Release Notes from CHANGELOG.md
