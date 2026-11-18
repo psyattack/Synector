@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest an improvement or a new capability for Synector
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. Describe the problem first, then the behaviour you
+        would like — it makes the idea much easier to evaluate.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Rules and triggers
+        - Actions and pipelines
+        - Overlay Studio
+        - Macro Studio
+        - GUI and UX
+        - CLI and rule authoring
+        - Daemon, watcher or updating
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The workflow pain or limitation you hit today.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed behaviour
+      description: How should Synector behave? Mention the triggers, actions or settings involved.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Current workarounds, other tools or automations you tried.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: This is one suggestion, not a batch of unrelated requests.
+          required: true

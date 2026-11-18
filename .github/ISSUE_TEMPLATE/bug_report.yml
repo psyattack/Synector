@@ -1,0 +1,78 @@
+name: Bug report
+description: Report a reproducible problem with Synector
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much as you can:
+        reproducible bugs with version, Windows build and logs get fixed first.
+  - type: input
+    id: version
+    attributes:
+      label: Synector version
+      description: Shown in the app footer and in Settings → Updates.
+      placeholder: "2.8.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Press Win+R, run winver and copy the version and build number.
+      placeholder: "Windows 11 23H2 (build 22631)"
+    validations:
+      required: true
+  - type: dropdown
+    id: elevation
+    attributes:
+      label: Running elevated
+      description: Synector starts elevated by default; process detection behaves differently without it.
+      options:
+        - Elevated (default)
+        - Not elevated (--no-elevate)
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: The actual behaviour, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: |
+        List the steps, including the rule trigger and actions involved. A minimal rule
+        (Copy automation in the rule list) attached or pasted as JSON helps a lot.
+      placeholder: |
+        1. Create a rule with trigger ...
+        2. Add action ...
+        3. Start the rule / launch the app ...
+        4. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: |
+        Attach the relevant file from %LOCALAPPDATA%\Synector\logs\ — the current day's file
+        covers most reports. Remove credentials, webhook secrets and private script output first.
+      placeholder: Attach files or paste the relevant lines here.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I am on the latest release and the issue still reproduces.
+          required: true
+        - label: I removed secrets and private data from logs and rule exports.
+          required: true
+        - label: I searched existing issues for duplicates.
+          required: true
