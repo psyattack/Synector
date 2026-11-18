@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "$trigger_type", rename_all = "snake_case")]
 pub enum Trigger {
     #[serde(rename = "manual")]
@@ -87,7 +87,7 @@ fn default_threshold_duration() -> u64 {
 }
 
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessMatchMode {
     #[default]
@@ -96,7 +96,7 @@ pub enum ProcessMatchMode {
     Regex,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemEventType {
     SessionLock,
@@ -115,7 +115,7 @@ pub enum SystemEventType {
     NetworkDisconnected,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleType {
     #[default]
@@ -127,7 +127,7 @@ pub enum ScheduleType {
     Monthly,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConditionOperator {
     #[default]
@@ -135,14 +135,14 @@ pub enum ConditionOperator {
     Or,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(from = "RuleConditionItemHelper", into = "RuleConditionItemHelper")]
 pub struct RuleConditionItem {
     pub operator: ConditionOperator,
     pub condition: RuleCondition,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 enum RuleConditionItemHelper {
     Item {
@@ -190,7 +190,7 @@ impl RuleConditionItem {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "$condition_type", rename_all = "snake_case")]
 pub enum RuleCondition {
     #[serde(rename = "process_running")]
@@ -263,7 +263,7 @@ impl RuleCondition {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "$action_type", rename_all = "snake_case")]
 pub enum Action {
     #[serde(rename = "start_process")]
@@ -527,13 +527,13 @@ pub enum Action {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct DiscordRpcButton {
     pub label: String,
     pub url: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ArchiveOperation {
     #[default]
@@ -541,7 +541,7 @@ pub enum ArchiveOperation {
     Unpack,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ArchiveFormat {
     #[default]
@@ -553,7 +553,7 @@ pub enum ArchiveFormat {
     Rar,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FileSystemOperation {
     #[default]
@@ -566,7 +566,7 @@ pub enum FileSystemOperation {
     AppendText,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ElseIfBranch {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<RuleConditionItem>,
@@ -583,7 +583,7 @@ impl ElseIfBranch {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioTarget {
     #[default]
@@ -608,7 +608,7 @@ pub fn default_idle_sec() -> u32 {
     300
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AudioVolumeAction {
     #[default]
@@ -619,7 +619,7 @@ pub enum AudioVolumeAction {
     PlayBeep,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ScriptType {
     #[default]
@@ -628,7 +628,7 @@ pub enum ScriptType {
     Lua,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MacroEvent {
     KeyDown {
@@ -706,7 +706,7 @@ pub fn default_text_delay() -> u32 {
     20
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MacroOperation {
     #[default]
@@ -715,7 +715,7 @@ pub enum MacroOperation {
     Toggle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MacroPreset {
     pub id: String,
     pub name: String,
@@ -776,7 +776,7 @@ pub fn default_macro_presets() -> Vec<MacroPreset> {
     ]
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseActionType {
     #[default]
@@ -788,7 +788,7 @@ pub enum MouseActionType {
     Scroll,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseButton {
     #[default]
@@ -799,7 +799,7 @@ pub enum MouseButton {
     XButton2,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MouseCoordMode {
     #[default]
@@ -816,7 +816,7 @@ fn default_http_method() -> String {
     "POST".to_string()
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FirewallAction {
     #[default]
@@ -825,7 +825,7 @@ pub enum FirewallAction {
     Toggle,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitMode {
     #[default]
@@ -833,7 +833,7 @@ pub enum WaitMode {
     UntilCondition,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitTimeoutPolicy {
     #[default]
@@ -841,7 +841,7 @@ pub enum WaitTimeoutPolicy {
     Continue,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WaitCondition {
     WindowOpened {
@@ -880,7 +880,7 @@ pub enum WaitCondition {
     },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitFileCondition {
     #[default]
@@ -896,7 +896,7 @@ pub fn default_wait_timeout() -> f64 {
     30.0
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowActionType {
     #[default]
@@ -915,7 +915,7 @@ pub enum WindowActionType {
     ToggleShowHide,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessPriorityLevel {
     #[default]
@@ -927,7 +927,7 @@ pub enum ProcessPriorityLevel {
     Idle,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PowerPlanType {
     #[default]
@@ -936,7 +936,7 @@ pub enum PowerPlanType {
     PowerSaver,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SystemPowerType {
     Lock,
@@ -946,7 +946,7 @@ pub enum SystemPowerType {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 pub struct RuleTag {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -991,7 +991,7 @@ impl RuleTag {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Rule {
     pub id: String,
     pub name: String,
@@ -1206,7 +1206,7 @@ fn default_cooldown() -> f64 {
     0.0
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProcessSnapshotItem {
     pub pid: u32,
     pub name: String,
@@ -1215,7 +1215,7 @@ pub struct ProcessSnapshotItem {
     pub cpu_percent: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LogItem {
     pub timestamp: String,
     pub level: String,
@@ -1223,13 +1223,13 @@ pub struct LogItem {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 pub struct AnalyticsSummary {
     #[serde(default)]
     pub total_executions: u64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayOperation {
     #[default]
@@ -1240,7 +1240,7 @@ pub enum OverlayOperation {
     SetText,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonitorInfo {
     pub index: usize,
     pub name: String,
@@ -1251,7 +1251,7 @@ pub struct MonitorInfo {
     pub is_primary: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MonitorOrientation {
     Landscape,
@@ -1272,7 +1272,7 @@ impl MonitorInfo {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OverlayAnchor {
     #[default]
@@ -1285,7 +1285,7 @@ pub enum OverlayAnchor {
     WindowRelative,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OverlayRect {
     pub x: f32,
     pub y: f32,
@@ -1304,7 +1304,7 @@ impl Default for OverlayRect {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OverlayStyle {
     #[serde(default = "default_overlay_bg")]
     pub bg_color: [u8; 4],
@@ -1346,7 +1346,7 @@ impl Default for OverlayStyle {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ShapeKind {
     #[default]
@@ -1356,7 +1356,7 @@ pub enum ShapeKind {
     Line,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CrosshairStyle {
     #[default]
@@ -1366,7 +1366,7 @@ pub enum CrosshairStyle {
     TShaped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", content = "payload")]
 pub enum OverlayClickAction {
     TriggerRule { rule_id: String },
@@ -1382,7 +1382,7 @@ pub enum OverlayClickAction {
     ToggleTimer,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphMetric {
     #[default]
@@ -1395,7 +1395,7 @@ pub enum GraphMetric {
     Network,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphStyle {
     #[default]
@@ -1404,7 +1404,7 @@ pub enum GraphStyle {
     Histogram,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerMode {
     #[default]
@@ -1414,7 +1414,7 @@ pub enum TimerMode {
     Uptime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InteractiveControlKind {
     Button {
@@ -1461,7 +1461,7 @@ impl Default for InteractiveControlKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SliderBindTarget {
     #[default]
@@ -1471,7 +1471,7 @@ pub enum SliderBindTarget {
     CustomVariable,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryKind {
     #[default]
@@ -1480,7 +1480,7 @@ pub enum TelemetryKind {
     EngineStatus,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryStyle {
     #[default]
@@ -1489,7 +1489,7 @@ pub enum TelemetryStyle {
     Detailed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyVisualizerLayout {
     WasdMouse,
@@ -1503,7 +1503,7 @@ pub fn default_key_vis_layout() -> KeyVisualizerLayout {
     KeyVisualizerLayout::WasdMouse
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OverlayElement {
     Text {
@@ -1966,7 +1966,7 @@ pub fn default_badge_bg() -> [u8; 4] {
     [70, 160, 255, 45]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct OverlayDefinition {
     pub id: String,
     pub name: String,

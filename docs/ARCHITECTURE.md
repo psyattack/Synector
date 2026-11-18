@@ -5,7 +5,7 @@ It separates background execution from user interaction: a tray daemon owns rule
 system monitoring, while the egui desktop GUI is a controlling client that renders state and
 edits drafts.
 
-Per-file layout lives in the Structure section of [README.md](README.md); this document describes
+Per-file layout lives in the Structure section of [README.md](../README.md); this document describes
 how the pieces behave and why.
 
 ## Two tiers
@@ -47,6 +47,9 @@ owner of runtime state, the GUI keeps a draft copy for editing and reconciliatio
 | `--status` | Print daemon status over IPC and exit |
 | `--overlay-window <id>` | Standalone borderless overlay window for one overlay |
 | `--run-rule <id_or_title>` | Invoke a rule directly (IPC when the daemon runs, otherwise an autonomous runner fallback) |
+| `--rules-validate <file>` | Parse and validate a JSON rule file without changing anything |
+| `--rules-apply <file>` | Upsert rules from JSON (IPC when the daemon runs, direct `config.json` edit otherwise) |
+| `--rules-list`, `--rules-export [<file>]`, `--rules-delete <id>` | Inspect, export or delete rules from the command line |
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation is what enables kernel
 ETW process tracing, UIPI-safe input simulation into elevated applications, and silent
@@ -60,6 +63,7 @@ highest-privilege logon autostart through Task Scheduler.
 | `src/daemon/` | Rule engine, actions, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, updater |
 | `src/ipc/` | Named pipe client/server and the shared request/response protocol |
 | `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, tags, overlays |
+| `src/cli.rs` | Command-line rule authoring: JSON parsing, validation, upsert and IPC dispatch |
 | `src/config.rs` | `AppConfig` persistence and validation (JSON) |
 | `src/i18n.rs`, `src/i18n/` | Locale registry and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
@@ -148,6 +152,15 @@ alphabetical, trigger type, action count, status). In default sort order with no
 cards are reordered by drag handle and the new order is committed immediately and persisted
 through IPC; filtered or sorted modes disable reordering with an explanatory tooltip.
 
+### Rule authoring without the GUI
+
+`src/cli.rs` validates and applies JSON rule files: upserts go through `IpcRequest::ImportRules`
+while the daemon runs, or directly into `config.json` when it does not, with daemon-owned runtime
+counters preserved. The format is self-describing (`--rules-schema` is a `schemars`-derived draft-07
+schema, plus `--rules-reference` and `--rules-template`), and the CLI supports declarative
+`--rules-sync`, single-rule enable/disable/reset, `--json` reports and `--dry-run`. The full command
+reference lives in [RULE_AUTHORING.md](RULE_AUTHORING.md).
+
 ### Presets and dynamic operations
 
 Overlay and macro templates are modular presets stored in `AppConfig` and synchronized between
@@ -167,5 +180,5 @@ tray menu and overlay notifications. Optional auto-install is a setting, not a d
   view.
 - No legacy shims: obsolete variants, fields and paths are removed instead of kept behind
   compatibility wrappers.
-- Rust crate versions and commands come from `Cargo.toml` and [README.md](README.md); do not
+- Rust crate versions and commands come from `Cargo.toml` and [README.md](../README.md); do not
   restate them here, they drift.

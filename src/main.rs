@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod autorun;
+mod cli;
 pub mod config;
 mod daemon;
 mod gui;
@@ -31,6 +32,11 @@ fn main() {
         if let Err(e) = gui::overlay_window::run_overlay_window(overlay_id, calibration, override_text, duration_ms, overlay_data) {
             eprintln!("Failed to launch overlay window: {e}");
         }
+        return;
+    }
+
+    // 2. Rule authoring commands are console tools: run them before elevation and update cleanup
+    if cli::run(&args) {
         return;
     }
 

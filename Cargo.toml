@@ -27,6 +27,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
 zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 regex = "1.11"
+schemars = { version = "0.8", default-features = false, features = ["derive"] }
 
 [build-dependencies]
 winres = "0.1"
@@ -60,6 +61,7 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
     "Win32_System_Variant",
     "Win32_Media_Audio",
     "Win32_Media_Audio_Endpoints",

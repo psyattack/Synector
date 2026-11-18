@@ -39,7 +39,7 @@
 * **Audio & Device Automation**: Control master and per-app volumes, balance channels, switch audio endpoints, or trigger automations from hardware and power events.
 * **Wait Conditions & Smart Flow**: Pause pipelines with timers or await dynamic events (window, process, hotkey, file changes) with timeout policies, mid-pipeline checks, and If/Else branching.
 * **Presets & Quick Operations**: Modular template presets for overlays and macros with instant operations (Run, Stop, Toggle) and dynamic runtime text updates.
-* **Desktop Shortcuts & CLI Runner**: Generate Windows `.lnk` shortcuts to launch any rule from desktop, or run automations directly via `--run-rule`.
+* **Desktop Shortcuts & CLI Runner**: Generate Windows `.lnk` shortcuts to launch any rule from desktop, run automations directly via `--run-rule`, or author rules from JSON files with the built-in CLI (`--rules-apply`).
 * **Silent Background Updates**: Daemon-managed GitHub release monitoring, auto-install, tray progress indicators, and overlay alerts.
 * **Portable Sharing**: Export and import complete automations instantly via compact clipboard codes for effortless backup and sharing.
 
@@ -118,6 +118,9 @@ Synector/
 │   ├── app.ico                            # Win32 application icon
 │   ├── app.png                            # High-res RGBA icon
 │   └── app.svg                            # Vector logo
+├── docs/
+│   ├── ARCHITECTURE.md                    # Subsystem behavior and design conventions
+│   └── RULE_AUTHORING.md                  # Command-line rule authoring reference
 ├── src/                                   # Source code
 │   ├── daemon/                            # Background daemon service
 │   │   ├── actions.rs                     # Execution handlers (Process, Window, Tuning, Audio, Scripts, Macros)
@@ -168,6 +171,7 @@ Synector/
 │   │   ├── client.rs                      # Named pipe IPC client
 │   │   └── protocol.rs                    # Request & response message types (Serde)
 │   ├── autorun.rs                         # Windows Task Scheduler autorun integration
+│   ├── cli.rs                             # Command-line rule authoring (validate, apply, list, export)
 │   ├── config.rs                          # JSON configuration persistence & validation (theme, language, updates)
 │   ├── daemon.rs                          # Daemon entrypoint & service lifecycle
 │   ├── gui.rs                             # GUI entrypoint & eframe application loop
@@ -184,13 +188,35 @@ Synector/
 
 How these pieces behave and interact — the two tiers, the data flow, and the design
 conventions behind the rule engine, overlays, input simulation and process monitoring — is
-described in [ARCHITECTURE.md](ARCHITECTURE.md).
+described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 </details>
 
 ## Configuration
 
 All files are located in: **`%LOCALAPPDATA%\Synector\`**
+
+## Rule authoring from the command line
+
+Rules are plain JSON files that can be authored, validated and applied without the GUI — through the
+running daemon over IPC, or directly into `config.json` when it is not running.
+
+```powershell
+Synector.exe --rules-validate rules.json
+Synector.exe --rules-apply rules.json      # create or update (upsert by id)
+Synector.exe --rules-sync rules.json       # declarative: also delete rules missing from the file
+Synector.exe --rules-list
+Synector.exe --rules-export rules.json
+```
+
+`--rules-schema` prints a draft-07 JSON Schema, `--rules-reference` a human-readable catalogue and
+`--rules-template <trigger>[:<action>]` a ready-to-edit skeleton, so the format is discoverable
+without the source. Full command reference, file format and examples:
+[docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md).
+
+> [!NOTE]
+> Release builds are Windows GUI-subsystem executables, so PowerShell does not wait for them; use
+> `cmd /c` when scripting. Agents that spawn the process with piped stdio and wait work directly.
 
 ## License
 
