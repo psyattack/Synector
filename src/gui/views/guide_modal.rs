@@ -344,9 +344,9 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Анатомия Правила",
             "1. Триггер (Trigger) — единственный источник события (запуск процесса, фокус окна, таймер, горячая клавиша, файл или вебхук).\n\
-             2. Предварительные Условия (Pre-conditions) — опциональная цепочка проверок (процесс, окно, время, питание, файл) с логикой И / ИЛИ. Если условия не выполнены, запуск правила пропускается.\n\
+             2. Предварительные Условия (Pre-conditions) — опциональная цепочка проверок (процесс, окно, время и дни недели, системные события, нагрузка CPU/RAM, файл или папка) с логикой И / ИЛИ. Если условия не выполнены, запуск правила пропускается.\n\
              3. Actions Pipeline — последовательная цепочка основных шагов, исполняемых сверху вниз.\n\
-             4. Exit Actions — завершающие шаги, исполняемые при закрытии отслеживаемого процесса или завершении задачи.",
+             4. Exit Actions — завершающие шаги, исполняемые при закрытии отслеживаемого процесса.",
             t,
             true,
         );
@@ -356,11 +356,11 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (сек)", "Минимальный интервал между повторными срабатываниями (защита от спама и циклов).", t);
         doc_table_row(ui, "Квота выполнений", "Ограничивает число запусков: за всё время (правило встаёт на паузу при исчерпании) либо за период — час, день, неделя, месяц или своё окно от первого запуска; периодическая квота после сброса счётчика продолжает работать.", t);
         doc_table_row(ui, "Остановка при ошибке", "Прерывание цепочки действий, если один из шагов завершился аварийно.", t);
-        doc_table_row(ui, "Single Instance", "Защита от запуска дубликатов процесса (блокирует создание второго окна приложения).", t);
-        doc_table_row(ui, "Скрытный режим (Stealth)", "Полное скрытие иконки в трее для незаметной фоновой работы сервиса.", t);
-        doc_table_row(ui, "Маскировка (PE Masking)", "Маскировка фонового демона в Диспетчере задач под системную службу (RuntimeBroker.exe).", t);
+        doc_table_row(ui, "Single Instance", "Правило срабатывает только для первого экземпляра процесса; остальные экземпляры игнорируются, а Exit Actions и привязанные процессы ждут закрытия всех экземпляров.", t);
+        doc_table_row(ui, "Скрытие иконки в трее (Stealth)", "Фоновый демон работает без значка в области уведомлений.", t);
+        doc_table_row(ui, "Маскировка (PE Masking)", "Копия демона запускается как WindowsServiceHost.exe со стандартной иконкой Windows; в Диспетчере задач она выглядит как системный процесс.", t);
         doc_table_row(ui, "Test Rule / Step", "Проверка всей цепочки или отдельного шага прямо в редакторе без ожидания триггера.", t);
-        doc_table_row(ui, "Backup & Sharing", "Экспорт и импорт правил в формате JSON для резервных копий и переноса настроек.", t);
+        doc_table_row(ui, "Backup & Sharing", "Экспорт и импорт правил в JSON, а также коды SYN1:, которые переносят связанные пресеты и оверлеи; импортированные правила создаются выключенными, дубликаты пропускаются.", t);
         doc_table_row(ui, "Теги и Сортировка", "Цветные теги с иконками, фильтрация списка, автоматическая сортировка и ручное перетаскивание карточек (Drag & Drop).", t);
         doc_table_row(ui, "Ярлыки (.lnk)", "Создание ярлыков Windows на рабочем столе для мгновенного прямого запуска правил из проводника или внешних лаунчеров.", t);
         doc_table_row(ui, "Библиотека Пресетов", "Сохранение и загрузка готовых пресетов оверлеев и макросов, открепление в кастомные копии и управление операциями.", t);
@@ -369,7 +369,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode (Сопровождение процесса)",
-            "Если триггером выбран процесс, Synector переходит в режим компаньона: удерживает контекст PID процесса во время его работы и автоматически вызывает Exit Actions при его завершении.",
+            "Если триггером выбран процесс, Synector отслеживает его PID, передаёт контекст в токены и выполняет Exit Actions при завершении. Шаг Start Process с флагом close_on_exit и оверлей с close_with_target дополнительно закрываются вместе с основным процессом.",
             t,
             false,
         );
@@ -381,7 +381,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Rule Anatomy",
             "1. Trigger — the single origin event (process start, window focus, schedule, hotkey, file, or webhook).\n\
-             2. Pre-conditions — optional gating criteria (process running, active window focus, time range & days, AC/battery power, file existence) chained with AND / OR operators. If not met, execution is skipped.\n\
+             2. Pre-conditions — optional gating criteria (process running, active window focus, time range & days, system events, sustained CPU/RAM load, file or folder presence) chained with AND / OR operators. If not met, execution is skipped.\n\
              3. Actions Pipeline — ordered sequential pipeline of steps executed top-to-bottom.\n\
              4. Exit Actions — optional clean-up actions executed when the tracked process terminates.",
             t,
@@ -393,11 +393,11 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (sec)", "Minimum elapsed time before the rule can trigger again (prevents event flooding).", t);
         doc_table_row(ui, "Execution Quota", "Caps the number of runs: for the rule's lifetime (auto-pauses when spent) or per period — hour, day, week, month, or a custom window that starts with the first run. A periodic quota resumes by itself once the counter resets.", t);
         doc_table_row(ui, "Stop on Error", "Aborts pipeline execution immediately if any action reports a failure.", t);
-        doc_table_row(ui, "Single Instance", "Prevents duplicate instances of tracked process from running.", t);
-        doc_table_row(ui, "Stealth Mode", "Option to hide system tray icon completely for unobtrusive background operation.", t);
-        doc_table_row(ui, "PE Masking", "Masks the background daemon process name in Task Manager as a system service (RuntimeBroker.exe).", t);
+        doc_table_row(ui, "Single Instance", "Fires only for the first instance of the tracked process; later instances are ignored, and exit actions plus bound satellites wait until all instances have closed.", t);
+        doc_table_row(ui, "Hide Tray Icon (Stealth)", "Runs the background daemon without a notification-area icon.", t);
+        doc_table_row(ui, "PE Masking", "Runs a daemon copy as WindowsServiceHost.exe with the generic Windows icon, so Task Manager sees it as a system process.", t);
         doc_table_row(ui, "Test Rule / Step", "Test the full pipeline or single actions directly in the studio without waiting for real triggers.", t);
-        doc_table_row(ui, "Backup & Sharing", "Export and import automations as JSON files, or send compact SYN1: share codes that bundle the referenced macro presets and overlays; imports are previewed and disabled by default.", t);
+        doc_table_row(ui, "Backup & Sharing", "Export and import automations as JSON, or use SYN1: codes that bundle the referenced macro presets and overlays; imports are created disabled and duplicates are skipped.", t);
         doc_table_row(ui, "Tags & Reordering", "Custom colored tags with icons, tag filtering, multi-mode sorting, and precision drag-and-drop rule card reordering.", t);
         doc_table_row(ui, "Shortcuts (.lnk)", "Generate Windows desktop shortcuts for direct 1-click rule invocation from shell or external launchers.", t);
         doc_table_row(ui, "Template Presets", "Reusable Overlay and Macro preset libraries with detach support, quick operations (Run, Stop, Toggle), and runtime text updates.", t);
@@ -406,7 +406,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode",
-            "When configured with a Process trigger, Synector tracks the lifecycle of the executable, maintaining runtime PID context and triggering Exit Actions upon process exit.",
+            "With a Process trigger, Synector tracks the executable's PIDs, exposes them to tokens and runs Exit Actions when the process terminates. Start Process steps with close_on_exit and overlays with close_with_target are also closed together with the primary process.",
             t,
             false,
         );
@@ -426,7 +426,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Клавиатурные Сочетания Редактора",
             "• Ctrl + Z — Отмена последнего действия (Undo). Поддерживает историю до 50 снимков состояния.\n\
              • Ctrl + Y или Ctrl + Shift + Z — Повтор отмененного действия (Redo).\n\
-             • F9 — Старт / стоп аппаратной записи макроса из любого окна Windows.\n\
+             • F9 — Старт / стоп аппаратной записи макроса; при открытой Студии макросов работает из любого окна Windows.\n\
              • F10 — Быстрый запуск пробного тестирования макроса (Test Run live).\n\
              • Escape — Мгновенная остановка записи макроса или закрытие модальных окон.",
             t,
@@ -450,9 +450,9 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Прокрутка Колеса", "Возможность записи и ручной вставки шагов прокрутки колесика мыши (+ Колесо)", t);
         doc_table_row(ui, "Дублирование и Удаление", "Быстрое клонирование шагов и удаление ненужных событий аккуратными значками без лишних рамок", t);
         doc_table_row(ui, "Повтор и Скорость", "Множитель скорости воспроизведения (0.1x – 10x) и цикл повторов макроса", t);
-        doc_table_row(ui, "Повороты в 3D-Играх", "Запись и воспроизведение поворотов камеры в играх через Raw Input; переключение [КУРСОР] ↔ [ПОВОРОТ] кликом по бейджику", t);
+        doc_table_row(ui, "Повороты в 3D-Играх", "Запись и воспроизведение поворотов камеры в играх через Raw Input; дельта-импульсы ΔX/ΔY отправляются шагами примерно по 3 мс, переключение [КУРСОР] ↔ [ПОВОРОТ] кликом по бейджику", t);
         doc_table_row(ui, "Защита от Залипания", "При отмене макроса или отпускании хоткея движок мгновенно сбрасывает все физически зажатые клавиши и кнопки мыши", t);
-        doc_table_row(ui, "DirectInput и ScanCodes", "Аппаратная симуляция скан-кодов с выдержкой нажатия (35+ мс), совместимая с играми и полноэкранными приложениями", t);
+        doc_table_row(ui, "DirectInput и ScanCodes", "Аппаратная симуляция скан-кодов с выдержкой нажатия не менее 30–35 мс, совместимая с играми и полноэкранными приложениями", t);
         doc_table_row(ui, "Безопасный Тест (F10)", "Запуск и остановка тестового прогона макроса на изолированном фоновом потоке без вылетов и зависаний", t);
     } else {
         doc_header(ui, "Keyboard Shortcuts & Recording", t);
@@ -463,7 +463,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Studio Editor Shortcuts",
             "• Ctrl + Z — Undo previous rule edit (supports up to 50 historical snapshots).\n\
              • Ctrl + Y or Ctrl + Shift + Z — Redo reverted modification.\n\
-             • F9 — Start / Stop global hardware macro recording from any window in Windows.\n\
+             • F9 — Start / Stop hardware macro recording; while Macro Studio is open it works from any window.\n\
              • F10 — Start / Stop live safe test run of the macro sequence.\n\
              • Escape — Immediately stops recording, cancels active Drag & Drop, or closes modal window.",
             t,
@@ -487,9 +487,9 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Scroll Wheel", "Full support for capturing and manually adding mouse wheel scrolling steps (+ Wheel)", t);
         doc_table_row(ui, "Clone & Delete", "Clean ghost actions for fast duplication and deletion without clunky button outlines", t);
         doc_table_row(ui, "Repeat & Speed", "Playback speed multiplier (0.1x – 10x) and loop iteration repeat counts", t);
-        doc_table_row(ui, "In-Game 3D Camera Turns", "Live capture and playback of camera rotation via Raw Input relative deltas; toggle [MOVE] ↔ [TURN] on the badge", t);
+        doc_table_row(ui, "In-Game 3D Camera Turns", "Live capture and playback of camera rotation via Raw Input relative deltas; ΔX/ΔY pulses are sent roughly every 3 ms, with [MOVE] ↔ [TURN] toggled on the badge", t);
         doc_table_row(ui, "Anti-Stuck Key Safety", "Cancelling a macro or releasing a Hold hotkey immediately releases all simulated down keys and mouse buttons", t);
-        doc_table_row(ui, "DirectInput ScanCodes", "Hardware scan-code simulation with frame-safe press durations (35+ ms) for compatibility with games and full-screen engines", t);
+        doc_table_row(ui, "DirectInput ScanCodes", "Hardware scan-code simulation with frame-safe press durations of at least 30–35 ms for compatibility with games and full-screen engines", t);
         doc_table_row(ui, "Safe Test Run (F10)", "Toggle test execution on an isolated background thread without freezing or crashes", t);
     }
 }
@@ -502,19 +502,17 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_header(ui, "Все Виды Триггеров", t);
         doc_paragraph(ui, "Триггер определяет событие, инициирующее автоматизацию. Выбрать нужный триггер можно через встроенную Библиотеку Триггеров с мгновенным поиском по ключевым словам:", t);
 
-        doc_table_row(ui, "MANUAL", "Ручной запуск правила по клику на кнопку в инспекторе или по хоткею (On-Demand) без постоянного фонового слежения.", t);
-        doc_table_row(ui, "PROCESS", "Срабатывает при запуске исполняемого файла. Режимы: Exact (точное имя), Wildcard, Regex. Опция Single Instance предотвращает повторный запуск.", t);
-        doc_table_row(ui, "WINDOW", "Срабатывает при смене активности окна: фокус получен (Gained Focus), потерян (Lost Focus) или оба события.", t);
-        doc_table_row(ui, "SCHEDULE", "Запуск по расписанию: Interval (каждые N сек), Daily (ежедневно в заданное время по дням недели), Monthly (в заданный день месяца) или One-Shot (точная дата и время).", t);
-        doc_table_row(ui, "EVENTS", "Системные события: запуск/закрытие сервиса, блокировка Windows, спящий режим, питание сеть/батарея, простой пользователя, подключение оборудования/USB, монитор вкл/выкл, сеть онлайн/офлайн.", t);
-        doc_table_row(ui, "SYSTEM", "Расширенные триггеры: порог ресурсов CPU/RAM, глобальный хоткей с поддержкой Hold mode, мониторинг файлов/папок (File Watcher) и локальный Webhook API.", t);
+        doc_table_row(ui, "PROCESSES", "Process — запуск .exe с режимами Exact / Wildcard / Regex и опцией Single Instance; Window — получение или потеря фокуса окном процесса.", t);
+        doc_table_row(ui, "SCHEDULE & TIME", "Interval (каждые N секунд), Daily (время и выбранные дни недели), One-Shot (точная дата и время) и Monthly (заданный день месяца).", t);
+        doc_table_row(ui, "SYSTEM & HARDWARE", "Manual (ручной запуск), Global Hotkey (клавиши и кнопки мыши, Hold/repeat), Resource (порог CPU/RAM с выдержкой), File Watcher (папка или отдельный файл) и Webhook.", t);
+        doc_table_row(ui, "EVENTS & LIFECYCLE", "Запуск и завершение Synector, блокировка/разблокировка сеанса, сон/пробуждение, питание от сети/батареи, простой/активность пользователя, подключение/отключение устройств, включение/выключение монитора и подключение/отключение сети.", t);
 
         ui.add_space(2.0);
         doc_callout(
             ui,
             "Предварительные Условия (Каталог Условий)",
             "• Интерактивный каталог: быстрый выбор условий через библиотеку с категориями и полнотекстовым поиском.\n\
-             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, а также слежение за папкой или файлом.\n\
+             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон/пробуждение, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, а также слежение за папкой или файлом.\n\
              • Логика связывания: объединение операторами И (AND) и ИЛИ (OR) в любых сочетаниях.\n\
              • Тихий пропуск: при невыполнении условий запуск правила мягко пропускается без ошибок.",
             t,
@@ -540,7 +538,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Webhook Trigger",
-            "Локальный REST-сервер слушает вызовы по адресу http://127.0.0.1:48123/api/v1/trigger/<endpoint_id>. Совместим с Stream Deck, Home Assistant, curl и браузерными закладками.",
+            "Локальный REST-сервер слушает вызовы по адресу http://127.0.0.1:48123/api/v1/trigger/<endpoint_id или id правила>. Отвечает JSON-статусом и совместим с Stream Deck, Home Assistant, curl и браузерными закладками.",
             t,
             false,
         );
@@ -552,7 +550,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Обычный триггер: нажатие хоткея запускает выполнение правила, а повторное нажатие останавливает текущее выполнение или бесконечный макрос.\n\
              • Повторять в цикле (Repeat in loop): при обычном нажатии правило циклически повторяется до повторного нажатия хоткея.\n\
              • Режим Hold mode: правило непрерывно выполняется пока физически зажата клавиша или кнопка мыши, и мгновенно прерывается при ее отпускании.\n\
-             • Повтор при удержании (repeat_while_held): циклический повтор пайплайна пока удерживается хоткей, со строгой синхронизацией квоты (max_executions). При отпускании все зажатые макросом кнопки сбрасываются мгновенно.\n\
+             • Повтор при удержании (repeat_while_held): в Hold mode пайплайн повторяется, пока клавиша или кнопка зажата, а в обычном режиме — до повторного нажатия. Каждая итерация проходит проверку квоты (max_executions). При отпускании все зажатые макросом кнопки сбрасываются мгновенно.\n\
              • Права Администратора: для перехвата хоткеев и эмуляции ввода в играх или программах, запущенных с повышенными привилегиями, Synector также должен быть запущен от имени администратора.",
             t,
             false,
@@ -561,12 +559,10 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_header(ui, "Triggers Deep-Dive", t);
         doc_paragraph(ui, "A trigger defines the origin event that initiates automation. Choose triggers conveniently from the built-in Trigger Catalog with instant search:", t);
 
-        doc_table_row(ui, "MANUAL", "On-Demand execution triggered manually via the Inspector run button or linked hotkey, without continuous background polling.", t);
-        doc_table_row(ui, "PROCESS", "Triggers when an executable starts. Match modes: Exact, Wildcard, Regex. Single Instance prevents multiple instances.", t);
-        doc_table_row(ui, "WINDOW", "Triggers on foreground window changes: focus Gained, focus Lost, or both.", t);
-        doc_table_row(ui, "SCHEDULE", "Time-based executions: Interval (every N seconds), Daily (at specified time on selected days), Monthly (day of month at specified time), or One-Shot (exact date & time).", t);
-        doc_table_row(ui, "EVENTS", "System OS hooks: app start/stop, workstation lock/unlock, system sleep/resume, AC/battery power, user idle, USB/device connect, display on/off, network status.", t);
-        doc_table_row(ui, "SYSTEM", "Advanced triggers: Resource thresholds (CPU/RAM), global keyboard/mouse hotkeys with Hold mode, File Watcher, and local HTTP Webhooks.", t);
+        doc_table_row(ui, "PROCESSES", "Process — executable launch with Exact / Wildcard / Regex matching and Single Instance; Window — a process window gains or loses focus.", t);
+        doc_table_row(ui, "SCHEDULE & TIME", "Interval (every N seconds), Daily (time plus selected weekdays), One-Shot (exact date and time), and Monthly (selected day of month).", t);
+        doc_table_row(ui, "SYSTEM & HARDWARE", "Manual (on-demand), Global Hotkey (keys and mouse buttons with Hold/repeat), Resource (CPU/RAM threshold sustained for a duration), File Watcher (folder or single file), and Webhook.", t);
+        doc_table_row(ui, "EVENTS & LIFECYCLE", "Synector startup and shutdown, session lock/unlock, sleep/resume, AC/battery power, user idle/active, device connect/disconnect, display on/off, and network connect/disconnect.", t);
 
         ui.add_space(2.0);
         doc_callout(
@@ -599,7 +595,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Webhook Trigger",
-            "Local REST server listens for incoming calls at http://127.0.0.1:48123/api/v1/trigger/<endpoint_id>. Compatible with Stream Deck, Home Assistant, curl, and browser bookmarks.",
+            "Local REST server listens for calls at http://127.0.0.1:48123/api/v1/trigger/<endpoint_id or rule id>. It answers with a JSON status and works with Stream Deck, Home Assistant, curl, and browser bookmarks.",
             t,
             false,
         );
@@ -611,7 +607,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Standard Trigger: pressing the hotkey starts execution, and pressing it again cleanly stops active rules or infinite macros.\n\
              • Repeat in Loop: in toggle mode, repeats rule pipeline execution continuously until the hotkey is pressed again.\n\
              • Hold Mode: execution continues while the hotkey or mouse button is physically held down, and automatically terminates on release.\n\
-             • Loop While Held: repeat pipeline execution continuously in a loop while held (respects execution quota and releases stuck inputs).\n\
+             • Loop While Held (repeat_while_held): with Hold mode, repeats the pipeline while the key or button is held; without it, repeats until the hotkey is pressed again. Every iteration goes through the execution quota check, and released inputs are cleaned up.\n\
              • Admin Privileges: to trigger shortcuts or dispatch inputs in elevated games or tools, Synector must also be run as administrator.",
             t,
             false,
@@ -632,16 +628,16 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Аппаратный Макрос", "Единый воркфлоу клавиатуры и мыши: зажатия, клики, перемещения, плавный ход, текст, паузы и запись по F9.", t);
         doc_table_row(ui, "Управление Звуком", "Единый контроллер громкости динамиков, микрофона и конкретных процессов (Mute, Set Volume, баланс L/R).", t);
         doc_table_row(ui, "Формат Аудио", "Переключение частоты дискретизации (до 192 кГц), разрядности (16-32 бит) и каналов (Stereo/Mono).", t);
-        doc_table_row(ui, "Воспроизведение Звука", "Воспроизведение звуковых файлов (WAV/MP3/OGG) или генерация тональных сигналов (Beep) с настраиваемой частотой.", t);
+        doc_table_row(ui, "Воспроизведение Звука", "Воспроизведение WAV через PlaySound, других форматов (MP3/WMA/M4A/OGG) через MCI или генерация тональных сигналов (Beep) с настраиваемой частотой.", t);
         doc_table_row(ui, "Устройство по Умолчанию", "Мгновенное переключение основного аудиовыхода или микрофона по имени устройства.", t);
         doc_table_row(ui, "Window & Display", "Управление окнами (свернуть/восстановить, скрыть/показать, прижать, TopMost), выбор целевого монитора, разрешение и Гц.", t);
         doc_table_row(ui, "Tuning & Firewall", "Изменение приоритета процессов, привязка к ядрам CPU (Affinity) и блокировка/переключение трафика в Windows Firewall.", t);
         doc_table_row(ui, "Очистка RAM (Trim)", "Сброс страниц памяти (Working Set) процесса обратно в систему с поддержкой мягких лимитов и пропуска активного окна.", t);
         doc_table_row(ui, "Discord Rich Presence", "Трансляция активности в Discord: статус игры/приложения, подробности, таймер, изображения и интерактивные кнопки с автосбросом.", t);
-        doc_table_row(ui, "Архивация (Archive)", "Упаковка и распаковка файлов и директорий во всех популярных форматах: Zip, 7z, Tar, Tar.gz, Rar.", t);
+        doc_table_row(ui, "Архивация (Archive)", "Упаковка и распаковка Zip, Tar, Tar.gz, Tar.xz и 7z через встроенные средства; Rar требует установленного WinRAR (rar.exe) или unrar.exe.", t);
         doc_table_row(ui, "Файловые Операции", "Создание файлов/папок, копирование, переименование, удаление, запись и дозапись текста с поддержкой токенов контекста.", t);
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Отправка исходящих REST-запросов (GET, POST, PUT, DELETE) с заголовками и телом.", t);
-        doc_table_row(ui, "Power & System", "Схемы питания Windows; переход в сон, гибернация, перезагрузка, выключение и блокировка.", t);
+        doc_table_row(ui, "Power & System", "Схемы питания Windows; сон, выключение экрана, перезагрузка, выключение и блокировка рабочей станции.", t);
         doc_table_row(ui, "Экранный Оверлей (HUD)", "Автономный GPU-оверлей поверх окон и игр: прицелы, текст с токенами, интерактивные кнопки/слайдеры, графики, телеметрия (CPU/RAM/сеть/микрофон), таймеры и медиаплеер с защитой от захвата.", t);
         doc_table_row(ui, "Ожидание (Wait)", "Универсальная пауза: таймер задержки или ожидание событий (окно, процесс, хоткей, файл) с таймаутом и политикой прерывания.", t);
         doc_table_row(ui, "Проверка (Check)", "Валидация условий посередине цепочки с мягким завершением выполнения последующих шагов без ошибок.", t);
@@ -658,7 +654,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Графики и Таймеры: графики истории (линейные, с заливкой, гистограммы) и таймеры (часы, секундомер, обратный отсчет, аптайм).\n\
              • Гейминг и Медиа: кастомные прицелы (Crosshair), визуализаторы нажатий клавиш (WASD, стрелки), медиаплеер и векторные фигуры.\n\
              • Защита от захвата (Anti-Capture): режим WDA_EXCLUDEFROMCAPTURE гарантирует полную невидимость оверлея в OBS Studio, Discord стримах и скриншотах.\n\
-             • Автономное окно и калибровка: отдельное легковесное окно с DWM-стилизацией, сквозным кликом, хоткеем калибровки F8 и Lua API (ph.overlay_*).",
+             • Автономное окно и калибровка: отдельное легковесное окно с DWM-стилизацией, сквозным кликом, калибровкой из Студии (в этом режиме оверлей можно перетаскивать) и Lua API (ph.overlay_*).",
             t,
             false,
         );
@@ -669,7 +665,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Единая Студия Макросов и Управление Мышью",
             "• Объединенный конвейер: любые комбинации физических нажатий клавиш, кнопок мыши, прокрутки колеса, набора текста, пауз и перемещений курсора.\n\
              • Интерактивная Студия: модальное окно с визуальным таймлайном, Drag & Drop сортировкой со скроллом колесиком и безопасным тестом (F10).\n\
-             • Повороты Камеры в Играх (Relative Mode): воспроизведение импульсов смещения ΔX, ΔY с линейной угловой скоростью и частотой 200–300 Гц для плавного движения камеры в 3D-играх.\n\
+             • Повороты Камеры в Играх (Relative Mode): воспроизведение импульсов смещения ΔX, ΔY шагами примерно по 3 мс для плавного движения камеры в 3D-играх.\n\
              • Плавность и Органика: поддержка настраиваемой длительности движения (мс) и флуктуаций (Organic) для естественного человекоподобного перемещения.\n\
              • Запись по F9: глобальный аппаратный перехват в реальном времени с настраиваемыми фильтрами и звуковым подтверждением.\n\
              • Бесконечный Режим: циклическое воспроизведение макроса с возможностью прерывания по хоткею или при отпускании в Hold mode.\n\
@@ -688,16 +684,16 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Hardware Macro", "Unified keyboard and mouse workflow: press/release, clicks, cursor move, wheel scroll, typing, delays, and F9 recording.", t);
         doc_table_row(ui, "Audio & Mic Control", "Unified volume and mute controller for playback speakers, microphones, and per-process audio with L/R balance.", t);
         doc_table_row(ui, "Audio Format", "Configure sample rate (up to 192 kHz), bit depth (16-32 bit), and channels (Stereo/Mono) for audio devices.", t);
-        doc_table_row(ui, "Play Sound", "Play local audio files (WAV/MP3/OGG) or generate customizable frequency/duration system beeps.", t);
+        doc_table_row(ui, "Play Sound", "Play WAV through PlaySound, other formats (MP3/WMA/M4A/OGG) through MCI, or generate a system beep with configurable frequency and duration.", t);
         doc_table_row(ui, "Default Audio Device", "Switch default system playback audio output or recording microphone by name.", t);
         doc_table_row(ui, "Window & Display", "Window positioning, show/hide or minimize/restore toggles, TopMost, target monitor index selection, resolution & Hz.", t);
         doc_table_row(ui, "Tuning & Firewall", "Process priority class, CPU core affinity masks, and Windows Firewall traffic blocking/toggling.", t);
         doc_table_row(ui, "Trim RAM (Working Set)", "Releases process working set memory pages back to the OS with configurable soft limits and active window skip safeguards.", t);
         doc_table_row(ui, "Discord Rich Presence", "Broadcast custom Rich Presence to Discord: game activity, state details, timer, image assets, and action buttons with auto-clear.", t);
-        doc_table_row(ui, "Archive (Pack/Unpack)", "Compress or extract files and folders in all popular archive formats: Zip, 7z, Tar, Tar.gz, Rar.", t);
+        doc_table_row(ui, "Archive (Pack/Unpack)", "Compress or extract Zip, Tar, Tar.gz, Tar.xz and 7z with built-in tooling; Rar requires WinRAR (rar.exe) or unrar.exe to be installed.", t);
         doc_table_row(ui, "File System Operations", "Create files/folders, copy/clone, rename/move, delete, write and append text with context tokens.", t);
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Send outbound HTTP requests (GET, POST, PUT, DELETE) with custom headers and body.", t);
-        doc_table_row(ui, "Power & System", "Windows power plans; sleep, hibernate, restart, shutdown, and workstation lock.", t);
+        doc_table_row(ui, "Power & System", "Windows power plans; sleep, turn the display off, restart, shut down, and lock the workstation.", t);
         doc_table_row(ui, "Screen Overlay (HUD)", "Standalone GPU overlay over apps and games: reticles, text with tokens, interactive buttons/sliders, live graphs, telemetry (CPU/RAM/net/mic), timers, and media player with anti-capture protection.", t);
         doc_table_row(ui, "Wait Condition", "Universal wait: timer pause or waiting for events (window, process, hotkey, file) with timeout and abort/continue policies.", t);
         doc_table_row(ui, "Check Condition", "Inline condition evaluation mid-pipeline that halts remaining steps cleanly without error.", t);
@@ -714,7 +710,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Graphs & Timers: history charts (line, filled area, histogram) and versatile timers (system clock, stopwatch, countdown, uptime).\n\
              • Gaming & Media: custom crosshairs, key visualizer layouts (WASD, Arrows, 6-Key), media player widgets, and vector shapes.\n\
              • Anti-Capture Mode: WDA_EXCLUDEFROMCAPTURE flag keeps the overlay completely invisible to OBS Studio, Discord screen sharing, and screenshot captures.\n\
-             • Standalone Window & Calibration: dedicated lightweight borderless window with DWM styling, click-through mode, F8 calibration, and Lua scripting API (ph.overlay_*).",
+             • Standalone Window & Calibration: dedicated lightweight borderless window with DWM styling, click-through mode, studio-driven calibration (the overlay becomes draggable), and Lua scripting API (ph.overlay_*).",
             t,
             false,
         );
@@ -725,7 +721,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Unified Macro Studio & Smart Mouse Control",
             "• Unified Workflow: seamlessly combine physical key presses, mouse buttons, wheel scroll, text typing, delays, and cursor motion.\n\
              • Interactive Studio: full-featured modal canvas with visual event rows, smooth Drag & Drop reordering with wheel scroll, and test run (F10).\n\
-             • In-Game 3D Camera Turns: relative displacement pulses ΔX, ΔY paced at 200–300 Hz with linear angular velocity for smooth camera rotations in 3D games.\n\
+             • In-Game 3D Camera Turns: relative displacement pulses ΔX, ΔY sent in roughly 3 ms steps for smooth camera rotations in 3D games.\n\
              • Smooth & Organic Motion: configurable duration (ms) and organic humanized curve toggles to simulate realistic mouse movements.\n\
              • F9 Global Recording: real-time low-level hardware capture with customizable action filters and audio chime confirmation.\n\
              • Infinite Mode: continuous macro cycling with on-demand cancellation via hotkey toggle or release in Hold mode.\n\
@@ -824,7 +820,7 @@ fn render_output_piping_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_paragraph(ui, "В PowerShell все переменные контекста также доступны как переменные окружения с префиксом `$env:PH_...` (например `$env:PH_PROCESSNAME`, `$env:PH_PREVOUTPUT`).", t);
         ui.add_space(2.0);
-        doc_paragraph(ui, "В скриптах Lua достаточно вернуть строку через `return \"результат\"`, чтобы движок передал её в {PrevOutput}. Также доступен метод `ph.get_prev_output()`.", t);
+        doc_paragraph(ui, "В скриптах Lua достаточно вернуть строку через `return \"результат\"`, чтобы движок передал её в {PrevOutput}. Прочитать её из скрипта можно через `ph.get(\"PrevOutput\")` или `ph.context.PrevOutput`.", t);
     } else {
         doc_header(ui, "Output Piping & Data Flow", t);
         doc_paragraph(ui, "Output Piping allows passing output between actions without intermediate files.", t);
@@ -854,7 +850,7 @@ fn render_output_piping_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_paragraph(ui, "In PowerShell, all context variables are also accessible as environment variables prefixed with `$env:PH_...` (e.g. `$env:PH_PROCESSNAME`, `$env:PH_PREVOUTPUT`).", t);
         ui.add_space(2.0);
-        doc_paragraph(ui, "In Lua scripts, returning a string via `return \"result\"` captures it into {PrevOutput}. The API helper `ph.get_prev_output()` is also available.", t);
+        doc_paragraph(ui, "In Lua scripts, returning a string via `return \"result\"` captures it into {PrevOutput}. Read it from inside a script with `ph.get(\"PrevOutput\")` or `ph.context.PrevOutput`.", t);
     }
 }
 

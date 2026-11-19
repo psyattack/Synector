@@ -352,18 +352,24 @@ pub fn run_daemon() {
         }
     });
 
-    // Spawn System Events Watcher Loop
+    // Spawn System Events Watcher Loop. Polled sources run on a timer; the notification
+    // window wakes the loop immediately for suspend/resume, display and device events.
     let engine_sys = Arc::clone(&engine);
     rt.spawn(async move {
         let mut sys_watcher = SystemEventsWatcher::new();
+        let notification = crate::daemon::system_events::notification_handle();
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(2000));
         loop {
-            interval.tick().await;
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = notification.notified() => {}
+            }
             let events = sys_watcher.check_events();
             if !events.is_empty() {
                 let mut eng = engine_sys.lock().await;
                 for ev in events {
-                    eng.handle_system_event(ev).await;
+                    eng.handle_system_event(ev.event_type, ev.device_id.as_deref())
+                        .await;
                 }
             }
         }

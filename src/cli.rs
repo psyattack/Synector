@@ -30,7 +30,7 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
   --rules-disable <id>        Disable one rule
   --rules-reset <id>          Reset a rule's execution counter and re-enable it
   --rules-example             Print an example rule file
-  --rules-schema              Print the draft-07 JSON Schema for a rule file
+  --rules-schema              Print the draft-07 JSON Schema for one rule object
   --rules-reference           Print a human-readable reference of every trigger, action and condition
   --rules-template <t[:a]>    Print a ready-to-edit rule skeleton for a trigger and action
   --json                      Machine-readable output for validate/apply/sync/delete/enable/disable/reset

@@ -4,6 +4,10 @@ This file contains the licenses and copyright notices for third-party software c
 
 Synector is grateful to the open-source community and the authors of the following projects.
 
+Components and versions below are the direct dependencies pinned by `Cargo.lock` for the current
+release, plus assets bundled in this repository. Transitive dependencies carry their own license
+metadata and are resolved by Cargo.
+
 ---
 
 ## Table of Contents
@@ -33,16 +37,19 @@ Synector is grateful to the open-source community and the authors of the followi
 | **chrono** | 0.4.45 | MIT OR Apache-2.0 | [github.com/chronotope/chrono](https://github.com/chronotope/chrono) |
 | **eframe** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
 | **egui** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
-| **egui-phosphor** | 0.14.0 | MIT OR Apache-2.0 | [github.com/lucasmerlin/egui-phosphor](https://github.com/lucasmerlin/egui-phosphor) |
+| **egui-phosphor** | 0.14.0 | MIT OR Apache-2.0 | [github.com/amPerl/egui-phosphor](https://github.com/amPerl/egui-phosphor) |
 | **egui_extras** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
 | **flate2** | 1.1.10 | MIT OR Apache-2.0 | [github.com/rust-lang/flate2-rs](https://github.com/rust-lang/flate2-rs) |
 | **image** | 0.25.10 | MIT OR Apache-2.0 | [github.com/image-rs/image](https://github.com/image-rs/image) |
-| **mlua** | 0.12.2 | MIT | [github.com/khvzak/mlua](https://github.com/khvzak/mlua) |
+| **mlua** | 0.12.2 | MIT | [github.com/mlua-rs/mlua](https://github.com/mlua-rs/mlua) |
+| **regex** | 1.13.1 | MIT OR Apache-2.0 | [github.com/rust-lang/regex](https://github.com/rust-lang/regex) |
 | **reqwest** | 0.13.5 | MIT OR Apache-2.0 | [github.com/seanmonstar/reqwest](https://github.com/seanmonstar/reqwest) |
 | **rfd** | 0.15.4 | MIT | [github.com/PolyMeilex/rfd](https://github.com/PolyMeilex/rfd) |
 | **rustls** | 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
+| **schemars** | 0.8.22 | MIT | [github.com/GREsau/schemars](https://github.com/GREsau/schemars) |
 | **serde** | 1.0.229 | MIT OR Apache-2.0 | [github.com/serde-rs/serde](https://github.com/serde-rs/serde) |
 | **serde_json** | 1.0.154 | MIT OR Apache-2.0 | [github.com/serde-rs/json](https://github.com/serde-rs/json) |
+| **sha2** | 0.10.9 | MIT OR Apache-2.0 | [github.com/RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
 | **tokio** | 1.53.3 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
 | **windows** | 0.62.2 | MIT OR Apache-2.0 | [github.com/microsoft/windows-rs](https://github.com/microsoft/windows-rs) |
 | **winres** | 0.1.12 | MIT | [github.com/mxre/winres](https://github.com/mxre/winres) |
@@ -52,7 +59,7 @@ Synector is grateful to the open-source community and the authors of the followi
 
 | Component | Version | License | Upstream / Author |
 | :--- | :--- | :--- | :--- |
-| **Lua 5.4** | 5.4.x | MIT | [lua.org](https://www.lua.org) / PUC-Rio |
+| **Lua** | 5.4.9 (vendored through `mlua` / `lua-src`) | MIT | [lua.org](https://www.lua.org) / PUC-Rio |
 
 ### Fonts and Visual Assets
 
@@ -61,14 +68,14 @@ Synector is grateful to the open-source community and the authors of the followi
 | **Archivo Variable** | Font | OFL-1.1 | [github.com/Omnibus-Type/Archivo](https://github.com/Omnibus-Type/Archivo) |
 | **Geist Mono Variable** | Font | OFL-1.1 | [github.com/vercel/geist-font](https://github.com/vercel/geist-font) |
 | **Inter Variable** | Font | OFL-1.1 | [github.com/rsms/inter](https://github.com/rsms/inter) |
-| **Phosphor Icons** | Icons | MIT | [github.com/phosphor-icons/core](https://github.com/phosphor-icons/core) |
+| **Phosphor Icons** | Icons | MIT | [phosphoricons.com](https://phosphoricons.com) / [github.com/phosphor-icons/core](https://github.com/phosphor-icons/core) |
 
 ---
 
 ## Component Attributions
 
 ### arboard
-- **Copyright**: (c) 1Password and contributors
+- **Copyright**: (c) 2022 The Arboard contributors
 - **License**: MIT OR Apache-2.0
 
 ### base64
@@ -80,7 +87,7 @@ Synector is grateful to the open-source community and the authors of the followi
 - **License**: BSD-3-Clause AND MIT
 
 ### chrono
-- **Copyright**: (c) 2014 Kang Seonghoon and Chrono contributors
+- **Copyright**: (c) 2014-2026 Kang Seonghoon and Chrono contributors
 - **License**: MIT OR Apache-2.0
 
 ### eframe / egui / egui_extras
@@ -88,11 +95,12 @@ Synector is grateful to the open-source community and the authors of the followi
 - **License**: MIT OR Apache-2.0
 
 ### egui-phosphor
-- **Copyright**: (c) Lucas Merlin
+- **Copyright**: (c) Romet Tagobert and egui-phosphor contributors
 - **License**: MIT OR Apache-2.0
+- **Bundled icons**: Phosphor Icons, MIT
 
 ### flate2
-- **Copyright**: (c) 2014 Alex Crichton, Josue Ortega
+- **Copyright**: (c) 2014-2026 Alex Crichton and flate2 contributors
 - **License**: MIT OR Apache-2.0
 
 ### image
@@ -100,23 +108,35 @@ Synector is grateful to the open-source community and the authors of the followi
 - **License**: MIT OR Apache-2.0
 
 ### mlua
-- **Copyright**: (c) 2019-2024 Aleksandr Slepnev
+- **Copyright**: (c) 2019-2021 A. Orlenko and mlua contributors
 - **License**: MIT
 
+### regex
+- **Copyright**: (c) 2014 The Rust Project Developers
+- **License**: MIT OR Apache-2.0
+
 ### reqwest
-- **Copyright**: (c) 2016-2024 Sean McArthur
+- **Copyright**: (c) 2016-2026 Sean McArthur
 - **License**: MIT OR Apache-2.0
 
 ### rfd
-- **Copyright**: (c) 2020 Polyakov Boris
+- **Copyright**: (c) 2022 Bartłomiej Maryńczak
 - **License**: MIT
 
 ### rustls
 - **Copyright**: (c) 2016 Joseph Birr-Pixton and rustls contributors
 - **License**: Apache-2.0 OR ISC OR MIT
 
+### schemars
+- **Copyright**: (c) 2019 Graham Esau
+- **License**: MIT
+
 ### serde / serde_json
 - **Copyright**: (c) 2014-2017 Erick Tryzelaar, David Tolnay
+- **License**: MIT OR Apache-2.0
+
+### sha2
+- **Copyright**: (c) 2006-2009 Graydon Hoare, (c) 2009-2013 Mozilla Foundation, (c) 2016 Artyom Pavlov
 - **License**: MIT OR Apache-2.0
 
 ### tokio
@@ -128,15 +148,15 @@ Synector is grateful to the open-source community and the authors of the followi
 - **License**: MIT OR Apache-2.0
 
 ### winres
-- **Copyright**: (c) 2016 Alice Maz
+- **Copyright**: (c) 2016 Max Resch
 - **License**: MIT
 
 ### zip
 - **Copyright**: (c) 2014 Mathijs van de Nes and contributors
 - **License**: MIT
 
-### Lua 5.4 (vendored)
-- **Copyright**: (c) 1994–2024 Lua.org, PUC-Rio
+### Lua 5.4.9 (vendored)
+- **Copyright**: (c) 1994–2025 Lua.org, PUC-Rio
 - **License**: MIT
 
 ### Archivo Font

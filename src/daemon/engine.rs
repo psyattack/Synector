@@ -760,6 +760,24 @@ impl DaemonEngine {
         }
     }
 
+    /// Matches an optional device filter against the interface path reported by Windows.
+    /// An empty filter accepts any device; otherwise the filter is a case-insensitive
+    /// substring, which works for IDs (`VID_1234`), interface paths and drive letters.
+    pub fn device_filter_matches(filter: Option<&str>, device_id: Option<&str>) -> bool {
+        let Some(filter) = filter.map(str::trim).filter(|value| !value.is_empty()) else {
+            return true;
+        };
+        if filter == "*" {
+            return true;
+        }
+        let Some(device_id) = device_id else {
+            return false;
+        };
+        device_id
+            .to_lowercase()
+            .contains(&filter.to_lowercase())
+    }
+
     pub fn matches_process(pattern: &str, actual: &str, mode: ProcessMatchMode) -> bool {
         if pattern == "*" {
             return true;
@@ -852,9 +870,26 @@ impl DaemonEngine {
                     crate::models::SystemEventType::NetworkDisconnected => {
                         !crate::daemon::system_events::is_network_connected()
                     }
-                    crate::models::SystemEventType::SystemSleep => false,
-                    crate::models::SystemEventType::SystemResume => true,
-                    _ => false,
+                    crate::models::SystemEventType::SystemSleep => {
+                        crate::daemon::system_events::is_system_sleeping()
+                    }
+                    crate::models::SystemEventType::SystemResume => {
+                        !crate::daemon::system_events::is_system_sleeping()
+                    }
+                    crate::models::SystemEventType::DeviceConnected => {
+                        crate::daemon::system_events::device_state_known()
+                            && crate::daemon::system_events::has_connected_device()
+                    }
+                    crate::models::SystemEventType::DeviceDisconnected => {
+                        crate::daemon::system_events::device_state_known()
+                            && !crate::daemon::system_events::has_connected_device()
+                    }
+                    crate::models::SystemEventType::MonitorOn => {
+                        crate::daemon::system_events::is_display_on()
+                    }
+                    crate::models::SystemEventType::MonitorOff => {
+                        !crate::daemon::system_events::is_display_on()
+                    }
                 }
             }
             RuleCondition::FileWatcher { path, filter_extension, must_exist } => {
@@ -1138,7 +1173,7 @@ impl DaemonEngine {
         }
     }
 
-    pub async fn handle_system_event(&mut self, event: SystemEventType) {
+    pub async fn handle_system_event(&mut self, event: SystemEventType, device_id: Option<&str>) {
         self.drain_action_events();
         let event_name = format!("{:?}", event);
         self.log("INFO", "SYSTEM", &format!("System Event: {}", event_name));
@@ -1152,8 +1187,15 @@ impl DaemonEngine {
                 continue;
             }
 
-            if let Some(Trigger::SystemEvent { event_type, .. }) = &rule.trigger {
-                if *event_type == event {
+            if let Some(Trigger::SystemEvent {
+                event_type,
+                device_id_filter,
+                ..
+            }) = &rule.trigger
+            {
+                if *event_type == event
+                    && Self::device_filter_matches(device_id_filter.as_deref(), device_id)
+                {
                     let _ = self.try_execute_rule(rule, &event_name, 0).await;
                 }
             }
@@ -2255,6 +2297,9 @@ impl DaemonEngine {
                     runtime_reset = adopt_rule_runtime(&mut rule, existing);
                     *existing = rule;
                 } else {
+                    // The GUI draft may carry counters copied from another rule; a newly
+                    // created rule starts with a clean runtime window.
+                    rule.clear_quota_runtime();
                     self.config.rules.push(rule);
                 }
                 self.persist_rules();
@@ -2403,6 +2448,9 @@ impl DaemonEngine {
                         runtime_reset |= adopt_rule_runtime(&mut rule, existing);
                         *existing = rule;
                     } else {
+                        // A new rule starts with a clean quota window even if the file
+                        // carried counter fields; runtime.json owns them.
+                        rule.clear_quota_runtime();
                         self.config.rules.push(rule);
                     }
                     count += 1;
@@ -2486,6 +2534,9 @@ impl DaemonEngine {
                 for mut rule in incoming {
                     if let Some(existing) = self.config.rules.iter().find(|r| r.id == rule.id) {
                         runtime_reset |= adopt_rule_runtime(&mut rule, existing);
+                    } else {
+                        // Sync files define rules, not execution history.
+                        rule.clear_quota_runtime();
                     }
                     synced.push(rule);
                 }
@@ -3027,6 +3078,18 @@ mod tests {
         assert!(!DaemonEngine::matches_process(r"game_\d+\.exe", "game_abc.exe", ProcessMatchMode::Regex));
         // Graceful handling of invalid regex pattern without panicking (falls back to contains)
         assert!(DaemonEngine::matches_process("[invalid", "test_[invalid_proc", ProcessMatchMode::Regex));
+    }
+
+    #[test]
+    fn test_device_filter_matches() {
+        let device = r"\\?\USB#VID_046D&PID_C52B#12345678#{guid}";
+        assert!(DaemonEngine::device_filter_matches(None, Some(device)));
+        assert!(DaemonEngine::device_filter_matches(Some(""), Some(device)));
+        assert!(DaemonEngine::device_filter_matches(Some("vid_046d"), Some(device)));
+        assert!(DaemonEngine::device_filter_matches(Some("USB"), Some(device)));
+        assert!(!DaemonEngine::device_filter_matches(Some("PCI"), Some(device)));
+        assert!(!DaemonEngine::device_filter_matches(Some("USB"), None));
+        assert!(DaemonEngine::device_filter_matches(Some("*"), None));
     }
 
     #[test]
@@ -4317,6 +4380,10 @@ mod tests {
             Rule {
                 id: "new".into(),
                 name: "New".into(),
+                // Sync files define rules, not execution history: these must be dropped.
+                execution_count: 9,
+                last_executed_at: Some("2026-02-02 00:00:00".into()),
+                quota_window_start: Some("2026-02-02 00:00:00".into()),
                 ..Default::default()
             },
         ];
@@ -4332,6 +4399,31 @@ mod tests {
             Some("2026-01-01 00:00:00")
         );
         assert_eq!(engine.config.rules[1].execution_count, 0);
+        assert!(engine.config.rules[1].last_executed_at.is_none());
+        assert!(engine.config.rules[1].quota_window_start.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_import_rules_starts_new_rules_with_a_clean_runtime() {
+        let mut engine = DaemonEngine::new(AppConfig::default());
+        let imported = vec![Rule {
+            id: "imported".into(),
+            name: "Imported".into(),
+            trigger: Some(Trigger::Manual),
+            // Counters in a rule file are not execution history.
+            execution_count: 7,
+            last_executed_at: Some("2026-03-03 00:00:00".into()),
+            quota_window_start: Some("2026-03-03 00:00:00".into()),
+            ..Default::default()
+        }];
+
+        let response = engine.handle_request(IpcRequest::ImportRules(imported)).await;
+        assert!(matches!(response, IpcResponse::Ok));
+        let rule = &engine.config.rules[0];
+        assert_eq!(rule.id, "imported");
+        assert_eq!(rule.execution_count, 0);
+        assert!(rule.last_executed_at.is_none());
+        assert!(rule.quota_window_start.is_none());
     }
 
     #[tokio::test]

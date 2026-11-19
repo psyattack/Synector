@@ -1,27 +1,25 @@
-# Line ending normalization. The repository stores LF; checkouts keep LF so that
-# diffs, CI, and generated files stay identical to the committed bytes.
+# Synector stores every text file with LF line endings in the repository and in
+# the working tree. Keeping checkouts on LF means the committed bytes are exactly
+# what the compiler, scripts and CI see, and CRLF/LF churn never shows up in diffs.
 * text=auto eol=lf
 
-# Rust sources and project configuration
-*.rs text eol=lf
-*.toml text eol=lf
-*.lock text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
-*.json text eol=lf
-*.md text eol=lf
-*.ps1 text eol=lf
-*.py text eol=lf
-*.txt text eol=lf
-*.gitignore text eol=lf
-*.gitattributes text eol=lf
-
-# Binary assets: never converted or diffed as text
+# Binary assets: never convert these between text and binary.
 *.ico binary
 *.png binary
-*.svg text eol=lf
 *.ttf binary
 *.otf binary
+*.woff binary
+*.woff2 binary
 *.exe binary
 *.dll binary
 *.zip binary
+*.7z binary
+*.tar binary
+*.gz binary
+*.xz binary
+*.bz2 binary
+*.rar binary
+*.lnk binary
+
+# The vector logo is XML, so keep it text and diffable.
+*.svg text eol=lf
