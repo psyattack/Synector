@@ -50,6 +50,7 @@ owner of runtime state, the GUI keeps a draft copy for editing and reconciliatio
 | `--rules-validate <file>` | Parse and validate a JSON rule file without changing anything |
 | `--rules-apply <file>` | Upsert rules from JSON (IPC when the daemon runs, direct `rules.json` edit otherwise) |
 | `--rules-list`, `--rules-export [<file>]`, `--rules-delete <id>` | Inspect, export or delete rules from the command line |
+| `--rules-share [<id>]`, `--rules-import-share <code\|file\|->` | Print or import a compact `SYN1:` automation share code |
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation is what enables kernel
 ETW process tracing, UIPI-safe input simulation into elevated applications, and silent
@@ -68,7 +69,7 @@ highest-privilege logon autostart through Task Scheduler.
 | `src/i18n.rs`, `src/i18n/` | Locale registry and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
 | `src/updater.rs` | GitHub release check, asset selection, SHA-256 verification, portable self-replacement and silent installer updates |
-| `src/sharing.rs` | Base64 + Deflate rule export/import codes |
+| `src/sharing.rs` | `SYN1:` Brotli + Base64 share codes: SHA-256 prefix, library dependency bundling, bounded decode |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
 
@@ -203,6 +204,24 @@ Overlay and macro templates are modular presets stored in `library.json` and syn
 daemon and GUI over IPC. Rules either reference a preset or detach it into an inline copy.
 Macros can be driven by `Run`, `Stop` and `Toggle` operations with cancellation tracking, and
 `Action::Overlay` supports `SetText` to update HUD strings at runtime.
+
+### Sharing and backup
+
+`src/sharing.rs` turns rules into `SYN1:` text codes that can be pasted into chats: the JSON
+payload is Brotli-compressed (quality 11, with a versioned custom dictionary), prefixed with an
+8-byte SHA-256 checksum, and Base64URL-encoded. A code also bundles the macro presets and overlays
+its rules reference, so the recipient gets a working automation set; presets/overlays whose id
+already exists locally with different content are re-identified and every rule reference is
+rewritten. Sender-local data never travels: runtime counters are reset, custom icon paths are
+dropped (with a notice), and truncated or altered codes fail the checksum instead of decoding to
+garbage. Decoding is bounded (code length, decompressed size and rule count), so a hostile code
+cannot exhaust memory. Exporting and importing are one click: the code is compressed on a worker
+thread and copied straight to the clipboard, and `IpcRequest::ImportShare` applies rules plus
+library entries in one daemon-owned step, skips duplicates and creates the rules disabled. The
+toast reports how many rules, library entries and duplicates were handled, while advisory notices
+(scripts/elevated processes/webhooks, dropped icons, missing presets/overlays) are written to the
+log. The “copy all” action respects the active tag filter and search. JSON files remain the backup
+format: `--rules-export` and the CLI authoring commands cover file-based migration.
 
 ### Installation forms and updates
 

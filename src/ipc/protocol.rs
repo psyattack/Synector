@@ -27,6 +27,13 @@ pub enum IpcRequest {
     ClearLogs,
     ShutdownDaemon,
     ImportRules(Vec<Rule>),
+    /// Apply a decoded share code: add its rules plus the library presets/overlays they
+    /// reference. Imported rules are disabled unless `enable` is set.
+    ImportShare {
+        payload: Box<crate::sharing::SharePayload>,
+        #[serde(default)]
+        enable: bool,
+    },
     /// Declarative replace of the whole rule set (CLI `--rules-sync`), applied and
     /// persisted in one step.
     SyncRules(Vec<Rule>),
@@ -56,6 +63,7 @@ pub enum IpcResponse {
     Processes(Vec<ProcessSnapshotItem>),
     TestStepResult(Result<(), String>),
     OverlayPosition(Option<(f32, f32)>),
+    ShareImportResult(crate::sharing::ShareImportSummary),
     Error(String),
 }
 
@@ -161,6 +169,48 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("ImportRules"));
         assert!(json.contains("Imported Rule"));
+    }
+
+    #[test]
+    fn test_ipc_import_share_request_serde() {
+        let payload = crate::sharing::SharePayload::rules_only(vec![Rule {
+            id: "share_rule".into(),
+            name: "Shared Rule".into(),
+            ..Default::default()
+        }]);
+        let req = IpcRequest::ImportShare {
+            payload: Box::new(payload),
+            enable: true,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("ImportShare"));
+        assert!(json.contains("Shared Rule"));
+        match serde_json::from_str::<IpcRequest>(&json).unwrap() {
+            IpcRequest::ImportShare { payload, enable } => {
+                assert!(enable);
+                assert_eq!(payload.rules[0].id, "share_rule");
+            }
+            other => panic!("wrong req variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_share_import_result_serde() {
+        let response = IpcResponse::ShareImportResult(crate::sharing::ShareImportSummary {
+            imported: 2,
+            skipped_duplicates: 1,
+            overlays: 1,
+            macro_presets: 0,
+            enabled: false,
+        });
+        let json = serde_json::to_string(&response).unwrap();
+        match serde_json::from_str::<IpcResponse>(&json).unwrap() {
+            IpcResponse::ShareImportResult(summary) => {
+                assert_eq!(summary.imported, 2);
+                assert_eq!(summary.skipped_duplicates, 1);
+            }
+            other => panic!("wrong response variant: {other:?}"),
+        }
     }
 
     #[test]

@@ -182,7 +182,7 @@ Synector/
 │   ├── i18n.rs                            # Internationalization loader & language switcher
 │   ├── logging.rs                         # Process-wide daily file logging (rotation, SYNECTOR_LOG levels, panics)
 │   ├── models.rs                          # Domain data models (Rule, Trigger, Action, Process)
-│   ├── sharing.rs                         # Portable automation compression, encoding & clipboard sharing
+│   ├── sharing.rs                         # SYN1: share codes (Brotli + Base64, checksum, library bundling)
 │   ├── shortcut.rs                        # Windows shell link (.lnk) desktop shortcut generator
 │   ├── single_instance.rs                 # Win32 Named Mutex guards for daemon and GUI
 │   ├── updater.rs                         # GitHub releases auto-update & self-replacement engine

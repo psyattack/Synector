@@ -22,6 +22,8 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
   --rules-apply <file|->      Create or update rules from a JSON rule file (upsert by id)
   --rules-list [--json]       List configured rules and their triggers
   --rules-export [<file>]     Print all rules as JSON, optionally to a file
+  --rules-share [<id>]        Print a compact SYN1: share code for one rule or all rules
+  --rules-import-share <code|file|->  Import automation(s) from a SYN1: share code
   --rules-delete <id>         Delete one rule by id
   --rules-sync <file|->       Make the configured rules match the file exactly (upsert and delete missing)
   --rules-enable <id>         Enable one rule
@@ -33,6 +35,7 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
   --rules-template <t[:a]>    Print a ready-to-edit rule skeleton for a trigger and action
   --json                      Machine-readable output for validate/apply/sync/delete/enable/disable/reset
   --dry-run                   With --rules-apply or --rules-sync: report changes without writing
+  --enable-imported           With --rules-import-share: enable the imported rules (default: disabled)
   --help                      Print this help
 
 A rule file is one rule object, an array of rules, or {"rules": [...]}. Every rule
@@ -40,6 +43,11 @@ needs an "id" (the upsert key) and a "name". Rules are applied to the running da
 over IPC; without a daemon the same upsert is written to rules.json and takes effect
 on the next daemon start. Runtime counters (execution_count, last_executed_at) live in
 runtime.json and are preserved when an existing rule is updated.
+
+Share codes are compact SYN1: strings that also carry the macro presets and overlays
+the rules reference. Imported automations are disabled by default; pass
+--enable-imported to activate them immediately. Codes are imported from the argument
+itself, from a file, or from stdin with "-".
 
 Use --rules-schema for machine-readable discovery (AI agents, IDE, validators) and
 --rules-reference for a compact human-readable catalogue.
@@ -79,6 +87,8 @@ const KNOWN_FLAGS: &[&str] = &[
     "--rules-apply",
     "--rules-list",
     "--rules-export",
+    "--rules-share",
+    "--rules-import-share",
     "--rules-delete",
     "--rules-sync",
     "--rules-enable",
@@ -90,6 +100,7 @@ const KNOWN_FLAGS: &[&str] = &[
     "--rules-template",
     "--json",
     "--dry-run",
+    "--enable-imported",
     "--help",
     "-h",
 ];
@@ -129,9 +140,14 @@ fn log_invocation(args: &[String]) -> String {
     let Some(command) = command else {
         return "unknown command".to_string();
     };
-    let label = match flag_optional_value(args, command) {
-        Some(value) if !value.is_empty() => format!("{command} {value}"),
-        _ => command.clone(),
+    let label = if command == "--rules-import-share" {
+        // Never log the code itself: it contains the user's automation definitions.
+        command.clone()
+    } else {
+        match flag_optional_value(args, command) {
+            Some(value) if !value.is_empty() => format!("{command} {value}"),
+            _ => command.clone(),
+        }
     };
     crate::logging::info("CLI", &format!("Invoked {label}"));
     label
@@ -199,6 +215,16 @@ fn dispatch(args: &[String]) -> i32 {
     }
     if has_flag(args, "--rules-export") {
         return cmd_export(args);
+    }
+    if has_flag(args, "--rules-share") {
+        return cmd_share(args, json_output);
+    }
+    match flag_value(args, "--rules-import-share") {
+        Ok(Some(code)) => {
+            return cmd_import_share(&code, json_output, has_flag(args, "--enable-imported"))
+        }
+        Ok(None) => {}
+        Err(err) => return fail_with(json_output, &err),
     }
 
     eprintln!("No command given.");
@@ -502,6 +528,228 @@ fn cmd_export(args: &[String]) -> i32 {
             println!("{json}");
             0
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Share codes
+// ---------------------------------------------------------------------------
+
+/// Prints a `SYN1:` share code for one rule (by id or name) or for every rule.
+fn cmd_share(args: &[String], json_output: bool) -> i32 {
+    let cfg = match current_config() {
+        Ok((cfg, _)) => cfg,
+        Err(err) => return fail_with(json_output, &err),
+    };
+
+    let rules = match flag_optional_value(args, "--rules-share") {
+        Some(selector) => match cfg
+            .rules
+            .iter()
+            .find(|rule| rule.id == selector || rule.name.eq_ignore_ascii_case(&selector))
+        {
+            Some(rule) => vec![rule.clone()],
+            None => return fail_with(json_output, &format!("rule \"{selector}\" not found")),
+        },
+        None => cfg.rules.clone(),
+    };
+    if rules.is_empty() {
+        return fail_with(json_output, "no rules configured to share");
+    }
+
+    let count = rules.len();
+    let (payload, warnings) = crate::sharing::build_payload(rules, &cfg.overlays, &cfg.macro_presets);
+    let warning_texts: Vec<String> = warnings
+        .iter()
+        .map(share_warning_text_cli)
+        .collect();
+
+    match crate::sharing::compress_and_encode(&payload) {
+        Ok(code) => {
+            if json_output {
+                emit_json(json!({
+                    "ok": true,
+                    "rules": count,
+                    "bytes": code.len(),
+                    "code": code,
+                    "warnings": warning_texts,
+                }));
+            } else {
+                for warning in &warning_texts {
+                    eprintln!("warning: {warning}");
+                }
+                // The code alone goes to stdout so it can be piped or redirected safely.
+                println!("{code}");
+                eprintln!("{count} rule(s), {} byte(s)", code.len());
+            }
+            0
+        }
+        Err(err) => fail_with(
+            json_output,
+            &format!("cannot build share code: {}", crate::sharing::error_text(&err)),
+        ),
+    }
+}
+
+/// Imports a share code from a literal argument, a file path, or stdin (`-`).
+fn cmd_import_share(raw_argument: &str, json_output: bool, enable: bool) -> i32 {
+    let raw = match read_share_argument(raw_argument) {
+        Ok(raw) => raw,
+        Err(err) => return fail_with(json_output, &err),
+    };
+    let payload = match crate::sharing::decode_and_decompress(&raw) {
+        Ok(payload) => payload,
+        Err(err) => {
+            return fail_with(
+                json_output,
+                &format!("invalid share code: {}", crate::sharing::error_text(&err)),
+            )
+        }
+    };
+
+    let (cfg, from_daemon) = match current_config() {
+        Ok(value) => value,
+        Err(err) => return fail_with(json_output, &err),
+    };
+    let prepared = match crate::sharing::prepare_import(
+        payload.clone(),
+        &cfg.rules,
+        &cfg.overlays,
+        &cfg.macro_presets,
+        enable,
+    ) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            return fail_with(
+                json_output,
+                &format!("cannot import share code: {}", crate::sharing::error_text(&err)),
+            )
+        }
+    };
+
+    let errors = validate_rules(&prepared.rules);
+    if !errors.is_empty() {
+        log_errors(&errors);
+        if json_output {
+            emit_json(json!({ "ok": false, "errors": errors }));
+        } else {
+            for error in &errors {
+                eprintln!("error: {error}");
+            }
+            eprintln!("Nothing was imported.");
+        }
+        return 1;
+    }
+    let warning_texts: Vec<String> = prepared
+        .warnings
+        .iter()
+        .map(share_warning_text_cli)
+        .collect();
+
+    let summary = if from_daemon {
+        match IpcClient::call(&IpcRequest::ImportShare {
+            payload: Box::new(payload),
+            enable,
+        }) {
+            Ok(IpcResponse::ShareImportResult(summary)) => summary,
+            Ok(IpcResponse::Error(err)) => {
+                return fail_with(json_output, &format!("daemon rejected the share code: {err}"))
+            }
+            Ok(other) => {
+                return fail_with(
+                    json_output,
+                    &format!("unexpected daemon response: {other:?}"),
+                )
+            }
+            Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
+        }
+    } else {
+        let mut rules = cfg.rules.clone();
+        rules.extend(prepared.rules.iter().cloned());
+        if let Err(err) = save_rules(&rules) {
+            return fail_with(json_output, &err);
+        }
+        if !prepared.overlays.is_empty() || !prepared.macro_presets.is_empty() {
+            let mut library = crate::config::Library::read();
+            library.overlays.extend(prepared.overlays.iter().cloned());
+            library.macro_presets.extend(prepared.macro_presets.iter().cloned());
+            if let Err(err) = library.save() {
+                return fail_with(json_output, &format!("cannot write library: {err}"));
+            }
+        }
+        crate::sharing::ShareImportSummary {
+            imported: prepared.rules.len(),
+            skipped_duplicates: prepared.skipped_duplicates,
+            overlays: prepared.overlays.len(),
+            macro_presets: prepared.macro_presets.len(),
+            enabled: enable,
+        }
+    };
+
+    for warning in &warning_texts {
+        crate::logging::warn("CLI", warning);
+        if !json_output {
+            eprintln!("warning: {warning}");
+        }
+    }
+
+    if json_output {
+        emit_json(json!({
+            "ok": true,
+            "imported": summary.imported,
+            "skipped_duplicates": summary.skipped_duplicates,
+            "overlays": summary.overlays,
+            "macro_presets": summary.macro_presets,
+            "enabled": summary.enabled,
+            "target": if from_daemon { "daemon" } else { "rules" },
+            "warnings": warning_texts,
+        }));
+    } else {
+        println!(
+            "Imported {} automation(s); {} duplicate(s) skipped.",
+            summary.imported, summary.skipped_duplicates
+        );
+        if summary.overlays > 0 || summary.macro_presets > 0 {
+            println!(
+                "Added {} overlay(s) and {} macro preset(s) to the shared library.",
+                summary.overlays, summary.macro_presets
+            );
+        }
+        if summary.imported == 0 && summary.overlays == 0 && summary.macro_presets == 0 {
+            println!("Nothing new was imported.");
+        } else if !enable && summary.imported > 0 {
+            println!(
+                "Imported rules are disabled; pass --enable-imported or use --rules-enable <id> to activate them."
+            );
+        }
+        if !from_daemon {
+            println!("Applied to {} (daemon is offline).", RulesFile::path().display());
+        }
+    }
+    0
+}
+
+/// A share argument is either a literal code, a file path, or `-` for stdin.
+fn read_share_argument(value: &str) -> Result<String, String> {
+    if value == "-" || Path::new(value).is_file() {
+        read_input(value)
+    } else {
+        Ok(value.to_string())
+    }
+}
+
+/// English CLI wording for a share-code notice (the GUI localizes its own).
+fn share_warning_text_cli(warning: &crate::sharing::ShareWarning) -> String {
+    use crate::sharing::ShareWarning as W;
+    match warning {
+        W::MissingMacroPreset(id) => {
+            format!("macro preset \"{id}\" is missing and will not work")
+        }
+        W::MissingOverlay(id) => format!("overlay \"{id}\" is missing and will not work"),
+        W::SensitiveScript => "contains scripts that run code when executed".to_string(),
+        W::SensitiveAdminProcess => "starts processes with administrator rights".to_string(),
+        W::SensitiveWebhook => "sends HTTP requests and may contain tokens".to_string(),
+        W::CustomIconDropped => "custom icon is not included".to_string(),
     }
 }
 
@@ -2209,5 +2457,32 @@ mod tests {
         assert_eq!(value["created"][0], serde_json::json!("a"));
         assert_eq!(value["updated"][0], serde_json::json!("b"));
         assert_eq!(value["deleted"][0], serde_json::json!("c"));
+    }
+
+    #[test]
+    fn test_share_argument_accepts_literal_and_stdin() {
+        assert_eq!(
+            read_share_argument("SYN1:abc").expect("literal"),
+            "SYN1:abc"
+        );
+        // A value that is not an existing file is treated as a literal code, not as a path.
+        assert_eq!(
+            read_share_argument("synector_missing_code_file_12345").expect("literal fallback"),
+            "synector_missing_code_file_12345"
+        );
+    }
+
+    #[test]
+    fn test_share_warning_cli_text() {
+        assert!(share_warning_text_cli(&crate::sharing::ShareWarning::SensitiveScript)
+            .contains("script"));
+        assert!(share_warning_text_cli(&crate::sharing::ShareWarning::MissingOverlay(
+            "ov".into()
+        ))
+        .contains("ov"));
+        assert_eq!(
+            share_warning_text_cli(&crate::sharing::ShareWarning::CustomIconDropped),
+            "custom icon is not included"
+        );
     }
 }

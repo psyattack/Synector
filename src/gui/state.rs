@@ -169,6 +169,12 @@ pub struct ElementCatalogModalState {
     pub selected_category: usize,
 }
 
+type ShareExportOutcome = (
+    Result<String, crate::sharing::ShareError>,
+    usize,
+    Vec<crate::sharing::ShareWarning>,
+);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
     #[default]
@@ -250,6 +256,7 @@ pub struct GuiState {
     pub new_tag_name: String,
     pub new_tag_color: Option<String>,
     pub new_tag_icon: Option<String>,
+    share_export_rx: Option<std::sync::mpsc::Receiver<ShareExportOutcome>>,
     update_event_tx: std::sync::mpsc::Sender<crate::updater::UpdateEvent>,
     update_event_rx: std::sync::mpsc::Receiver<crate::updater::UpdateEvent>,
 }
@@ -320,6 +327,7 @@ impl GuiState {
             new_tag_name: String::new(),
             new_tag_color: Some("#3B82F6".into()),
             new_tag_icon: None,
+            share_export_rx: None,
             update_event_tx,
             update_event_rx,
         }
@@ -817,14 +825,134 @@ impl GuiState {
         }
     }
 
-    pub fn copy_single_rule_to_clipboard(&mut self, ctx: &egui::Context, rule: &Rule) {
-        match crate::sharing::compress_and_encode(&crate::sharing::SharedAutomation::Single(Box::new(rule.clone()))) {
-            Ok(encoded) => {
-                crate::sharing::copy_text_to_clipboard(ctx, &encoded);
-                self.set_toast(self.loc().toast_copy_single_success.replace("{}", &rule.name));
+    pub fn copy_single_rule_to_clipboard(&mut self, _ctx: &egui::Context, rule: &Rule) {
+        self.start_share_export(vec![rule.clone()]);
+    }
+
+    /// Copies every automation currently visible in the rules view: the same tag filter and
+    /// search that drive the list, so sharing a subset no longer requires deleting rules.
+    pub fn copy_all_rules_to_clipboard(&mut self, _ctx: &egui::Context) {
+        let rules = self.visible_rules();
+        if rules.is_empty() {
+            self.set_toast(self.loc().toast_copy_all_empty);
+            return;
+        }
+        self.start_share_export(rules);
+    }
+
+    /// Rules matching the active tag filter and search query.
+    pub fn visible_rules(&self) -> Vec<Rule> {
+        let rules = self
+            .daemon_state
+            .as_ref()
+            .map(|s| s.config.rules.clone())
+            .unwrap_or_default();
+        let needle = self.search_query.trim().to_lowercase();
+        rules
+            .into_iter()
+            .filter(|rule| {
+                if let Some(tag) = &self.selected_tag_filter {
+                    if !rule.tags.iter().any(|t| t.name.eq_ignore_ascii_case(tag)) {
+                        return false;
+                    }
+                }
+                if needle.is_empty() {
+                    return true;
+                }
+                rule.name.to_lowercase().contains(&needle)
+                    || rule
+                        .tags
+                        .iter()
+                        .any(|t| t.name.to_lowercase().contains(&needle))
+            })
+            .collect()
+    }
+
+    fn share_library(&self) -> (Vec<crate::models::OverlayDefinition>, Vec<crate::models::MacroPreset>) {
+        match &self.daemon_state {
+            Some(ds) => (ds.config.overlays.clone(), ds.config.macro_presets.clone()),
+            None => {
+                let library = crate::config::Library::read();
+                (library.overlays, library.macro_presets)
             }
-            Err(e) => {
-                self.set_toast(format!("Error: {e}"));
+        }
+    }
+
+    fn start_share_export(&mut self, rules: Vec<Rule>) {
+        let (overlays, presets) = self.share_library();
+        let (payload, warnings) = crate::sharing::build_payload(rules, &overlays, &presets);
+        for warning in &warnings {
+            // Notices are advisory: they go to the log and are summarized in the toast, but
+            // copying stays a single click.
+            crate::logging::warn("SHARE", &self.share_warning_text(warning));
+        }
+        self.spawn_share_export(payload, warnings);
+    }
+
+    fn spawn_share_export(
+        &mut self,
+        payload: crate::sharing::SharePayload,
+        warnings: Vec<crate::sharing::ShareWarning>,
+    ) {
+        let rule_count = payload.rules.len();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = crate::sharing::compress_and_encode(&payload);
+            let _ = tx.send((result, rule_count, warnings));
+        });
+        self.share_export_rx = Some(rx);
+        crate::logging::info(
+            "SHARE",
+            &format!("Building share code for {rule_count} automation(s) in the background"),
+        );
+    }
+
+    /// Drains the background export channel; called once per frame from the app loop.
+    pub fn poll_share_events(&mut self, ctx: &egui::Context) {
+        enum Polled {
+            Outcome(ShareExportOutcome),
+            Empty,
+            Closed,
+        }
+        let polled = match self.share_export_rx.as_ref().map(|rx| rx.try_recv()) {
+            None => return,
+            Some(Ok(outcome)) => Polled::Outcome(outcome),
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => Polled::Empty,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Polled::Closed,
+        };
+        match polled {
+            Polled::Outcome((Ok(code), count, warnings)) => {
+                self.share_export_rx = None;
+                crate::sharing::copy_text_to_clipboard(ctx, &code);
+                let mut message = self.loc().toast_share_copied.replace("{}", &count.to_string());
+                if !warnings.is_empty() {
+                    let notices = self
+                        .loc()
+                        .toast_share_warnings
+                        .replace("{}", &warnings.len().to_string());
+                    message = format!("{message} · {notices}");
+                }
+                self.set_toast(message);
+                crate::logging::info(
+                    "SHARE",
+                    &format!(
+                        "Share code copied: {count} automation(s), {} byte(s), {} notice(s)",
+                        code.len(),
+                        warnings.len()
+                    ),
+                );
+            }
+            Polled::Outcome((Err(error), _, _)) => {
+                self.share_export_rx = None;
+                let detail = self.share_error_text(&error);
+                self.set_toast(self.loc().toast_share_failed.replace("{}", &detail));
+                crate::logging::warn("SHARE", &format!("Share code export failed: {error}"));
+            }
+            Polled::Empty => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+            Polled::Closed => {
+                self.share_export_rx = None;
             }
         }
     }
@@ -848,65 +976,118 @@ impl GuiState {
         }
     }
 
-    pub fn copy_all_rules_to_clipboard(&mut self, ctx: &egui::Context) {
-        let rules = self.daemon_state.as_ref().map(|s| s.config.rules.clone()).unwrap_or_default();
-        if rules.is_empty() {
-            self.set_toast(self.loc().toast_copy_all_empty);
-            return;
-        }
-        match crate::sharing::compress_and_encode(&crate::sharing::SharedAutomation::Batch(rules.clone())) {
-            Ok(encoded) => {
-                crate::sharing::copy_text_to_clipboard(ctx, &encoded);
-                self.set_toast(self.loc().toast_copy_all_success.replace("{}", &rules.len().to_string()));
-            }
-            Err(e) => {
-                self.set_toast(format!("Error: {e}"));
-            }
-        }
-    }
-
+    /// Imports the share code currently in the clipboard in one step.
+    ///
+    /// Rules are created disabled; the daemon applies the code atomically and reports how many
+    /// rules, library entries and duplicates it handled, which the toast summarizes.
     pub fn import_automations_from_clipboard(&mut self, _ctx: &egui::Context) {
         let text = match crate::sharing::read_text_from_clipboard() {
-            Ok(t) => t,
-            Err(e) => {
-                self.set_toast(format!("{}: {}", self.loc().toast_import_clipboard_err, e));
+            Ok(text) => text,
+            Err(error) => {
+                self.set_toast(format!("{}: {}", self.loc().toast_import_clipboard_err, error));
                 return;
             }
         };
 
-        match crate::sharing::decode_and_decompress(&text) {
-            Ok(rules) => {
-                if rules.is_empty() {
-                    self.set_toast(self.loc().toast_import_empty);
-                    return;
+        let payload = match crate::sharing::decode_and_decompress(&text) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let detail = self.share_error_text(&error);
+                crate::logging::warn("SHARE", &format!("Share code rejected: {error}"));
+                self.set_toast(format!("{}: {}", self.loc().toast_import_invalid, detail));
+                return;
+            }
+        };
+
+        let request = IpcRequest::ImportShare {
+            payload: Box::new(payload),
+            enable: false,
+        };
+        match IpcClient::call(&request) {
+            Ok(IpcResponse::ShareImportResult(summary)) => {
+                let mut message = if summary.imported == 0 {
+                    self.loc().share_import_nothing_new.to_string()
+                } else {
+                    self.loc()
+                        .toast_import_success
+                        .replace("{}", &summary.imported.to_string())
+                };
+                if summary.skipped_duplicates > 0 {
+                    message.push_str(" · ");
+                    message.push_str(
+                        &self
+                            .loc()
+                            .toast_import_skipped
+                            .replace("{}", &summary.skipped_duplicates.to_string()),
+                    );
                 }
-
-                let existing_ids: std::collections::HashSet<String> = self.daemon_state
-                    .as_ref()
-                    .map(|s| s.config.rules.iter().map(|r| r.id.clone()).collect())
-                    .unwrap_or_default();
-
-                let mut prepared_rules = Vec::new();
-                for mut r in rules {
-                    if existing_ids.contains(&r.id) {
-                        static IMPORT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-                        let count = IMPORT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        r.id = format!("rule_{:x}_{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(), count);
-                        r.name = format!("{} (Imported)", r.name);
-                    }
-                    prepared_rules.push(r);
+                if summary.imported > 0 {
+                    message.push_str(" · ");
+                    message.push_str(self.loc().toast_import_disabled);
                 }
-
-                let count = prepared_rules.len();
-                let _ = IpcClient::call(&IpcRequest::ImportRules(prepared_rules));
-                self.set_toast(self.loc().toast_import_success.replace("{}", &count.to_string()));
+                self.set_toast(message);
+                crate::logging::info(
+                    "SHARE",
+                    &format!(
+                        "Import applied: {} rule(s), {} overlay(s), {} preset(s), {} skipped",
+                        summary.imported,
+                        summary.overlays,
+                        summary.macro_presets,
+                        summary.skipped_duplicates
+                    ),
+                );
                 self.sync_with_daemon();
             }
-            Err(err) => {
-                self.set_toast(format!("{}: {}", self.loc().toast_import_invalid, err));
+            Ok(IpcResponse::Error(error)) => {
+                crate::logging::warn("SHARE", &format!("Import rejected by daemon: {error}"));
+                self.set_toast(self.loc().toast_import_failed.replace("{}", &error));
+            }
+            Ok(_) => {
+                self.set_toast(self.loc().toast_import_failed.replace("{}", "unexpected daemon response"));
+            }
+            Err(error) => {
+                crate::logging::warn("SHARE", &format!("Import IPC failed: {error}"));
+                self.set_toast(self.loc().toast_import_failed.replace("{}", &error));
             }
         }
     }
+
+    /// Localized explanation of a decoding failure.
+    pub fn share_error_text(&self, error: &crate::sharing::ShareError) -> String {
+        use crate::sharing::ShareError as E;
+        let loc = self.loc();
+        match error {
+            E::EmptyInput => loc.share_err_empty.to_string(),
+            E::LegacyFormat => loc.share_err_legacy.to_string(),
+            E::MissingPrefix => loc.share_err_missing_prefix.to_string(),
+            E::CodeTooLong => loc.share_err_code_too_long.to_string(),
+            E::InvalidBase64 => loc.share_err_invalid_base64.to_string(),
+            E::CorruptedPayload => loc.share_err_corrupted.to_string(),
+            E::ChecksumMismatch => loc.share_err_checksum.to_string(),
+            E::PayloadTooLarge => loc.share_err_payload_too_large.to_string(),
+            E::TooManyRules => loc.share_err_too_many_rules.to_string(),
+            E::EmptyPayload => loc.share_err_empty_payload.to_string(),
+            E::InvalidPayload => loc.share_err_invalid_payload.to_string(),
+            E::UnsupportedVersion(version) => {
+                format!("{} (v{version})", loc.share_err_unsupported_version)
+            }
+        }
+    }
+
+    /// Localized line for a share-code notice.
+    pub fn share_warning_text(&self, warning: &crate::sharing::ShareWarning) -> String {
+        use crate::sharing::ShareWarning as W;
+        let loc = self.loc();
+        match warning {
+            W::MissingMacroPreset(id) => loc.share_warn_missing_macro.replace("{}", id),
+            W::MissingOverlay(id) => loc.share_warn_missing_overlay.replace("{}", id),
+            W::SensitiveScript => loc.share_warn_script.to_string(),
+            W::SensitiveAdminProcess => loc.share_warn_admin.to_string(),
+            W::SensitiveWebhook => loc.share_warn_webhook.to_string(),
+            W::CustomIconDropped => loc.share_warn_icon.to_string(),
+        }
+    }
+
 
     pub fn ensure_processes(&mut self) {
         if self.cached_processes.is_empty() {
@@ -1864,6 +2045,65 @@ mod tests {
         state.reorder_rule_by_id("rule-2", None, false);
         let ids: Vec<_> = state.daemon_state.as_ref().unwrap().config.rules.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, vec!["rule-4", "rule-3", "rule-1", "rule-2"]);
+    }
+
+    fn state_with_shared_rules() -> GuiState {
+        let mut state = GuiState::new();
+        let json = serde_json::json!({
+            "autorun_enabled": false,
+            "uptime_secs": 0,
+            "daemon_memory_bytes": 0,
+            "daemon_cpu_usage": 0.0,
+            "active_rules_count": 3,
+            "total_rules_count": 3,
+            "config": {
+                "rules": [
+                    {"id": "work_rule", "name": "Work Profile", "tags": [{"name": "Work"}]},
+                    {"id": "game_rule", "name": "Game Boost", "tags": [{"name": "Gaming"}]},
+                    {"id": "misc_rule", "name": "Misc Workflow"}
+                ]
+            },
+            "logs": []
+        });
+        state.daemon_state =
+            Some(serde_json::from_value(json).expect("daemon state deserializes"));
+        state
+    }
+
+    #[test]
+    fn test_visible_rules_respect_tag_filter_and_search() {
+        let mut state = state_with_shared_rules();
+        assert_eq!(state.visible_rules().len(), 3);
+
+        state.selected_tag_filter = Some("Work".into());
+        let filtered = state.visible_rules();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "work_rule");
+
+        state.selected_tag_filter = None;
+        state.search_query = "work".into();
+        let searched = state.visible_rules();
+        assert_eq!(searched.len(), 2, "name and tag matches are both kept");
+
+        state.search_query = "nothing-matches".into();
+        assert!(state.visible_rules().is_empty());
+    }
+
+    #[test]
+    fn test_share_error_text_is_localized() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        assert_eq!(
+            state.share_error_text(&crate::sharing::ShareError::LegacyFormat),
+            crate::i18n::get(crate::i18n::Language::English).share_err_legacy
+        );
+        state.language = crate::i18n::Language::Russian;
+        assert_eq!(
+            state.share_error_text(&crate::sharing::ShareError::ChecksumMismatch),
+            crate::i18n::get(crate::i18n::Language::Russian).share_err_checksum
+        );
+        let version = state.share_error_text(&crate::sharing::ShareError::UnsupportedVersion(9));
+        assert!(version.contains('9'));
     }
 }
 

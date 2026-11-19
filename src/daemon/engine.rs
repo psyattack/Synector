@@ -2280,6 +2280,13 @@ impl DaemonEngine {
             }
 
             IpcRequest::ImportRules(imported) => {
+                let errors = crate::cli::validate_rules(&imported);
+                if !errors.is_empty() {
+                    return IpcResponse::Error(format!(
+                        "rejected invalid rules: {}",
+                        errors.join("; ")
+                    ));
+                }
                 let mut count = 0;
                 for mut rule in imported {
                     if let Some(existing) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
@@ -2299,6 +2306,67 @@ impl DaemonEngine {
                 }
                 self.log("INFO", "CONFIG", &format!("Imported {count} automations"));
                 IpcResponse::Ok
+            }
+
+            IpcRequest::ImportShare { payload, enable } => {
+                let prepared = match crate::sharing::prepare_import(
+                    *payload,
+                    &self.config.rules,
+                    &self.config.overlays,
+                    &self.config.macro_presets,
+                    enable,
+                ) {
+                    Ok(prepared) => prepared,
+                    Err(err) => {
+                        return IpcResponse::Error(crate::sharing::error_text(&err).to_string())
+                    }
+                };
+                let errors = crate::cli::validate_rules(&prepared.rules);
+                if !errors.is_empty() {
+                    return IpcResponse::Error(format!(
+                        "share import rejected: {}",
+                        errors.join("; ")
+                    ));
+                }
+                let summary = crate::sharing::ShareImportSummary {
+                    imported: prepared.rules.len(),
+                    skipped_duplicates: prepared.skipped_duplicates,
+                    overlays: prepared.overlays.len(),
+                    macro_presets: prepared.macro_presets.len(),
+                    enabled: enable,
+                };
+                if !prepared.has_new_content {
+                    return IpcResponse::ShareImportResult(summary);
+                }
+                for overlay in prepared.overlays {
+                    self.config.overlays.push(overlay);
+                }
+                for preset in prepared.macro_presets {
+                    self.config.macro_presets.push(preset);
+                }
+                for rule in prepared.rules {
+                    self.config.rules.push(rule);
+                }
+                if summary.overlays > 0 || summary.macro_presets > 0 {
+                    self.persist_library();
+                }
+                self.persist_rules();
+                self.mark_runtime_dirty();
+                if let Some(h) = &self.hotkey_handle {
+                    h.reload(&self.config.rules);
+                }
+                self.log(
+                    "INFO",
+                    "CONFIG",
+                    &format!(
+                        "Imported share code: {} automation(s), {} duplicate(s) skipped, {} overlay(s), {} preset(s)",
+                        summary.imported,
+                        summary.skipped_duplicates,
+                        summary.overlays,
+                        summary.macro_presets
+                    ),
+                );
+                IpcResponse::ShareImportResult(summary)
             }
 
             IpcRequest::SyncRules(incoming) => {
@@ -4143,6 +4211,114 @@ mod tests {
             Some("2026-01-01 00:00:00")
         );
         assert_eq!(engine.config.rules[1].execution_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_import_share_bundles_deps_disables_rules_and_skips_duplicates() {
+        let mut config = AppConfig::default();
+        let existing = Rule {
+            id: "keep".into(),
+            name: "Keep".into(),
+            trigger: Some(Trigger::Manual),
+            ..Default::default()
+        };
+        config.rules.push(existing.clone());
+        let mut engine = DaemonEngine::new(config);
+
+        let mut overlay = crate::models::OverlayDefinition::default_new_overlay();
+        overlay.id = "share_ov".into();
+        overlay.name = "Shared overlay".into();
+        let preset = crate::models::MacroPreset {
+            id: "share_preset".into(),
+            name: "Shared preset".into(),
+            events: vec![crate::models::MacroEvent::KeyDown { key: "A".into() }],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+        };
+        let mut duplicate = existing.clone();
+        duplicate.id = "renamed_duplicate".into();
+        let fresh = Rule {
+            id: "fresh".into(),
+            name: "Fresh".into(),
+            trigger: Some(Trigger::Manual),
+            actions: vec![
+                Action::Macro {
+                    preset_id: Some("share_preset".into()),
+                    operation: crate::models::MacroOperation::Run,
+                    events: vec![],
+                    repeat: 1,
+                    speed: 1.0,
+                    infinite: false,
+                },
+                Action::Overlay {
+                    overlay_id: "share_ov".into(),
+                    custom_overlay: None,
+                    operation: crate::models::OverlayOperation::Show,
+                    override_text: None,
+                    duration_ms: None,
+                    close_on_exit: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let payload = crate::sharing::SharePayload {
+            version: crate::sharing::SHARE_VERSION,
+            app_version: "test".into(),
+            created_at: String::new(),
+            rules: vec![duplicate, fresh],
+            overlays: vec![overlay],
+            macro_presets: vec![preset],
+        };
+
+        let response = engine
+            .handle_request(IpcRequest::ImportShare {
+                payload: Box::new(payload.clone()),
+                enable: false,
+            })
+            .await;
+        match response {
+            IpcResponse::ShareImportResult(summary) => {
+                assert_eq!(summary.imported, 1);
+                assert_eq!(summary.skipped_duplicates, 1);
+                assert_eq!(summary.overlays, 1);
+                assert_eq!(summary.macro_presets, 1);
+                assert!(!summary.enabled);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+
+        let imported = engine
+            .config
+            .rules
+            .iter()
+            .find(|rule| rule.id == "fresh")
+            .expect("fresh rule must be imported");
+        assert!(!imported.is_enabled, "share imports are disabled by default");
+        assert_eq!(imported.execution_count, 0);
+        assert!(engine.config.overlays.iter().any(|ov| ov.id == "share_ov"));
+        assert!(engine
+            .config
+            .macro_presets
+            .iter()
+            .any(|preset| preset.id == "share_preset"));
+
+        // Importing the same code again imports nothing and skips both rules as duplicates.
+        let response = engine
+            .handle_request(IpcRequest::ImportShare {
+                payload: Box::new(payload),
+                enable: false,
+            })
+            .await;
+        match response {
+            IpcResponse::ShareImportResult(summary) => {
+                assert_eq!(summary.imported, 0);
+                assert_eq!(summary.skipped_duplicates, 2);
+                assert_eq!(summary.overlays, 0);
+                assert_eq!(summary.macro_presets, 0);
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
     }
 }
 

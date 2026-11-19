@@ -181,6 +181,8 @@ impl App for SynectorApp {
 
         // Sync with daemon state
         self.state.sync_with_daemon();
+        // Background share-code compression finishes on a worker thread; collect it here.
+        self.state.poll_share_events(&ctx);
 
         // If background daemon was closed/terminated, close GUI window immediately
         if self.state.has_connected_daemon

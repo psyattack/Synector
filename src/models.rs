@@ -997,15 +997,15 @@ pub struct Rule {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub is_enabled: bool,
-    #[serde(default = "default_cooldown")]
+    #[serde(default = "default_cooldown", skip_serializing_if = "is_zero_f64")]
     pub cooldown_seconds: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_executions: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub execution_count: u64,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub stop_on_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Trigger>,
@@ -1017,7 +1017,7 @@ pub struct Rule {
     pub on_exit_actions: Vec<Action>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_icon_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub auto_process_icon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<String>,
@@ -1200,6 +1200,26 @@ pub fn generate_clone_name(name: &str) -> String {
 
 fn default_true() -> bool {
     true
+}
+
+/// Serde helper: skip a field holding the `true` default.
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+/// Serde helper: skip a field holding the `false` default.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// Serde helper: skip a numeric field holding its zero default.
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
+/// Serde helper: skip a float field holding its zero default.
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
 }
 
 fn default_cooldown() -> f64 {
