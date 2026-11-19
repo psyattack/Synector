@@ -9,10 +9,10 @@ fn main() {
         res.set("LegalCopyright", "psyattack");
         res.set("OriginalFilename", "Synector.exe");
         res.set("InternalName", "Synector");
-        res.set("FileVersion", "2.8.0.0");
-        res.set("ProductVersion", "2.8.0.0");
-        res.set_version_info(winres::VersionInfo::FILEVERSION, 0x0002000800000000);
-        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x0002000800000000);
+        res.set("FileVersion", "2.9.0.0");
+        res.set("ProductVersion", "2.9.0.0");
+        res.set_version_info(winres::VersionInfo::FILEVERSION, 0x0002000900000000);
+        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, 0x0002000900000000);
         res.set_manifest(r#"
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
 <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">

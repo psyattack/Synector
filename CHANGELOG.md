@@ -1,5 +1,47 @@
 # Changelog
 
+## [2.9.0](https://github.com/psyattack/Synector/compare/v2.8.0...v2.9.0) - 2026-11-19
+
+### Added
+- Windows Installer: Synector now ships as `Synector-Setup-<version>-Windows-x64.exe` next to the portable zip. Installed copies update by running the new setup silently, downloads are verified against GitHub release SHA-256 digests, and a new `install.cmd` / `install.ps1` bootstrap offers install, portable, update, and uninstall options from a single menu.
+- Compact Share Codes: Export any rule set as one `SYN1:` text code that bundles the presets and overlays it references. Every code carries a checksum and is imported atomically in one click; imported rules are added disabled and their runtime counters start fresh.
+- Periodic Execution Quotas: Limit a rule to a number of runs per minute, hour, day, week, or month, or define a custom first-run window. When the limit for the current period is reached, the rule skips executions until the counter resets instead of pausing itself.
+- Unit-Aware Durations: Duration fields now accept milliseconds, seconds, minutes, hours, and days, automatically select the most readable unit, and remember your choice for each field.
+- Rule Authoring CLI: Validate, apply, sync, list, export, enable, disable, reset, and delete rules from JSON files or stdin, with dry-run previews, JSON reports, a generated JSON Schema, and a starter template (`--rules-schema`, `--rules-template`).
+- Diagnostic Log Files: Synector writes daily logs to `%LOCALAPPDATA%\Synector\logs\` with configurable levels, 7-day retention, an 8 MiB size cap, and crash capture for troubleshooting.
+- Accessibility: Editor controls are now associated with labels and exposed through the accessibility layer, making the interface usable with screen readers and UI automation tools.
+
+### Changed
+- Configuration Storage: Settings, rules, presets, and runtime counters now live in separate versioned files written atomically, and an unreadable file is quarantined instead of being silently replaced. Configuration from 2.8.0 and older is not migrated, so upgrade using exported rules or share codes.
+- Share Code Compatibility: Codes created by older versions (`PH1:`) are no longer accepted; re-export them from the updated app.
+- Lower Disk Load: Configuration reads are cached and runtime counters are flushed in batches, so long automation sessions no longer write to disk on every execution.
+- Smoother Window Handling: Main-window geometry is saved after dragging stops instead of on every frame, and overlay positions are persisted without blocking the UI.
+
+### Fixed
+- Rule Card Layout: Fixed the pipeline container width so action buttons no longer overlap the step stream, with symmetric margins on both sides.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **ui:** add unit-aware duration inputs (by @psyattack in fe3a65e)
+- **rules:** add periodic execution quotas (by @psyattack in d0a2e76)
+- **sharing:** replace PH1 codes with checksummed SYN1 share codes (by @psyattack in 8b2b12d)
+- **installer:** add Windows installer with installer-driven updates (by @psyattack in 413ab44)
+- **logging:** add rotating file logs with levels and panic capture (by @psyattack in 3fd3eb2)
+- **cli:** add rule authoring CLI with JSON schema and config-as-code commands (by @psyattack in ebafc31)
+
+### Changed
+- **repo:** add issue forms for bug reports and feature requests (by @psyattack in 8ee64c8)
+- **config:** split config into versioned section files with safe writes (by @psyattack in f4df3fe)
+- **repo:** add architecture doc, line-ending policy, and CI clippy (by @psyattack in 3ae9dff)
+
+### Fixed
+- **lint:** simplify boolean filters for clippy 1.100 (by @psyattack in 323b0d1)
+- **ui:** fix pipeline container width and symmetric margins on rule card (by @psyattack in 7850b31)
+
+</details>
+
+
 ## [2.8.0](https://github.com/psyattack/Synector/compare/v2.7.0...v2.8.0) - 2026-11-15
 
 ### Added
