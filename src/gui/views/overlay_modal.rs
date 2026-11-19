@@ -2022,9 +2022,9 @@ fn render_overlay_inspector(
                             crate::models::TimerMode::Countdown => {
                                 ui.horizontal(|ui| {
                                     ui.label(RichText::new(loc.overlay_studio_timer_countdown).size(10.0).family(theme::semibold()).color(t.faint));
-                                    let mut sec = *countdown_total_ms / 1000;
-                                    if ui.add(egui::DragValue::new(&mut sec).range(1..=86400).suffix(" s")).changed() {
-                                        *countdown_total_ms = sec * 1000;
+                                    let mut total_ms = *countdown_total_ms;
+                                    if widgets::duration_millis_u64(ui, loc, ("timer_countdown", idx), &mut total_ms, 1000.0..=86_400_000.0).changed() {
+                                        *countdown_total_ms = total_ms;
                                     }
                                 });
                             }
@@ -2371,7 +2371,7 @@ fn render_overlay_inspector(
                                 ui.label(RichText::new(loc.overlay_studio_key_max).size(10.0).family(theme::semibold()).color(t.faint));
                                 ui.add(egui::DragValue::new(max_keys).range(1..=8));
                                 ui.label(RichText::new(loc.overlay_studio_key_decay).size(10.0).family(theme::semibold()).color(t.faint));
-                                ui.add(egui::DragValue::new(decay_seconds).range(0.2..=5.0).suffix(" s"));
+                                widgets::duration_secs_f32(ui, loc, ("key_decay", idx), decay_seconds, 0.2..=5.0);
                             });
                             ui.checkbox(show_modifiers_only, loc.overlay_studio_key_modifiers_only);
                         }

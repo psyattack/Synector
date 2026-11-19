@@ -7,6 +7,11 @@ use egui::{
 };
 use crate::gui::theme::{self, Tokens};
 
+pub use super::duration::{
+    DurationField, TimeUnit, duration_millis_u32, duration_millis_u64, duration_secs_f32,
+    duration_secs_f64, duration_secs_u32, duration_secs_u64,
+};
+
 /// `text` laid out uppercase in `family`, `spacing` points between letters.
 pub fn caps(
     ui: &Ui,

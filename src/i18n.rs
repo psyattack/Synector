@@ -676,6 +676,12 @@ pub struct Strings {
     pub inspector_quota_unit_days: &'static str,
     pub inspector_quota_unit_weeks: &'static str,
     pub inspector_quota_unit_months: &'static str,
+    // Time units selectable in duration fields (duration.rs)
+    pub time_unit_ms: &'static str,
+    pub time_unit_seconds: &'static str,
+    pub time_unit_minutes: &'static str,
+    pub time_unit_hours: &'static str,
+    pub time_unit_days: &'static str,
     pub inspector_quota_resets_at: &'static str,
     pub inspector_quota_custom_tip: &'static str,
     pub inspector_field_stop_on_error: &'static str,

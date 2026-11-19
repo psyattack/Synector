@@ -77,9 +77,6 @@ cd Synector
 # Run in development mode (spawns daemon and opens GUI)
 cargo run
 
-# Run only the GUI (connects to an existing background daemon)
-cargo run -- --gui
-
 # Run only the background daemon (tray mode)
 cargo run -- --daemon
 
@@ -143,6 +140,7 @@ Synector/
 │   │   └── webhook_server.rs              # Local HTTP webhook server (port 48123)
 │   ├── gui/                               # egui desktop user interface
 │   │   ├── components/                    # UI components
+│   │   │   ├── duration.rs                # Unit-aware duration input (ms/s/min/h/d dropdown)
 │   │   │   ├── icons.rs                   # Win32 shell icon extractor, image loader & texture cache
 │   │   │   ├── modal.rs                   # Unified animated modal window framework
 │   │   │   ├── overlay_renderer.rs        # GPU-accelerated overlay HUD element renderer

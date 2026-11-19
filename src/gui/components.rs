@@ -1,3 +1,4 @@
+pub mod duration;
 pub mod icons;
 pub mod modal;
 pub mod overlay_renderer;

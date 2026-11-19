@@ -615,7 +615,10 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                                                             MacroEvent::MouseMove { duration_ms, .. } => duration_ms.unwrap_or(200),
                                                             _ => 200,
                                                         };
-                                                        if ui.add(egui::DragValue::new(&mut group_dur).range(10..=5000).suffix(" ms").prefix("⏱ ")).changed() {
+                                                        let group_field = widgets::DurationField::millis(ui, loc, ("macro_group_duration", *start_idx), 10.0..=5000.0)
+                                                            .default_unit(widgets::TimeUnit::Milliseconds)
+                                                            .prefix("⏱ ");
+                                                        if group_field.show_millis_u32(ui, &mut group_dur).changed() {
                                                             for ev in &mut events[*start_idx..*start_idx + *count] {
                                                                 if let MacroEvent::MouseMove { duration_ms, .. } = ev {
                                                                     *duration_ms = Some(group_dur);
@@ -700,7 +703,10 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                                                         if let MacroEvent::Delay { ms, .. } = &mut events[start_idx + 1] {
                                                             ui.add_space(4.0);
                                                             widgets::hud(ui, loc.macro_studio_label_delay, t.muted);
-                                                            ui.add(egui::DragValue::new(ms).range(0..=60000).suffix(" ms").prefix("⏱ "));
+                                                            widgets::DurationField::millis(ui, loc, ("macro_press_delay", *start_idx), 0.0..=60_000.0)
+                                                                .default_unit(widgets::TimeUnit::Milliseconds)
+                                                                .prefix("⏱ ")
+                                                                .show_millis_u32(ui, ms);
                                                         }
                                                     }
 
@@ -744,7 +750,10 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                                                         if let MacroEvent::Delay { ms, .. } = &mut events[start_idx + 1] {
                                                             ui.add_space(4.0);
                                                             widgets::hud(ui, loc.macro_studio_label_delay, t.muted);
-                                                            ui.add(egui::DragValue::new(ms).range(0..=60000).suffix(" ms").prefix("⏱ "));
+                                                            widgets::DurationField::millis(ui, loc, ("macro_click_delay", *start_idx), 0.0..=60_000.0)
+                                                                .default_unit(widgets::TimeUnit::Milliseconds)
+                                                                .prefix("⏱ ")
+                                                                .show_millis_u32(ui, ms);
                                                         }
                                                     }
 
@@ -1259,7 +1268,10 @@ fn render_timeline_row_inline(
 
             if *smooth {
                 let mut dur = duration_ms.unwrap_or(200);
-                if ui.add(egui::DragValue::new(&mut dur).range(10..=5000).suffix(" ms").prefix("⏱ ")).changed() {
+                let duration_field = widgets::DurationField::millis(ui, loc, ("macro_move_duration", idx), 10.0..=5000.0)
+                    .default_unit(widgets::TimeUnit::Milliseconds)
+                    .prefix("⏱ ");
+                if duration_field.show_millis_u32(ui, &mut dur).changed() {
                     *duration_ms = Some(dur);
                 }
             }
@@ -1269,7 +1281,10 @@ fn render_timeline_row_inline(
         MacroEvent::Delay { ms, .. } => {
             render_chip(ui, loc.macro_studio_chip_delay, t.faint, t.bg);
             widgets::hud(ui, loc.macro_studio_label_delay, t.muted);
-            ui.add(egui::DragValue::new(ms).range(0..=60000).suffix(" ms").prefix("⏱ "));
+            widgets::DurationField::millis(ui, loc, ("macro_delay", idx), 0.0..=60_000.0)
+                .default_unit(widgets::TimeUnit::Milliseconds)
+                .prefix("⏱ ")
+                .show_millis_u32(ui, ms);
         }
 
         // --- TEXT TYPING (with built-in char delay and organic jitter) ---
@@ -1279,7 +1294,10 @@ fn render_timeline_row_inline(
             ui.add(egui::TextEdit::singleline(text).desired_width(170.0).min_size(vec2(0.0, 20.0)).font(egui::FontId::new(11.0, theme::mono())));
             ui.add_space(4.0);
             widgets::hud(ui, loc.macro_studio_label_delay, t.muted);
-            ui.add(egui::DragValue::new(delay_ms).range(0..=5000).suffix(" ms").prefix("⏱ "));
+            widgets::DurationField::millis(ui, loc, ("macro_text_delay", idx), 0.0..=5000.0)
+                .default_unit(widgets::TimeUnit::Milliseconds)
+                .prefix("⏱ ")
+                .show_millis_u32(ui, delay_ms);
         }
 
         // --- SCROLL WHEEL ---

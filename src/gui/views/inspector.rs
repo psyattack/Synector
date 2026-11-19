@@ -375,15 +375,6 @@ fn quota_form_label(ui: &mut Ui, text: &str, t: &Tokens) -> egui::Response {
     .inner
 }
 
-/// Natural outer height of a framed control (DragValue, ComboBox, Button): the button text
-/// plus the theme's button padding on both sides. Keeping `interact_size.y` at this value
-/// makes all of them take exactly the same height instead of a mix of natural and minimum
-/// sizes, which is what made a ComboBox sit lower than a DragValue next to it.
-fn quota_control_height(ui: &Ui) -> f32 {
-    let text_h = ui.text_style_height(&egui::TextStyle::Button);
-    (text_h + 2.0 * ui.spacing().button_padding.y).ceil()
-}
-
 fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &Tokens) {
     state.ensure_processes();
 
@@ -506,7 +497,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                         ui.horizontal(|ui| {
                             ui.spacing_mut().interact_size.y = 24.0;
                             let cooldown_label = widgets::hud(ui, loc.inspector_field_cooldown, t.muted);
-                            ui.add(egui::DragValue::new(&mut rule.cooldown_seconds).speed(0.1).range(0.0..=60.0).suffix(" s"))
+                            widgets::duration_secs_f64(ui, loc, "rule_cooldown", &mut rule.cooldown_seconds, 0.0..=60.0)
                                 .labelled_by(cooldown_label.id);
                         });
 
@@ -542,7 +533,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                         ui.set_width(ui.available_width());
                                         // Every control in the panel uses the same height so the
                                         // labels and the fields line up vertically.
-                                        ui.spacing_mut().interact_size.y = quota_control_height(ui);
+                                        ui.spacing_mut().interact_size.y = theme::framed_control_height(ui);
                                         egui::Grid::new("inspector_quota_grid")
                                             .num_columns(2)
                                             .spacing(vec2(10.0, 6.0))
@@ -872,7 +863,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                             ui.add_space(8.0);
                                             ui.horizontal_wrapped(|ui| {
                                                 widgets::hud(ui, loc.inspector_field_startup_delay, t.muted);
-                                                ui.add(egui::DragValue::new(delay_sec).range(0..=3600).suffix(" s"));
+                                                widgets::duration_secs_u64(ui, loc, "schedule_startup_delay", delay_sec, 0.0..=3600.0);
                                             });
                                         } else {
                                             render_trigger_info_frame(
@@ -987,7 +978,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                 if matches!(event_type, SystemEventType::UserIdle) {
                                     ui.add_space(8.0);
                                     widgets::hud(ui, loc.inspector_field_idle_duration, t.muted);
-                                    ui.add(egui::DragValue::new(idle_duration_sec).range(5..=3600).suffix(" s"));
+                                    widgets::duration_secs_u32(ui, loc, "trigger_idle_duration", idle_duration_sec, 5.0..=3600.0);
                                 }
                             }
 
@@ -1033,7 +1024,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                 ui.add_space(4.0);
                                 ui.horizontal_wrapped(|ui| {
                                     widgets::hud(ui, "DURATION THRESHOLD", t.muted);
-                                    ui.add(egui::DragValue::new(duration_sec).range(1..=3600).suffix(" s"));
+                                    widgets::duration_secs_u64(ui, loc, "trigger_res_duration", duration_sec, 1.0..=3600.0);
                                 });
                             }
 
@@ -2413,7 +2404,7 @@ fn render_action_parameter_fields(
                             crate::models::WaitMode::Timer => {
                                 ui.add_space(4.0);
                                 widgets::hud(ui, loc.inspector_wait_seconds, t.muted);
-                                ui.add(egui::DragValue::new(seconds).speed(0.1).range(0.05..=86400.0).suffix(" s"));
+                                widgets::duration_secs_f64(ui, loc, ("wait_seconds", idx, is_exit_pipeline), seconds, 0.05..=86400.0);
                             }
                             crate::models::WaitMode::UntilCondition => {
                                 ui.add_space(4.0);
@@ -2553,7 +2544,7 @@ fn render_action_parameter_fields(
                                 ui.add_space(4.0);
                                 ui.horizontal(|ui| {
                                     widgets::hud(ui, loc.inspector_wait_timeout, t.muted);
-                                    ui.add(egui::DragValue::new(timeout_sec).speed(0.5).range(0.0..=3600.0).suffix(" s"));
+                                    widgets::duration_secs_f64(ui, loc, ("wait_timeout", idx, is_exit_pipeline), timeout_sec, 0.0..=3600.0);
                                     ui.label(egui::RichText::new("(0 = infinite)").size(11.0).color(t.muted));
                                 });
 
@@ -2612,7 +2603,7 @@ fn render_action_parameter_fields(
                         }
 
                         ui.add_space(4.0);
-                        render_single_condition_editor(ui, loc, condition, || {
+                        render_single_condition_editor(ui, loc, condition, idx, || {
                             resp.pick_target = Some(default_picker_target);
                         }, t);
                     }
@@ -2840,7 +2831,7 @@ fn render_action_parameter_fields(
 
                                 ui.add_space(4.0);
                                 widgets::hud(ui, loc.inspector_sound_beep_duration, t.muted);
-                                if ui.add(egui::Slider::new(&mut dur, 50..=3000).suffix(" ms")).changed() {
+                                if widgets::duration_millis_u32(ui, loc, ("beep_duration", idx, is_exit_pipeline), &mut dur, 50.0..=3000.0).changed() {
                                     *beep_duration_ms = Some(dur);
                                 }
                             }
@@ -4176,7 +4167,11 @@ fn render_action_parameter_fields(
                 ui.add_space(4.0);
                 widgets::hud(ui, loc.inspector_overlay_duration_ms, t.muted);
                 let mut d = duration_ms.unwrap_or(3000);
-                if ui.add(egui::DragValue::new(&mut d).range(200..=30000).suffix(" ms")).changed() {
+                if widgets::DurationField::millis(ui, loc, ("overlay_flash", idx, is_exit_pipeline), 200.0..=30_000.0)
+                    .default_unit(widgets::TimeUnit::Milliseconds)
+                    .show_millis_u32(ui, &mut d)
+                    .changed()
+                {
                     *duration_ms = Some(d);
                 }
             }
@@ -4202,26 +4197,18 @@ fn render_action_parameter_fields(
                 widgets::hud(ui, loc.inspector_overlay_fade_title, t.muted);
                 ui.columns(2, |cols| {
                     let mut fade_in = overlay_def.fade_in_ms.unwrap_or(0);
-                    if cols[0].add_sized(
-                        vec2(cols[0].available_width(), theme::CONTROL_H),
-                        egui::DragValue::new(&mut fade_in)
-                            .range(0..=5000)
-                            .speed(10.0)
-                            .prefix(format!("{}: ", loc.inspector_overlay_fade_in))
-                            .suffix(" ms"),
-                    ).changed() {
+                    let fade_in_field = widgets::DurationField::millis(&cols[0], loc, ("overlay_fade_in", idx, is_exit_pipeline), 0.0..=5000.0)
+                        .default_unit(widgets::TimeUnit::Milliseconds)
+                        .prefix(format!("{}: ", loc.inspector_overlay_fade_in));
+                    if fade_in_field.show_millis_u32(&mut cols[0], &mut fade_in).changed() {
                         overlay_def.fade_in_ms = if fade_in == 0 { None } else { Some(fade_in) };
                     }
 
                     let mut fade_out = overlay_def.fade_out_ms.unwrap_or(0);
-                    if cols[1].add_sized(
-                        vec2(cols[1].available_width(), theme::CONTROL_H),
-                        egui::DragValue::new(&mut fade_out)
-                            .range(0..=5000)
-                            .speed(10.0)
-                            .prefix(format!("{}: ", loc.inspector_overlay_fade_out))
-                            .suffix(" ms"),
-                    ).changed() {
+                    let fade_out_field = widgets::DurationField::millis(&cols[1], loc, ("overlay_fade_out", idx, is_exit_pipeline), 0.0..=5000.0)
+                        .default_unit(widgets::TimeUnit::Milliseconds)
+                        .prefix(format!("{}: ", loc.inspector_overlay_fade_out));
+                    if fade_out_field.show_millis_u32(&mut cols[1], &mut fade_out).changed() {
                         overlay_def.fade_out_ms = if fade_out == 0 { None } else { Some(fade_out) };
                     }
                 });
@@ -4368,7 +4355,7 @@ fn render_condition_card(
                 widgets::hrule(ui);
 
                 // 2. Condition Parameter Fields
-                render_single_condition_editor(ui, loc, &mut item.condition, on_pick_process, t);
+                render_single_condition_editor(ui, loc, &mut item.condition, idx, on_pick_process, t);
             });
         });
 
@@ -4440,6 +4427,7 @@ fn render_single_condition_editor(
     ui: &mut Ui,
     loc: &crate::i18n::Strings,
     cond: &mut RuleCondition,
+    idx: usize,
     mut on_pick_process: impl FnMut(),
     t: &Tokens,
 ) {
@@ -4657,7 +4645,7 @@ fn render_single_condition_editor(
             if matches!(event_type, crate::models::SystemEventType::UserIdle | crate::models::SystemEventType::UserActive) {
                 ui.add_space(6.0);
                 widgets::hud(ui, loc.inspector_field_idle_duration, t.muted);
-                ui.add(egui::Slider::new(idle_duration_sec, 5..=3600).suffix(" s"));
+                widgets::duration_secs_u32(ui, loc, ("cond_idle_duration", idx), idle_duration_sec, 5.0..=3600.0);
             }
         }
         RuleCondition::ResourceThreshold { process_name, cpu_percent, ram_mb, duration_sec } => {
@@ -4702,7 +4690,7 @@ fn render_single_condition_editor(
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 widgets::hud(ui, loc.inspector_cond_res_duration, t.muted);
-                ui.add(egui::DragValue::new(duration_sec).range(1..=3600).suffix(" s"));
+                widgets::duration_secs_u64(ui, loc, ("cond_res_duration", idx), duration_sec, 1.0..=3600.0);
             });
         }
         RuleCondition::FileWatcher { path, filter_extension, must_exist } => {

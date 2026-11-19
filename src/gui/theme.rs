@@ -10,6 +10,15 @@ pub use crate::config::AppTheme;
 /// Height of buttons, inputs and filter cells.
 pub const CONTROL_H: f32 = 34.0;
 
+/// Natural outer height of a framed control (DragValue, ComboBox, Button): the button
+/// text plus the theme's button padding on both sides. Keeping `interact_size.y` at this
+/// value makes all of them take exactly the same height instead of a mix of natural and
+/// minimum sizes, which is what made a ComboBox sit lower than a DragValue next to it.
+pub fn framed_control_height(ui: &egui::Ui) -> f32 {
+    let text_h = ui.text_style_height(&TextStyle::Button);
+    (text_h + 2.0 * ui.spacing().button_padding.y).ceil()
+}
+
 /// The precision `.hud-label`: 11 px Geist Mono 500, uppercase, 0.15 em letter-spacing.
 pub const HUD_SIZE: f32 = 11.0;
 pub const HUD_SPACING: f32 = HUD_SIZE * 0.15;
