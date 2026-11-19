@@ -1,3 +1,4 @@
+use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -991,6 +992,80 @@ impl RuleTag {
     }
 }
 
+/// Unit used by a custom quota window.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaUnit {
+    #[default]
+    Minutes,
+    Hours,
+    Days,
+    Weeks,
+    Months,
+}
+
+impl QuotaUnit {
+    pub const ALL: [QuotaUnit; 5] = [
+        QuotaUnit::Minutes,
+        QuotaUnit::Hours,
+        QuotaUnit::Days,
+        QuotaUnit::Weeks,
+        QuotaUnit::Months,
+    ];
+
+    /// Fixed length of one unit in seconds. Calendar months have no fixed length and are
+    /// added as calendar months by [`QuotaPeriod::custom_window_end`].
+    pub fn fixed_seconds(self) -> Option<u64> {
+        match self {
+            QuotaUnit::Minutes => Some(60),
+            QuotaUnit::Hours => Some(3_600),
+            QuotaUnit::Days => Some(86_400),
+            QuotaUnit::Weeks => Some(604_800),
+            QuotaUnit::Months => None,
+        }
+    }
+}
+
+/// Reset period of a rule's execution quota.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaPeriod {
+    /// Reset at the start of every clock minute.
+    Minute,
+    /// Reset at the start of every clock hour.
+    Hour,
+    /// Reset at local midnight.
+    Day,
+    /// Reset at Monday 00:00 of the ISO week.
+    Week,
+    /// Reset on the 1st day of the month at 00:00.
+    Month,
+    /// Fixed-length window anchored at the first execution after the previous window lapsed.
+    Custom {
+        /// Window length in `unit`s.
+        value: u32,
+        #[serde(default)]
+        unit: QuotaUnit,
+    },
+}
+
+impl QuotaPeriod {
+    /// End of a custom window that started at `start`; calendar months are added as
+    /// calendar months (Jan 31 + 1 month = Feb 28/29), other units as fixed time.
+    pub fn custom_window_end(self, start: DateTime<Local>) -> Option<DateTime<Local>> {
+        match self {
+            QuotaPeriod::Custom { value, unit } => {
+                let value = value.max(1);
+                match unit.fixed_seconds() {
+                    Some(seconds) => Some(start + chrono::Duration::seconds(seconds as i64 * value as i64)),
+                    None => start.checked_add_months(chrono::Months::new(value)),
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Rule {
     pub id: String,
@@ -1003,6 +1078,10 @@ pub struct Rule {
     pub cooldown_seconds: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_executions: Option<u64>,
+    /// Reset period for `max_executions`. `None` counts executions for the lifetime of
+    /// the rule (historical behavior), `Some(_)` limits them per period.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_period: Option<QuotaPeriod>,
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub execution_count: u64,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
@@ -1021,6 +1100,9 @@ pub struct Rule {
     pub auto_process_icon: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<String>,
+    /// Runtime anchor of a custom quota window, local `%Y-%m-%d %H:%M:%S`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_window_start: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<RuleTag>,
 }
@@ -1034,6 +1116,7 @@ impl Default for Rule {
             is_enabled: true,
             cooldown_seconds: 0.0,
             max_executions: None,
+            quota_period: None,
             execution_count: 0,
             stop_on_error: true,
             trigger: Some(Trigger::Manual),
@@ -1043,6 +1126,7 @@ impl Default for Rule {
             custom_icon_path: None,
             auto_process_icon: false,
             last_executed_at: None,
+            quota_window_start: None,
             tags: Vec::new(),
         }
     }
@@ -1105,8 +1189,7 @@ impl Rule {
         cloned.id = new_id;
         cloned.name = new_name;
         cloned.is_enabled = false;
-        cloned.execution_count = 0;
-        cloned.last_executed_at = None;
+        cloned.clear_quota_runtime();
         cloned.stop_on_error = self.stop_on_error;
         cloned.custom_icon_path = self.custom_icon_path.clone();
         cloned.auto_process_icon = self.auto_process_icon;
@@ -1120,6 +1203,141 @@ impl Rule {
         }
 
         cloned
+    }
+
+    /// Clears the daemon-owned quota counters and the custom-window anchor.
+    pub fn clear_quota_runtime(&mut self) {
+        self.execution_count = 0;
+        self.last_executed_at = None;
+        self.quota_window_start = None;
+    }
+
+    fn parsed_timestamp(stamp: Option<&str>) -> Option<DateTime<Local>> {
+        let naive = chrono::NaiveDateTime::parse_from_str(stamp?, "%Y-%m-%d %H:%M:%S").ok()?;
+        Local.from_local_datetime(&naive).single()
+    }
+
+    fn last_executed_local(&self) -> Option<DateTime<Local>> {
+        Self::parsed_timestamp(self.last_executed_at.as_deref())
+    }
+
+    fn quota_window_start_local(&self) -> Option<DateTime<Local>> {
+        Self::parsed_timestamp(self.quota_window_start.as_deref())
+    }
+
+    /// Identifier of the calendar bucket of `period` that contains `at`.
+    fn calendar_bucket(period: QuotaPeriod, at: DateTime<Local>) -> Option<String> {
+        match period {
+            QuotaPeriod::Minute => Some(at.format("%Y-%m-%d %H:%M").to_string()),
+            QuotaPeriod::Hour => Some(at.format("%Y-%m-%d %H").to_string()),
+            QuotaPeriod::Day => Some(at.format("%Y-%m-%d").to_string()),
+            QuotaPeriod::Week => Some(at.format("%G-W%V").to_string()),
+            QuotaPeriod::Month => Some(at.format("%Y-%m").to_string()),
+            QuotaPeriod::Custom { .. } => None,
+        }
+    }
+
+    /// True when the stored counter still belongs to the quota window containing `now`.
+    fn quota_window_is_current(&self, now: DateTime<Local>) -> bool {
+        match self.quota_period {
+            None => true,
+            Some(period @ QuotaPeriod::Custom { .. }) => {
+                let Some(start) = self.quota_window_start_local() else {
+                    return false;
+                };
+                let Some(end) = period.custom_window_end(start) else {
+                    return true;
+                };
+                now < end
+            }
+            Some(period) => match self.last_executed_local() {
+                Some(last) => Self::calendar_bucket(period, last) == Self::calendar_bucket(period, now),
+                None => false,
+            },
+        }
+    }
+
+    /// Executions counted against the quota in the period containing `now`. A lapsed
+    /// window reads as zero even before the stored counter is reset.
+    pub fn quota_used(&self, now: DateTime<Local>) -> u64 {
+        if self.quota_window_is_current(now) {
+            self.execution_count
+        } else {
+            0
+        }
+    }
+
+    /// Remaining executions in the current period; `None` when the rule is unlimited.
+    pub fn quota_remaining(&self, now: DateTime<Local>) -> Option<u64> {
+        let limit = self.max_executions?;
+        Some(limit.saturating_sub(self.quota_used(now)))
+    }
+
+    pub fn quota_exhausted(&self, now: DateTime<Local>) -> bool {
+        self.max_executions
+            .is_some_and(|limit| self.quota_used(now) >= limit)
+    }
+
+    /// Drops the counter of a lapsed period. Returns `true` when the counters changed,
+    /// so the daemon can persist the rollover.
+    pub fn normalize_quota(&mut self, now: DateTime<Local>) -> bool {
+        if self.quota_period.is_none() || self.quota_window_is_current(now) {
+            return false;
+        }
+        let changed = self.execution_count != 0 || self.quota_window_start.is_some();
+        self.execution_count = 0;
+        self.quota_window_start = None;
+        changed
+    }
+
+    /// Anchors a custom window at the moment its first execution starts.
+    pub fn begin_quota_window(&mut self, now: DateTime<Local>) -> bool {
+        if !matches!(self.quota_period, Some(QuotaPeriod::Custom { .. })) || self.quota_window_start.is_some() {
+            return false;
+        }
+        self.quota_window_start = Some(now.format("%Y-%m-%d %H:%M:%S").to_string());
+        true
+    }
+
+    /// The next moment the quota counter resets, when that moment is known.
+    pub fn quota_next_reset(&self, now: DateTime<Local>) -> Option<DateTime<Local>> {
+        match self.quota_period? {
+            period @ QuotaPeriod::Custom { .. } => {
+                let start = self.quota_window_start_local()?;
+                let end = period.custom_window_end(start)?;
+                (end > now).then_some(end)
+            }
+            period => {
+                let midnight = now.date_naive().and_hms_opt(0, 0, 0)?;
+                let start_of_day = Local.from_local_datetime(&midnight).single()?;
+                let next = match period {
+                    QuotaPeriod::Minute => {
+                        let start_of_minute = Local
+                            .from_local_datetime(&now.date_naive().and_hms_opt(now.hour(), now.minute(), 0)?)
+                            .single()?;
+                        start_of_minute + chrono::Duration::minutes(1)
+                    }
+                    QuotaPeriod::Hour => start_of_day + chrono::Duration::hours(now.hour() as i64 + 1),
+                    QuotaPeriod::Day => start_of_day + chrono::Duration::days(1),
+                    QuotaPeriod::Week => {
+                        let monday =
+                            start_of_day - chrono::Duration::days(now.weekday().num_days_from_monday() as i64);
+                        monday + chrono::Duration::weeks(1)
+                    }
+                    QuotaPeriod::Month => {
+                        let (year, month) = if now.month() == 12 {
+                            (now.year() + 1, 1)
+                        } else {
+                            (now.year(), now.month() + 1)
+                        };
+                        let naive = chrono::NaiveDate::from_ymd_opt(year, month, 1)?.and_hms_opt(0, 0, 0)?;
+                        Local.from_local_datetime(&naive).single()?
+                    }
+                    QuotaPeriod::Custom { .. } => return None,
+                };
+                Some(next)
+            }
+        }
     }
 
     pub fn default_icon_glyph(&self) -> &'static str {
@@ -2252,6 +2470,7 @@ mod tests {
             is_enabled: true,
             cooldown_seconds: 1.5,
             max_executions: Some(10),
+            quota_period: Some(QuotaPeriod::Day),
             execution_count: 42,
             stop_on_error: true,
             trigger: Some(Trigger::Process {
@@ -2268,6 +2487,7 @@ mod tests {
             auto_process_icon: true,
             conditions: vec![],
             last_executed_at: None,
+            quota_window_start: Some("2026-11-19 08:00:00".into()),
             tags: vec![RuleTag::new("Gaming").with_color("#3B82F6").with_icon("🎮")],
         };
 
@@ -2279,9 +2499,11 @@ mod tests {
         assert!(!cloned.is_enabled); // Paused on clone
         assert_eq!(cloned.cooldown_seconds, 1.5);
         assert_eq!(cloned.max_executions, Some(10));
+        assert_eq!(cloned.quota_period, Some(QuotaPeriod::Day));
         assert_eq!(cloned.trigger, original.trigger);
         assert_eq!(cloned.actions, original.actions);
         assert_eq!(cloned.execution_count, 0); // reset to 0
+        assert!(cloned.quota_window_start.is_none()); // runtime anchor reset
         assert_eq!(cloned.custom_icon_path, Some("C:\\game.exe".into()));
         assert!(cloned.auto_process_icon);
         assert!(cloned.stop_on_error);
@@ -2319,6 +2541,7 @@ mod tests {
             is_enabled: true,
             cooldown_seconds: 0.0,
             max_executions: None,
+            quota_period: None,
             execution_count: 0,
             stop_on_error: true,
             trigger: None,
@@ -2329,6 +2552,7 @@ mod tests {
             conditions: vec![],
             tags: vec![],
             last_executed_at: None,
+            quota_window_start: None,
         };
 
         // Fallback when empty
@@ -2414,6 +2638,7 @@ mod tests {
             is_enabled: true,
             cooldown_seconds: 1.0,
             max_executions: Some(5),
+            quota_period: Some(QuotaPeriod::Week),
             execution_count: 2,
             stop_on_error: true,
             trigger: Some(Trigger::Webhook {
@@ -2528,6 +2753,7 @@ mod tests {
             ],
             tags: vec![],
             last_executed_at: None,
+            quota_window_start: None,
         };
 
         let json = serde_json::to_string(&rule).expect("Serialization must succeed");
@@ -2535,6 +2761,7 @@ mod tests {
 
         assert_eq!(decoded.id, rule.id);
         assert_eq!(decoded.max_executions, Some(5));
+        assert_eq!(decoded.quota_period, Some(QuotaPeriod::Week));
         assert_eq!(decoded.execution_count, 2);
         assert!(decoded.stop_on_error);
         assert_eq!(decoded.actions.len(), 11);
@@ -3161,5 +3388,196 @@ mod tests {
         let mut cloned_action = overlay_set_text.clone();
         cloned_action.refresh_overlay_ids();
         assert_eq!(cloned_action, overlay_set_text);
+    }
+
+    fn local_at(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> DateTime<Local> {
+        Local
+            .with_ymd_and_hms(year, month, day, hour, minute, 0)
+            .single()
+            .expect("valid local time")
+    }
+
+    #[test]
+    fn test_calendar_quota_periods_roll_over() {
+        // Minute: 14:59:xx belongs to the previous bucket, 15:00 starts a new one.
+        let mut minutely = Rule {
+            max_executions: Some(2),
+            quota_period: Some(QuotaPeriod::Minute),
+            execution_count: 2,
+            last_executed_at: Some("2026-11-19 14:59:10".into()),
+            ..Default::default()
+        };
+        assert!(minutely.quota_exhausted(local_at(2026, 11, 19, 14, 59)));
+        assert_eq!(
+            minutely.quota_next_reset(local_at(2026, 11, 19, 14, 59)),
+            Some(local_at(2026, 11, 19, 15, 0))
+        );
+        assert!(!minutely.quota_exhausted(local_at(2026, 11, 19, 15, 0)));
+        assert!(minutely.normalize_quota(local_at(2026, 11, 19, 15, 0)));
+        assert_eq!(minutely.execution_count, 0);
+
+        // Hour: 14:59 belongs to the previous bucket, 15:00 starts a new one.
+        let mut hourly = Rule {
+            max_executions: Some(2),
+            quota_period: Some(QuotaPeriod::Hour),
+            execution_count: 2,
+            last_executed_at: Some("2026-11-19 14:10:00".into()),
+            ..Default::default()
+        };
+        assert!(hourly.quota_exhausted(local_at(2026, 11, 19, 14, 59)));
+        assert!(!hourly.quota_exhausted(local_at(2026, 11, 19, 15, 0)));
+        assert!(hourly.normalize_quota(local_at(2026, 11, 19, 15, 0)));
+        assert_eq!(hourly.execution_count, 0);
+
+        // Day: local midnight is the boundary.
+        let mut daily = Rule {
+            max_executions: Some(3),
+            quota_period: Some(QuotaPeriod::Day),
+            execution_count: 3,
+            last_executed_at: Some("2026-11-18 22:00:00".into()),
+            ..Default::default()
+        };
+        assert!(daily.quota_exhausted(local_at(2026, 11, 18, 23, 59)));
+        assert_eq!(daily.quota_used(local_at(2026, 11, 19, 0, 1)), 0);
+        assert!(daily.normalize_quota(local_at(2026, 11, 19, 0, 1)));
+        // The last-run stamp stays: daily and monthly schedules deduplicate on it.
+        assert_eq!(daily.last_executed_at.as_deref(), Some("2026-11-18 22:00:00"));
+
+        // Week: Monday 00:00 starts a new ISO week (2026-11-16 is a Monday).
+        let weekly = Rule {
+            max_executions: Some(1),
+            quota_period: Some(QuotaPeriod::Week),
+            execution_count: 1,
+            last_executed_at: Some("2026-11-16 09:00:00".into()),
+            ..Default::default()
+        };
+        assert!(weekly.quota_exhausted(local_at(2026, 11, 22, 23, 0)));
+        assert!(!weekly.quota_exhausted(local_at(2026, 11, 23, 0, 1)));
+
+        // Month: the 1st at 00:00 is the boundary.
+        let monthly = Rule {
+            max_executions: Some(1),
+            quota_period: Some(QuotaPeriod::Month),
+            execution_count: 1,
+            last_executed_at: Some("2026-11-30 23:00:00".into()),
+            ..Default::default()
+        };
+        assert!(monthly.quota_exhausted(local_at(2026, 11, 30, 23, 59)));
+        assert!(!monthly.quota_exhausted(local_at(2026, 12, 1, 0, 0)));
+    }
+
+    #[test]
+    fn test_custom_quota_window_anchors_at_first_execution() {
+        let mut rule = Rule {
+            max_executions: Some(2),
+            quota_period: Some(QuotaPeriod::Custom { value: 90, unit: QuotaUnit::Minutes }),
+            ..Default::default()
+        };
+        let start = local_at(2026, 11, 19, 10, 0);
+        assert!(rule.begin_quota_window(start));
+        assert_eq!(rule.quota_window_start.as_deref(), Some("2026-11-19 10:00:00"));
+        rule.execution_count = 2;
+        rule.last_executed_at = Some("2026-11-19 10:30:00".into());
+
+        assert!(rule.quota_exhausted(local_at(2026, 11, 19, 11, 0)));
+        assert_eq!(
+            rule.quota_next_reset(local_at(2026, 11, 19, 11, 0)),
+            Some(local_at(2026, 11, 19, 11, 30))
+        );
+        assert!(rule.quota_exhausted(local_at(2026, 11, 19, 11, 29)));
+        // The window lapses exactly on its end, and the counter rolls over lazily.
+        assert!(!rule.quota_exhausted(local_at(2026, 11, 19, 11, 30)));
+        assert!(rule.normalize_quota(local_at(2026, 11, 19, 11, 30)));
+        assert_eq!(rule.execution_count, 0);
+        assert!(rule.quota_window_start.is_none());
+
+        // The next execution opens a fresh window instead of inheriting the old one.
+        let next = local_at(2026, 11, 19, 13, 0);
+        assert!(rule.begin_quota_window(next));
+        assert_eq!(rule.quota_window_start.as_deref(), Some("2026-11-19 13:00:00"));
+        assert_eq!(rule.quota_remaining(next), Some(2));
+    }
+
+    #[test]
+    fn test_custom_quota_window_supports_calendar_months() {
+        let mut rule = Rule {
+            max_executions: Some(1),
+            quota_period: Some(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Months }),
+            ..Default::default()
+        };
+        let start = local_at(2026, 11, 19, 10, 0);
+        assert!(rule.begin_quota_window(start));
+        rule.execution_count = 1;
+        rule.last_executed_at = Some("2026-11-19 10:05:00".into());
+
+        // One calendar month from the window start, not a fixed 30-day span.
+        assert_eq!(
+            rule.quota_next_reset(local_at(2026, 12, 1, 0, 0)),
+            Some(local_at(2026, 12, 19, 10, 0))
+        );
+        assert!(rule.quota_exhausted(local_at(2026, 12, 18, 23, 0)));
+        assert!(!rule.quota_exhausted(local_at(2026, 12, 19, 10, 0)));
+
+        // Month-end clamping: Jan 31 + 1 month lands on the last day of February.
+        let mut clamped = Rule {
+            quota_period: Some(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Months }),
+            ..Default::default()
+        };
+        assert!(clamped.begin_quota_window(local_at(2027, 1, 31, 9, 0)));
+        assert_eq!(
+            clamped.quota_next_reset(local_at(2027, 2, 1, 0, 0)),
+            Some(local_at(2027, 2, 28, 9, 0))
+        );
+    }
+
+    #[test]
+    fn test_lifetime_quota_never_resets() {
+        let mut rule = Rule {
+            max_executions: Some(1),
+            quota_period: None,
+            execution_count: 1,
+            last_executed_at: Some("2020-01-01 00:00:00".into()),
+            ..Default::default()
+        };
+        assert!(rule.quota_exhausted(local_at(2026, 11, 19, 12, 0)));
+        assert!(!rule.normalize_quota(local_at(2026, 11, 19, 12, 0)));
+        assert_eq!(rule.execution_count, 1);
+        assert_eq!(rule.quota_remaining(local_at(2026, 11, 19, 12, 0)), Some(0));
+    }
+
+    #[test]
+    fn test_quota_period_serde() {
+        // Rules without the field keep the historical lifetime quota.
+        let legacy: Rule = serde_json::from_str(r#"{"id":"r","name":"R","max_executions":5}"#).unwrap();
+        assert_eq!(legacy.quota_period, None);
+        assert_eq!(legacy.quota_window_start, None);
+
+        let custom = Rule {
+            id: "r".into(),
+            name: "R".into(),
+            max_executions: Some(2),
+            quota_period: Some(QuotaPeriod::Custom { value: 2, unit: QuotaUnit::Days }),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&custom).unwrap();
+        assert!(
+            json.contains(r#""quota_period":{"custom":{"value":2,"unit":"days"}}"#),
+            "{json}"
+        );
+        // The custom-window anchor is runtime state, never part of the definition.
+        assert!(!json.contains("quota_window_start"));
+        let decoded: Rule = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.quota_period, custom.quota_period);
+
+        // Calendar variants serialize as bare snake_case strings.
+        let daily: Rule = serde_json::from_str(r#"{"id":"r","name":"R","quota_period":"day"}"#).unwrap();
+        assert_eq!(daily.quota_period, Some(QuotaPeriod::Day));
+        // A custom window without a unit defaults to minutes.
+        let minutes: Rule =
+            serde_json::from_str(r#"{"id":"r","name":"R","quota_period":{"custom":{"value":30}}}"#).unwrap();
+        assert_eq!(
+            minutes.quota_period,
+            Some(QuotaPeriod::Custom { value: 30, unit: QuotaUnit::Minutes })
+        );
     }
 }

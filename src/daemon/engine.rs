@@ -170,6 +170,27 @@ fn match_cached_regex(pattern: &str, actual: &str) -> bool {
     matched
 }
 
+/// Merges the daemon-owned runtime counters into a freshly saved rule definition.
+/// Redefining the quota (changing its period, or enabling one) starts a fresh counting
+/// window, because the old counter measured a different thing; every other edit keeps
+/// the counters so a rule continues where it left off. Returns `true` when the counters
+/// were reset and `runtime.json` therefore has to be flushed. `last_executed_at` is
+/// daemon state too and is always preserved, since schedule triggers use it for
+/// deduplication.
+fn adopt_rule_runtime(rule: &mut Rule, existing: &Rule) -> bool {
+    let quota_redefined =
+        rule.quota_period != existing.quota_period || (existing.max_executions.is_none() && rule.max_executions.is_some());
+    if quota_redefined {
+        rule.execution_count = 0;
+        rule.quota_window_start = None;
+    } else {
+        rule.execution_count = existing.execution_count;
+        rule.quota_window_start = existing.quota_window_start.clone();
+    }
+    rule.last_executed_at = existing.last_executed_at.clone();
+    quota_redefined
+}
+
 impl DaemonEngine {
     pub const MAX_LOGS: usize = 500;
     /// Coalescing window for `runtime.json`; counters may lag the daemon by this much
@@ -247,6 +268,17 @@ impl DaemonEngine {
 
     fn mark_runtime_dirty(&mut self) {
         self.runtime_dirty = true;
+    }
+
+    /// A rule edit that redefined its quota resets the daemon-owned counter, so the
+    /// stale `runtime.json` entry must be replaced immediately: the regular flush is
+    /// coalesced, and a restart before it would resurrect the old counter.
+    fn flush_quota_reset(&mut self, reset: bool) {
+        if !reset {
+            return;
+        }
+        self.mark_runtime_dirty();
+        self.persist_runtime_now();
     }
 
     /// Persists positions streamed by an overlay drag at most once per window; the
@@ -603,28 +635,43 @@ impl DaemonEngine {
                 }
                 ActionCompletionEvent::IncrementExecutionCount { rule_id, max_executions } => {
                     self.analytics.total_executions += 1;
+                    let now = chrono::Local::now();
                     let mut quota_msg = None;
                     let mut quota_paused = false;
                     if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule_id) {
+                        let _ = r.normalize_quota(now);
+                        r.begin_quota_window(now);
                         r.execution_count += 1;
-                        r.last_executed_at = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+                        r.last_executed_at = Some(now.format("%Y-%m-%d %H:%M:%S").to_string());
                         if let Some(limit) = max_executions {
                             if r.execution_count >= limit {
-                                r.is_enabled = false;
-                                quota_paused = true;
-                                quota_msg = Some(format!(
-                                    "Rule '{}' completed quota ({}/{}) and has been auto-paused.",
-                                    r.name, r.execution_count, limit
-                                ));
+                                if r.quota_period.is_some() {
+                                    // A periodic quota resumes on its own, so the rule stays
+                                    // enabled; the message reports when the counter rolls over.
+                                    quota_msg = Some(format!(
+                                        "Rule '{}' reached its quota ({}/{}); the counter resets {}.",
+                                        r.name,
+                                        r.execution_count,
+                                        limit,
+                                        Self::quota_reset_text(r.quota_next_reset(now))
+                                    ));
+                                } else {
+                                    r.is_enabled = false;
+                                    quota_paused = true;
+                                    quota_msg = Some(format!(
+                                        "Rule '{}' completed quota ({}/{}) and has been auto-paused.",
+                                        r.name, r.execution_count, limit
+                                    ));
+                                }
                             }
                         }
                     }
                     self.mark_runtime_dirty();
                     if quota_paused {
                         self.persist_rules();
+                        self.stop_rule_execution(&rule_id);
                     }
                     if let Some(msg) = quota_msg {
-                        self.stop_rule_execution(&rule_id);
                         self.log("INFO", "RULE", &msg);
                     }
                 }
@@ -1468,6 +1515,66 @@ impl DaemonEngine {
         }
     }
 
+    /// Human-readable "when" part of a periodic-quota reset message.
+    fn quota_reset_text(reset: Option<chrono::DateTime<chrono::Local>>) -> String {
+        match reset {
+            Some(at) => format!("at {}", at.format("%Y-%m-%d %H:%M")),
+            None => "when the period ends".to_string(),
+        }
+    }
+
+    /// Rolls a lapsed quota period over and reports whether the rule may execute now.
+    /// An exhausted lifetime quota pauses the rule (historical behavior); a periodic
+    /// quota only waits for the next period, so the rule stays enabled. `announce`
+    /// logs the exhausted state for user-invoked runs, which should not fail silently.
+    fn quota_allows_execution(&mut self, rule_id: &str, announce: bool) -> bool {
+        let now = chrono::Local::now();
+        let rolled;
+        let mut exhausted = false;
+        let mut paused = false;
+        let mut message = None;
+        {
+            let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == rule_id) else {
+                return true;
+            };
+            rolled = rule.normalize_quota(now);
+            let used = rule.quota_used(now);
+            if let Some(limit) = rule.max_executions {
+                if used >= limit {
+                    exhausted = true;
+                    if rule.quota_period.is_some() {
+                        if announce {
+                            message = Some(format!(
+                                "Rule '{}' reached its quota ({}/{}); the counter resets {}.",
+                                rule.name,
+                                used,
+                                limit,
+                                Self::quota_reset_text(rule.quota_next_reset(now))
+                            ));
+                        }
+                    } else {
+                        rule.is_enabled = false;
+                        paused = true;
+                        message = Some(format!(
+                            "Rule '{}' reached execution limit ({}/{}). Pausing.",
+                            rule.name, used, limit
+                        ));
+                    }
+                }
+            }
+        }
+        if rolled {
+            self.mark_runtime_dirty();
+        }
+        if paused {
+            self.persist_rules();
+        }
+        if let Some(message) = message {
+            self.log(if paused { "WARN" } else { "INFO" }, "RULE", &message);
+        }
+        !exhausted
+    }
+
     pub async fn try_execute_rule(
         &mut self,
         rule: &Rule,
@@ -1492,23 +1599,8 @@ impl DaemonEngine {
             self.active_bound_overlays.retain(|bo| bo.rule_id != rule.id);
         }
 
-        if let Some(limit) = rule.max_executions {
-            if rule.execution_count >= limit {
-                self.log(
-                    "WARN",
-                    "RULE",
-                    &format!("Rule '{}' reached execution limit ({}/{}). Pausing.", rule.name, rule.execution_count, limit),
-                );
-                let mut disabled = false;
-                if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
-                    r.is_enabled = false;
-                    disabled = true;
-                }
-                if disabled {
-                    self.persist_rules();
-                }
-                return None;
-            }
+        if !self.quota_allows_execution(&rule.id, false) {
+            return None;
         }
 
         if let Some(last) = self.rule_last_triggered.get(&rule.id) {
@@ -1593,16 +1685,35 @@ impl DaemonEngine {
         let execution_id = EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let total_steps = actions.len();
 
+        let now = chrono::Local::now();
         let mut quota_msg = None;
         let mut quota_paused = false;
         if let Some(r) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
+            let _ = r.normalize_quota(now);
+            r.begin_quota_window(now);
             r.execution_count += 1;
-            r.last_executed_at = Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string());
+            r.last_executed_at = Some(now.format("%Y-%m-%d %H:%M:%S").to_string());
             if let Some(limit) = r.max_executions {
                 if r.execution_count >= limit {
-                    r.is_enabled = false;
-                    quota_paused = true;
-                    quota_msg = Some(format!("Rule '{}' completed quota ({}/{}) and has been auto-paused.", r.name, r.execution_count, limit));
+                    if r.quota_period.is_some() {
+                        // Periodic quota: the rule stays enabled and simply waits for the
+                        // next period instead of being auto-paused.
+                        let reset = r.quota_next_reset(now);
+                        quota_msg = Some(format!(
+                            "Rule '{}' reached its quota ({}/{}); the counter resets {}.",
+                            r.name,
+                            r.execution_count,
+                            limit,
+                            Self::quota_reset_text(reset)
+                        ));
+                    } else {
+                        r.is_enabled = false;
+                        quota_paused = true;
+                        quota_msg = Some(format!(
+                            "Rule '{}' completed quota ({}/{}) and has been auto-paused.",
+                            r.name, r.execution_count, limit
+                        ));
+                    }
                 }
             }
         }
@@ -1861,15 +1972,8 @@ impl DaemonEngine {
             self.rule_overlay_map.insert(rule.id.clone(), ov_ids);
         }
 
-        if let Some(limit) = rule.max_executions {
-            if rule.execution_count >= limit {
-                self.log(
-                    "WARN",
-                    "RULE",
-                    &format!("Rule '{}' reached execution limit ({}/{}). Pausing.", rule.name, rule.execution_count, limit),
-                );
-                return None;
-            }
+        if !self.quota_allows_execution(&rule.id, true) {
+            return None;
         }
 
         if !rule.conditions.is_empty() && !Self::evaluate_rule_conditions(&rule.conditions) {
@@ -1966,8 +2070,11 @@ impl DaemonEngine {
         let stop_on_error = rule.stop_on_error;
         let context_name = context_name.to_string();
         let tx = self.action_tx.clone();
-        let max_executions = rule.max_executions;
-        let mut current_runs = rule.execution_count;
+        let now = chrono::Local::now();
+        let (max_executions, mut current_runs) = match self.config.rules.iter().find(|r| r.id == rule.id) {
+            Some(stored) => (stored.max_executions, stored.quota_used(now)),
+            None => (rule.max_executions, rule.quota_used(now)),
+        };
 
         static EXECUTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let execution_id = EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2141,16 +2248,17 @@ impl DaemonEngine {
             }
 
             IpcRequest::SaveRule(mut rule) => {
+                let mut runtime_reset = false;
                 if let Some(existing) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
                     // Counters belong to the daemon: the GUI edits drafts, it does not
                     // own execution history.
-                    rule.execution_count = existing.execution_count;
-                    rule.last_executed_at = existing.last_executed_at.clone();
+                    runtime_reset = adopt_rule_runtime(&mut rule, existing);
                     *existing = rule;
                 } else {
                     self.config.rules.push(rule);
                 }
                 self.persist_rules();
+                self.flush_quota_reset(runtime_reset);
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
@@ -2175,8 +2283,7 @@ impl DaemonEngine {
                 let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == id) else {
                     return IpcResponse::Error(format!("rule \"{id}\" not found"));
                 };
-                rule.execution_count = 0;
-                rule.last_executed_at = None;
+                rule.clear_quota_runtime();
                 rule.is_enabled = true;
                 self.persist_rules();
                 self.mark_runtime_dirty();
@@ -2288,12 +2395,12 @@ impl DaemonEngine {
                     ));
                 }
                 let mut count = 0;
+                let mut runtime_reset = false;
                 for mut rule in imported {
                     if let Some(existing) = self.config.rules.iter_mut().find(|r| r.id == rule.id) {
                         // Imported definitions never carry execution history: counters stay
                         // with the daemon and the rule keeps running where it left off.
-                        rule.execution_count = existing.execution_count;
-                        rule.last_executed_at = existing.last_executed_at.clone();
+                        runtime_reset |= adopt_rule_runtime(&mut rule, existing);
                         *existing = rule;
                     } else {
                         self.config.rules.push(rule);
@@ -2301,6 +2408,7 @@ impl DaemonEngine {
                     count += 1;
                 }
                 self.persist_rules();
+                self.flush_quota_reset(runtime_reset);
                 if let Some(h) = &self.hotkey_handle {
                     h.reload(&self.config.rules);
                 }
@@ -2374,16 +2482,17 @@ impl DaemonEngine {
                 // surviving rules stay with the daemon; removed rules lose theirs on the
                 // runtime flush below. One persist + one hotkey reload for the whole sync.
                 let mut synced = Vec::with_capacity(incoming.len());
+                let mut runtime_reset = false;
                 for mut rule in incoming {
                     if let Some(existing) = self.config.rules.iter().find(|r| r.id == rule.id) {
-                        rule.execution_count = existing.execution_count;
-                        rule.last_executed_at = existing.last_executed_at.clone();
+                        runtime_reset |= adopt_rule_runtime(&mut rule, existing);
                     }
                     synced.push(rule);
                 }
                 let count = synced.len();
                 self.config.rules = synced;
                 self.persist_rules();
+                self.flush_quota_reset(runtime_reset);
                 self.mark_runtime_dirty();
                 self.persist_runtime_now();
                 if let Some(h) = &self.hotkey_handle {
@@ -2561,6 +2670,18 @@ impl DaemonEngine {
 
     pub fn get_current_state(&mut self) -> DaemonState {
         self.drain_action_events();
+
+        // Roll lapsed quota periods over before the snapshot is built, so the GUI never
+        // shows a spent counter that has already reset with the calendar.
+        let now = chrono::Local::now();
+        let mut quota_rolled = false;
+        for rule in &mut self.config.rules {
+            quota_rolled |= rule.normalize_quota(now);
+        }
+        if quota_rolled {
+            self.mark_runtime_dirty();
+        }
+
         let active_rules = self.config.rules.iter().filter(|r| r.is_enabled).count();
         let total_rules = self.config.rules.len();
 
@@ -4319,6 +4440,116 @@ mod tests {
             }
             other => panic!("unexpected response: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_periodic_quota_resets_without_pausing_the_rule() {
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "periodic_quota".into(),
+            name: "Periodic quota".into(),
+            max_executions: Some(2),
+            quota_period: Some(crate::models::QuotaPeriod::Day),
+            execution_count: 2,
+            last_executed_at: Some(yesterday),
+            trigger: Some(Trigger::Manual),
+            actions: vec![Action::Notification {
+                title: "Tick".into(),
+                message: "Tick".into(),
+            }],
+            ..Default::default()
+        });
+        let mut engine = DaemonEngine::new(config);
+
+        // Yesterday's spent daily counter does not block today's first run.
+        let first = engine.try_execute_rule(&engine.config.rules[0].clone(), "MANUAL_TEST", 0).await;
+        assert!(first.is_some());
+        assert_eq!(engine.config.rules[0].execution_count, 1);
+        engine.drain_action_events();
+
+        let second = engine.try_execute_rule(&engine.config.rules[0].clone(), "MANUAL_TEST", 0).await;
+        assert!(second.is_some());
+        assert_eq!(engine.config.rules[0].execution_count, 2);
+        assert!(engine.config.rules[0].is_enabled, "a periodic quota must not pause the rule");
+        assert!(engine
+            .logs
+            .iter()
+            .any(|log| log.message.contains("reached its quota (2/2)")));
+        engine.drain_action_events();
+
+        // Once the period is spent the rule stays enabled but is skipped.
+        let blocked = engine.try_execute_rule(&engine.config.rules[0].clone(), "MANUAL_TEST", 0).await;
+        assert!(blocked.is_none());
+        assert!(engine.config.rules[0].is_enabled);
+        assert_eq!(engine.config.rules[0].execution_count, 2);
+
+        // A user-invoked run reports the exhausted quota instead of failing silently.
+        let emulated = engine.emulate_rule_trigger(&engine.config.rules[0].clone()).await;
+        assert!(emulated.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_lifetime_quota_still_pauses_the_rule() {
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "lifetime_quota".into(),
+            name: "Lifetime quota".into(),
+            max_executions: Some(1),
+            execution_count: 1,
+            last_executed_at: Some("2020-01-01 00:00:00".into()),
+            trigger: Some(Trigger::Manual),
+            actions: vec![Action::Notification {
+                title: "Tick".into(),
+                message: "Tick".into(),
+            }],
+            ..Default::default()
+        });
+        let mut engine = DaemonEngine::new(config);
+
+        let blocked = engine.try_execute_rule(&engine.config.rules[0].clone(), "MANUAL_TEST", 0).await;
+        assert!(blocked.is_none());
+        assert!(!engine.config.rules[0].is_enabled);
+        assert_eq!(engine.config.rules[0].execution_count, 1);
+        assert!(engine
+            .logs
+            .iter()
+            .any(|log| log.message.contains("reached execution limit")));
+    }
+
+    #[tokio::test]
+    async fn test_save_rule_resets_counters_only_when_quota_is_redefined() {
+        let mut config = AppConfig::default();
+        config.rules.push(Rule {
+            id: "quota_edit".into(),
+            name: "Quota edit".into(),
+            max_executions: Some(5),
+            execution_count: 4,
+            last_executed_at: Some("2026-11-19 10:00:00".into()),
+            quota_window_start: Some("2026-11-19 09:00:00".into()),
+            ..Default::default()
+        });
+        let mut engine = DaemonEngine::new(config);
+
+        // Unrelated edits keep the daemon-owned counters.
+        let mut draft = engine.config.rules[0].clone();
+        draft.name = "Renamed".into();
+        engine.handle_request(IpcRequest::SaveRule(draft)).await;
+        assert_eq!(engine.config.rules[0].execution_count, 4);
+        assert!(engine.config.rules[0].quota_window_start.is_some());
+
+        // Changing the quota period starts a fresh counting window.
+        let mut draft = engine.config.rules[0].clone();
+        draft.quota_period = Some(crate::models::QuotaPeriod::Day);
+        engine.handle_request(IpcRequest::SaveRule(draft)).await;
+        assert_eq!(engine.config.rules[0].execution_count, 0);
+        assert!(engine.config.rules[0].quota_window_start.is_none());
+        assert!(
+            engine.config.rules[0].last_executed_at.is_some(),
+            "schedule deduplication relies on the last-run stamp"
+        );
     }
 }
 

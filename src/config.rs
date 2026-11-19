@@ -530,8 +530,7 @@ impl RulesFile {
 /// Strips daemon-owned runtime counters from a rule before it is written to disk.
 fn rule_definition(rule: &Rule) -> Rule {
     let mut definition = rule.clone();
-    definition.execution_count = 0;
-    definition.last_executed_at = None;
+    definition.clear_quota_runtime();
     definition
 }
 
@@ -546,6 +545,9 @@ pub struct RuleRuntime {
     pub execution_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<String>,
+    /// Anchor of a `QuotaPeriod::Custom` window, local `%Y-%m-%d %H:%M:%S`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_window_start: Option<String>,
 }
 
 /// Hot runtime state. The daemon flushes it coalesced, so a fast-firing rule cannot
@@ -591,14 +593,18 @@ impl RuntimeState {
         write_json_atomic(&Self::path_in(dir), &snapshot)
     }
 
-    /// Snapshots the counters of every rule that has run at least once.
+    /// Snapshots the counters of every rule that has run at least once (including the
+    /// anchor of a custom quota window, which only survives a restart through this file).
     pub fn capture(rules: &[Rule]) -> Self {
         let mut runtime = Self {
             version: CONFIG_VERSION,
             rules: BTreeMap::new(),
         };
         for rule in rules {
-            if rule.execution_count == 0 && rule.last_executed_at.is_none() {
+            if rule.execution_count == 0
+                && rule.last_executed_at.is_none()
+                && rule.quota_window_start.is_none()
+            {
                 continue;
             }
             runtime.rules.insert(
@@ -606,6 +612,7 @@ impl RuntimeState {
                 RuleRuntime {
                     execution_count: rule.execution_count,
                     last_executed_at: rule.last_executed_at.clone(),
+                    quota_window_start: rule.quota_window_start.clone(),
                 },
             );
         }
@@ -618,6 +625,7 @@ impl RuntimeState {
             if let Some(entry) = self.rules.get(&rule.id) {
                 rule.execution_count = entry.execution_count;
                 rule.last_executed_at = entry.last_executed_at.clone();
+                rule.quota_window_start = entry.quota_window_start.clone();
             }
         }
     }
@@ -986,6 +994,7 @@ mod tests {
         let mut stored = rule("rule_a", "A");
         stored.execution_count = 42;
         stored.last_executed_at = Some("2026-01-01 00:00:00".to_string());
+        stored.quota_window_start = Some("2026-01-01 00:00:00".to_string());
         stored.is_enabled = false;
 
         RulesFile::save_rules_to(&dir, &[stored]).expect("save rules");
@@ -996,10 +1005,12 @@ mod tests {
         assert_eq!(decoded.rules[0].id, "rule_a");
         assert_eq!(decoded.rules[0].execution_count, 0);
         assert!(decoded.rules[0].last_executed_at.is_none());
+        assert!(decoded.rules[0].quota_window_start.is_none());
         assert!(!decoded.rules[0].is_enabled);
 
         let raw = fs::read_to_string(RulesFile::path_in(&dir)).expect("rules json");
         assert!(!raw.contains("last_executed_at"), "runtime counter leaked: {raw}");
+        assert!(!raw.contains("quota_window_start"), "quota anchor leaked: {raw}");
         assert!(raw.contains("\"version\": 1"));
     }
 
@@ -1008,11 +1019,16 @@ mod tests {
         let mut first = rule("rule_a", "A");
         first.execution_count = 7;
         first.last_executed_at = Some("2026-02-03 04:05:06".to_string());
+        first.quota_window_start = Some("2026-02-03 01:00:00".to_string());
         let untouched = rule("rule_b", "B");
 
         let runtime = RuntimeState::capture(&[first, untouched]);
         assert_eq!(runtime.rules.len(), 1);
         assert_eq!(runtime.rules["rule_a"].execution_count, 7);
+        assert_eq!(
+            runtime.rules["rule_a"].quota_window_start.as_deref(),
+            Some("2026-02-03 01:00:00")
+        );
 
         let mut loaded = vec![rule("rule_a", "A"), rule("rule_b", "B")];
         runtime.apply_to(&mut loaded);
@@ -1020,6 +1036,10 @@ mod tests {
         assert_eq!(
             loaded[0].last_executed_at.as_deref(),
             Some("2026-02-03 04:05:06")
+        );
+        assert_eq!(
+            loaded[0].quota_window_start.as_deref(),
+            Some("2026-02-03 01:00:00")
         );
         assert_eq!(loaded[1].execution_count, 0);
     }
@@ -1033,12 +1053,17 @@ mod tests {
             RuleRuntime {
                 execution_count: 3,
                 last_executed_at: None,
+                quota_window_start: Some("2026-02-03 01:00:00".to_string()),
             },
         );
         runtime.save_to(&dir).expect("save runtime");
 
         let mut decoded = RuntimeState::read_from(&dir);
         assert_eq!(decoded.version, CONFIG_VERSION);
+        assert_eq!(
+            decoded.rules["rule_a"].quota_window_start.as_deref(),
+            Some("2026-02-03 01:00:00")
+        );
         assert_eq!(decoded.rules["rule_a"].execution_count, 3);
         decoded.forget("rule_a");
         assert!(decoded.rules.is_empty());
@@ -1062,6 +1087,7 @@ mod tests {
             RuleRuntime {
                 execution_count: 11,
                 last_executed_at: Some("2026-01-01 00:00:00".to_string()),
+                quota_window_start: None,
             },
         );
         runtime.save_to(&dir).expect("save runtime");

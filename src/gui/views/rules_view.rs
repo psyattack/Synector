@@ -58,6 +58,10 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                             }
                         }
                     }
+                })
+                .response
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, loc.rules_tag_filter_accessible)
                 });
 
             ui.add_space(6.0);
@@ -88,6 +92,10 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                             state.rule_sort_mode = mode;
                         }
                     }
+                })
+                .response
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, loc.rules_sort_accessible)
                 });
 
             ui.add_space(6.0);

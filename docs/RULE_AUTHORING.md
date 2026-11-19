@@ -31,9 +31,10 @@ rule file from stdin.
 
 A rule file is one rule object, an array of rules, or `{"rules": [...]}`. `id` is the upsert key and
 must be unique and stable, `name` is required. Rule files never carry runtime state: the daemon keeps
-`execution_count` and `last_executed_at` in `runtime.json`, and applying a file does not reset the
-quota progress of the rules it updates. `--rules-schema` describes a single rule object; the array and
-wrapper forms are only file containers.
+`execution_count`, `last_executed_at` and the custom quota window anchor in `runtime.json`, and
+applying a file does not reset the quota progress of the rules it updates. Redefining the quota (its
+limit or period) does start a fresh counting window, because the old counter measured something else.
+`--rules-schema` describes a single rule object; the array and wrapper forms are only file containers.
 
 Minimal example:
 
@@ -62,8 +63,33 @@ A rule with a schedule trigger, a beep action and a three-run quota:
 }
 ```
 
-When `max_executions` is reached the engine disables the rule automatically; `--rules-reset <id>`
-clears the counter and enables it again.
+`max_executions` without `quota_period` is a lifetime quota: when it is reached the engine disables
+the rule automatically; `--rules-reset <id>` clears the counter and enables it again.
+
+A quota that resets on its own sets `quota_period`:
+
+```json
+{
+  "id": "rule_ten_runs_per_day",
+  "name": "Ten runs per day",
+  "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+D" },
+  "actions": [
+    { "$action_type": "notification", "title": "Daily run", "message": "Quota unit consumed" }
+  ],
+  "max_executions": 10,
+  "quota_period": "day"
+}
+```
+
+| `quota_period` | Reset point |
+|---|---|
+| `"minute"`, `"hour"`, `"day"`, `"week"`, `"month"` | Calendar-aligned local time: the next minute, the next hour, midnight, Monday 00:00 (ISO week), the 1st at 00:00 |
+| `{"custom": {"value": 90, "unit": "minutes"}}` | Fixed window of `value` `unit`s (`minutes`, `hours`, `days`, `weeks`, `months`); it starts with the rule's first execution and the counter resets when the window ends. A `months` window is added as calendar months (e.g. first run on the 19th ends on the 19th, month-end days are clamped) |
+| omitted | Lifetime quota |
+
+A periodic quota never disables the rule: when the period is spent the engine skips executions until
+the counter rolls over. `--rules-reset <id>` clears it immediately, and `--rules-list` shows the
+progress plus the period, e.g. `exec 3/10 (daily)`.
 
 ## Discovering the schema
 

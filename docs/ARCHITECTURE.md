@@ -96,7 +96,7 @@ over IPC, never written as one document. This keeps write volume proportional to
 | `settings.json` | Window geometry, tray icon, language, theme, update preferences | Settings changes |
 | `rules.json` | Rule definitions; counter fields are written zeroed | Rule create/update/delete/reorder |
 | `library.json` | Overlay and macro presets | Preset save/delete, overlay calibration |
-| `runtime.json` | Per-rule `execution_count` and `last_executed_at` | Coalesced daemon flush |
+| `runtime.json` | Per-rule `execution_count`, `last_executed_at` and the custom quota-window anchor | Coalesced daemon flush |
 
 Every write goes through a temporary file that is flushed and renamed over the target, so a crash
 mid-write cannot truncate user data, and every file carries a schema version that is re-stamped on
@@ -142,8 +142,11 @@ actions, volume, opacity and live telemetry.
 ### Rule engine
 
 A rule pairs one trigger with an ordered action pipeline. The engine schedules triggered runs,
-enforces per-rule quotas (`max_executions`) and cooldowns, tracks active executions for the UI,
-and reports analytics telemetry.
+enforces per-rule quotas (`max_executions`, either a lifetime cap or a counter that resets per
+minute/hour/day/week/month or on a custom first-run window) and cooldowns, tracks active executions for the
+UI, and reports analytics telemetry. A lifetime quota pauses the rule when it is exhausted; a
+periodic quota keeps the rule enabled and simply skips executions until the counter rolls over, so
+the same rule starts firing again the next minute/hour/day/week/month without user interaction.
 
 Pipelines support waits, inline checks and branching:
 

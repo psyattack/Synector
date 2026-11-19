@@ -385,8 +385,7 @@ pub fn build_payload(
     let mut warnings = Vec::new();
 
     for rule in &mut rules {
-        rule.execution_count = 0;
-        rule.last_executed_at = None;
+        rule.clear_quota_runtime();
         if rule.custom_icon_path.take().is_some() {
             push_warning(&mut warnings, ShareWarning::CustomIconDropped);
         }
@@ -645,8 +644,7 @@ pub fn prepare_import(
     let mut fingerprints: HashSet<String> = existing_rules.iter().map(rule_fingerprint).collect();
 
     for mut rule in payload.rules {
-        rule.execution_count = 0;
-        rule.last_executed_at = None;
+        rule.clear_quota_runtime();
         rule.is_enabled = enable;
         remap_library_refs(&mut rule, &overlay_map, &preset_map);
         if rule.custom_icon_path.take().is_some() {
@@ -779,8 +777,7 @@ fn fresh_id(prefix: &str) -> String {
 fn rule_fingerprint(rule: &Rule) -> String {
     let mut clone = rule.clone();
     clone.id.clear();
-    clone.execution_count = 0;
-    clone.last_executed_at = None;
+    clone.clear_quota_runtime();
     clone.is_enabled = false;
     // Icon paths are sender-local and never shared, so they must not affect identity.
     clone.custom_icon_path = None;
@@ -1294,6 +1291,7 @@ mod tests {
         let mut shared = sample_rule("shared_rule");
         shared.execution_count = 42;
         shared.last_executed_at = Some("2020-01-01T00:00:00Z".into());
+        shared.quota_window_start = Some("2020-01-01 00:00:00".into());
         shared.is_enabled = true;
         let (payload, _) = build_payload(vec![shared], &[], &[]);
 
@@ -1302,6 +1300,7 @@ mod tests {
         assert!(!prepared.rules[0].is_enabled);
         assert_eq!(prepared.rules[0].execution_count, 0);
         assert!(prepared.rules[0].last_executed_at.is_none());
+        assert!(prepared.rules[0].quota_window_start.is_none());
         assert!(prepared.has_new_content);
 
         let enabled = prepare_import(
@@ -1478,6 +1477,8 @@ mod tests {
             "auto_process_icon",
             "custom_icon_path",
             "last_executed_at",
+            "quota_period",
+            "quota_window_start",
         ] {
             assert!(!json.contains(omitted), "{omitted} must be omitted: {json}");
         }
@@ -1491,7 +1492,7 @@ mod tests {
 
     #[test]
     fn test_prepare_import_strips_foreign_icon_paths() {
-        let mut rule = sample_rule("icon_rule");
+        let rule = sample_rule("icon_rule");
         assert!(rule.custom_icon_path.is_some());
         let prepared = prepare_import(
             SharePayload::rules_only(vec![rule]),

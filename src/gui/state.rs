@@ -1106,6 +1106,7 @@ impl GuiState {
             is_enabled: true,
             cooldown_seconds: 0.0,
             max_executions: None,
+            quota_period: None,
             execution_count: 0,
             stop_on_error: true,
             trigger: Some(crate::models::Trigger::Manual),
@@ -1115,6 +1116,7 @@ impl GuiState {
             auto_process_icon: false,
             conditions: Vec::new(),
             last_executed_at: None,
+            quota_window_start: None,
             tags: Vec::new(),
         }
     }
@@ -1457,6 +1459,21 @@ impl GuiState {
         self.editing_rule = Some(rule);
         self.is_creating_new_rule = false;
         self.selected_process = None;
+    }
+
+    /// Clears the rule's quota progress. The daemon owns the counters, so a rule that
+    /// already exists is reset through `ResetRule`; an unsaved draft is cleared locally.
+    pub fn reset_rule_quota(&mut self, rule: &mut Rule) {
+        rule.clear_quota_runtime();
+        rule.is_enabled = true;
+        let saved = self
+            .daemon_state
+            .as_ref()
+            .is_some_and(|state| state.config.rules.iter().any(|saved| saved.id == rule.id));
+        if saved {
+            let _ = IpcClient::call(&IpcRequest::ResetRule(rule.id.clone()));
+            self.sync_with_daemon();
+        }
     }
 
     pub fn save_rule(&mut self, mut rule: Rule) {

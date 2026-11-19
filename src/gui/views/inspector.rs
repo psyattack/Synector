@@ -11,7 +11,7 @@ use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 use crate::models::{
     Action, ConditionOperator, PowerPlanType, ProcessMatchMode,
-    ProcessPriorityLevel, ProcessSnapshotItem, Rule, RuleCondition, RuleConditionItem, ScheduleType,
+    ProcessPriorityLevel, ProcessSnapshotItem, QuotaPeriod, QuotaUnit, Rule, RuleCondition, RuleConditionItem, ScheduleType,
     SystemEventType, SystemPowerType, Trigger, WindowActionType,
 };
 use chrono::{Datelike, Timelike};
@@ -342,6 +342,48 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
         });
 }
 
+fn quota_period_label(period: Option<QuotaPeriod>, loc: &crate::i18n::Strings) -> String {
+    match period {
+        None => loc.inspector_quota_period_total.to_string(),
+        Some(QuotaPeriod::Minute) => loc.inspector_quota_period_minute.to_string(),
+        Some(QuotaPeriod::Hour) => loc.inspector_quota_period_hour.to_string(),
+        Some(QuotaPeriod::Day) => loc.inspector_quota_period_day.to_string(),
+        Some(QuotaPeriod::Week) => loc.inspector_quota_period_week.to_string(),
+        Some(QuotaPeriod::Month) => loc.inspector_quota_period_month.to_string(),
+        Some(QuotaPeriod::Custom { .. }) => loc.inspector_quota_period_custom.to_string(),
+    }
+}
+
+fn quota_unit_label(unit: QuotaUnit, loc: &crate::i18n::Strings) -> &'static str {
+    match unit {
+        QuotaUnit::Minutes => loc.inspector_quota_unit_minutes,
+        QuotaUnit::Hours => loc.inspector_quota_unit_hours,
+        QuotaUnit::Days => loc.inspector_quota_unit_days,
+        QuotaUnit::Weeks => loc.inspector_quota_unit_weeks,
+        QuotaUnit::Months => loc.inspector_quota_unit_months,
+    }
+}
+
+/// Left-hand form label centred against a standard-height control row.
+fn quota_form_label(ui: &mut Ui, text: &str, t: &Tokens) -> egui::Response {
+    let row_h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        vec2(58.0, row_h),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| widgets::hud(ui, text, t.muted),
+    )
+    .inner
+}
+
+/// Natural outer height of a framed control (DragValue, ComboBox, Button): the button text
+/// plus the theme's button padding on both sides. Keeping `interact_size.y` at this value
+/// makes all of them take exactly the same height instead of a mix of natural and minimum
+/// sizes, which is what made a ComboBox sit lower than a DragValue next to it.
+fn quota_control_height(ui: &Ui) -> f32 {
+    let text_h = ui.text_style_height(&egui::TextStyle::Button);
+    (text_h + 2.0 * ui.spacing().button_padding.y).ceil()
+}
+
 fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &Tokens) {
     state.ensure_processes();
 
@@ -463,8 +505,9 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                         ui.add_space(-3.0);
                         ui.horizontal(|ui| {
                             ui.spacing_mut().interact_size.y = 24.0;
-                            widgets::hud(ui, loc.inspector_field_cooldown, t.muted);
-                            ui.add(egui::DragValue::new(&mut rule.cooldown_seconds).speed(0.1).range(0.0..=60.0).suffix(" s"));
+                            let cooldown_label = widgets::hud(ui, loc.inspector_field_cooldown, t.muted);
+                            ui.add(egui::DragValue::new(&mut rule.cooldown_seconds).speed(0.1).range(0.0..=60.0).suffix(" s"))
+                                .labelled_by(cooldown_label.id);
                         });
 
                         ui.add_space(4.0);
@@ -475,24 +518,157 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                             ui.checkbox(&mut rule.auto_process_icon, loc.inspector_icon_auto_process)
                                 .on_hover_text(loc.inspector_icon_auto_process_tip);
 
-                            // Execution Quota (separate line)
+                            // Execution quota: the limit and the period its counter resets on.
                             widgets::checkbox_row(ui, |ui| {
                                 let mut has_quota = rule.max_executions.is_some();
                                 if ui.checkbox(&mut has_quota, loc.inspector_field_max_executions).changed() {
-                                    rule.max_executions = if has_quota { Some(10) } else { None };
-                                }
-                                if let Some(limit) = &mut rule.max_executions {
-                                    if widgets::glyph_button(ui, Glyph::Reset, loc.inspector_btn_reset).clicked() {
-                                        rule.execution_count = 0;
+                                    if has_quota {
+                                        rule.max_executions = Some(10);
+                                    } else {
+                                        rule.max_executions = None;
+                                        rule.quota_period = None;
+                                        rule.clear_quota_runtime();
                                     }
-                                    ui.add(egui::DragValue::new(limit).range(1..=100000).suffix(" runs"));
-                                    let remaining = limit.saturating_sub(rule.execution_count);
-                                    let note = loc.inspector_runs_remaining
-                                        .replacen("{}", &remaining.to_string(), 1)
-                                        .replacen("{}", &limit.to_string(), 1);
-                                    widgets::hud(ui, &note, t.faint);
                                 }
                             });
+
+                            if rule.max_executions.is_some() {
+                                let mut reset_clicked = false;
+                                egui::Frame::new()
+                                    .fill(t.bg)
+                                    .stroke(t.hairline())
+                                    .inner_margin(egui::Margin::symmetric(10, 8))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        // Every control in the panel uses the same height so the
+                                        // labels and the fields line up vertically.
+                                        ui.spacing_mut().interact_size.y = quota_control_height(ui);
+                                        egui::Grid::new("inspector_quota_grid")
+                                            .num_columns(2)
+                                            .spacing(vec2(10.0, 6.0))
+                                            .show(ui, |ui| {
+                                                let limit_label = quota_form_label(ui, loc.inspector_quota_limit, t);
+                                                if let Some(limit) = &mut rule.max_executions {
+                                                    ui.add(
+                                                        egui::DragValue::new(limit)
+                                                            .range(1..=100_000)
+                                                            .suffix(" runs"),
+                                                    )
+                                                    .labelled_by(limit_label.id);
+                                                }
+                                                ui.end_row();
+
+                                                let period_label = quota_form_label(ui, loc.inspector_quota_period, t);
+                                                let mut period = rule.quota_period;
+                                                let period_combo = egui::ComboBox::from_id_salt("inspector_quota_period")
+                                                    .selected_text(quota_period_label(period, loc))
+                                                    .width(170.0)
+                                                    // Seven full-height rows; the 200 px default
+                                                    // would hide the last option below a scrollbar.
+                                                    .height(300.0)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(&mut period, None, loc.inspector_quota_period_total);
+                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Minute), loc.inspector_quota_period_minute);
+                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Hour), loc.inspector_quota_period_hour);
+                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Day), loc.inspector_quota_period_day);
+                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Week), loc.inspector_quota_period_week);
+                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Month), loc.inspector_quota_period_month);
+                                                        ui.selectable_value(
+                                                            &mut period,
+                                                            Some(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Hours }),
+                                                            loc.inspector_quota_period_custom,
+                                                        );
+                                                    });
+                                                period_combo.response.labelled_by(period_label.id);
+                                                rule.quota_period = period;
+                                                ui.end_row();
+
+                                                if let Some(QuotaPeriod::Custom { value, unit }) = &mut rule.quota_period {
+                                                    let window_label = quota_form_label(ui, loc.inspector_quota_period, t)
+                                                        .on_hover_text(loc.inspector_quota_custom_tip);
+                                                    ui.horizontal(|ui| {
+                                                        ui.add(
+                                                            egui::DragValue::new(value)
+                                                                .range(1..=100_000)
+                                                                .speed(1.0),
+                                                        )
+                                                        .labelled_by(window_label.id);
+                                                        egui::ComboBox::from_id_salt("inspector_quota_unit")
+                                                            .selected_text(quota_unit_label(*unit, loc))
+                                                            .width(64.0)
+                                                            .height(220.0)
+                                                            .show_ui(ui, |ui| {
+                                                                for option in QuotaUnit::ALL {
+                                                                    ui.selectable_value(unit, option, quota_unit_label(option, loc));
+                                                                }
+                                                            })
+                                                            .response
+                                                            .labelled_by(window_label.id);
+                                                    });
+                                                    ui.end_row();
+                                                }
+                                            });
+
+                                        // Footer: remaining budget (separated from the fields)
+                                        // and the counter reset action right next to it.
+                                        ui.add_space(2.0);
+                                        ui.separator();
+                                        ui.add_space(2.0);
+                                        let now = chrono::Local::now();
+                                        let exhausted = rule.quota_exhausted(now);
+                                        let limit = rule.max_executions.unwrap_or(0);
+                                        let remaining = rule.quota_remaining(now).unwrap_or(0);
+                                        let mut status = loc
+                                            .inspector_runs_remaining
+                                            .replacen("{}", &remaining.to_string(), 1)
+                                            .replacen("{}", &limit.to_string(), 1);
+                                        if exhausted {
+                                            if let Some(reset) = rule.quota_next_reset(now) {
+                                                status.push_str(" · ");
+                                                status.push_str(
+                                                    &loc.inspector_quota_resets_at
+                                                        .replacen("{}", &reset.format("%H:%M").to_string(), 1),
+                                                );
+                                            }
+                                        }
+                                        ui.allocate_ui_with_layout(
+                                            vec2(ui.available_width(), ui.spacing().interact_size.y),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                ui.spacing_mut().item_spacing.x = 8.0;
+                                                // The counter reset is a bare glyph, not a framed
+                                                // button: it only reacts to hover.
+                                                let (reset_rect, reset_response) =
+                                                    ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                                                let reset_color = if reset_response.hovered() { t.accent_ink } else { t.faint };
+                                                ui.painter().text(
+                                                    reset_rect.center(),
+                                                    egui::Align2::CENTER_CENTER,
+                                                    egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+                                                    egui::FontId::new(15.0, theme::phosphor()),
+                                                    reset_color,
+                                                );
+                                                reset_response.widget_info(|| {
+                                                    egui::WidgetInfo::labeled(
+                                                        egui::WidgetType::Button,
+                                                        true,
+                                                        loc.inspector_btn_reset,
+                                                    )
+                                                });
+                                                let reset_response = reset_response
+                                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                    .on_hover_text(loc.inspector_btn_reset);
+                                                if reset_response.clicked() {
+                                                    reset_clicked = true;
+                                                }
+                                                widgets::hud(ui, &status, if exhausted { t.warn } else { t.faint });
+                                            },
+                                        );
+                                    });
+                                if reset_clicked {
+                                    state.reset_rule_quota(rule);
+                                }
+                            }
 
                             // Stop pipeline on error (separate line)
                             ui.checkbox(&mut rule.stop_on_error, loc.inspector_field_stop_on_error)

@@ -14,7 +14,7 @@ use schemars::schema::{InstanceType, RootSchema, Schema, SchemaObject, SingleOrV
 
 use crate::config::{AppConfig, RulesFile, RuntimeState};
 use crate::ipc::{IpcClient, IpcRequest, IpcResponse};
-use crate::models::{Action, Rule, ScheduleType, Trigger};
+use crate::models::{Action, QuotaPeriod, Rule, ScheduleType, Trigger};
 
 pub const USAGE: &str = r#"Synector - rule authoring from the command line
 
@@ -354,8 +354,12 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
             Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
         }
     } else {
+        let previous = cfg.rules.clone();
         let report = upsert_rules(&mut cfg.rules, &rules);
         if let Err(err) = save_rules(&cfg.rules) {
+            return fail_with(json_output, &err);
+        }
+        if let Err(err) = reset_redefined_quota_runtime(&previous, &rules) {
             return fail_with(json_output, &err);
         }
         if json_output {
@@ -410,6 +414,7 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         }
     }
 
+    let previous = cfg.rules.clone();
     let (report, deleted) = plan_sync(&cfg.rules, &rules);
     if dry_run {
         if json_output {
@@ -457,6 +462,9 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         if let Err(err) = save_rules(&cfg.rules) {
             return fail_with(json_output, &err);
         }
+        if let Err(err) = reset_redefined_quota_runtime(&previous, &cfg.rules) {
+            return fail_with(json_output, &err);
+        }
         if json_output {
             emit_json(report_json(true, "rules", &report, &deleted, false, &warnings));
         } else {
@@ -488,13 +496,20 @@ fn cmd_list(args: &[String]) -> i32 {
     }
 
     println!("{} rule(s) from {}", cfg.rules.len(), config_source(from_daemon));
+    let now = chrono::Local::now();
     for rule in &cfg.rules {
+        // `quota_used` reports zero for a period that already rolled over, so the listing
+        // matches what the daemon will allow even before it persists the reset.
+        let used = rule.quota_used(now);
         let executions = match rule.max_executions {
-            Some(max) => format!("{}/{}", rule.execution_count, max),
-            None => rule.execution_count.to_string(),
+            Some(max) => match rule.quota_period {
+                Some(period) => format!("{}/{} ({})", used, max, quota_period_summary(period)),
+                None => format!("{}/{}", used, max),
+            },
+            None => used.to_string(),
         };
         println!(
-            "  {:<28}  {:<32}  {:<8}  {:>2} action(s)  exec {:<7}  {}",
+            "  {:<28}  {:<32}  {:<8}  {:>2} action(s)  exec {:<18}  {}",
             rule.id,
             truncate(&rule.name, 32),
             if rule.is_enabled { "enabled" } else { "disabled" },
@@ -504,6 +519,27 @@ fn cmd_list(args: &[String]) -> i32 {
         );
     }
     0
+}
+
+/// Compact period description for `--rules-list`.
+fn quota_period_summary(period: QuotaPeriod) -> String {
+    match period {
+        QuotaPeriod::Minute => "every minute".to_string(),
+        QuotaPeriod::Hour => "hourly".to_string(),
+        QuotaPeriod::Day => "daily".to_string(),
+        QuotaPeriod::Week => "weekly".to_string(),
+        QuotaPeriod::Month => "monthly".to_string(),
+        QuotaPeriod::Custom { value, unit } => {
+            let unit = match unit {
+                crate::models::QuotaUnit::Minutes => "min",
+                crate::models::QuotaUnit::Hours => "h",
+                crate::models::QuotaUnit::Days => "d",
+                crate::models::QuotaUnit::Weeks => "w",
+                crate::models::QuotaUnit::Months => "mo",
+            };
+            format!("every {value}{unit}")
+        }
+    }
 }
 
 fn cmd_export(args: &[String]) -> i32 {
@@ -1572,6 +1608,12 @@ pub fn validate_rules(rules: &[Rule]) -> Vec<String> {
                 display_id(rule)
             ));
         }
+        if let Some(QuotaPeriod::Custom { value: 0, .. }) = rule.quota_period {
+            errors.push(format!(
+                "rule #{number} ({}): a custom quota_period window needs value > 0",
+                display_id(rule)
+            ));
+        }
 
         validate_trigger(&rule.trigger, number, rule, &mut errors);
 
@@ -1672,6 +1714,11 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
         if rule.max_executions == Some(0) {
             warnings.push(format!(
                 "rule #{number} ({id}): max_executions is 0, the rule will never run"
+            ));
+        }
+        if rule.quota_period.is_some() && rule.max_executions.is_none() {
+            warnings.push(format!(
+                "rule #{number} ({id}): quota_period has no effect without max_executions"
             ));
         }
 
@@ -1813,8 +1860,7 @@ fn reset_rule_runtime<'a>(rules: &'a mut [Rule], id: &str) -> Result<&'a mut Rul
         .iter_mut()
         .find(|rule| rule.id == id)
         .ok_or_else(|| format!("rule \"{id}\" not found"))?;
-    rule.execution_count = 0;
-    rule.last_executed_at = None;
+    rule.clear_quota_runtime();
     rule.is_enabled = true;
     Ok(rule)
 }
@@ -1898,6 +1944,41 @@ fn forget_runtime_counters(ids: &[&str]) -> Result<(), String> {
     let mut runtime = RuntimeState::read();
     for id in ids {
         runtime.forget(id);
+    }
+    runtime
+        .save()
+        .map_err(|err| format!("cannot write {}: {err}", RuntimeState::path().display()))
+}
+
+/// Keeps `runtime.json` in step with a rule file applied while the daemon is offline.
+/// Redefining a quota (changing its period, or enabling one) starts a fresh counting
+/// window, matching the daemon's `adopt_rule_runtime`; every other update keeps the
+/// counters, and `last_executed_at` is always preserved because schedules rely on it.
+fn reset_redefined_quota_runtime(previous: &[Rule], applied: &[Rule]) -> Result<(), String> {
+    let redefined: Vec<&str> = applied
+        .iter()
+        .filter(|rule| {
+            previous.iter().find(|old| old.id == rule.id).is_some_and(|old| {
+                old.quota_period != rule.quota_period
+                    || (old.max_executions.is_none() && rule.max_executions.is_some())
+            })
+        })
+        .map(|rule| rule.id.as_str())
+        .collect();
+    if redefined.is_empty() {
+        return Ok(());
+    }
+    let mut runtime = RuntimeState::read();
+    let mut changed = false;
+    for id in redefined {
+        if let Some(entry) = runtime.rules.get_mut(id) {
+            changed |= entry.execution_count != 0 || entry.quota_window_start.is_some();
+            entry.execution_count = 0;
+            entry.quota_window_start = None;
+        }
+    }
+    if !changed {
+        return Ok(());
     }
     runtime
         .save()
@@ -2198,6 +2279,61 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_custom_quota_period() {
+        let mut rule = rule_with_notification("custom_quota");
+        rule.max_executions = Some(5);
+        rule.quota_period = Some(QuotaPeriod::Custom {
+            value: 0,
+            unit: crate::models::QuotaUnit::Hours,
+        });
+        let errors = validate_rules(&[rule.clone()]);
+        assert!(
+            errors.iter().any(|e| e.contains("custom quota_period window needs value > 0")),
+            "{errors:?}"
+        );
+
+        rule.quota_period = Some(QuotaPeriod::Custom {
+            value: 2,
+            unit: crate::models::QuotaUnit::Days,
+        });
+        assert!(validate_rules(&[rule.clone()]).is_empty());
+        assert!(rule_warnings(&[rule], &AppConfig::default()).is_empty());
+
+        // A period without a limit does nothing; it is a warning, not an error.
+        let mut orphan = rule_with_notification("orphan_period");
+        orphan.quota_period = Some(QuotaPeriod::Day);
+        assert!(validate_rules(&[orphan.clone()]).is_empty());
+        let warnings = rule_warnings(&[orphan], &AppConfig::default());
+        assert!(
+            warnings.iter().any(|w| w.contains("quota_period has no effect")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_quota_period_summary() {
+        assert_eq!(quota_period_summary(QuotaPeriod::Minute), "every minute");
+        assert_eq!(quota_period_summary(QuotaPeriod::Hour), "hourly");
+        assert_eq!(quota_period_summary(QuotaPeriod::Day), "daily");
+        assert_eq!(quota_period_summary(QuotaPeriod::Week), "weekly");
+        assert_eq!(quota_period_summary(QuotaPeriod::Month), "monthly");
+        assert_eq!(
+            quota_period_summary(QuotaPeriod::Custom {
+                value: 90,
+                unit: crate::models::QuotaUnit::Minutes
+            }),
+            "every 90min"
+        );
+        assert_eq!(
+            quota_period_summary(QuotaPeriod::Custom {
+                value: 3,
+                unit: crate::models::QuotaUnit::Months
+            }),
+            "every 3mo"
+        );
+    }
+
+    #[test]
     fn test_upsert_and_classify() {
         let mut existing = vec![rule_with_notification("keep"), rule_with_notification("update")];
         let incoming = vec![
@@ -2303,6 +2439,7 @@ mod tests {
             "play_sound",
             "schedule",
             "max_executions",
+            "quota_period",
         ] {
             assert!(text.contains(needle), "schema missing {needle}");
         }
@@ -2343,6 +2480,7 @@ mod tests {
         for needle in [
             "RULE FIELDS",
             "max_executions",
+            "quota_period",
             "TRIGGERS",
             "ACTIONS",
             "CONDITIONS",

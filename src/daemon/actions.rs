@@ -52,6 +52,11 @@ pub enum ActionOutcome {
     AbortPipeline { reason: String },
 }
 
+/// Physical input emitters (SendInput, SetCursorPos, media keys) are disabled while the
+/// crate is built for unit tests, so `cargo test` can exercise macros, hold tracking and
+/// cursor math without moving the developer's mouse or typing into the focused window.
+pub(crate) const INPUT_INJECTION_ENABLED: bool = !cfg!(test);
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -1877,6 +1882,9 @@ pub(crate) fn calculate_sleep_ms(base_ms: u32, organic: bool, jitter_percent: u3
 
 #[cfg(windows)]
 fn send_mouse_input(flags: MOUSE_EVENT_FLAGS, mouse_data: u32) {
+    if !INPUT_INJECTION_ENABLED {
+        return;
+    }
     let input = INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: windows::Win32::UI::Input::KeyboardAndMouse::INPUT_0 {
@@ -1902,6 +1910,9 @@ fn smooth_mouse_move(
     duration_ms: u32,
     organic: bool,
 ) {
+    if !INPUT_INJECTION_ENABLED {
+        return;
+    }
     let mut start_pt = POINT::default();
     unsafe {
         let _ = GetCursorPos(&mut start_pt);
@@ -1991,7 +2002,7 @@ fn smooth_mouse_move(
 
 #[cfg(windows)]
 fn send_mouse_relative_step(dx: i32, dy: i32) {
-    if dx == 0 && dy == 0 {
+    if dx == 0 && dy == 0 || !INPUT_INJECTION_ENABLED {
         return;
     }
     let input = INPUT {
@@ -2019,7 +2030,7 @@ fn smooth_relative_mouse_move(
     duration_ms: u32,
     organic: bool,
 ) {
-    if total_dx == 0 && total_dy == 0 {
+    if total_dx == 0 && total_dy == 0 || !INPUT_INJECTION_ENABLED {
         return;
     }
 
@@ -2111,7 +2122,9 @@ fn mouse_control(
                 if smooth_move {
                     smooth_mouse_move(target_x, target_y, move_duration_ms.unwrap_or(250), organic_move);
                 } else {
-                    let _ = SetCursorPos(target_x, target_y);
+                    if INPUT_INJECTION_ENABLED {
+                        let _ = SetCursorPos(target_x, target_y);
+                    }
                     let sleep_d = move_duration_ms.unwrap_or(16);
                     if sleep_d > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(sleep_d as u64));
@@ -2361,6 +2374,9 @@ static ACTIVE_HELD_MOUSE_BUTTONS: std::sync::LazyLock<std::sync::Mutex<std::coll
 
 #[cfg(windows)]
 fn send_key_event_raw(vk: VIRTUAL_KEY, is_up: bool) {
+    if !INPUT_INJECTION_ENABLED {
+        return;
+    }
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         MapVirtualKeyW, MAPVK_VK_TO_VSC, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE,
         VK_DIVIDE, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RWIN,
@@ -2456,6 +2472,9 @@ pub fn release_all_simulated_inputs() {}
 
 #[cfg(windows)]
 fn send_char_event(ch: char) {
+    if !INPUT_INJECTION_ENABLED {
+        return;
+    }
     let mut buf = [0u16; 2];
     let encoded = ch.encode_utf16(&mut buf);
     for &code in encoded.iter() {
@@ -3173,8 +3192,14 @@ fn set_process_audio(
 mod tests {
     use super::*;
 
+    // Compile-time guard against a future change that would let `cargo test` type into the
+    // focused window or move the cursor while the developer is working.
+    const _: () = assert!(!INPUT_INJECTION_ENABLED, "unit tests must not inject input into the desktop");
+
     #[test]
     fn test_active_held_inputs_and_release() {
+        // Physical injection is compiled out under `cfg(test)` (see INPUT_INJECTION_ENABLED),
+        // so these calls only exercise the anti-stuck tracking registry and its drain path.
         #[cfg(windows)]
         {
             use windows::Win32::UI::Input::KeyboardAndMouse::VK_W;
@@ -3201,14 +3226,16 @@ mod tests {
     fn test_relative_mouse_control_no_panic() {
         #[cfg(windows)]
         {
+            // Cursor movement is suppressed under `cfg(test)`, so this exercises the
+            // relative coordinate path and its error handling without touching the desktop.
             let res = mouse_control(
                 crate::models::MouseActionType::Move,
                 crate::models::MouseButton::Left,
                 crate::models::MouseCoordMode::Relative,
                 Some(50),
                 Some(-30),
-                true,
-                Some(50),
+                false,
+                Some(0),
                 false,
                 None,
                 None,
@@ -3216,6 +3243,8 @@ mod tests {
                 false,
             );
             assert!(res.is_ok());
+            // A move never leaves a button in the held-input registry.
+            assert!(ACTIVE_HELD_MOUSE_BUTTONS.lock().unwrap().is_empty());
         }
     }
 

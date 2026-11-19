@@ -354,7 +354,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_section_title(ui, "Параметры контроля и защиты:", t);
         doc_table_row(ui, "Cooldown (сек)", "Минимальный интервал между повторными срабатываниями (защита от спама и циклов).", t);
-        doc_table_row(ui, "Квота выполнений", "Максимальное число запусков правила, после которого оно автоматически становится на паузу.", t);
+        doc_table_row(ui, "Квота выполнений", "Ограничивает число запусков: за всё время (правило встаёт на паузу при исчерпании) либо за период — час, день, неделя, месяц или своё окно от первого запуска; периодическая квота после сброса счётчика продолжает работать.", t);
         doc_table_row(ui, "Остановка при ошибке", "Прерывание цепочки действий, если один из шагов завершился аварийно.", t);
         doc_table_row(ui, "Single Instance", "Защита от запуска дубликатов процесса (блокирует создание второго окна приложения).", t);
         doc_table_row(ui, "Скрытный режим (Stealth)", "Полное скрытие иконки в трее для незаметной фоновой работы сервиса.", t);
@@ -391,7 +391,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_section_title(ui, "Execution Controls:", t);
         doc_table_row(ui, "Cooldown (sec)", "Minimum elapsed time before the rule can trigger again (prevents event flooding).", t);
-        doc_table_row(ui, "Execution Quota", "Auto-disables the rule after completing N executions.", t);
+        doc_table_row(ui, "Execution Quota", "Caps the number of runs: for the rule's lifetime (auto-pauses when spent) or per period — hour, day, week, month, or a custom window that starts with the first run. A periodic quota resumes by itself once the counter resets.", t);
         doc_table_row(ui, "Stop on Error", "Aborts pipeline execution immediately if any action reports a failure.", t);
         doc_table_row(ui, "Single Instance", "Prevents duplicate instances of tracked process from running.", t);
         doc_table_row(ui, "Stealth Mode", "Option to hide system tray icon completely for unobtrusive background operation.", t);

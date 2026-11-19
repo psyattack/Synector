@@ -669,6 +669,9 @@ pub fn get_active_or_recent_keys(max_keys: usize, decay_sec: f32) -> String {
 // ---------------- MEDIA HELPER ----------------
 
 pub fn simulate_media_key(vk: u8) {
+    if !crate::daemon::actions::INPUT_INJECTION_ENABLED {
+        return;
+    }
     #[cfg(windows)]
     unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP};
