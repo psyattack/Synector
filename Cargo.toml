@@ -13,30 +13,31 @@ name = "Synector"
 path = "src/main.rs"
 
 [dependencies]
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
-egui = "0.36"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["full"] }
-egui-phosphor = "0.14.0"
-egui_extras = { version = "0.36", features = ["default", "all_loaders"] }
-rfd = "0.15"
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+egui = "0.37"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+chrono = { version = "0.4.45", features = ["serde"] }
+tokio = { version = "1.54.1", features = ["full"] }
+# Maintained fork of egui-phosphor for egui 0.37; switch back when upstream catches up.
+egui-pop-phosphor = "0.15"
+egui_extras = { version = "0.37", features = ["default", "all_loaders"] }
+rfd = "0.18"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-flate2 = "1.0"
-brotli = "9.1"
-base64 = "0.22"
-arboard = "3"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+flate2 = "1.1.11"
+brotli = "9.1.3"
+base64 = "0.23.1"
+arboard = "3.7.0"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
-zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
-regex = "1.11"
-sha2 = "0.10"
-schemars = { version = "0.8", default-features = false, features = ["derive"] }
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
+regex = "1.13.2"
+sha2 = "0.11.1"
+schemars = { version = "1.2.3", features = ["derive"] }
 
 [build-dependencies]
-winres = "0.1"
+winres = "0.1.12"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

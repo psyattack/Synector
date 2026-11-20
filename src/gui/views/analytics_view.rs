@@ -40,7 +40,7 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
 
         // 1. Toolbar with Filter Cells, Search Box, & Clear Action
         ui.horizontal(|ui| {
-            let mut filter = match ui.data(|d| d.get_temp::<LogFilter>(egui::Id::new("log_filter"))) {
+            let mut filter = match ui.data(|d| d.get_temp::<LogFilter>(egui::Id::unique("log_filter"))) {
                 Some(f) => f,
                 None => LogFilter::All,
             };
@@ -89,7 +89,7 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
             ];
 
             if widgets::cells(ui, &mut filter, &options) {
-                ui.data_mut(|d| d.insert_temp(egui::Id::new("log_filter"), filter));
+                ui.data_mut(|d| d.insert_temp(egui::Id::unique("log_filter"), filter));
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -110,14 +110,14 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
                         .hint_text(loc.logs_search_placeholder)
                         .desired_width(240.0)
                         .min_size(vec2(0.0, theme::CONTROL_H))
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(10.0, 8.0)),
                 );
             });
         });
 
         // 3. Filter Logs
-        let filter = ui.data(|d| d.get_temp::<LogFilter>(egui::Id::new("log_filter"))).unwrap_or_default();
+        let filter = ui.data(|d| d.get_temp::<LogFilter>(egui::Id::unique("log_filter"))).unwrap_or_default();
         let needle = state.analytics_log_filter.trim().to_lowercase();
         let filtered: Vec<_> = logs
             .into_iter()

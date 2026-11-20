@@ -169,7 +169,7 @@ impl<'a> DurationField<'a> {
     ) -> Self {
         Self {
             loc,
-            id: ui.id().with(("duration_field", id_salt)),
+            id: ui.scope_id().with(("duration_field", id_salt)),
             range_secs,
             prefix: None,
             default_unit: None,
@@ -320,7 +320,7 @@ impl<'a> DurationField<'a> {
             let _combo_rect = combo.response.rect;
             #[cfg(test)]
             ui.data_mut(|data| {
-                data.insert_temp(Id::new("duration_test_combo_rect"), _combo_rect);
+                data.insert_temp(Id::unique("duration_test_combo_rect"), _combo_rect);
             });
 
             if drag_response.changed() {
@@ -501,7 +501,7 @@ mod tests {
 
         let drag_rect = drag_rect.expect("numeric field rect");
         let combo_rect = ctx
-            .data(|data| data.get_temp::<egui::Rect>(Id::new("duration_test_combo_rect")))
+            .data(|data| data.get_temp::<egui::Rect>(Id::unique("duration_test_combo_rect")))
             .expect("unit dropdown rect");
 
         assert!((drag_rect.top() - combo_rect.top()).abs() < 0.01);

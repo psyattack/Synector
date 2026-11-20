@@ -55,7 +55,7 @@ pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
         let tab_rect = Rect::from_min_size(pos2(current_x, full_rect.top()), vec2(w, h));
         current_x += w;
 
-        let mut resp = ui.interact(tab_rect, ui.id().with(view as usize), egui::Sense::click());
+        let mut resp = ui.interact(tab_rect, ui.scope_id().with(view as usize), egui::Sense::click());
         if resp.clicked() {
             if view != state.active_view {
                 if let Some(rule) = state.editing_rule.take() {

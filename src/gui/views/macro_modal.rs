@@ -436,13 +436,13 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                             return;
                         }
 
-                        let expand_id = ui.id().with("macro_expanded_move_groups");
+                        let expand_id = ui.scope_id().with("macro_expanded_move_groups");
                         let mut expanded_groups: std::collections::HashSet<usize> = ui.data(|d| d.get_temp(expand_id).unwrap_or_default());
 
                         let items = partition_timeline_items(events, state.group_full_presses, &expanded_groups);
 
                         // Robust Drag & Drop tracking (using continuous vertical Y-centers pattern)
-                        let dnd_id = ui.id().with("macro_timeline_dnd_src");
+                        let dnd_id = ui.scope_id().with("macro_timeline_dnd_src");
                         let active_src: Option<usize> = ui.data(|d| d.get_temp(dnd_id));
                         let pointer_pos = ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
                         let pointer_released = ui.input(|i| i.pointer.any_released());
@@ -1167,7 +1167,7 @@ fn render_timeline_row_inline(
         *event = MacroEvent::MouseDown { button: *button };
     }
 
-    let picker_id = ui.id().with(idx).with("row_coord_picker");
+    let picker_id = ui.scope_id().with(idx).with("row_coord_picker");
     ui.spacing_mut().interact_size.y = 19.0;
     ui.spacing_mut().item_spacing.y = 0.0;
 

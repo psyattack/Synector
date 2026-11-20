@@ -7,7 +7,7 @@ conventions and the documentation rules that keep the project consistent.
 
 - **Platform:** Windows 10 or 11, x64. Synector has no non-Windows fallback and does not need one.
 - **Toolchain:** a recent stable Rust toolchain. The project does not pin an MSRV; the current
-  `eframe`/`egui` 0.36 dependencies need Rust 1.95 or newer.
+  `eframe`/`egui` 0.37 dependencies need Rust 1.95 or newer.
 - **Installer work:** Inno Setup is only needed if you change `installer/synector.iss`. CI compiles
   it; local builds of the application do not require it.
 

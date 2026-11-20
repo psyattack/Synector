@@ -136,7 +136,7 @@ impl Tokens {
     };
 
     pub fn get(ctx: &egui::Context) -> Self {
-        let theme = ctx.data(|d| d.get_temp::<AppTheme>(egui::Id::new("app_theme"))).unwrap_or(AppTheme::Dark);
+        let theme = ctx.data(|d| d.get_temp::<AppTheme>(egui::Id::unique("app_theme"))).unwrap_or(AppTheme::Dark);
         match theme {
             AppTheme::Dark => Self::DARK,
             AppTheme::Light => Self::LIGHT,
@@ -337,7 +337,7 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
         AppTheme::Light => Tokens::LIGHT,
         AppTheme::Chocolate => Tokens::CHOCOLATE,
     };
-    ctx.data_mut(|d| d.insert_temp(egui::Id::new("app_theme"), theme));
+    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("app_theme"), theme));
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::DARK));
     ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::LIGHT));
     ctx.set_visuals(visuals(&tokens));

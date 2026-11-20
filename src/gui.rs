@@ -138,7 +138,7 @@ impl SynectorApp {
                 let stroke = Stroke::new(1.0, Color32::from_white_alpha((alpha * 120.0) as u8));
                 let text_color = Color32::from_white_alpha((alpha * 255.0) as u8);
 
-                egui::Area::new(egui::Id::new("app-toast"))
+                egui::Area::new(egui::Id::unique("app-toast"))
                     .order(egui::Order::Tooltip)
                     .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -theme::FOOTER_H - 24.0))
                     .interactable(false)

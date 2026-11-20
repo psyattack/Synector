@@ -61,7 +61,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                 })
                 .response
                 .widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, loc.rules_tag_filter_accessible)
+                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, loc.rules_tag_filter_accessible)
                 });
 
             ui.add_space(6.0);
@@ -95,7 +95,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                 })
                 .response
                 .widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, loc.rules_sort_accessible)
+                    egui::WidgetInfo::labeled(egui::Role::ComboBox, true, loc.rules_sort_accessible)
                 });
 
             ui.add_space(6.0);
@@ -106,7 +106,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                     .hint_text(loc.rules_search_placeholder)
                     .desired_width(180.0)
                     .min_size(vec2(0.0, theme::CONTROL_H))
-                    .vertical_align(egui::Align::Center)
+                    .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(8.0, 7.0)),
             );
 
@@ -204,7 +204,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
             && state.selected_tag_filter.is_none()
             && needle.is_empty();
 
-        let dnd_id = egui::Id::new("rules_view_dnd");
+        let dnd_id = egui::Id::unique("rules_view_dnd");
         let mut dnd_session = if is_dnd_allowed {
             ui.data(|d| d.get_temp::<RuleDndSession>(dnd_id))
         } else {
@@ -328,7 +328,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
             if let Some(pointer) = pointer_pos {
                 if session.source_idx < filtered.len() {
                     let dragged_rule = &filtered[session.source_idx];
-                    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("rule_drag_preview")));
+                    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("rule_drag_preview")));
                     let float_rect = Rect::from_min_size(pointer + vec2(14.0, 10.0), vec2(180.0, 26.0));
                     p.rect_filled(float_rect, CornerRadius::same(2), t.bg);
                     p.rect_stroke(float_rect, CornerRadius::same(2), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
@@ -360,7 +360,7 @@ fn render_rule_drop_slot(
         false
     };
 
-    let anim_id = ui.id().with(("rule_slot_anim", slot_idx));
+    let anim_id = ui.scope_id().with(("rule_slot_anim", slot_idx));
     let anim = ui.ctx().animate_bool_with_time_and_easing(anim_id, is_targeted, 0.16, egui::emath::easing::cubic_out);
 
     if anim > 0.001 {
@@ -888,7 +888,7 @@ fn render_card_tags_at(
         }
 
         let pill_rect = Rect::from_min_size(pos2(curr_x, top_y), vec2(pill_w, pill_h));
-        let _resp = ui.interact(pill_rect, ui.id().with(("card_tag", rule_id, i)), Sense::hover());
+        let _resp = ui.interact(pill_rect, ui.scope_id().with(("card_tag", rule_id, i)), Sense::hover());
 
         ui.painter().rect(
             pill_rect,
@@ -920,7 +920,7 @@ fn render_card_tags_at(
         let more_galley = ui.painter().layout_no_wrap(more_text, egui::FontId::new(8.5, theme::mono()), t.muted);
         let more_w = more_galley.size().x + 8.0;
         let more_rect = Rect::from_min_size(pos2(curr_x, top_y), vec2(more_w, pill_h));
-        let more_resp = ui.interact(more_rect, ui.id().with(("card_tag_more", rule_id)), Sense::hover());
+        let more_resp = ui.interact(more_rect, ui.scope_id().with(("card_tag_more", rule_id)), Sense::hover());
 
         ui.painter().rect(
             more_rect,

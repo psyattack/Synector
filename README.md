@@ -33,9 +33,7 @@
 
 <p align="center">
   <img src="assets/screenshots/rules.png" alt="Synector rules list" width="49%">
-  <img src="assets/screenshots/overlay-studio.png" alt="Synector Overlay Studio" width="49%">
-</p>
-<p align="center">
+  <img src="assets/screenshots/overlay-studio.png" alt="Synector Overlay Studio" width="49%"><br>
   <img src="assets/screenshots/macro-studio.png" alt="Synector Macro Studio" width="49%">
   <img src="assets/screenshots/analytics.png" alt="Synector Analytics" width="49%">
 </p>
@@ -105,7 +103,7 @@ you verify a download manually. SmartScreen prompts, elevation and update questi
 
 ## Development
 
-Requires a recent stable Rust toolchain on Windows; the `eframe`/`egui` 0.36 dependencies currently
+Requires a recent stable Rust toolchain on Windows; the `eframe`/`egui` 0.37 dependencies currently
 need Rust **1.95 or newer**. The project does not pin an MSRV.
 
 Contribution workflow, code style and documentation rules live in [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -143,7 +141,7 @@ on `windows-latest`.
 
 ### Stack
 
-- **UI:** egui / eframe, egui_extras, egui-phosphor
+- **UI:** egui / eframe, egui_extras, egui-pop-phosphor (egui 0.37 fork of egui-phosphor)
 - **Runtime:** Tokio
 - **Engine:** mlua (vendored Lua 5.4.9), windows-rs
 - **Data:** Serde / Serde JSON, schemars

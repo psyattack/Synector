@@ -842,7 +842,7 @@ fn render_color_chip(
 
         // Compact rounded rectangle swatch (vec2(28.0, 15.0)), no large square, no hex text
         let swatch_size = vec2(28.0, 15.0);
-        let id = ui.id().with(("swatch", target, label));
+        let id = ui.scope_id().with(("swatch", target, label));
         let (rect, _) = ui.allocate_exact_size(swatch_size, Sense::hover());
         let resp = ui.interact(rect, id, Sense::click());
         let p = ui.painter();
@@ -893,8 +893,8 @@ fn render_inline_color_editor(
             ui.spacing_mut().item_spacing.y = 8.0;
 
             // Maintain stable HSVA state across frames to prevent hue/saturation snapping at extremes
-            let hsva_id = ui.id().with("custom_picker_hsva");
-            let last_rgba_id = ui.id().with("custom_picker_last_rgba");
+            let hsva_id = ui.scope_id().with("custom_picker_hsva");
+            let last_rgba_id = ui.scope_id().with("custom_picker_last_rgba");
 
             let last_rgba: [u8; 4] = ui.ctx().data(|d| d.get_temp(last_rgba_id)).unwrap_or([255, 255, 255, 255]);
             let mut hsva: egui::ecolor::Hsva = ui.ctx().data(|d| d.get_temp(hsva_id)).unwrap_or_else(|| {
@@ -935,7 +935,7 @@ fn render_inline_color_editor(
 
                 ui.add_space(2.0);
 
-                let hex_id = ui.id().with("hex_edit_buf");
+                let hex_id = ui.scope_id().with("hex_edit_buf");
                 let mut hex_val: String = ui.ctx().data(|d| d.get_temp(hex_id)).unwrap_or_else(|| {
                     if has_alpha {
                         format!("#{:02X}{:02X}{:02X}{:02X}", color[0], color[1], color[2], color[3])
@@ -1141,7 +1141,7 @@ fn render_elem_drop_slot(
         false
     };
 
-    let anim_id = ui.id().with(("elem_drop_anim", slot_idx));
+    let anim_id = ui.scope_id().with(("elem_drop_anim", slot_idx));
     let anim = ui.ctx().animate_bool_with_time_and_easing(anim_id, is_targeted, 0.16, egui::emath::easing::cubic_out);
     if anim > 0.001 {
         let slot_h = 20.0 * anim;
@@ -1401,7 +1401,7 @@ fn render_overlay_inspector(
 
     ui.add_space(4.0);
 
-    let dnd_id = ui.id().with("overlay_element_dnd");
+    let dnd_id = ui.scope_id().with("overlay_element_dnd");
     let mut dnd_session: Option<ElementDndSession> = ui.ctx().data(|d| d.get_temp(dnd_id));
     let pointer_pos = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos()));
     let pointer_released = ui.input(|i| i.pointer.any_released());
@@ -1606,7 +1606,7 @@ fn render_overlay_inspector(
                             "Georgia",
                             "Courier New",
                         ];
-                        egui::ComboBox::from_id_salt(ui.id().with(("font_combo", idx)))
+                        egui::ComboBox::from_id_salt(ui.scope_id().with(("font_combo", idx)))
                             .selected_text(font_family.as_str())
                             .width(ui.available_width())
                             .show_ui(ui, |ui| {
@@ -1919,7 +1919,7 @@ fn render_overlay_inspector(
                                 crate::models::GraphMetric::Battery => loc.overlay_studio_graph_metric_battery,
                                 crate::models::GraphMetric::Network => loc.overlay_studio_graph_metric_network,
                             };
-                            egui::ComboBox::from_id_salt(ui.id().with(("graph_metric", idx)))
+                            egui::ComboBox::from_id_salt(ui.scope_id().with(("graph_metric", idx)))
                                 .selected_text(metric_lbl)
                                 .width(ui.available_width() - 8.0)
                                 .show_ui(ui, |ui| {
@@ -2001,7 +2001,7 @@ fn render_overlay_inspector(
                                 crate::models::TimerMode::Countdown => loc.overlay_studio_timer_mode_countdown,
                                 crate::models::TimerMode::Uptime => loc.overlay_studio_timer_mode_uptime,
                             };
-                            egui::ComboBox::from_id_salt(ui.id().with(("clock_mode", idx)))
+                            egui::ComboBox::from_id_salt(ui.scope_id().with(("clock_mode", idx)))
                                 .selected_text(mode_lbl)
                                 .width(ui.available_width() - 8.0)
                                 .show_ui(ui, |ui| {
@@ -2149,7 +2149,7 @@ fn render_overlay_inspector(
                                         crate::models::SliderBindTarget::OverlayOpacity => loc.overlay_studio_slider_overlay_opacity,
                                         crate::models::SliderBindTarget::ProcessVolume => loc.overlay_studio_slider_process_volume,
                                     };
-                                    egui::ComboBox::from_id_salt(ui.id().with(("slider_target", idx)))
+                                    egui::ComboBox::from_id_salt(ui.scope_id().with(("slider_target", idx)))
                                         .selected_text(target_lbl)
                                         .width(ui.available_width() - 8.0)
                                         .show_ui(ui, |ui| {
@@ -2213,7 +2213,7 @@ fn render_overlay_inspector(
                                 crate::models::TelemetryKind::AudioMicStatus => loc.overlay_studio_telemetry_kind_audio,
                                 crate::models::TelemetryKind::EngineStatus => loc.overlay_studio_telemetry_kind_engine,
                             };
-                            egui::ComboBox::from_id_salt(ui.id().with(("telem_kind", idx)))
+                            egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_kind", idx)))
                                 .selected_text(kind_lbl)
                                 .width(ui.available_width() - 8.0)
                                 .show_ui(ui, |ui| {
@@ -2230,7 +2230,7 @@ fn render_overlay_inspector(
                                 crate::models::TelemetryStyle::Compact => loc.overlay_studio_telemetry_style_compact,
                                 crate::models::TelemetryStyle::Detailed => loc.overlay_studio_telemetry_style_detailed,
                             };
-                            egui::ComboBox::from_id_salt(ui.id().with(("telem_style", idx)))
+                            egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_style", idx)))
                                 .selected_text(style_lbl)
                                 .width(ui.available_width() - 8.0)
                                 .show_ui(ui, |ui| {
@@ -2487,7 +2487,7 @@ fn render_overlay_inspector(
         // Floating drag preview badge following the pointer
         if let Some(pointer) = pointer_pos {
             if session.source_idx < overlay.elements.len() {
-                let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("elem_drag_float")));
+                let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("elem_drag_float")));
                 let (badge_text, _) = match &overlay.elements[session.source_idx] {
                     OverlayElement::Crosshair { .. } => ("CROSSHAIR", t.accent_ink),
                     OverlayElement::Text { .. } => ("TEXT", t.ink),
@@ -2595,7 +2595,7 @@ fn render_element_click_action_ui(
             Some(OverlayClickAction::ToggleTimer) => loc.overlay_studio_on_click_timer_toggle.to_string(),
         };
 
-        egui::ComboBox::from_id_salt(ui.id().with(("elem_onclick", idx)))
+        egui::ComboBox::from_id_salt(ui.scope_id().with(("elem_onclick", idx)))
             .selected_text(current_lbl)
             .width(ui.available_width() - 8.0)
             .show_ui(ui, |ui| {
@@ -3122,7 +3122,7 @@ fn render_overlay_canvas(
         (i, get_rotated_aabb(center, ew * 0.5, eh * 0.5, angle_rad))
     }).collect();
 
-    let drag_mode_id = ui.id().with("canvas_drag_mode");
+    let drag_mode_id = ui.scope_id().with("canvas_drag_mode");
     let mut drag_mode: CanvasDragMode = ui.ctx().data(|d| d.get_temp(drag_mode_id)).unwrap_or(CanvasDragMode::None);
 
     let selected_handles = studio.selected_element_idx.and_then(|sel| {
@@ -3154,7 +3154,7 @@ fn render_overlay_canvas(
     });
 
     // ---------------- CANVAS DIRECT MOUSE DRAG & SELECTION & RESIZING / ROTATING ----------------
-    let canvas_sense_resp = ui.interact(canvas_rect, ui.id().with("canvas_mouse_sense"), Sense::click_and_drag());
+    let canvas_sense_resp = ui.interact(canvas_rect, ui.scope_id().with("canvas_mouse_sense"), Sense::click_and_drag());
     let pointer_pos = ui.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()));
 
     let is_space_down = ui.input(|i| i.key_down(egui::Key::Space));

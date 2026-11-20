@@ -120,7 +120,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
         state.selected_process = None;
     }
 
-    let k = ctx.animate_bool_with_time_and_easing(Id::new("inspector-slide"), is_open, 0.22, easing::cubic_out);
+    let k = ctx.animate_bool_with_time_and_easing(Id::unique("inspector-slide"), is_open, 0.22, easing::cubic_out);
     if k <= 0.001 && !is_open {
         return;
     }
@@ -136,7 +136,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
     // 1. Scrim dimming over background (strictly to the left of the drawer)
     let scrim_w = (left - area.left()).max(0.0);
     if scrim_w > 0.0 {
-        egui::Area::new(Id::new("inspector-scrim"))
+        egui::Area::new(Id::unique("inspector-scrim"))
             .order(Order::Middle)
             .fixed_pos(area.min)
             .show(ctx, |ui| {
@@ -151,7 +151,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
     }
 
     // 2. Sliding Drawer Area
-    egui::Area::new(Id::new("inspector-drawer"))
+    egui::Area::new(Id::unique("inspector-drawer"))
         .order(Order::Middle)
         .fixed_pos(pos2(left, area.top()))
         .constrain(false)
@@ -478,7 +478,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                     .desired_width(input_w)
                                     .min_size(vec2(0.0, 38.0))
                                     .font(egui::FontId::new(14.0, theme::semibold()))
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .margin(vec2(10.0, 9.0)),
                             );
 
@@ -641,7 +641,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                 );
                                                 reset_response.widget_info(|| {
                                                     egui::WidgetInfo::labeled(
-                                                        egui::WidgetType::Button,
+                                                        egui::Role::Button,
                                                         true,
                                                         loc.inspector_btn_reset,
                                                     )
@@ -783,7 +783,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                         .hint_text(loc.inspector_field_target_process_hint)
                                                         .desired_width(ui.available_width())
                                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                                        .vertical_align(egui::Align::Center)
+                                                        .align(egui::Align2::LEFT_CENTER)
                                                         .margin(vec2(10.0, 8.0)),
                                                 );
                                             });
@@ -815,7 +815,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                 .hint_text(loc.inspector_field_target_process_hint)
                                                 .desired_width(ui.available_width())
                                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                                .vertical_align(egui::Align::Center)
+                                                .align(egui::Align2::LEFT_CENTER)
                                                 .margin(vec2(10.0, 8.0)),
                                         );
                                     });
@@ -995,7 +995,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                 .hint_text("Process executable")
                                                 .desired_width(ui.available_width())
                                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                                .vertical_align(egui::Align::Center)
+                                                .align(egui::Align2::LEFT_CENTER)
                                                 .margin(vec2(10.0, 8.0)),
                                         );
                                     });
@@ -1030,7 +1030,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
 
                             Some(Trigger::GlobalHotkey { key_combination, hold_mode, repeat_while_held }) => {
                                 widgets::hud(ui, "HOTKEY COMBINATION", t.muted);
-                                let rec_id = ui.id().with("rec_global_hotkey");
+                                let rec_id = ui.scope_id().with("rec_global_hotkey");
                                         let mut is_recording: bool = ui.data_mut(|d| d.get_temp(rec_id).unwrap_or(false));
 
                                         if is_recording {
@@ -1090,7 +1090,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                         .hint_text("Ctrl+Shift+P or M4, M5...")
                                                         .desired_width(ui.available_width())
                                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                                        .vertical_align(egui::Align::Center)
+                                                        .align(egui::Align2::LEFT_CENTER)
                                                         .margin(vec2(10.0, 8.0)),
                                                 );
                                             });
@@ -1131,7 +1131,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                                 .hint_text("C:\\Path\\To\\Folder")
                                                 .desired_width(ui.available_width())
                                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                                .vertical_align(egui::Align::Center)
+                                                .align(egui::Align2::LEFT_CENTER)
                                                 .margin(vec2(10.0, 8.0)),
                                         );
                                     });
@@ -1146,7 +1146,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                         .hint_text(".log, .png")
                                         .desired_width(max_w)
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 ).changed() {
                                     *filter_extension = if ext.trim().is_empty() { None } else { Some(ext.trim().to_string()) };
@@ -1169,7 +1169,7 @@ fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut Rule, t: &To
                                         .hint_text("endpoint_id")
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
 
@@ -1592,7 +1592,7 @@ fn render_drop_slot(
         false
     };
 
-    let anim_id = ui.id().with(("slot_anim", pipeline_id, slot_idx));
+    let anim_id = ui.scope_id().with(("slot_anim", pipeline_id, slot_idx));
     let anim = ui.ctx().animate_bool_with_time_and_easing(anim_id, is_targeted, 0.18, easing::cubic_out);
 
     if anim > 0.001 {
@@ -1660,7 +1660,7 @@ fn render_floating_drag_preview(
     );
     let preview_rect = Rect::from_min_size(preview_pos, vec2(card_w, card_h));
 
-    let painter = ui.ctx().layer_painter(LayerId::new(Order::Tooltip, Id::new(("dnd_float_preview", pipeline_id))));
+    let painter = ui.ctx().layer_painter(LayerId::new(Order::Tooltip, Id::unique(("dnd_float_preview", pipeline_id))));
 
     // Elevated drop shadow
     painter.add(theme::shadow(t).as_shape(preview_rect, CornerRadius::same(2)));
@@ -1747,7 +1747,7 @@ fn render_actions_pipeline(
     exec_opt: Option<crate::ipc::protocol::ActiveRuleExecutionState>,
     t: &Tokens,
 ) -> Option<usize> {
-    let dnd_id = ui.id().with(("action_pipeline_dnd", pipeline_id));
+    let dnd_id = ui.scope_id().with(("action_pipeline_dnd", pipeline_id));
 
     let mut dnd_session: Option<DndDragSession> = ui.data_mut(|d| d.get_temp(dnd_id));
 
@@ -2059,7 +2059,7 @@ fn render_action_card(
     let mut step_tested_overlays = Vec::new();
     let mut fields_resp = ActionFieldsResponse::default();
 
-    let ghost_id = ui.id().with(("card_ghost", is_exit_pipeline, idx));
+    let ghost_id = ui.scope_id().with(("card_ghost", is_exit_pipeline, idx));
     let ghost_anim = ui.ctx().animate_bool_with_time_and_easing(ghost_id, is_being_dragged, 0.15, easing::cubic_out);
 
     let (fill, stroke) = if is_dimmed {
@@ -2137,11 +2137,11 @@ fn render_action_card(
                                 }
                             };
                             let key = if is_exit_pipeline { idx + 1000 } else { idx };
-                            ui.data_mut(|d| d.insert_temp(Id::new(("test_step_res", key)), (ok, msg, Instant::now())));
+                            ui.data_mut(|d| d.insert_temp(Id::unique(("test_step_res", key)), (ok, msg, Instant::now())));
                         }
 
                         let test_key = if is_exit_pipeline { idx + 1000 } else { idx };
-                        if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, Instant)>(Id::new(("test_step_res", test_key)))) {
+                        if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, Instant)>(Id::unique(("test_step_res", test_key)))) {
                             if at.elapsed().as_secs() < 8 {
                                 let badge_color = if ok { t.good } else { t.bad };
                                 widgets::badge(ui, if ok { "PASS" } else { "FAIL" }, badge_color).on_hover_text(msg);
@@ -2271,7 +2271,7 @@ fn render_action_parameter_fields(
                                         .hint_text(loc.inspector_field_executable_hint)
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
                             });
@@ -2283,7 +2283,7 @@ fn render_action_parameter_fields(
                                 .hint_text(loc.inspector_field_arguments_hint)
                                 .desired_width(ui.available_width())
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
 
@@ -2303,7 +2303,7 @@ fn render_action_parameter_fields(
                                         .hint_text(loc.inspector_field_working_directory_hint)
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 ).changed() {
                                     *working_directory = if wd_str.trim().is_empty() { None } else { Some(wd_str.clone()) };
@@ -2346,7 +2346,7 @@ fn render_action_parameter_fields(
                                         .hint_text(loc.inspector_field_terminate_hint)
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
                             });
@@ -2365,7 +2365,7 @@ fn render_action_parameter_fields(
                                 .hint_text(loc.inspector_field_notif_title_hint)
                                 .desired_width(ui.available_width())
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
 
@@ -2375,7 +2375,7 @@ fn render_action_parameter_fields(
                                 .hint_text(loc.inspector_field_notif_message_hint)
                                 .desired_width(ui.available_width())
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
                     }
@@ -2430,7 +2430,7 @@ fn render_action_parameter_fields(
                                     None => WaitCondKind::WindowOpened,
                                 };
 
-                                let combo_id = ui.id().with(idx).with("wait_cond_combo");
+                                let combo_id = ui.scope_id().with(idx).with("wait_cond_combo");
                                 let kind_label = match current_kind {
                                     WaitCondKind::WindowOpened => loc.inspector_wait_window_opened,
                                     WaitCondKind::WindowClosed => loc.inspector_wait_window_closed,
@@ -2483,7 +2483,7 @@ fn render_action_parameter_fields(
                                                             .hint_text("Application .exe or window title")
                                                             .desired_width(ui.available_width())
                                                             .min_size(vec2(0.0, theme::CONTROL_H))
-                                                            .vertical_align(egui::Align::Center)
+                                                            .align(egui::Align2::LEFT_CENTER)
                                                             .margin(vec2(10.0, 8.0)),
                                                     );
                                                 });
@@ -2505,7 +2505,7 @@ fn render_action_parameter_fields(
                                                     .hint_text("e.g. Ctrl+Alt+F12")
                                                     .desired_width(ui.available_width())
                                                     .min_size(vec2(0.0, theme::CONTROL_H))
-                                                    .vertical_align(egui::Align::Center)
+                                                    .align(egui::Align2::LEFT_CENTER)
                                                     .margin(vec2(10.0, 8.0)),
                                             );
                                         }
@@ -2525,7 +2525,7 @@ fn render_action_parameter_fields(
                                                             .hint_text("C:\\path\\to\\file.ext")
                                                             .desired_width(ui.available_width())
                                                             .min_size(vec2(0.0, theme::CONTROL_H))
-                                                            .vertical_align(egui::Align::Center)
+                                                            .align(egui::Align2::LEFT_CENTER)
                                                             .margin(vec2(10.0, 8.0)),
                                                     );
                                                 });
@@ -2571,7 +2571,7 @@ fn render_action_parameter_fields(
                         ui.add_space(4.0);
 
                         let mut kind = ConditionKind::from_condition(condition);
-                        let combo_id = ui.id().with(idx).with("check_cond_kind");
+                        let combo_id = ui.scope_id().with(idx).with("check_cond_kind");
                         let mut changed_kind = false;
                         egui::ComboBox::from_id_salt(combo_id)
                             .selected_text(kind.label(loc))
@@ -2613,7 +2613,7 @@ fn render_action_parameter_fields(
                         ui.horizontal(|ui| {
                             ui.set_width(ui.available_width());
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let combo_id = ui.id().with(idx).with("meth_combo");
+                                let combo_id = ui.scope_id().with(idx).with("meth_combo");
                                 egui::ComboBox::from_id_salt(combo_id)
                                     .selected_text(method.as_str())
                                     .width(65.0)
@@ -2627,7 +2627,7 @@ fn render_action_parameter_fields(
                                         .hint_text(loc.inspector_field_webhook_url_hint)
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
                             });
@@ -2669,7 +2669,7 @@ fn render_action_parameter_fields(
                                         .hint_text("Process executable or title")
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 ).changed() {
                                     *target_process = if proc_str.trim().is_empty() { None } else { Some(proc_str) };
@@ -2678,7 +2678,7 @@ fn render_action_parameter_fields(
                         });
 
                         widgets::hud(ui, "WINDOW OPERATION", t.muted);
-                        let combo_id = ui.id().with(idx).with("win_act_combo");
+                        let combo_id = ui.scope_id().with(idx).with("win_act_combo");
                         let win_act_label = match window_action {
                             WindowActionType::Minimize => "Minimize",
                             WindowActionType::Maximize => "Maximize",
@@ -2760,7 +2760,7 @@ fn render_action_parameter_fields(
                                         .hint_text("Target process")
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 ).changed() {
                                     *target_process = if proc_str.trim().is_empty() { None } else { Some(proc_str) };
@@ -2769,7 +2769,7 @@ fn render_action_parameter_fields(
                         });
 
                         widgets::hud(ui, "PRIORITY", t.muted);
-                        let combo_id = ui.id().with(idx).with("pri_combo");
+                        let combo_id = ui.scope_id().with(idx).with("pri_combo");
                         let pri_text = priority.map(|p| format!("{:?}", p)).unwrap_or_else(|| "Unchanged".to_string());
                         egui::ComboBox::from_id_salt(combo_id)
                             .selected_text(pri_text)
@@ -2854,7 +2854,7 @@ fn render_action_parameter_fields(
                                             .hint_text("C:\\Windows\\Media\\notify.wav")
                                             .desired_width(ui.available_width())
                                             .min_size(vec2(0.0, theme::CONTROL_H))
-                                            .vertical_align(egui::Align::Center)
+                                            .align(egui::Align2::LEFT_CENTER)
                                             .margin(vec2(10.0, 8.0)),
                                     );
                                 });
@@ -2875,7 +2875,7 @@ fn render_action_parameter_fields(
                                         .hint_text("Application .exe")
                                         .desired_width(ui.available_width())
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
                             });
@@ -2966,7 +2966,7 @@ fn render_action_parameter_fields(
                                             .hint_text("Application .exe")
                                             .desired_width(ui.available_width())
                                             .min_size(vec2(0.0, theme::CONTROL_H))
-                                            .vertical_align(egui::Align::Center)
+                                            .align(egui::Align2::LEFT_CENTER)
                                             .margin(vec2(10.0, 8.0)),
                                     ).changed() {
                                         let trimmed = p_buf.trim().to_string();
@@ -3108,7 +3108,7 @@ fn render_action_parameter_fields(
                                 .hint_text(dev_hint)
                                 .desired_width(ui.available_width())
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
                     }
@@ -3540,7 +3540,7 @@ fn render_action_parameter_fields(
                             .hint_text(loc.inspector_trim_target_hint)
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     ).changed() {
                         *target_process = if proc_str.trim().is_empty() { None } else { Some(proc_str) };
@@ -3683,7 +3683,7 @@ fn render_action_parameter_fields(
                                 .hint_text(loc.inspector_discord_btn_url)
                                 .desired_width(url_w)
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(8.0, 6.0)),
                         );
                         ui.add(
@@ -3691,7 +3691,7 @@ fn render_action_parameter_fields(
                                 .hint_text(loc.inspector_discord_btn_label)
                                 .desired_width(label_w)
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(8.0, 6.0)),
                         );
                     });
@@ -3808,7 +3808,7 @@ fn render_action_parameter_fields(
                             .hint_text(src_hint)
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -3850,7 +3850,7 @@ fn render_action_parameter_fields(
                             .hint_text(dst_hint)
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -3869,7 +3869,7 @@ fn render_action_parameter_fields(
             overwrite,
         } => {
             widgets::hud(ui, loc.inspector_fs_operation, t.muted);
-            let combo_id = ui.id().with(idx).with("fs_op_combo");
+            let combo_id = ui.scope_id().with(idx).with("fs_op_combo");
             let op_text = match operation {
                 crate::models::FileSystemOperation::CreateFile => loc.inspector_fs_op_create_file,
                 crate::models::FileSystemOperation::CreateDirectory => loc.inspector_fs_op_create_dir,
@@ -3938,7 +3938,7 @@ fn render_action_parameter_fields(
                             .hint_text(p_hint)
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -3966,7 +3966,7 @@ fn render_action_parameter_fields(
                                 .hint_text("C:\\destination\\path")
                                 .desired_width(ui.available_width())
                                 .min_size(vec2(0.0, theme::CONTROL_H))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         ).changed() {
                             *target_path = if tgt.trim().is_empty() { None } else { Some(tgt.clone()) };
@@ -4445,7 +4445,7 @@ fn render_single_condition_editor(
                             .hint_text("game.exe")
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -4480,7 +4480,7 @@ fn render_single_condition_editor(
                             .hint_text("game.exe")
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -4511,7 +4511,7 @@ fn render_single_condition_editor(
                         .hint_text("09:00")
                         .desired_width(65.0)
                         .min_size(vec2(0.0, theme::CONTROL_H))
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
                 widgets::hud(ui, loc.inspector_cond_time_to, t.muted);
@@ -4520,7 +4520,7 @@ fn render_single_condition_editor(
                         .hint_text("18:00")
                         .desired_width(65.0)
                         .min_size(vec2(0.0, theme::CONTROL_H))
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
             });
@@ -4661,7 +4661,7 @@ fn render_single_condition_editor(
                             .hint_text("Process executable")
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -4713,7 +4713,7 @@ fn render_single_condition_editor(
                             .hint_text("C:\\path\\to\\file_or_folder")
                             .desired_width(ui.available_width())
                             .min_size(vec2(0.0, theme::CONTROL_H))
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
                 });
@@ -4727,7 +4727,7 @@ fn render_single_condition_editor(
                     .hint_text(loc.inspector_cond_file_ext_hint)
                     .desired_width(ui.available_width())
                     .min_size(vec2(0.0, theme::CONTROL_H))
-                    .vertical_align(egui::Align::Center)
+                    .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             ).changed() {
                 let trimmed = ext_buf.trim().to_string();
@@ -4837,7 +4837,7 @@ fn render_subaction_card(
 
     let mut fields_resp = ActionFieldsResponse::default();
 
-    let ghost_id = ui.id().with(("sub_card_ghost", parent_idx, branch_label, sub_idx));
+    let ghost_id = ui.scope_id().with(("sub_card_ghost", parent_idx, branch_label, sub_idx));
     let ghost_anim = ui.ctx().animate_bool_with_time_and_easing(ghost_id, is_being_dragged, 0.15, easing::cubic_out);
 
     let is_overlay_active = match sub_act {
@@ -4918,11 +4918,11 @@ fn render_subaction_card(
                                     (ok, msg)
                                 }
                             };
-                            let sub_test_key = ui.id().with(("sub_test_res", parent_idx, branch_label, sub_idx));
+                            let sub_test_key = ui.scope_id().with(("sub_test_res", parent_idx, branch_label, sub_idx));
                             ui.data_mut(|d| d.insert_temp(sub_test_key, (ok, msg, std::time::Instant::now())));
                         }
 
-                        let sub_test_key = ui.id().with(("sub_test_res", parent_idx, branch_label, sub_idx));
+                        let sub_test_key = ui.scope_id().with(("sub_test_res", parent_idx, branch_label, sub_idx));
                         if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, std::time::Instant)>(sub_test_key)) {
                             if at.elapsed().as_secs() < 8 {
                                 let badge_color = if ok { t.good } else { t.bad };
@@ -5030,7 +5030,7 @@ fn render_subactions_branch_pipeline(
     catalog_target: Option<crate::gui::state::IfElseCatalogTarget>,
 ) {
     let pipeline_id = format!("sub_{}_{}_{}", parent_idx, branch_key, if is_exit_pipeline { "exit" } else { "main" });
-    let dnd_id = ui.id().with(("subaction_pipeline_dnd", &pipeline_id));
+    let dnd_id = ui.scope_id().with(("subaction_pipeline_dnd", &pipeline_id));
 
     let mut dnd_session: Option<DndDragSession> = ui.data_mut(|d| d.get_temp(dnd_id));
 
@@ -5387,8 +5387,8 @@ fn render_datetime_picker(
         }
     };
 
-    let view_month_id = ui.id().with(id_salt).with("cal_view_month");
-    let view_year_id = ui.id().with(id_salt).with("cal_view_year");
+    let view_month_id = ui.scope_id().with(id_salt).with("cal_view_month");
+    let view_year_id = ui.scope_id().with(id_salt).with("cal_view_year");
     let mut view_month: u32 = ui.data_mut(|d| d.get_temp(view_month_id).unwrap_or(sel_month));
     let mut view_year: i32 = ui.data_mut(|d| d.get_temp(view_year_id).unwrap_or(sel_year));
 
@@ -5434,7 +5434,7 @@ fn render_datetime_picker(
 
         let two_digit_w = (widgets::caps(ui, "00", theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, t.ink).size().x + 28.0).max(44.0);
 
-        egui::Grid::new(ui.id().with(id_salt).with("mini_cal_grid"))
+        egui::Grid::new(ui.scope_id().with(id_salt).with("mini_cal_grid"))
             .spacing(vec2(3.0, 3.0))
             .show(ui, |ui| {
                 for d in loc.inspector_cal_day_names {
@@ -5811,7 +5811,7 @@ fn render_inspector_tag_section(
             ui.painter().galley(text_pos, name_galley, color);
 
             let close_rect = Rect::from_center_size(pos2(rect.right() - 8.0, rect.center().y), vec2(14.0, 14.0));
-            let close_resp = ui.interact(close_rect, ui.id().with(("tag_rem", idx)), Sense::click());
+            let close_resp = ui.interact(close_rect, ui.scope_id().with(("tag_rem", idx)), Sense::click());
             let close_hover = close_resp.hovered();
             ui.painter().text(
                 close_rect.center(),

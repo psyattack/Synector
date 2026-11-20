@@ -51,7 +51,7 @@ pub fn hud(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let galley = hud_galley(ui, text, color);
     let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::hover());
     paint_left(ui, rect, galley, color);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
     resp
 }
 
@@ -73,7 +73,7 @@ pub fn badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 20.0), Sense::hover());
     ui.painter().rect(rect, CornerRadius::ZERO, t.sunken, t.hairline(), egui::StrokeKind::Inside);
     paint_centred(ui, rect, galley, color);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
     resp
 }
 
@@ -143,7 +143,7 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, width: f32) -> Response {
         egui::StrokeKind::Inside,
     );
     paint_centred(ui, rect, galley, fade(color));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -250,7 +250,7 @@ pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
     if enabled {
         resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, *on, enabled, ""));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, *on, enabled, ""));
     resp
 }
 
@@ -287,7 +287,7 @@ pub fn compact_button(ui: &mut Ui, text: &str, kind: Kind, height: f32) -> Respo
         egui::StrokeKind::Inside,
     );
     paint_centred(ui, rect, galley, fade(color));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
     if enabled {
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     } else {
@@ -380,7 +380,7 @@ const RESIZE_EDGE: f32 = 5.0;
 pub fn title_bar_drag(ui: &mut Ui) {
     let r = ui.max_rect();
     let rect = Rect::from_min_max(r.min + vec2(RESIZE_EDGE, RESIZE_EDGE), r.max - vec2(RESIZE_EDGE, 0.0));
-    let resp = ui.interact(rect, ui.id().with("title-bar-drag"), Sense::click_and_drag());
+    let resp = ui.interact(rect, ui.scope_id().with("title-bar-drag"), Sense::click_and_drag());
     if resp.drag_started_by(egui::PointerButton::Primary) {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
@@ -423,7 +423,7 @@ fn window_button(ui: &mut Ui, button: WindowButton, height: f32, tip: &str) -> R
     let (rect, _) = ui.allocate_exact_size(vec2(46.0, height), Sense::hover());
     let right = if button == WindowButton::Close { RESIZE_EDGE } else { 0.0 };
     let hit = Rect::from_min_max(rect.min + vec2(0.0, RESIZE_EDGE), rect.max - vec2(right, 0.0));
-    let resp = ui.interact(hit, ui.id().with(("window-button", button as u8)), Sense::click());
+    let resp = ui.interact(hit, ui.scope_id().with(("window-button", button as u8)), Sense::click());
 
     let (fill, ink) = match (button, resp.hovered()) {
         (WindowButton::Close, true) => (Color32::from_rgb(0xc4, 0x2b, 0x1c), Color32::WHITE),
@@ -455,7 +455,7 @@ fn window_button(ui: &mut Ui, button: WindowButton, height: f32, tip: &str) -> R
             p.line_segment([c + vec2(-s, s), c + vec2(s, -s)], stroke);
         }
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     if !tip.trim().is_empty() {
         resp.on_hover_text(tip)
     } else {
@@ -473,7 +473,7 @@ pub fn window_edges(ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let r = ctx.content_rect();
-    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("window-border"))).rect_stroke(
+    ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("window-border"))).rect_stroke(
         r,
         CornerRadius::ZERO,
         t.hairline(),
@@ -663,7 +663,7 @@ pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, t
             );
         }
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let resp = if !tip.trim().is_empty() {
         resp.on_hover_text(tip)
     } else {
@@ -710,7 +710,7 @@ pub fn drag_handle_custom_interactive(ui: &mut Ui, height: f32, tip: &str, inter
             p.circle_filled(m + vec2(x, y), 1.2, c);
         }
     }
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let cursor = if !interactive {
         egui::CursorIcon::NotAllowed
     } else if dragged {
@@ -799,7 +799,7 @@ pub fn catalog_search_box(
     hint_text: &str,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
-    let search_id = ui.id().with("catalog_search_box_input");
+    let search_id = ui.scope_id().with("catalog_search_box_input");
     let is_focused = ui.ctx().memory(|m| m.has_focus(search_id));
 
     let search_w = ui.available_width().max(60.0);
@@ -853,7 +853,7 @@ pub fn catalog_search_box(
             .font(egui::FontId::new(12.5, theme::medium()))
             .text_color(t.ink)
             .frame(egui::Frame::NONE)
-            .vertical_align(egui::Align::Center),
+            .align(egui::Align2::LEFT_CENTER),
     );
 
     // Clear button on the right
@@ -862,7 +862,7 @@ pub fn catalog_search_box(
             pos2(box_rect.right() - 15.0, box_rect.center().y),
             vec2(18.0, 18.0),
         );
-        let clear_resp = ui.interact(clear_rect, ui.id().with("catalog_search_clear"), Sense::click());
+        let clear_resp = ui.interact(clear_rect, ui.scope_id().with("catalog_search_clear"), Sense::click());
         let clear_hovered = clear_resp.hovered();
         if clear_hovered {
             ui.painter().rect_filled(clear_rect, CornerRadius::same(3), t.sunken);

@@ -82,7 +82,7 @@ pub fn render_process_picker_modal(ctx: &egui::Context, state: &mut GuiState) {
                                         .hint_text(loc.hunter_search_placeholder)
                                         .desired_width(240.0)
                                         .min_size(vec2(0.0, theme::CONTROL_H))
-                                        .vertical_align(egui::Align::Center)
+                                        .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
                             });

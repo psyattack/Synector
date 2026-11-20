@@ -194,7 +194,7 @@ impl Modal {
         t: &Tokens,
         render_content: impl FnOnce(&mut ModalFrame<'_>) -> R,
     ) -> Option<ModalResponse> {
-        let anim_id = Id::new(self.id_str).with("modal_cinematic_anim");
+        let anim_id = Id::unique(self.id_str).with("modal_cinematic_anim");
 
         // If this modal ID has never been seen before and is opening for the first time,
         // egui's `animate_bool` would default to 1.0 immediately (skipping the opening animation).
@@ -239,7 +239,7 @@ impl Modal {
         let scrim_alpha = (anim.powf(0.85) * (self.scrim_max_alpha as f32)).round() as u8;
 
         if scrim_alpha > 0 {
-            let scrim_id = Id::new(self.id_str).with("scrim");
+            let scrim_id = Id::unique(self.id_str).with("scrim");
             ctx.move_to_top(egui::LayerId::new(Order::Middle, scrim_id));
             egui::Area::new(scrim_id)
                 .order(Order::Middle)
@@ -317,7 +317,7 @@ impl Modal {
         );
 
         // 4. Modal Surface Window (Foreground order ensures child ComboBox & popups render on top)
-        let window_id = Id::new(self.id_str).with("window");
+        let window_id = Id::unique(self.id_str).with("window");
         egui::Area::new(window_id)
             .order(Order::Foreground)
             .fixed_pos(modal_rect.min)

@@ -352,7 +352,7 @@ fn render_general_content(
                     .hint_text(loc.settings_tray_icon_placeholder)
                     .desired_width(input_w)
                     .min_size(vec2(input_w, theme::CONTROL_H))
-                    .vertical_align(egui::Align::Center)
+                    .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(8.0, 6.0)),
             ).changed() {
                 cfg.tray_icon_path = if path.trim().is_empty() { None } else { Some(path) };

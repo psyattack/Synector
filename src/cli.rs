@@ -8,9 +8,7 @@
 use std::io::Read;
 use std::path::Path;
 
-use serde_json::{json, Value};
-
-use schemars::schema::{InstanceType, RootSchema, Schema, SchemaObject, SingleOrVec};
+use serde_json::{json, Map, Value};
 
 use crate::config::{AppConfig, RulesFile, RuntimeState};
 use crate::ipc::{IpcClient, IpcRequest, IpcResponse};
@@ -793,12 +791,16 @@ fn share_warning_text_cli(warning: &crate::sharing::ShareWarning) -> String {
 // Schema and reference discovery
 // ---------------------------------------------------------------------------
 
+/// Generates the draft-07 JSON Schema for one rule object.
+fn rule_schema() -> Value {
+    schemars::generate::SchemaSettings::draft07()
+        .into_generator()
+        .into_root_schema_for::<crate::models::Rule>()
+        .to_value()
+}
+
 fn cmd_schema() -> i32 {
-    let mut root = schemars::schema_for!(crate::models::Rule);
-    if root.meta_schema.is_none() {
-        root.meta_schema = Some("http://json-schema.org/draft-07/schema#".to_string());
-    }
-    match serde_json::to_string_pretty(&root) {
+    match serde_json::to_string_pretty(&rule_schema()) {
         Ok(text) => {
             println!("{text}");
             0
@@ -815,13 +817,14 @@ fn cmd_reference() -> i32 {
 /// Human-readable catalogue generated from the same JSON Schema as `--rules-schema`,
 /// so the two can never drift apart.
 fn render_reference() -> String {
-    let root = schemars::schema_for!(crate::models::Rule);
+    let root = rule_schema();
     let mut out = String::new();
     out.push_str("Synector rule reference\n");
     out.push_str("Machine-readable draft-07 JSON Schema: Synector.exe --rules-schema\n\n");
     out.push_str("RULE FIELDS\n");
-    if let Some(object) = &root.schema.object {
-        render_fields(&root, &object.properties, &object.required, &mut out);
+    if let Some(properties) = root.get("properties").and_then(Value::as_object) {
+        let required = required_names(&root);
+        render_fields(&root, properties, &required, &mut out);
     }
     for (definition, tag, title) in [
         ("Trigger", "$trigger_type", "TRIGGERS"),
@@ -833,17 +836,41 @@ fn render_reference() -> String {
         out.push('\n');
         out.push_str(title);
         out.push_str(&format!(" ({tag})\n"));
-        if let Some(definition_schema) = root.definitions.get(definition) {
-            render_variants(&root, definition_schema, tag, &mut out);
-        }
+        render_variants(&root, definition, tag, &mut out);
     }
     out.push_str("\nNested objects (overlays, tags, branches) are described by --rules-schema.\n");
     out
 }
 
+fn required_names(schema: &Value) -> std::collections::BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn definition<'a>(root: &'a Value, name: &str) -> Option<&'a Value> {
+    root.get("definitions")?.get(name)
+}
+
+fn definition_variants<'a>(root: &'a Value, name: &str) -> &'a [Value] {
+    definition(root, name)
+        .and_then(|definition| definition.get("oneOf"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
 fn render_fields(
-    root: &RootSchema,
-    properties: &schemars::Map<String, Schema>,
+    root: &Value,
+    properties: &Map<String, Value>,
     required: &std::collections::BTreeSet<String>,
     out: &mut String,
 ) {
@@ -853,47 +880,31 @@ fn render_fields(
         } else {
             ""
         };
-        out.push_str(&format!(
-            "  {name}: {}{marker}\n",
-            type_label(root, &schema.clone().into_object(), 0)
-        ));
+        out.push_str(&format!("  {name}: {}{marker}\n", type_label(root, schema, 0)));
     }
 }
 
-fn render_variants(root: &RootSchema, definition: &Schema, tag: &str, out: &mut String) {
-    let definition = definition.clone().into_object();
-    let Some(variants) = definition
-        .subschemas
-        .as_ref()
-        .and_then(|subschemas| subschemas.one_of.as_ref())
-    else {
-        return;
-    };
-    for variant in variants {
-        let variant = variant.clone().into_object();
-        let Some(object) = &variant.object else {
+fn render_variants(root: &Value, definition: &str, tag: &str, out: &mut String) {
+    for variant in definition_variants(root, definition) {
+        let Some(properties) = variant.get("properties").and_then(Value::as_object) else {
             continue;
         };
-        let variant_name = object
-            .properties
+        let variant_name = properties
             .get(tag)
-            .map(|schema| schema.clone().into_object())
-            .and_then(|schema| tag_value(&schema))
+            .and_then(tag_value)
             .unwrap_or_else(|| "<unknown>".to_string());
+        let required = required_names(variant);
         let mut fields = Vec::new();
-        for (name, schema) in &object.properties {
+        for (name, schema) in properties {
             if name == tag {
                 continue;
             }
-            let marker = if is_required(&object.required, name) {
+            let marker = if is_required(&required, name) {
                 " (required)"
             } else {
                 ""
             };
-            fields.push(format!(
-                "{name}: {}{marker}",
-                type_label(root, &schema.clone().into_object(), 0)
-            ));
+            fields.push(format!("{name}: {}{marker}", type_label(root, schema, 0)));
         }
         if fields.is_empty() {
             out.push_str(&format!("  {variant_name} - no fields\n"));
@@ -907,28 +918,26 @@ fn is_required(required: &std::collections::BTreeSet<String>, name: &str) -> boo
     required.contains(name)
 }
 
-fn tag_value(schema: &SchemaObject) -> Option<String> {
-    if let Some(values) = &schema.enum_values {
-        if let Some(value) = values.first().and_then(Value::as_str) {
-            return Some(value.to_string());
-        }
+fn tag_value(schema: &Value) -> Option<String> {
+    if let Some(value) = schema.get("const").and_then(Value::as_str) {
+        return Some(value.to_string());
     }
     schema
-        .const_value
-        .as_ref()
+        .get("enum")
+        .and_then(Value::as_array)
+        .and_then(|values| values.first())
         .and_then(Value::as_str)
         .map(str::to_string)
 }
 
-fn type_label(root: &RootSchema, schema: &SchemaObject, depth: usize) -> String {
+fn type_label(root: &Value, schema: &Value, depth: usize) -> String {
     if depth > 6 {
         return "...".to_string();
     }
-    if let Some(reference) = &schema.reference {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let name = reference.rsplit('/').next().unwrap_or(reference);
-        if let Some(definition) = root.definitions.get(name) {
-            let definition = definition.clone().into_object();
-            if let Some(values) = &definition.enum_values {
+        if let Some(definition) = definition(root, name) {
+            if let Some(values) = definition.get("enum").and_then(Value::as_array) {
                 if values.iter().all(Value::is_string) {
                     return values
                         .iter()
@@ -940,17 +949,24 @@ fn type_label(root: &RootSchema, schema: &SchemaObject, depth: usize) -> String 
         }
         return name.to_string();
     }
-    if let Some(instance_types) = &schema.instance_type {
+    if let Some(instance_types) = schema.get("type") {
         return match instance_types {
-            SingleOrVec::Single(single) => instance_type_label(single.as_ref()).to_string(),
-            SingleOrVec::Vec(types) => types
+            Value::String(instance_type) if instance_type == "array" => {
+                array_label(root, schema, depth)
+            }
+            Value::String(instance_type) => instance_type.clone(),
+            Value::Array(types) => types
                 .iter()
-                .map(|instance_type| instance_type_label(instance_type))
+                .filter_map(Value::as_str)
                 .collect::<Vec<_>>()
                 .join(" or "),
+            _ => "any".to_string(),
         };
     }
-    if let Some(values) = &schema.enum_values {
+    if schema.get("items").is_some() {
+        return array_label(root, schema, depth);
+    }
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
         if values.iter().all(Value::is_string) {
             return values
                 .iter()
@@ -959,54 +975,47 @@ fn type_label(root: &RootSchema, schema: &SchemaObject, depth: usize) -> String 
                 .join("|");
         }
     }
-    if let Some(subschemas) = &schema.subschemas {
-        if let Some(candidates) = subschemas.any_of.as_ref().or(subschemas.one_of.as_ref()) {
-            let labels: Vec<String> = candidates
-                .iter()
-                .map(|candidate| type_label(root, &candidate.clone().into_object(), depth + 1))
-                .collect();
-            let non_null: Vec<&String> = labels
-                .iter()
-                .filter(|label| label.as_str() != "null")
-                .collect();
-            if labels.len() > 1 && non_null.len() == 1 {
-                return format!("{} or null", non_null[0]);
-            }
-            return labels.join(" or ");
+    if let Some(candidates) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)
+    {
+        let labels: Vec<String> = candidates
+            .iter()
+            .map(|candidate| type_label(root, candidate, depth + 1))
+            .collect();
+        let non_null: Vec<&String> = labels
+            .iter()
+            .filter(|label| label.as_str() != "null")
+            .collect();
+        if labels.len() > 1 && non_null.len() == 1 {
+            return format!("{} or null", non_null[0]);
         }
-        if let Some(all_of) = &subschemas.all_of {
-            if let Some(first) = all_of.first() {
-                return type_label(root, &first.clone().into_object(), depth + 1);
-            }
-        }
+        return labels.join(" or ");
     }
-    if let Some(array) = &schema.array {
-        if let Some(items) = &array.items {
-            let item = match items {
-                SingleOrVec::Single(item) => Some((**item).clone().into_object()),
-                SingleOrVec::Vec(items) => items.first().cloned().map(Schema::into_object),
-            };
-            if let Some(item) = item {
-                return format!("array of {}", type_label(root, &item, depth + 1));
-            }
-        }
-        return "array".to_string();
+    if let Some(first) = schema
+        .get("allOf")
+        .and_then(Value::as_array)
+        .and_then(|schemas| schemas.first())
+    {
+        return type_label(root, first, depth + 1);
     }
-    if schema.object.is_some() {
+    if schema.get("properties").is_some() {
         return "object".to_string();
     }
     "any".to_string()
 }
 
-fn instance_type_label(instance_type: &InstanceType) -> &'static str {
-    match instance_type {
-        InstanceType::Null => "null",
-        InstanceType::Boolean => "boolean",
-        InstanceType::Object => "object",
-        InstanceType::Array => "array",
-        InstanceType::Number => "number",
-        InstanceType::String => "string",
-        InstanceType::Integer => "integer",
+fn array_label(root: &Value, schema: &Value, depth: usize) -> String {
+    match schema.get("items") {
+        Some(Value::Array(items)) => items
+            .first()
+            .map(|first| format!("array of {}", type_label(root, first, depth + 1)))
+            .unwrap_or_else(|| "array".to_string()),
+        Some(items @ Value::Object(_)) => {
+            format!("array of {}", type_label(root, items, depth + 1))
+        }
+        _ => "array".to_string(),
     }
 }
 
@@ -1015,7 +1024,7 @@ fn instance_type_label(instance_type: &InstanceType) -> &'static str {
 // ---------------------------------------------------------------------------
 
 fn cmd_template(spec: Option<&str>) -> i32 {
-    let root = schemars::schema_for!(crate::models::Rule);
+    let root = rule_schema();
     let triggers = variant_names(&root, "Trigger", "$trigger_type");
     let actions = variant_names(&root, "Action", "$action_type");
     let Some(spec) = spec else {
@@ -1069,7 +1078,7 @@ fn parse_template_spec(spec: &str) -> (String, String) {
 }
 
 /// Builds a minimal but valid rule for the requested trigger/action pair.
-fn template_rule(root: &RootSchema, trigger: &str, action: &str) -> Result<Value, String> {
+fn template_rule(root: &Value, trigger: &str, action: &str) -> Result<Value, String> {
     let mut rule = serde_json::Map::new();
     rule.insert(
         "id".to_string(),
@@ -1096,34 +1105,20 @@ fn template_rule(root: &RootSchema, trigger: &str, action: &str) -> Result<Value
     Ok(Value::Object(rule))
 }
 
-fn variant_names(root: &RootSchema, definition: &str, tag: &str) -> Vec<String> {
-    let Some(definition) = root.definitions.get(definition) else {
-        return Vec::new();
-    };
-    let definition = definition.clone().into_object();
-    let Some(variants) = definition
-        .subschemas
-        .as_ref()
-        .and_then(|subschemas| subschemas.one_of.as_ref())
-    else {
-        return Vec::new();
-    };
-    variants
+fn variant_names(root: &Value, definition: &str, tag: &str) -> Vec<String> {
+    definition_variants(root, definition)
         .iter()
         .filter_map(|variant| {
-            let variant = variant.clone().into_object();
-            let object = variant.object.as_ref()?;
-            object
-                .properties
-                .get(tag)
-                .map(|schema| schema.clone().into_object())
-                .and_then(|schema| tag_value(&schema))
+            variant
+                .get("properties")
+                .and_then(|properties| properties.get(tag))
+                .and_then(tag_value)
         })
         .collect()
 }
 
 fn variant_value(
-    root: &RootSchema,
+    root: &Value,
     definition: &str,
     tag: &str,
     variant_name: &str,
@@ -1132,53 +1127,40 @@ fn variant_value(
     if depth > 8 {
         return Ok(Value::Null);
     }
-    let definition_schema = root
-        .definitions
-        .get(definition)
-        .cloned()
-        .ok_or_else(|| format!("schema is missing the {definition} definition"))?
-        .into_object();
-    let variants = definition_schema
-        .subschemas
-        .as_ref()
-        .and_then(|subschemas| subschemas.one_of.as_ref())
-        .ok_or_else(|| format!("schema is missing {definition} variants"))?;
+    let variants = definition_variants(root, definition);
+    if variants.is_empty() {
+        return Err(format!("schema is missing the {definition} definition"));
+    }
     let variant = variants
         .iter()
-        .filter_map(|variant| {
-            let variant = variant.clone().into_object();
-            let object = variant.object.as_ref()?;
-            let name = object
-                .properties
-                .get(tag)
-                .map(|schema| schema.clone().into_object())
-                .and_then(|schema| tag_value(&schema))?;
-            (name == variant_name).then_some(variant)
+        .find(|variant| {
+            variant
+                .get("properties")
+                .and_then(|properties| properties.get(tag))
+                .and_then(tag_value)
+                .as_deref()
+                == Some(variant_name)
         })
-        .next()
         .ok_or_else(|| format!("unknown {definition} variant \"{variant_name}\""))?;
-    let object = variant
-        .object
-        .as_ref()
+    let properties = variant
+        .get("properties")
+        .and_then(Value::as_object)
         .ok_or_else(|| format!("{definition} variant \"{variant_name}\" is not an object"))?;
     let mut fields = serde_json::Map::new();
     fields.insert(tag.to_string(), Value::String(variant_name.to_string()));
-    for required in object.required.iter() {
+    for required in required_names(variant) {
         if required == tag {
             continue;
         }
-        if let Some(schema) = object.properties.get(required) {
-            let value = placeholder_value(
-                root,
-                &schema.clone().into_object(),
-                required,
-                depth + 1,
+        if let Some(schema) = properties.get(&required) {
+            fields.insert(
+                required.clone(),
+                placeholder_value(root, schema, &required, depth + 1),
             );
-            fields.insert(required.clone(), value);
         }
     }
     for (name, value) in extra_fields(variant_name) {
-        if object.properties.contains_key(name) {
+        if properties.contains_key(name) {
             fields.insert(name.to_string(), value);
         }
     }
@@ -1207,61 +1189,37 @@ fn extra_fields(variant_name: &str) -> Vec<(&'static str, Value)> {
     }
 }
 
-fn placeholder_value(
-    root: &RootSchema,
-    schema: &SchemaObject,
-    field_name: &str,
-    depth: usize,
-) -> Value {
+fn placeholder_value(root: &Value, schema: &Value, field_name: &str, depth: usize) -> Value {
     if depth > 8 {
         return Value::Null;
     }
-    if let Some(reference) = &schema.reference {
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
         let name = reference.rsplit('/').next().unwrap_or(reference);
-        if let Some(definition) = root.definitions.get(name).cloned() {
-            let definition = definition.into_object();
-            if let Some(values) = &definition.enum_values {
+        if let Some(definition) = definition(root, name) {
+            if let Some(values) = definition.get("enum").and_then(Value::as_array) {
                 if let Some(first) = values.first() {
                     return first.clone();
                 }
             }
-            if let Some(variants) = definition
-                .subschemas
-                .as_ref()
-                .and_then(|subschemas| subschemas.one_of.as_ref())
-            {
-                if let Some(first) = variants.first() {
-                    let first = first.clone().into_object();
-                    if let Some(object) = &first.object {
-                        if let Some(tag) = discover_tag_key(object) {
-                            if let Some(tag_name) = object
-                                .properties
-                                .get(&tag)
-                                .map(|schema| schema.clone().into_object())
-                                .and_then(|schema| tag_value(&schema))
+            if let Some(first) = definition_variants(root, name).first() {
+                if let Some(properties) = first.get("properties").and_then(Value::as_object) {
+                    if let Some(tag) = discover_tag_key(properties) {
+                        if let Some(tag_name) = properties.get(&tag).and_then(tag_value) {
+                            if let Ok(value) = variant_value(root, name, &tag, &tag_name, depth + 1)
                             {
-                                if let Ok(value) =
-                                    variant_value(root, name, &tag, &tag_name, depth + 1)
-                                {
-                                    return value;
-                                }
+                                return value;
                             }
                         }
                     }
                 }
             }
-            if let Some(object) = &definition.object {
+            if let Some(properties) = definition.get("properties").and_then(Value::as_object) {
                 let mut fields = serde_json::Map::new();
-                for required in object.required.iter() {
-                    if let Some(field_schema) = object.properties.get(required) {
+                for required in required_names(definition) {
+                    if let Some(field_schema) = properties.get(&required) {
                         fields.insert(
                             required.clone(),
-                            placeholder_value(
-                                root,
-                                &field_schema.clone().into_object(),
-                                required,
-                                depth + 1,
-                            ),
+                            placeholder_value(root, field_schema, &required, depth + 1),
                         );
                     }
                 }
@@ -1270,57 +1228,61 @@ fn placeholder_value(
         }
         return Value::String(name.to_string());
     }
-    if let Some(instance_types) = &schema.instance_type {
+    if let Some(instance_types) = schema.get("type") {
         return match instance_types {
-            SingleOrVec::Single(instance_type) => {
-                single_type_placeholder(instance_type, field_name)
-            }
-            SingleOrVec::Vec(instance_types) => instance_types
+            Value::String(instance_type) => single_type_placeholder(instance_type, field_name),
+            Value::Array(instance_types) => instance_types
                 .iter()
-                .find(|instance_type| !is_null_instance_type(instance_type))
+                .filter_map(Value::as_str)
+                .find(|instance_type| *instance_type != "null")
                 .map(|instance_type| single_type_placeholder(instance_type, field_name))
                 .unwrap_or(Value::Null),
+            _ => Value::Null,
         };
     }
-    if let Some(values) = &schema.enum_values {
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
         if let Some(first) = values.first() {
             return first.clone();
         }
     }
-    if let Some(subschemas) = &schema.subschemas {
-        if let Some(candidates) = subschemas.any_of.as_ref().or(subschemas.one_of.as_ref()) {
-            for candidate in candidates {
-                let candidate = candidate.clone().into_object();
-                if is_null_type(&candidate) {
-                    continue;
-                }
-                return placeholder_value(root, &candidate, field_name, depth + 1);
+    if let Some(candidates) = schema
+        .get("anyOf")
+        .or_else(|| schema.get("oneOf"))
+        .and_then(Value::as_array)
+    {
+        for candidate in candidates {
+            if is_null_type(candidate) {
+                continue;
             }
-        }
-        if let Some(all_of) = &subschemas.all_of {
-            if let Some(first) = all_of.first() {
-                return placeholder_value(root, &first.clone().into_object(), field_name, depth + 1);
-            }
+            return placeholder_value(root, candidate, field_name, depth + 1);
         }
     }
-    if schema.array.is_some() {
+    if let Some(first) = schema
+        .get("allOf")
+        .and_then(Value::as_array)
+        .and_then(|schemas| schemas.first())
+    {
+        return placeholder_value(root, first, field_name, depth + 1);
+    }
+    if schema.get("items").is_some() {
         return Value::Array(Vec::new());
     }
-    if schema.object.is_some() {
+    if schema.get("properties").is_some() {
         return Value::Object(serde_json::Map::new());
     }
     Value::String("value".to_string())
 }
 
-fn single_type_placeholder(instance_type: &InstanceType, field_name: &str) -> Value {
+fn single_type_placeholder(instance_type: &str, field_name: &str) -> Value {
     match instance_type {
-        InstanceType::Null => Value::Null,
-        InstanceType::Boolean => Value::Bool(false),
-        InstanceType::Integer => Value::from(1),
-        InstanceType::Number => Value::from(1.0),
-        InstanceType::String => Value::String(string_placeholder(field_name)),
-        InstanceType::Array => Value::Array(Vec::new()),
-        InstanceType::Object => Value::Object(serde_json::Map::new()),
+        "null" => Value::Null,
+        "boolean" => Value::Bool(false),
+        "integer" => Value::from(1),
+        "number" => Value::from(1.0),
+        "string" => Value::String(string_placeholder(field_name)),
+        "array" => Value::Array(Vec::new()),
+        "object" => Value::Object(serde_json::Map::new()),
+        _ => Value::Null,
     }
 }
 
@@ -1349,31 +1311,27 @@ fn string_placeholder(field_name: &str) -> String {
     }
 }
 
-fn discover_tag_key(object: &schemars::schema::ObjectValidation) -> Option<String> {
-    object.properties.iter().find_map(|(name, schema)| {
-        let schema = schema.clone().into_object();
+fn discover_tag_key(object: &Map<String, Value>) -> Option<String> {
+    object.iter().find_map(|(name, schema)| {
         let single_value_enum = schema
-            .enum_values
-            .as_ref()
+            .get("enum")
+            .and_then(Value::as_array)
             .map(|values| values.len() == 1)
             .unwrap_or(false);
-        (schema.const_value.is_some() || single_value_enum).then(|| name.clone())
+        (schema.get("const").is_some() || single_value_enum).then(|| name.clone())
     })
 }
 
-fn is_null_instance_type(instance_type: &InstanceType) -> bool {
-    matches!(instance_type, InstanceType::Null)
-}
-
-fn is_null_type(schema: &SchemaObject) -> bool {
-    match &schema.instance_type {
-        Some(SingleOrVec::Single(instance_type)) => {
-            matches!(instance_type.as_ref(), InstanceType::Null)
+fn is_null_type(schema: &Value) -> bool {
+    match schema.get("type") {
+        Some(Value::String(instance_type)) => instance_type == "null",
+        Some(Value::Array(instance_types)) => {
+            !instance_types.is_empty()
+                && instance_types
+                    .iter()
+                    .all(|instance_type| instance_type.as_str() == Some("null"))
         }
-        Some(SingleOrVec::Vec(instance_types)) => instance_types
-            .iter()
-            .all(|instance_type| matches!(instance_type, InstanceType::Null)),
-        None => false,
+        _ => false,
     }
 }
 
@@ -2426,8 +2384,7 @@ mod tests {
 
     #[test]
     fn test_rules_schema_has_trigger_and_action_definitions() {
-        let root = schemars::schema_for!(crate::models::Rule);
-        let json = serde_json::to_value(&root).expect("schema serializes");
+        let json = rule_schema();
         assert!(json["definitions"]["Trigger"].is_object());
         assert!(json["definitions"]["Action"].is_object());
         assert!(json["definitions"]["RuleCondition"].is_object());
@@ -2447,24 +2404,19 @@ mod tests {
 
     #[test]
     fn test_reference_covers_all_trigger_and_action_variants() {
-        let root = schemars::schema_for!(crate::models::Rule);
+        let root = rule_schema();
         let reference = render_reference();
         for (definition, tag) in [("Trigger", "$trigger_type"), ("Action", "$action_type")] {
-            let definition = root.definitions[definition].clone().into_object();
-            let variants = definition
-                .subschemas
-                .as_ref()
-                .and_then(|subschemas| subschemas.one_of.as_ref())
-                .expect("variants");
+            let variants = definition_variants(&root, definition);
             assert!(variants.len() >= 9, "{definition:?} has too few variants");
             for variant in variants {
-                let variant = variant.clone().into_object();
-                let object = variant.object.as_ref().expect("variant object");
-                let name = object
-                    .properties
+                let properties = variant
+                    .get("properties")
+                    .and_then(Value::as_object)
+                    .expect("variant object");
+                let name = properties
                     .get(tag)
-                    .map(|schema| schema.clone().into_object())
-                    .and_then(|schema| tag_value(&schema))
+                    .and_then(tag_value)
                     .expect("variant tag");
                 assert!(
                     reference.contains(&format!("  {name}")),
@@ -2493,7 +2445,7 @@ mod tests {
 
     #[test]
     fn test_template_generates_valid_rule_for_every_combination() {
-        let root = schemars::schema_for!(crate::models::Rule);
+        let root = rule_schema();
         let triggers = variant_names(&root, "Trigger", "$trigger_type");
         let actions = variant_names(&root, "Action", "$action_type");
         assert_eq!(triggers.len(), 9, "{triggers:?}");
@@ -2527,14 +2479,14 @@ mod tests {
             parse_template_spec("schedule:wait"),
             ("schedule".to_string(), "wait".to_string())
         );
-        let root = schemars::schema_for!(crate::models::Rule);
+        let root = rule_schema();
         assert!(template_rule(&root, "nope", "notification").is_err());
         assert!(template_rule(&root, "manual", "nope").is_err());
     }
 
     #[test]
     fn test_template_play_sound_roundtrip() {
-        let root = schemars::schema_for!(crate::models::Rule);
+        let root = rule_schema();
         let value = template_rule(&root, "schedule", "play_sound").expect("template");
         let json = serde_json::to_string(&value).expect("json");
         let rules = parse_rules_json(&json).expect("parse");

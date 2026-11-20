@@ -33,9 +33,7 @@
 
 <p align="center">
   <img src="assets/screenshots/rules.png" alt="Список правил Synector" width="49%">
-  <img src="assets/screenshots/overlay-studio.png" alt="Overlay Studio в Synector" width="49%">
-</p>
-<p align="center">
+  <img src="assets/screenshots/overlay-studio.png" alt="Overlay Studio в Synector" width="49%"><br>
   <img src="assets/screenshots/macro-studio.png" alt="Macro Studio в Synector" width="49%">
   <img src="assets/screenshots/analytics.png" alt="Аналитика Synector" width="49%">
 </p>
@@ -136,7 +134,7 @@ Synector общается с Windows напрямую: Win32 API, именова
 ## Разработка
 
 Требуется свежий стабильный инструментарий Rust на Windows; текущим зависимостям
-`eframe`/`egui` 0.36 нужен Rust **1.95 или новее**. Проект не фиксирует MSRV.
+`eframe`/`egui` 0.37 нужен Rust **1.95 или новее**. Проект не фиксирует MSRV.
 
 Процесс участия, стиль кода и правила документации описаны в [CONTRIBUTING.md](CONTRIBUTING.md)
 (на английском).
@@ -174,7 +172,7 @@ CI (`.github/workflows/ci.yml`) запускает `cargo check`, `cargo test` �
 
 ### Стек
 
-- **UI:** egui / eframe, egui_extras, egui-phosphor
+- **UI:** egui / eframe, egui_extras, egui-pop-phosphor (egui 0.37 fork of egui-phosphor)
 - **Рантайм:** Tokio
 - **Движок:** mlua (встроенный Lua 5.4.9), windows-rs
 - **Данные:** Serde / Serde JSON, schemars

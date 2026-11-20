@@ -32,28 +32,28 @@ metadata and are resolved by Cargo.
 | Crate | Version | License | Upstream Repository |
 | :--- | :--- | :--- | :--- |
 | **arboard** | 3.7.0 | MIT OR Apache-2.0 | [github.com/1Password/arboard](https://github.com/1Password/arboard) |
-| **base64** | 0.22.1 | MIT OR Apache-2.0 | [github.com/marshallpierce/rust-base64](https://github.com/marshallpierce/rust-base64) |
+| **base64** | 0.23.1 | MIT OR Apache-2.0 | [github.com/marshallpierce/rust-base64](https://github.com/marshallpierce/rust-base64) |
 | **brotli** | 9.1.3 | BSD-3-Clause AND MIT | [github.com/dropbox/rust-brotli](https://github.com/dropbox/rust-brotli) |
 | **chrono** | 0.4.45 | MIT OR Apache-2.0 | [github.com/chronotope/chrono](https://github.com/chronotope/chrono) |
-| **eframe** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
-| **egui** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
-| **egui-phosphor** | 0.14.0 | MIT OR Apache-2.0 | [github.com/amPerl/egui-phosphor](https://github.com/amPerl/egui-phosphor) |
-| **egui_extras** | 0.36.2 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
-| **flate2** | 1.1.10 | MIT OR Apache-2.0 | [github.com/rust-lang/flate2-rs](https://github.com/rust-lang/flate2-rs) |
+| **eframe** | 0.37.0 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
+| **egui** | 0.37.0 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
+| **egui-pop-phosphor** | 0.15.0 | MIT OR Apache-2.0 | [github.com/quazardous/egui-phosphor](https://github.com/quazardous/egui-phosphor) |
+| **egui_extras** | 0.37.0 | MIT OR Apache-2.0 | [github.com/emilk/egui](https://github.com/emilk/egui) |
+| **flate2** | 1.1.11 | MIT OR Apache-2.0 | [github.com/rust-lang/flate2-rs](https://github.com/rust-lang/flate2-rs) |
 | **image** | 0.25.10 | MIT OR Apache-2.0 | [github.com/image-rs/image](https://github.com/image-rs/image) |
 | **mlua** | 0.12.2 | MIT | [github.com/mlua-rs/mlua](https://github.com/mlua-rs/mlua) |
-| **regex** | 1.13.1 | MIT OR Apache-2.0 | [github.com/rust-lang/regex](https://github.com/rust-lang/regex) |
+| **regex** | 1.13.2 | MIT OR Apache-2.0 | [github.com/rust-lang/regex](https://github.com/rust-lang/regex) |
 | **reqwest** | 0.13.5 | MIT OR Apache-2.0 | [github.com/seanmonstar/reqwest](https://github.com/seanmonstar/reqwest) |
-| **rfd** | 0.15.4 | MIT | [github.com/PolyMeilex/rfd](https://github.com/PolyMeilex/rfd) |
+| **rfd** | 0.18.0 | MIT | [github.com/PolyMeilex/rfd](https://github.com/PolyMeilex/rfd) |
 | **rustls** | 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
-| **schemars** | 0.8.22 | MIT | [github.com/GREsau/schemars](https://github.com/GREsau/schemars) |
+| **schemars** | 1.2.3 | MIT | [github.com/GREsau/schemars](https://github.com/GREsau/schemars) |
 | **serde** | 1.0.229 | MIT OR Apache-2.0 | [github.com/serde-rs/serde](https://github.com/serde-rs/serde) |
 | **serde_json** | 1.0.154 | MIT OR Apache-2.0 | [github.com/serde-rs/json](https://github.com/serde-rs/json) |
-| **sha2** | 0.10.9 | MIT OR Apache-2.0 | [github.com/RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
-| **tokio** | 1.53.3 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
+| **sha2** | 0.11.1 | MIT OR Apache-2.0 | [github.com/RustCrypto/hashes](https://github.com/RustCrypto/hashes) |
+| **tokio** | 1.54.1 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
 | **windows** | 0.62.2 | MIT OR Apache-2.0 | [github.com/microsoft/windows-rs](https://github.com/microsoft/windows-rs) |
 | **winres** | 0.1.12 | MIT | [github.com/mxre/winres](https://github.com/mxre/winres) |
-| **zip** | 2.6.1 | MIT | [github.com/zip-rs/zip2](https://github.com/zip-rs/zip2) |
+| **zip** | 9.8.1 | MIT | [github.com/zip-rs/zip2](https://github.com/zip-rs/zip2) |
 
 ### Embedded Runtimes
 
@@ -94,8 +94,8 @@ metadata and are resolved by Cargo.
 - **Copyright**: (c) Emil Ernerfeldt and egui contributors
 - **License**: MIT OR Apache-2.0
 
-### egui-phosphor
-- **Copyright**: (c) Romet Tagobert and egui-phosphor contributors
+### egui-pop-phosphor
+- **Copyright**: (c) Romet Tagobert and egui-phosphor contributors; (c) egui-pop-phosphor contributors
 - **License**: MIT OR Apache-2.0
 - **Bundled icons**: Phosphor Icons, MIT
 
