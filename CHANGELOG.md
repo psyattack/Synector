@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.9.2](https://github.com/psyattack/Synector/compare/v2.9.1...v2.9.2) - 2026-11-20
+
+### Changed
+- Updated Libraries: The interface framework and supporting libraries were upgraded to their latest versions, bringing upstream bug fixes and stability improvements.
+
+### Fixed
+- Interface Symbols: Battery, sound, image and similar icons now always use the bundled emoji fonts, so no glyphs appear as missing characters.
+
+<details><summary>Detailed Changelog</summary>
+
+### Changed
+- **deps:** update all dependencies to latest versions (by @psyattack in 72f9090)
+
+### Fixed
+- **ui:** restore bundled emoji fonts after egui 0.37 update (by @psyattack in 5c4edef)
+
+</details>
+
+
 ## [2.9.1](https://github.com/psyattack/Synector/compare/v2.9.0...v2.9.1) - 2026-11-20
 
 ### Added
