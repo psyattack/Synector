@@ -43,9 +43,9 @@ jobs:
 
           $exePath = "target/release/Synector.exe"
           if (Test-Path $exePath) {
-              # Portable zip archive
+              # Portable zip archive: the executable plus the license and notices files
               $zipTarget = "$distDir/Synector-v$ver-Windows-x64.zip"
-              Compress-Archive -Path $exePath -DestinationPath $zipTarget -Force
+              Compress-Archive -Path $exePath, "LICENSE", "NOTICES.md" -DestinationPath $zipTarget -Force
               Write-Host "Created $zipTarget"
           } else {
               Write-Error "Release executable not found at $exePath"

@@ -63,6 +63,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
 
 [Files]
 Source: "..\target\release\Synector.exe"; DestDir: "{app}"; Flags: ignoreversion
+; License and notices files ship next to the executable; the same files are in the portable zip.
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\Synector.exe"
