@@ -7,7 +7,7 @@ immediately; when it is not, the same operation is written to
 next daemon start.
 
 Related documents: [documentation map](README.md) · [rule examples](EXAMPLES.md) ·
-[architecture](ARCHITECTURE.md#rule-engine).
+[Lua scripting](SCRIPTING.md) · [architecture](ARCHITECTURE.md#rule-engine).
 
 ## Commands
 
@@ -113,6 +113,33 @@ counter meaningless:
 - enabling `max_executions` where the rule previously had no limit also starts a fresh window;
 - changing only the numeric limit (for example `10` → `20`) keeps the current counter.
 
+## Webhook trigger
+
+Anything that can make a local HTTP request can start a rule: the daemon listens on
+`http://127.0.0.1:48123/api/v1/trigger/<endpoint>`; the port is fixed.
+
+- The tail of the path is matched against enabled rules: the rule `id`, or the `endpoint_path` of a
+  `webhook` trigger. A leading slash in `endpoint_path` is tolerated, a trailing slash in the request
+  is ignored, and the first matching rule in configuration order wins.
+- The request method and body are ignored; only the path matters.
+- Matching rule: `200` with `{"status":"triggered","rule":"<rule name>"}`.
+- Unknown name or a disabled rule: `404` with
+  `{"status":"error","message":"Rule '<target>' not found or disabled"}`.
+- Any other path: `400` with
+  `{"status":"error","message":"Invalid endpoint. Use /api/v1/trigger/<endpoint_or_rule_id>"}`.
+
+A `200` means a rule was found, not that the pipeline ran: the engine still applies cooldowns and
+quotas, so a request can be accepted and then skipped. The server is local-only; if another process
+owns the port it does not start and webhook rules never fire.
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:48123/api/v1/trigger/backup
+```
+
+```bash
+curl http://127.0.0.1:48123/api/v1/trigger/backup
+```
+
 ## Validation and warnings
 
 `--rules-validate` performs structural validation and exits non-zero on errors:
@@ -141,12 +168,15 @@ The format is self-describing, so an AI agent or a person without the source can
   every available trigger and action.
 
 ```powershell
-Synector.exe --rules-schema > schema.json
-Synector.exe --rules-template schedule:play_sound > rule.json
+cmd /c "Synector.exe --rules-schema > schema.json"
+cmd /c "Synector.exe --rules-template schedule:play_sound > rule.json"
 # edit rule.json, then:
-Synector.exe --rules-validate rule.json
-Synector.exe --rules-apply rule.json
+cmd /c "Synector.exe --rules-validate rule.json"
+cmd /c "Synector.exe --rules-apply rule.json"
 ```
+
+`cmd /c` is required here because release builds are GUI-subsystem executables: PowerShell would
+neither wait for the process nor capture its output or exit code. See [Console notes](#console-notes).
 
 ## Config as code
 
@@ -157,16 +187,16 @@ single replace: surviving rules keep their runtime counters and hotkeys are relo
 `--dry-run` to preview the result and `--json` for a machine-readable report:
 
 ```powershell
-Synector.exe --rules-sync rules.json --dry-run --json
-Synector.exe --rules-sync rules.json --json
+cmd /c "Synector.exe --rules-sync rules.json --dry-run --json"
+cmd /c "Synector.exe --rules-sync rules.json --json"
 ```
 
 An apply/sync JSON report has the shape
 `{"ok": true, "target": "daemon"|"rules", "dry_run": false, "created": [...], "updated": [...],
 "deleted": [...], "warnings": [...]}`. Failures report
-`{"ok": false, "error": "...", "errors": ["..."]}` and exit with a non-zero status. Validation,
-listing, toggle and reset commands use their own small JSON objects with `ok` plus the affected
-rule ids, counts or counters.
+`{"ok": false, "error": "...", "errors": ["..."]}` and exit with a non-zero status.
+`--rules-list --json` prints the rule array itself; validation, toggle and reset commands return a
+small object with `ok` plus the affected rule ids, counts or counters.
 
 ## Share codes
 

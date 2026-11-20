@@ -27,9 +27,9 @@ cargo clippy -- -D warnings
 - [ ] User-visible strings are in both `src/i18n/en.rs` and `src/i18n/ru.rs`.
 - [ ] The in-app guide was updated in both language branches if builder behavior changed.
 - [ ] Documentation was updated in the owning file (README/README.ru, ARCHITECTURE, RULE_AUTHORING,
-      FAQ, EXAMPLES) instead of duplicating text elsewhere.
+      FAQ, EXAMPLES, RELEASING); new or renamed documents are registered in `docs/README.md`.
 - [ ] `README.md` and `README.ru.md` still match, if either changed.
-- [ ] `THIRD-PARTY-NOTICES.md` was updated if dependencies changed.
+- [ ] `NOTICES.md` is updated if dependencies changed.
 - [ ] Logs contain identifiers and outcomes only, no scripts, payloads, rule JSON or secrets.
 - [ ] Line endings are LF.
 

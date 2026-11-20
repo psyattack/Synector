@@ -43,6 +43,8 @@ instance has exited.
 }
 ```
 
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
+
 ## Free memory on a hotkey
 
 Trims the working set of one process. A cooldown prevents repeated trimming while the hotkey is
@@ -66,6 +68,8 @@ held.
   "cooldown_seconds": 5
 }
 ```
+
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Webhook trigger with an hourly quota
 
@@ -98,6 +102,8 @@ clock hour and then skips requests until the hour rolls over; the rule stays ena
 }
 ```
 
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
+
 Replace the placeholder script with your own command. Script bodies are never written to the log.
 
 ## Archive a folder when a new file arrives
@@ -128,6 +134,8 @@ one archive operation.
   "cooldown_seconds": 30
 }
 ```
+
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Switch power plans on a weekday schedule
 
@@ -169,6 +177,8 @@ Two rules in one file. `--rules-apply` accepts an array, a single object, or `{"
   }
 ]
 ```
+
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 `days_of_week` uses `1` = Monday through `7` = Sunday.
 
@@ -213,6 +223,8 @@ One hotkey either restores an existing window or starts the application. Conditi
 }
 ```
 
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
+
 ## Mute before sleep and unmute after resume
 
 Sleep, resume, display state and device changes are pushed by Windows through a hidden notification
@@ -253,6 +265,8 @@ window, so these rules fire without polling.
 ]
 ```
 
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
+
 ## Launch, wait for the process, then tune it
 
 The wait step blocks only this execution. `timeout_policy: "abort"` stops the remaining pipeline if
@@ -290,6 +304,8 @@ the process does not appear within 60 seconds; use `"continue"` to run the follo
   ]
 }
 ```
+
+Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## More patterns
 

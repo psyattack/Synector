@@ -20,7 +20,7 @@ cd Synector
 cargo check
 cargo test
 cargo clippy -- -D warnings
-cargo fmt
+cargo fmt                      # optional local formatting; CI does not check it
 ```
 
 `cargo clippy -- -D warnings` is the CI gate: warnings are errors. Unit tests live next to the code
@@ -31,7 +31,7 @@ Run modes:
 
 ```powershell
 cargo run                    # spawn the daemon if absent, then open the GUI
-cargo run -- --gui           # GUI only, connects to an existing daemon
+cargo run -- --gui           # GUI only (starts the daemon if it is not running)
 cargo run -- --daemon        # daemon/tray only
 cargo run -- --status        # print daemon status over IPC and exit
 ```
@@ -44,15 +44,29 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Scheduling, quotas, cooldowns, active executions | `src/daemon/engine.rs` |
 | Action execution handlers | `src/daemon/actions.rs` |
 | Process detection | `src/daemon/watcher.rs` |
+| File and directory watching | `src/daemon/file_watcher.rs` |
 | Hotkeys | `src/daemon/hotkeys.rs` |
 | System events and state | `src/daemon/system_events.rs` |
+| System telemetry, media and key visualizer | `src/daemon/telemetry.rs` |
+| Tray icon, menu and notifications | `src/daemon/tray.rs` |
+| Overlay process lifecycle and placement | `src/daemon/overlay_manager.rs`, `src/gui/overlay_window.rs` |
+| Webhook trigger server | `src/daemon/webhook_server.rs` |
+| Lua runtime and the `ph` API | `src/daemon/lua_runner.rs` |
+| Discord Rich Presence | `src/daemon/discord_rpc.rs` |
+| Named-pipe server | `src/daemon/ipc_server.rs` |
 | GUI state, drafts, IPC calls | `src/gui/state.rs` |
 | Views and inspectors | `src/gui/views/` |
+| Shared widgets and renderers | `src/gui/components/` |
 | Localization | `src/i18n.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |
 | CLI rule authoring | `src/cli.rs` |
 | IPC protocol | `src/ipc/protocol.rs` |
 | Configuration persistence | `src/config.rs` |
+| Share codes | `src/sharing.rs` |
+| Autostart registration | `src/autorun.rs` |
+| Updates and self-replacement | `src/updater.rs` |
+| Logging | `src/logging.rs` |
+| Single-instance guards | `src/single_instance.rs` |
 
 Adding or changing a trigger, action or condition touches `models.rs`, the engine and action
 handlers, the catalog/inspector GUI views, and both i18n catalogs. Treat `models.rs` as the single
@@ -82,19 +96,9 @@ steps in the pull request.
 
 ## Documentation and localization
 
-Documentation has one owner per topic. Update the owning file and link to it instead of copying its
-content elsewhere.
-
-| File | Owns |
-|---|---|
-| `README.md`, `README.ru.md` | User overview, features, installation, quick-start commands. Keep both in sync. |
-| `docs/ARCHITECTURE.md` | Subsystem behavior and design rationale. |
-| `docs/RULE_AUTHORING.md` | CLI reference, JSON rule format, quotas, share codes. |
-| `docs/EXAMPLES.md` | Ready-to-apply rule recipes. |
-| `docs/FAQ.md` | User questions and troubleshooting. |
-| `docs/README.md` | Documentation map and entry point. |
-| `CONTRIBUTING.md` | This file: build, style, PR process. |
-| `SECURITY.md` | Vulnerability reporting policy. |
+Documentation has one owner per topic. The document set and its owners are listed once, in
+[docs/README.md](docs/README.md); update the owning file and link to it instead of copying its content
+elsewhere.
 
 User-visible GUI strings belong to `Strings` in `src/i18n.rs`, with values in `src/i18n/en.rs` and
 `src/i18n/ru.rs`; views must not embed literals. The in-app guide is the documented exception: its
@@ -102,10 +106,13 @@ long prose uses Russian/English `if lang == Language::Russian { ... } else { ...
 `src/gui/views/guide_modal.rs`, and both branches must be updated together. Chrome labels in the
 guide still come from `Strings`.
 
-When dependencies change, update the direct-dependency table (and attributions) in
-`THIRD-PARTY-NOTICES.md`. When CLI commands or quota behavior change, update
-`docs/RULE_AUTHORING.md`. When subsystems change, update `docs/ARCHITECTURE.md`. When behavior
-users ask about changes, update `docs/FAQ.md`.
+When dependencies change, update the dependency table and license texts in `NOTICES.md`. When CLI
+commands or quota behavior change, update `docs/RULE_AUTHORING.md`. When subsystems change, update
+`docs/ARCHITECTURE.md`. When behavior users ask about changes, update `docs/FAQ.md`.
+
+Division of ownership: this file owns the contribution process and code conventions,
+`docs/ARCHITECTURE.md` owns subsystem behavior, `docs/RULE_AUTHORING.md` owns the CLI and JSON format,
+and `docs/RELEASING.md` owns the release flow. Where two documents appear to disagree, the owner wins.
 
 ## Commits and pull requests
 
@@ -119,8 +126,9 @@ chore(release): bump version to 2.9.0
 ```
 
 Keep a pull request focused on one concern. Fill in `.github/PULL_REQUEST_TEMPLATE.md`, list the
-commands you ran, and add screenshots for UI changes. Maintainers update `CHANGELOG.md` at release
-time; describe user-facing changes in the PR so the note can be written accurately.
+commands you ran, and add screenshots for UI changes. Describe user-facing changes in the pull
+request: maintainers cut the release and turn that description into the `CHANGELOG.md` entry, as
+described in [docs/RELEASING.md](docs/RELEASING.md).
 
 By submitting a contribution you agree that it is licensed under the [MIT License](LICENSE).
 

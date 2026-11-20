@@ -5,8 +5,9 @@ background execution from user interaction: a tray daemon owns rules, triggers, 
 system monitoring, while the egui desktop GUI is a controlling client that renders daemon state and
 edits drafts.
 
-Per-file layout lives in the Project structure section of [README.md](../README.md); this document
-explains how the pieces behave and why.
+The repository layout (top level only) is in the Project structure section of
+[README.md](../README.md); module-level pointers are in [CONTRIBUTING.md](../CONTRIBUTING.md)
+("Where changes belong"). This document explains how the pieces behave and why.
 
 Related documents: [documentation map](README.md) · [rule authoring](RULE_AUTHORING.md) ·
 [rule examples](EXAMPLES.md) · [FAQ and troubleshooting](FAQ.md) · [contributing](../CONTRIBUTING.md).
@@ -45,11 +46,11 @@ only owner of runtime state; the GUI keeps a draft copy for editing and reconcil
 | Invocation | Behavior |
 |---|---|
 | no flags | Start `--daemon` in the background if absent, then open the GUI |
-| `--gui` | Open the GUI and connect to an already running daemon |
+| `--gui` | Open the GUI; the daemon is started first if it is not running |
 | `--daemon` | Background service only (tray mode) |
 | `--status` | Print daemon status over IPC and exit |
 | `--overlay-window <id>` | Standalone borderless overlay window for one overlay (`--calibration`, `--duration`, `--override-text`, `--overlay-data`) |
-| `--run-rule <id_or_title>` | Invoke a rule directly (IPC when the daemon runs, otherwise an autonomous runner fallback) |
+| `--run-rule <rule id>` | Invoke a rule directly (IPC when the daemon runs, otherwise an autonomous runner fallback) |
 | `--rules-*` | Rule authoring CLI: validate, apply, sync, list, export, enable/disable, reset, delete, share, import, schema and templates. See [RULE_AUTHORING.md#commands](RULE_AUTHORING.md#commands). |
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation enables kernel ETW process
@@ -66,8 +67,8 @@ CLI rule commands run before elevation because they are console tools.
 | Area | Responsibility |
 |---|---|
 | `src/gui/` | egui views, overlay renderer, macro recorder, GUI state and IPC synchronization |
-| `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, Discord RPC, updater |
-| `src/ipc/` | Named pipe client/server and the shared request/response protocol |
+| `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
+| `src/ipc/` | Named pipe client and the shared request/response protocol |
 | `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas |
 | `src/cli.rs` | Command-line rule authoring: parsing, validation, upsert/sync, share codes and IPC dispatch |
 | `src/config.rs` | Split configuration persistence: settings, rules, presets and runtime counters |
@@ -247,9 +248,9 @@ remain the backup format: `--rules-export` and the CLI authoring commands cover 
 
 ## Installation forms and updates
 
-Synector ships in two forms. The portable zip is a single `Synector.exe`; the installer
-(`installer/synector.iss`, built only in CI) installs the same executable into `Program Files`, adds
-Start Menu and `App Paths` integration and registers an uninstaller. A console bootstrap
+Synector ships in two forms. The portable zip is `Synector.exe` plus `LICENSE` and `NOTICES.md`; the
+installer (`installer/synector.iss`, built only in CI) installs the same executable into `Program
+Files`, adds Start Menu and `App Paths` integration and registers an uninstaller. A console bootstrap
 (`installer/install.cmd`, or `install.ps1` fetched with `irm <url> | iex`) covers machine-driven
 installs: it resolves the latest release, verifies the chosen artifact's SHA-256 and runs Setup,
 extracts the portable archive or calls the uninstaller.
@@ -296,8 +297,6 @@ errors that may embed script output are routed through the engine's `SensitiveLo
 
 - Localization is mandatory for regular views; the guide's inline bilingual prose is the documented
   exception.
-- Documentation has one owner per topic: user overview in `README.md`/`README.ru.md`, subsystem
-  behavior in this file, CLI and JSON format in [RULE_AUTHORING.md](RULE_AUTHORING.md), recipes in
-  [EXAMPLES.md](EXAMPLES.md), and user questions in [FAQ.md](FAQ.md). Link instead of copying text
-  across files.
+- Documentation has one owner per topic; the document set and its owners are listed in one place,
+  [docs/README.md](README.md). Link instead of copying text across files.
 - `README.md` and `README.ru.md` are mirrors and must change together.

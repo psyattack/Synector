@@ -4,6 +4,44 @@ Answers to the questions that come up most often. For the JSON rule format see
 [RULE_AUTHORING.md](RULE_AUTHORING.md), for complete rules see [EXAMPLES.md](EXAMPLES.md), and for
 internals see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+<details>
+<summary>Contents</summary>
+
+- [Installation and updates](#installation-and-updates)
+  - [Which build should I use: Setup or portable?](#which-build-should-i-use-setup-or-portable)
+  - [Windows SmartScreen or antivirus warns about the download](#windows-smartscreen-or-antivirus-warns-about-the-download)
+  - [Do I need to run as administrator?](#do-i-need-to-run-as-administrator)
+  - [Does Synector start with Windows?](#does-synector-start-with-windows)
+  - [How do updates work?](#how-do-updates-work)
+  - [Can I downgrade?](#can-i-downgrade)
+  - [Upgrading from 2.8 or older](#upgrading-from-28-or-older)
+- [Daemon and GUI](#daemon-and-gui)
+  - [Does closing the window stop my rules?](#does-closing-the-window-stop-my-rules)
+  - [Where are configuration and logs?](#where-are-configuration-and-logs)
+  - [How do I back up or move my setup?](#how-do-i-back-up-or-move-my-setup)
+  - [A configuration file is corrupt or I want a clean start](#a-configuration-file-is-corrupt-or-i-want-a-clean-start)
+  - [Why are there two Synector processes?](#why-are-there-two-synector-processes)
+  - [How do I create or change an overlay?](#how-do-i-create-or-change-an-overlay)
+  - [How do I record and replay a macro?](#how-do-i-record-and-replay-a-macro)
+- [Rules and triggers](#rules-and-triggers)
+  - [My rule does not fire](#my-rule-does-not-fire)
+  - [What is the difference between a cooldown and a quota?](#what-is-the-difference-between-a-cooldown-and-a-quota)
+  - [Why is my infinite macro rejected?](#why-is-my-infinite-macro-rejected)
+  - [How do I trigger Synector from another program?](#how-do-i-trigger-synector-from-another-program)
+  - [Why does a hotkey not respond?](#why-does-a-hotkey-not-respond)
+  - [Are share codes safe?](#are-share-codes-safe)
+  - [PowerShell does not show CLI output](#powershell-does-not-show-cli-output)
+- [Troubleshooting](#troubleshooting)
+  - [The daemon does not start or exits immediately](#the-daemon-does-not-start-or-exits-immediately)
+  - [An overlay is not visible](#an-overlay-is-not-visible)
+  - [A macro does not register in a game](#a-macro-does-not-register-in-a-game)
+  - [Audio actions fail](#audio-actions-fail)
+  - [High CPU or constant disk writes](#high-cpu-or-constant-disk-writes)
+  - [The webhook port is busy](#the-webhook-port-is-busy)
+  - [Where do I report a bug or a security issue?](#where-do-i-report-a-bug-or-a-security-issue)
+
+</details>
+
 ## Installation and updates
 
 ### Which build should I use: Setup or portable?
@@ -11,8 +49,8 @@ internals see [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Setup** (`Synector-Setup-<version>-Windows-x64.exe`) installs into `Program Files`, adds a Start
   Menu shortcut, registers `App Paths` and an uninstaller. Updates are applied by downloading and
   running the new setup silently.
-- **Portable** (`Synector-v<version>-Windows-x64.zip`) is a single `Synector.exe`. Extract it
-  anywhere and run it; updates replace the executable in place.
+- **Portable** (`Synector-v<version>-Windows-x64.zip`) contains `Synector.exe` plus the license and
+  attribution files. Extract it anywhere and run the executable; updates replace it in place.
 
 Both forms share the same configuration in `%LOCALAPPDATA%\Synector\` and the same daemon.
 
@@ -34,7 +72,7 @@ hash you have not verified.
 Synector starts elevated by default; `--no-elevate` opts out. Elevation enables:
 
 - kernel ETW process tracing (otherwise Synector falls back to adaptive Toolhelp32 polling);
-- input simulation into elevated applications through UIPI;
+- input simulation into elevated applications (UIPI bypass);
 - memory/priority/affinity tuning of elevated processes;
 - silent highest-privilege logon autostart through Task Scheduler.
 
@@ -44,8 +82,8 @@ or that relies on ETW, may not fire.
 ### Does Synector start with Windows?
 
 The daemon registers a Task Scheduler autostart entry on first launch. It can be disabled in
-Settings. The entry is separate from the installer: uninstalling removes it, and running portable
-without autostart leaves the machine untouched.
+Settings. The entry is separate from the installer: uninstalling removes it. First launch always
+creates `%LOCALAPPDATA%\Synector\` with the configuration files and logs.
 
 ### How do updates work?
 
@@ -60,17 +98,17 @@ configuration directory is preserved either way.
 
 ### Can I downgrade?
 
-Install the older release over the current one. Configuration is versioned per section, but
-downgrades are not a supported migration path: keep an export of your rules
-(`--rules-export rules.json`) or a `SYN1:` share code before changing versions, and restore from it
-if the older build cannot read the current data.
+Install the older release over the current one. Configuration is versioned per section and
+downgrades are not a supported migration path: a 2.8 build cannot read the 2.9 files. Before
+changing versions, keep a copy of `%LOCALAPPDATA%\Synector\` and an export of your rules
+(`--rules-export rules.json`), so the rules can be restored or re-entered.
 
 ### Upgrading from 2.8 or older
 
 The 2.9 storage format is split into independent section files and older configuration is not
-migrated automatically. Export the rules from the old version (`--rules-export` or a share code)
-and import them into the new one. Old `PH1:` share codes are not accepted by 2.9 and later;
-re-export them from the updated app.
+migrated automatically. A 2.8 installation has no `--rules-export` flag and its `PH1:` share codes
+are rejected by 2.9, so rules have to be re-created in the new version: keep the old app installed
+alongside while you copy rule settings across. `SYN1:` share codes exist only in 2.9 and later.
 
 ## Daemon and GUI
 
@@ -108,6 +146,27 @@ The tray daemon and the GUI are separate tiers of the same executable. Overlay w
 additional borderless processes supervised by the daemon. Seeing several Synector processes is
 normal when overlays are open. Each tier has a single-instance mutex, so a second daemon or GUI does
 not start.
+
+### How do I create or change an overlay?
+
+Overlays are edited in the Overlay Studio: select an Overlay action in the rule inspector and press
+**OPEN →**. The studio arranges elements on a multi-monitor artboard; **POSITION ON SCREEN** switches
+the overlay into calibration, which makes it draggable so it can be placed on the intended display.
+The daemon then renders it in a separate process, so the overlay stays on screen when the GUI is
+closed.
+
+The action decides what happens at runtime: toggle visibility or flash on screen, optional override
+text (tokens such as `{ProcessName}` are allowed), duration and fade, and "close when process exits"
+to bind the overlay to the triggering application. Saved definitions live in `library.json`.
+
+### How do I record and replay a macro?
+
+Record it in Macro Studio: select a Macro action in the inspector and press **OPEN →**, then **F9**
+starts and stops recording — the low-level hooks are active only while recording. **F10** test-runs
+the sequence on a background thread, **Esc** closes the studio. The action then decides playback:
+operation Run, Stop or Toggle, repeat count, and an optional preset stored in `library.json`.
+Playback uses hardware scan codes with short holds and humanized timing, so it also registers in
+DirectInput games.
 
 ## Rules and triggers
 
@@ -148,16 +207,17 @@ dims the steps after the infinite action.
 
 Use a webhook trigger and send a request to
 `http://127.0.0.1:48123/api/v1/trigger/<endpoint_path>` (a rule id also works). The server is
-local-only. See [RULE_AUTHORING.md](RULE_AUTHORING.md) for the JSON format and
+local-only. See [RULE_AUTHORING.md#webhook-trigger](RULE_AUTHORING.md#webhook-trigger) for the
+request and response contract, [RULE_AUTHORING.md](RULE_AUTHORING.md) for the JSON format and
 [EXAMPLES.md](EXAMPLES.md) for a complete rule.
 
 ### Why does a hotkey not respond?
 
 Global hotkeys are detected by polling `GetAsyncKeyState`, not by `RegisterHotKey`, which is what
-allows mouse-button combinations and hold/repeat modes. A combination already consumed by another
-application or by Windows may still not reach Synector. Try a different combination and check the
-logs. Hold mode repeats the pipeline while the key is held; repeat-while-held without hold mode
-loops until the hotkey is pressed again.
+allows mouse-button combinations and hold/repeat modes. Another application listening for the same
+combination will also react, and a target that ignores synthetic input will still not respond. If a
+combination does nothing, try another one and check the logs. Hold mode repeats the pipeline while
+the key is held; repeat-while-held without hold mode loops until the hotkey is pressed again.
 
 ### Are share codes safe?
 
@@ -168,16 +228,15 @@ you trust. See [ARCHITECTURE.md#sharing-and-backup](ARCHITECTURE.md#sharing-and-
 
 ### PowerShell does not show CLI output
 
-Release builds use the Windows GUI subsystem, so PowerShell does not wait for them and cannot
-capture their output or exit code. Prefix commands with `cmd /c`:
+Release builds use the Windows GUI subsystem, so PowerShell neither waits for them nor captures their
+output or exit code. Prefix commands with `cmd /c`:
 
 ```powershell
 cmd /c "Synector.exe --rules-validate rule.json"
-cmd /c "type rule.json | Synector.exe --rules-apply -"
 ```
 
-Tools that spawn the process with piped stdio and wait for it, such as Python `subprocess.run` or
-Node `child_process`, work directly.
+The full explanation, including how other tools that spawn and wait for the process behave, is in
+[RULE_AUTHORING.md#console-notes](RULE_AUTHORING.md#console-notes).
 
 ## Troubleshooting
 

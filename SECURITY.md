@@ -5,13 +5,14 @@ on a local HTTP port. Security reports are taken seriously.
 
 ## Supported versions
 
-Security fixes are applied to the latest release series. Older releases may not receive fixes;
-upgrade to the current version before reporting an issue that may already be fixed.
+Security fixes are applied to the latest published release only. Earlier releases — including earlier
+2.x versions once a newer one ships — do not receive fixes; upgrade before reporting an issue that may
+already be fixed.
 
 | Version | Supported |
 |---|---|
-| 2.x (latest release) | Yes |
-| Older versions | No |
+| Latest published release | Yes |
+| Any earlier release | No |
 
 ## Reporting a vulnerability
 

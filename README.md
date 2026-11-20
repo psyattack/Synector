@@ -126,7 +126,7 @@ cargo run
 # Run only the background daemon (tray mode)
 cargo run -- --daemon
 
-# Open the GUI against an existing daemon
+# Open the GUI (starts the daemon if it is not running)
 cargo run -- --gui
 
 # Print daemon status over the named pipe
@@ -150,117 +150,31 @@ on `windows-latest`.
 
 ### Project structure
 
-<details>
-<summary>File-by-file layout</summary>
-
 ```
 Synector/
-├── .github/
-│   ├── ISSUE_TEMPLATE/                    # Bug report and feature request forms
-│   ├── workflows/
-│   │   ├── ci.yml                         # Check, test and clippy on windows-latest
-│   │   └── release.yml                    # Portable zip, Inno Setup installer and GitHub release
-│   ├── dependabot.yml                     # Weekly cargo and GitHub Actions updates
-│   └── PULL_REQUEST_TEMPLATE.md           # Pull-request checklist
-├── assets/
-│   ├── fonts/                             # Bundled variable fonts (Archivo, GeistMono, Inter) + OFL texts
-│   ├── screenshots/                       # Documentation screenshots
-│   ├── app.ico                            # Win32 application icon
-│   ├── app.png                            # High-res RGBA icon
-│   ├── app.svg                            # Vector logo
-│   └── social-preview.png                 # 1280x640 GitHub social preview
-├── docs/
-│   ├── README.md                          # Documentation map
-│   ├── ARCHITECTURE.md                    # Subsystem behavior and design conventions
-│   ├── RULE_AUTHORING.md                  # Command-line rule authoring reference
-│   ├── EXAMPLES.md                        # Ready-to-apply rule recipes
-│   └── FAQ.md                             # User questions and troubleshooting
-├── installer/
-│   ├── install.cmd                        # Console bootstrap (menu: Setup / Portable / Uninstall)
-│   ├── install.ps1                        # Release download, SHA-256 verification, Setup/Portable/Uninstall
-│   └── synector.iss                       # Inno Setup script (compiled only in CI)
-├── src/
-│   ├── daemon/                            # Background daemon
-│   │   ├── actions.rs                     # Execution handlers for every Action variant
-│   │   ├── discord_rpc.rs                 # Discord Rich Presence client over \\.\pipe\discord-ipc-*
-│   │   ├── engine.rs                      # Rule scheduler, quotas/cooldowns, active executions, analytics
-│   │   ├── file_watcher.rs                # Adaptive directory/file polling watcher
-│   │   ├── hotkeys.rs                     # Global hotkey monitor (plain, hold and repeat-while-held modes)
-│   │   ├── ipc_server.rs                  # Named pipe listener and connection worker
-│   │   ├── lua_runner.rs                  # Embedded Lua 5.4.9 runtime with the custom `ph` API
-│   │   ├── overlay_manager.rs             # Overlay process lifecycle, calibration and monitor placement
-│   │   ├── pe_mask.rs                     # WindowsServiceHost.exe masked daemon image
-│   │   ├── system_events.rs               # Sleep/resume, display, device, session, power, idle and network events
-│   │   ├── telemetry.rs                   # CPU/RAM/network/battery/mic samples, key visualizer, media state
-│   │   ├── tray.rs                        # Win32 tray icon, menu, notifications and update progress
-│   │   ├── watcher.rs                     # Hybrid ETW / Toolhelp32 process watcher
-│   │   └── webhook_server.rs              # Local HTTP trigger server (127.0.0.1:48123)
-│   ├── gui/                               # egui desktop client
-│   │   ├── components/                    # Shared widgets and renderers
-│   │   │   ├── duration.rs                # Unit-aware duration input (ms/s/min/h/d)
-│   │   │   ├── icons.rs                   # Win32 shell icon extraction, image loading, texture cache
-│   │   │   ├── modal.rs                   # Animated modal window framework
-│   │   │   ├── overlay_renderer.rs        # GPU overlay element renderer
-│   │   │   ├── script_highlighter.rs      # PowerShell, Batch and Lua syntax highlighting
-│   │   │   └── widgets.rs                 # Custom canvas controls (buttons, inputs, cards, drag handles)
-│   │   ├── views/                         # Application screens and panels
-│   │   │   ├── action_catalog_modal.rs    # Action catalog with categories and search
-│   │   │   ├── analytics_view.rs          # KPI cards, event telemetry and live log stream
-│   │   │   ├── changelog_modal.rs         # Release notes and changelog viewer
-│   │   │   ├── condition_catalog_modal.rs # Pre-condition catalog
-│   │   │   ├── element_catalog_modal.rs   # Overlay element catalog
-│   │   │   ├── guide_modal.rs             # Bilingual in-app Rule Builder guide
-│   │   │   ├── header_bar.rs              # Custom titlebar and navigation tabs
-│   │   │   ├── inspector.rs               # Rule inspector, trigger/action editor, drag-and-drop, undo/redo
-│   │   │   ├── macro_modal.rs             # Macro timeline editor and presets
-│   │   │   ├── overlay_modal.rs           # Overlay Studio artboard and element editor
-│   │   │   ├── process_picker_modal.rs    # Process picker with filters and sorting
-│   │   │   ├── rules_view.rs              # Rule list, tags, filters and sorting
-│   │   │   ├── script_modal.rs            # PowerShell, CMD and Lua script editor
-│   │   │   ├── settings_view.rs           # System, engine, appearance and update settings
-│   │   │   └── trigger_catalog_modal.rs   # Trigger catalog with categories and search
-│   │   ├── components.rs                  # Component module exports
-│   │   ├── macro_recorder.rs              # Low-level keyboard/mouse macro recorder and Raw Input capture
-│   │   ├── overlay_window.rs              # Standalone borderless GPU overlay window
-│   │   ├── state.rs                       # GUI state, drafts, undo/redo, IPC synchronization
-│   │   ├── theme.rs                       # Design tokens and Dark/Light/Chocolate palettes
-│   │   └── views.rs                       # View module exports
-│   ├── i18n/                              # Localization catalogs
-│   │   ├── en.rs                          # English strings
-│   │   └── ru.rs                          # Russian strings
-│   ├── ipc/                               # Inter-process communication
-│   │   ├── client.rs                      # Named pipe client
-│   │   └── protocol.rs                    # IpcRequest/IpcResponse and DaemonState types
-│   ├── autorun.rs                         # Task Scheduler autostart integration
-│   ├── cli.rs                             # Rule authoring CLI (validate, apply, sync, share, ...)
-│   ├── config.rs                          # Versioned split JSON persistence and read caches
-│   ├── daemon.rs                          # Daemon entrypoint, loops and subsystem wiring
-│   ├── gui.rs                             # GUI entrypoint and eframe application loop
-│   ├── i18n.rs                            # Language registry and `Strings` catalog interface
-│   ├── ipc.rs                             # `PIPE_NAME` and IPC re-exports
-│   ├── logging.rs                         # Daily log files, levels, retention and panic capture
-│   ├── main.rs                            # CLI dispatcher (overlay, rule CLI, status, elevation, tiers)
-│   ├── models.rs                          # Domain model (Rule, Trigger, Action, conditions, overlays)
-│   ├── sharing.rs                         # SYN1 share codes (Brotli + Base64, checksum, bounded decode)
-│   ├── shortcut.rs                        # Windows shell link (.lnk) rule shortcuts
-│   ├── single_instance.rs                 # Named mutex guards and window focus helpers
-│   └── updater.rs                         # GitHub release checks, SHA-256 verification, self-update
-├── build.rs                               # Windows resource compilation (icon, version, manifest)
-├── CHANGELOG.md                           # Release history
-├── CODE_OF_CONDUCT.md                     # Community standards
-├── CONTRIBUTING.md                        # Build, style and pull-request process
-├── Cargo.toml                             # Rust manifest and dependencies
-├── LICENSE                                # MIT license
-├── README.md                              # This file
-├── README.ru.md                           # Russian README
-├── SECURITY.md                            # Vulnerability reporting policy
-└── THIRD-PARTY-NOTICES.md                 # Third-party licenses and attributions
+├── .github/                # CI, release workflow, issue and PR templates
+├── assets/                 # Icon, logo, screenshots and bundled fonts
+├── docs/                   # Documentation set, indexed in docs/README.md
+├── installer/              # Inno Setup script and console bootstrap
+├── src/                    # Rust sources: daemon, GUI, IPC, CLI, domain model, i18n
+├── build.rs                # Windows resources: icon, version, manifest
+├── Cargo.lock              # Pinned dependency versions
+├── Cargo.toml              # Manifest and dependencies
+├── CHANGELOG.md            # Release history
+├── CODE_OF_CONDUCT.md      # Community standards
+├── CONTRIBUTING.md         # Build, style and pull-request process
+├── LICENSE                 # MIT license
+├── README.md               # This file
+├── README.ru.md            # Russian README
+├── SECURITY.md             # Vulnerability reporting
+└── NOTICES.md              # Third-party dependencies and license texts
 ```
 
-</details>
-
-How the pieces behave and interact — the two tiers, the data flow, the rule engine, overlays, input
-simulation and process monitoring — is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The tree stops at the top level on purpose: per-file responsibilities change faster than this
+document. Module-level pointers live in [CONTRIBUTING.md](CONTRIBUTING.md) ("Where changes belong"),
+and how the pieces behave and interact — the two tiers, the data flow, the rule engine, overlays,
+input simulation and process monitoring — is described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Configuration
 
@@ -275,12 +189,26 @@ directory for portable or isolated runs.
 | `runtime.json` | Per-rule execution counters, last-run timestamps and custom quota-window anchors |
 | `logs\` | Daily diagnostic logs, one file per day, 7-day retention and an 8 MiB cap per file |
 
-Writes are atomic (temp file → flush → rename) and every section carries a schema version. A section
-that fails to parse is quarantined as `<name>.corrupt-<timestamp>` before defaults replace it, so a
-hand-edited file is never silently destroyed. While the daemon is reachable it is the only writer;
-the GUI and CLI fall back to direct file writes only when IPC is unavailable. Back up or edit these
-files while Synector is stopped. The write path, read caches and coalescing rules are described in
+Writes are atomic and versioned, and while the daemon is reachable it is the only writer — back up or
+edit these files with Synector stopped. The write path, the quarantine of a section that fails to
+parse, read caches and coalescing rules are documented in
 [docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
+
+### Settings fields
+
+`settings.json` holds the preferences the app does not derive from the GUI state:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `version` | integer | Schema version, rewritten on every save — leave it alone |
+| `window` | object | Saved main-window geometry and state; managed by the app |
+| `tray_icon_path` | string, optional | Custom tray icon file; the field is omitted while unset |
+| `hide_tray_icon` | boolean (default `false`) | Hide the tray icon |
+| `mask_daemon_process` | boolean (default `false`) | Run the daemon from the masked `WindowsServiceHost.exe` copy |
+| `language` | `"english"` or `"russian"` (default `"english"`) | Interface language |
+| `check_updates_on_startup` | boolean (default `true`) | Check GitHub for a new release at startup |
+| `auto_install_updates` | boolean (default `false`) | Install a downloaded update without asking |
+| `theme` | `"dark"`, `"light"` or `"chocolate"` (default `"dark"`) | Interface palette |
 
 ## Rule authoring from the CLI
 
@@ -288,13 +216,16 @@ Rules are plain JSON and can be validated, applied, replaced, exported, shared a
 opening the GUI:
 
 ```powershell
-Synector.exe --rules-schema > schema.json
-Synector.exe --rules-template schedule:play_sound > rule.json
-Synector.exe --rules-validate rule.json
-Synector.exe --rules-apply rule.json
-Synector.exe --rules-sync rule.json --dry-run --json
-Synector.exe --rules-share my_rule
+cmd /c "Synector.exe --rules-schema > schema.json"
+cmd /c "Synector.exe --rules-template schedule:play_sound > rule.json"
+cmd /c "Synector.exe --rules-validate rule.json"
+cmd /c "Synector.exe --rules-apply rule.json"
+cmd /c "Synector.exe --rules-sync rule.json --dry-run --json"
+cmd /c "Synector.exe --rules-share my_rule"
 ```
+
+`Synector.exe` is a Windows GUI-subsystem executable, so PowerShell neither waits for it nor captures
+its output; `cmd /c` does both (see [console notes](docs/RULE_AUTHORING.md#console-notes)).
 
 See [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md) for the full command reference, quota semantics,
 JSON report shapes and `SYN1:` share-code behavior, and [docs/EXAMPLES.md](docs/EXAMPLES.md) for
@@ -302,21 +233,17 @@ complete recipes you can validate and apply.
 
 ## Documentation
 
-| Document | Audience | Contents |
-|---|---|---|
-| [docs/README.md](docs/README.md) | Everyone | Documentation map and rules |
-| [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md) | Rule authors | CLI reference, JSON format, quotas, share codes |
-| [docs/EXAMPLES.md](docs/EXAMPLES.md) | Rule authors | Ready-to-apply rule recipes |
-| [docs/FAQ.md](docs/FAQ.md) | Users | Common questions and troubleshooting |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Developers | Subsystems, data flow and design rationale |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Build, test, style and pull-request process |
-| [SECURITY.md](SECURITY.md) | Security researchers | Private vulnerability reporting |
-| [CHANGELOG.md](CHANGELOG.md) | Everyone | Release history |
+The full map — which document owns what and who it is for — lives in [docs/README.md](docs/README.md).
+Entry points: [FAQ](docs/FAQ.md) for troubleshooting, [RULE_AUTHORING](docs/RULE_AUTHORING.md) for the
+CLI and the JSON format, [SCRIPTING](docs/SCRIPTING.md) for Lua, [EXAMPLES](docs/EXAMPLES.md) for
+ready-to-apply recipes, [ARCHITECTURE](docs/ARCHITECTURE.md) for internals,
+[CONTRIBUTING](CONTRIBUTING.md) for the build and review process, and
+[RELEASING](docs/RELEASING.md) for how versions are cut.
 
 ## License
 
 This project is licensed under the [MIT License](LICENSE). Third-party components:
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[NOTICES.md](NOTICES.md).
 
 ## Credits
 

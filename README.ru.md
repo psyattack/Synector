@@ -157,7 +157,7 @@ cargo run
 # Только фоновый демон (режим трея)
 cargo run -- --daemon
 
-# GUI против уже запущенного демона
+# GUI (демон запустится, если он ещё не запущен)
 cargo run -- --gui
 
 # Статус демона по именованному каналу
@@ -181,95 +181,29 @@ CI (`.github/workflows/ci.yml`) запускает `cargo check`, `cargo test` �
 
 ### Структура проекта
 
-<details>
-<summary>Разбивка по файлам</summary>
-
 ```
 Synector/
-├── .github/
-│   ├── ISSUE_TEMPLATE/                    # Формы баг-репортов и предложений
-│   ├── workflows/
-│   │   ├── ci.yml                         # Check, test и clippy на windows-latest
-│   │   └── release.yml                    # Портативный zip, установщик Inno Setup и релиз GitHub
-│   ├── dependabot.yml                     # Еженедельные обновления cargo и GitHub Actions
-│   └── PULL_REQUEST_TEMPLATE.md           # Чек-лист pull request
-├── assets/
-│   ├── fonts/                             # Встроенные вариативные шрифты (Archivo, GeistMono, Inter) + тексты OFL
-│   ├── screenshots/                       # Скриншоты для документации
-│   ├── app.ico                            # Иконка приложения Win32
-│   ├── app.png                            # Иконка RGBA высокого разрешения
-│   ├── app.svg                            # Векторный логотип
-│   └── social-preview.png                 # Социальное превью GitHub 1280x640
-├── docs/
-│   ├── README.md                          # Карта документации
-│   ├── ARCHITECTURE.md                    # Поведение подсистем и соглашения проектирования
-│   ├── RULE_AUTHORING.md                  # Справочник по авторству правил из CLI
-│   ├── EXAMPLES.md                        # Готовые рецепты правил
-│   └── FAQ.md                             # Вопросы пользователей и устранение неполадок
-├── installer/
-│   ├── install.cmd                        # Консольный загрузчик (меню: Setup / Portable / Uninstall)
-│   ├── install.ps1                        # Загрузка релиза, проверка SHA-256, Setup/Portable/Uninstall
-│   └── synector.iss                       # Скрипт Inno Setup (компилируется только в CI)
-├── src/
-│   ├── daemon/                            # Фоновый демон
-│   │   ├── actions.rs                     # Обработчики всех вариантов Action
-│   │   ├── discord_rpc.rs                 # Клиент Discord Rich Presence через \\.\pipe\discord-ipc-*
-│   │   ├── engine.rs                      # Планировщик правил, квоты/кулдауны, активные выполнения, аналитика
-│   │   ├── file_watcher.rs                # Адаптивный наблюдатель за папками и файлами
-│   │   ├── hotkeys.rs                     # Монитор глобальных горячих клавиш (обычный, удержание, повтор)
-│   │   ├── ipc_server.rs                  # Слушатель именованного канала и воркер соединений
-│   │   ├── lua_runner.rs                  # Встроенный Lua 5.4.9 с API `ph`
-│   │   ├── overlay_manager.rs             # Жизненный цикл оверлеев, калибровка и размещение
-│   │   ├── pe_mask.rs                     # Замаскированный образ демона WindowsServiceHost.exe
-│   │   ├── system_events.rs               # Сон/пробуждение, дисплей, устройства, сеанс, питание, простой, сеть
-│   │   ├── telemetry.rs                   # CPU/RAM/сеть/батарея/микрофон, визуализатор клавиш, медиа
-│   │   ├── tray.rs                        # Иконка трея Win32, меню, уведомления и прогресс обновления
-│   │   ├── watcher.rs                     # Гибридный наблюдатель процессов ETW / Toolhelp32
-│   │   └── webhook_server.rs              # Локальный HTTP-сервер триггеров (127.0.0.1:48123)
-│   ├── gui/                               # Клиент egui
-│   │   ├── components/                    # Общие виджеты и рендереры
-│   │   ├── views/                         # Экраны и панели приложения
-│   │   ├── components.rs                  # Экспорт модулей компонентов
-│   │   ├── macro_recorder.rs              # Запись макросов через низкоуровневые хуки и Raw Input
-│   │   ├── overlay_window.rs              # Отдельное безрамочное окно оверлея с GPU
-│   │   ├── state.rs                       # Состояние GUI, черновики, undo/redo, синхронизация IPC
-│   │   ├── theme.rs                       # Токены дизайна и палитры Dark/Light/Chocolate
-│   │   └── views.rs                       # Экспорт модулей экранов
-│   ├── i18n/                              # Каталоги локализации
-│   │   ├── en.rs                          # Английские строки
-│   │   └── ru.rs                          # Русские строки
-│   ├── ipc/                               # Межпроцессное взаимодействие
-│   │   ├── client.rs                      # Клиент именованного канала
-│   │   └── protocol.rs                    # IpcRequest/IpcResponse и DaemonState
-│   ├── autorun.rs                         # Интеграция автозапуска через Планировщик заданий
-│   ├── cli.rs                             # CLI авторства правил (validate, apply, sync, share, ...)
-│   ├── config.rs                          # Версионированное раздельное JSON-хранилище и кеши чтения
-│   ├── daemon.rs                          # Точка входа демона, циклы и подключение подсистем
-│   ├── gui.rs                             # Точка входа GUI и цикл приложения eframe
-│   ├── i18n.rs                            # Реестр языков и интерфейс каталога `Strings`
-│   ├── ipc.rs                             # `PIPE_NAME` и реэкспорты IPC
-│   ├── logging.rs                         # Суточные логи, уровни, хранение и перехват паник
-│   ├── main.rs                            # Диспетчер CLI (оверлей, правила, статус, повышение прав, уровни)
-│   ├── models.rs                          # Доменная модель (Rule, Trigger, Action, условия, оверлеи)
-│   ├── sharing.rs                         # Share-коды SYN1: (Brotli + Base64, контрольная сумма, границы)
-│   ├── shortcut.rs                        # Ярлыки Windows (.lnk) для запуска правил
-│   ├── single_instance.rs                 # Мьютексы единственного экземпляра и фокус окна
-│   └── updater.rs                         # Проверка релизов GitHub, SHA-256, самообновление
-├── build.rs                               # Компиляция ресурсов Windows (иконка, версия, манифест)
-├── CHANGELOG.md                           # История релизов
-├── CODE_OF_CONDUCT.md                     # Стандарты сообщества
-├── CONTRIBUTING.md                        # Сборка, стиль и процесс pull request
-├── Cargo.toml                             # Манифест Rust и зависимости
-├── LICENSE                                # Лицензия MIT
-├── README.md                              # Английская версия этого файла
-├── README.ru.md                           # Этот файл
-├── SECURITY.md                            # Политика сообщения об уязвимостях
-└── THIRD-PARTY-NOTICES.md                 # Лицензии и атрибуции третьих сторон
+├── .github/                # CI, релизный workflow, шаблоны issue и PR
+├── assets/                 # Иконка, логотип, скриншоты и встроенные шрифты
+├── docs/                   # Документация, индекс в docs/README.md
+├── installer/              # Скрипт Inno Setup и консольный загрузчик
+├── src/                    # Исходники Rust: демон, GUI, IPC, CLI, доменная модель, i18n
+├── build.rs                # Ресурсы Windows: иконка, версия, манифест
+├── Cargo.lock              # Зафиксированные версии зависимостей
+├── Cargo.toml              # Манифест и зависимости
+├── CHANGELOG.md            # История релизов
+├── CODE_OF_CONDUCT.md      # Стандарты сообщества
+├── CONTRIBUTING.md         # Сборка, стиль и процесс pull request
+├── LICENSE                 # Лицензия MIT
+├── README.md               # Английская версия этого файла
+├── README.ru.md            # Этот файл
+├── SECURITY.md             # Политика сообщения об уязвимостях
+└── NOTICES.md              # Зависимости третьих сторон и тексты лицензий
 ```
 
-</details>
-
-Как части ведут себя и взаимодействуют — два уровня, поток данных, движок правил, оверлеи,
+Дерево намеренно ограничено верхним уровнем: ответственность файлов меняется быстрее этого
+документа. Указатели по модулям — в [CONTRIBUTING.md](CONTRIBUTING.md) («Where changes belong»),
+а как части ведут себя и взаимодействуют — два уровня, поток данных, движок правил, оверлеи,
 симуляция ввода и мониторинг процессов — описано в
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (на английском).
 
@@ -286,13 +220,26 @@ Synector/
 | `runtime.json` | Счётчики выполнений правил, время последнего запуска и якоря пользовательских окон квот |
 | `logs\` | Суточные диагностические логи, хранение 7 дней и лимит 8 МиБ на файл |
 
-Запись атомарна (временный файл → сброс → переименование), и каждая секция несёт версию схемы.
-Секция, которую не удалось разобрать, помещается в карантин как `<name>.corrupt-<timestamp>`, после
-чего заменяется значениями по умолчанию, — файл, отредактированный вручную, не уничтожается молча.
-Пока демон доступен, только он выполняет запись; GUI и CLI переходят к прямой записи файлов лишь
-при недоступности IPC. Делайте резервные копии и редактируйте эти файлы при остановленном Synector.
-Путь записи, кеши чтения и правила объединения записей описаны в
+Запись атомарна и версионирована, и пока демон доступен, пишет только он — резервные копии и правки
+делайте при остановленном Synector. Путь записи, карантин нечитаемой секции, кеши чтения и правила
+объединения записей описаны в
 [docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
+
+### Поля settings.json
+
+`settings.json` хранит настройки, которые приложение не выводит из состояния интерфейса:
+
+| Поле | Тип | Значение |
+|---|---|---|
+| `version` | целое | Версия схемы, перезаписывается при каждом сохранении — не трогайте |
+| `window` | объект | Сохранённые геометрия и состояние главного окна; управляется приложением |
+| `tray_icon_path` | строка, необязательно | Файл пользовательской иконки трея; пока не задан, поле отсутствует |
+| `hide_tray_icon` | логическое (по умолчанию `false`) | Скрыть иконку в трее |
+| `mask_daemon_process` | логическое (по умолчанию `false`) | Запускать демон из маскированной копии `WindowsServiceHost.exe` |
+| `language` | `"english"` или `"russian"` (по умолчанию `"english"`) | Язык интерфейса |
+| `check_updates_on_startup` | логическое (по умолчанию `true`) | Проверять новый релиз на GitHub при запуске |
+| `auto_install_updates` | логическое (по умолчанию `false`) | Устанавливать скачанное обновление без подтверждения |
+| `theme` | `"dark"`, `"light"` или `"chocolate"` (по умолчанию `"dark"`) | Палитра интерфейса |
 
 ## Авторство правил из CLI
 
@@ -300,13 +247,17 @@ Synector/
 передавать и сбрасывать без открытия GUI:
 
 ```powershell
-Synector.exe --rules-schema > schema.json
-Synector.exe --rules-template schedule:play_sound > rule.json
-Synector.exe --rules-validate rule.json
-Synector.exe --rules-apply rule.json
-Synector.exe --rules-sync rule.json --dry-run --json
-Synector.exe --rules-share my_rule
+cmd /c "Synector.exe --rules-schema > schema.json"
+cmd /c "Synector.exe --rules-template schedule:play_sound > rule.json"
+cmd /c "Synector.exe --rules-validate rule.json"
+cmd /c "Synector.exe --rules-apply rule.json"
+cmd /c "Synector.exe --rules-sync rule.json --dry-run --json"
+cmd /c "Synector.exe --rules-share my_rule"
 ```
+
+`Synector.exe` — исполняемый файл Windows с GUI-подсистемой, поэтому PowerShell не дожидается его
+завершения и не перехватывает вывод; `cmd /c` делает и то и другое
+([заметки о консоли](docs/RULE_AUTHORING.md#console-notes)).
 
 Полный справочник команд, семантику квот, форматы JSON-отчётов и поведение share-кодов `SYN1:`
 смотрите в [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md), а готовые рецепты — в
@@ -314,23 +265,19 @@ Synector.exe --rules-share my_rule
 
 ## Документация
 
-| Документ | Для кого | Содержимое |
-|---|---|---|
-| [docs/README.md](docs/README.md) | Все | Карта документации и правила |
-| [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md) | Авторы правил | Справочник CLI, формат JSON, квоты, share-коды |
-| [docs/EXAMPLES.md](docs/EXAMPLES.md) | Авторы правил | Готовые к применению рецепты |
-| [docs/FAQ.md](docs/FAQ.md) | Пользователи | Частые вопросы и устранение неполадок |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Разработчики | Подсистемы, поток данных и обоснование решений |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Участники | Сборка, тесты, стиль и процесс pull request |
-| [SECURITY.md](SECURITY.md) | Исследователи безопасности | Политика приватного сообщения об уязвимостях |
-| [CHANGELOG.md](CHANGELOG.md) | Все | История релизов |
+Полная карта — какой документ что освещает и для кого он — в [docs/README.md](docs/README.md).
+Точки входа: [FAQ](docs/FAQ.md) — неполадки, [RULE_AUTHORING](docs/RULE_AUTHORING.md) — CLI и
+формат JSON, [SCRIPTING](docs/SCRIPTING.md) — Lua, [EXAMPLES](docs/EXAMPLES.md) — готовые рецепты,
+[ARCHITECTURE](docs/ARCHITECTURE.md) — внутреннее устройство,
+[CONTRIBUTING](CONTRIBUTING.md) — сборка и ревью, [RELEASING](docs/RELEASING.md) — как выпускается
+версия.
 
 Документация в `docs/` и большинство файлов сообщества написаны на английском.
 
 ## Лицензия
 
 Проект распространяется по [лицензии MIT](LICENSE). Компоненты третьих сторон:
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+[NOTICES.md](NOTICES.md).
 
 ## Благодарности
 
