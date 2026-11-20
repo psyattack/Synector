@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.9.1](https://github.com/psyattack/Synector/compare/v2.9.0...v2.9.1) - 2026-11-20
+
+### Added
+- System Event Triggers: Rules can now react to sleep, resume, monitor on/off and plug-and-play device connect/disconnect events.
+- Documentation: Added a Russian README, a screenshot gallery of the main views, an FAQ, ready-to-use rule examples and a documentation index.
+- Release Checksums: Every release now publishes `SHA256SUMS.txt` for manual verification of downloaded artifacts.
+
+### Changed
+- Documentation Navigation: The README, architecture and rule-authoring references now link to the owning document instead of repeating the same details.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **daemon:** add sleep, display and device event notifications (by @psyattack in 72d5b6c)
+
+### Changed
+- **repo:** polish documentation, community files and release assets (by @psyattack in bb5f2b0)
+
+</details>
+
+
 ## [2.9.0](https://github.com/psyattack/Synector/compare/v2.8.0...v2.9.0) - 2026-11-19
 
 ### Added
