@@ -208,6 +208,12 @@ pub fn phosphor() -> FontFamily {
 type Face<'a> = (&'a str, &'static [u8], &'a [([u8; 4], f32)], FontFamily);
 
 pub fn install_fonts(ctx: &egui::Context) {
+    ctx.set_fonts(build_fonts());
+}
+
+/// Builds the full font set. Kept separate from [`install_fonts`] so tests can
+/// verify that icon and emoji fallbacks stay registered.
+pub(crate) fn build_fonts() -> FontDefinitions {
     const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Variable.ttf");
     const ARCHIVO: &[u8] = include_bytes!("../../assets/fonts/Archivo-Variable.ttf");
     const GEIST_MONO: &[u8] = include_bytes!("../../assets/fonts/GeistMono-Variable.ttf");
@@ -291,7 +297,7 @@ pub fn install_fonts(ctx: &egui::Context) {
         }
     }
 
-    ctx.set_fonts(fonts);
+    fonts
 }
 
 fn visuals(t: &Tokens) -> Visuals {
@@ -363,4 +369,29 @@ pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
         ]
         .into();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fonts_register_phosphor_and_bundled_emoji_fallbacks() {
+        let fonts = build_fonts();
+        for name in ["phosphor", "NotoEmoji-Regular", "emoji-icon-font"] {
+            assert!(
+                fonts.font_data.contains_key(name),
+                "{name} is missing from font_data"
+            );
+        }
+        for family in [FontFamily::Proportional, FontFamily::Monospace] {
+            let stack = fonts.families.get(&family).expect("font family");
+            for name in ["phosphor", "NotoEmoji-Regular", "emoji-icon-font"] {
+                assert!(
+                    stack.iter().any(|font| font == name),
+                    "{name} is missing from {family:?} fallback"
+                );
+            }
+        }
+    }
 }
