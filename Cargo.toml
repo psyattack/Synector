@@ -26,7 +26,7 @@ reqwest = { version = "0.13.5", default-features = false, features = ["json", "r
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 flate2 = "1.0"
 brotli = "9.1"
-base64 = "0.22"
+base64 = "0.23"
 arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "ico", "bmp", "webp"] }
 mlua = { version = "0.12.2", features = ["lua54", "vendored"] }
