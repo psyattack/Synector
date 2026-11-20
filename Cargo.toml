@@ -3,7 +3,10 @@ name = "Synector"
 version = "2.9.0"
 edition = "2021"
 authors = ["psyattack"]
-description = "Synector"
+description = "Native Windows automation suite and process supervisor in pure Rust"
+license = "MIT"
+repository = "https://github.com/psyattack/Synector"
+homepage = "https://psyattack.github.io/Synector/"
 
 [[bin]]
 name = "Synector"

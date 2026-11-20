@@ -9,10 +9,20 @@
 <p align="center">
   <a href="https://github.com/psyattack/Synector/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/psyattack/Synector"></a>
   <a href="https://github.com/psyattack/Synector/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/psyattack/Synector/total"></a>
+  <a href="https://github.com/psyattack/Synector/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/psyattack/Synector/actions/workflows/ci.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="Licence: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="https://github.com/psyattack/Synector/releases/latest"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-0078D6"></a>
 </p>
 
 <p align="center">
+  <strong>English</strong>
+  ·
+  <a href="README.ru.md">Русский</a>
+</p>
+
+<p align="center">
+  <a href="https://psyattack.github.io/Synector/">Website</a>
+  ·
   <a href="https://github.com/psyattack/Synector/releases/latest">Download</a>
   ·
   <a href="https://github.com/psyattack/Synector/issues/new">Issues</a>
@@ -22,8 +32,27 @@
 > Synector interacts directly with Windows system processes and administrative APIs. The developers are not liable for any errors, including those caused by the user, as also stated in the license.
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/d81b93e2-cac7-42d2-a23a-596cdb111d51">
+  <img src="assets/screenshots/rules.png" alt="Synector rules list" width="49%">
+  <img src="assets/screenshots/overlay-studio.png" alt="Synector Overlay Studio" width="49%">
 </p>
+<p align="center">
+  <img src="assets/screenshots/macro-studio.png" alt="Synector Macro Studio" width="49%">
+  <img src="assets/screenshots/analytics.png" alt="Synector Analytics" width="49%">
+</p>
+<p align="center"><sub>Rules · Overlay Studio · Macro Studio · Analytics</sub></p>
+
+## Contents
+
+- [Overview](#overview)
+- [Features](#features)
+- [Installation](#installation)
+- [Development](#development)
+- [Configuration](#configuration)
+- [Rule authoring from the CLI](#rule-authoring-from-the-cli)
+- [Documentation](#documentation)
+- [License](#license)
+- [Credits](#credits)
+- [Support & Contributing](#support--contributing)
 
 ## Overview
 
@@ -61,6 +90,10 @@ Requires Windows 10 / 11 (x64).
 - **Portable** — `Synector-v<version>-Windows-x64.zip`: extract anywhere and run `Synector.exe`.
 - **Installer script** — one line in PowerShell: `irm https://raw.githubusercontent.com/psyattack/Synector/main/installer/install.ps1 | iex`.
 
+Every release also publishes `SHA256SUMS.txt`; compare it with `Get-FileHash -Algorithm SHA256` when
+you verify a download manually. SmartScreen prompts, elevation and update questions are covered in
+[docs/FAQ.md](docs/FAQ.md#installation-and-updates).
+
 > [!IMPORTANT]
 > **Administrator Privileges**: Synector launches elevated by default (override with `--no-elevate`). Required for:
 > * **Kernel ETW**: zero-polling, real-time process lifecycle events.
@@ -72,8 +105,10 @@ Requires Windows 10 / 11 (x64).
 
 ## Development
 
-Requires Rust **1.95 or newer** on Windows. The floor comes from the `eframe`/`egui` 0.36
-dependencies.
+Requires a recent stable Rust toolchain on Windows; the `eframe`/`egui` 0.36 dependencies currently
+need Rust **1.95 or newer**. The project does not pin an MSRV.
+
+Contribution workflow, code style and documentation rules live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```powershell
 # Clone the repository
@@ -115,23 +150,33 @@ on `windows-latest`.
 - **Networking:** reqwest + rustls
 - **Compression and hashing:** brotli, flate2, zip, sha2
 
-### Structure
+### Project structure
+
+<details>
+<summary>File-by-file layout</summary>
 
 ```
 Synector/
 ├── .github/
 │   ├── ISSUE_TEMPLATE/                    # Bug report and feature request forms
-│   └── workflows/
-│       ├── ci.yml                         # Check, test and clippy on windows-latest
-│       └── release.yml                    # Portable zip, Inno Setup installer and GitHub release
+│   ├── workflows/
+│   │   ├── ci.yml                         # Check, test and clippy on windows-latest
+│   │   └── release.yml                    # Portable zip, Inno Setup installer and GitHub release
+│   ├── dependabot.yml                     # Weekly cargo and GitHub Actions updates
+│   └── PULL_REQUEST_TEMPLATE.md           # Pull-request checklist
 ├── assets/
 │   ├── fonts/                             # Bundled variable fonts (Archivo, GeistMono, Inter) + OFL texts
+│   ├── screenshots/                       # Documentation screenshots
 │   ├── app.ico                            # Win32 application icon
 │   ├── app.png                            # High-res RGBA icon
-│   └── app.svg                            # Vector logo
+│   ├── app.svg                            # Vector logo
+│   └── social-preview.png                 # 1280x640 GitHub social preview
 ├── docs/
+│   ├── README.md                          # Documentation map
 │   ├── ARCHITECTURE.md                    # Subsystem behavior and design conventions
-│   └── RULE_AUTHORING.md                  # Command-line rule authoring reference
+│   ├── RULE_AUTHORING.md                  # Command-line rule authoring reference
+│   ├── EXAMPLES.md                        # Ready-to-apply rule recipes
+│   └── FAQ.md                             # User questions and troubleshooting
 ├── installer/
 │   ├── install.cmd                        # Console bootstrap (menu: Setup / Portable / Uninstall)
 │   ├── install.ps1                        # Release download, SHA-256 verification, Setup/Portable/Uninstall
@@ -204,11 +249,17 @@ Synector/
 │   └── updater.rs                         # GitHub release checks, SHA-256 verification, self-update
 ├── build.rs                               # Windows resource compilation (icon, version, manifest)
 ├── CHANGELOG.md                           # Release history
+├── CODE_OF_CONDUCT.md                     # Community standards
+├── CONTRIBUTING.md                        # Build, style and pull-request process
 ├── Cargo.toml                             # Rust manifest and dependencies
 ├── LICENSE                                # MIT license
 ├── README.md                              # This file
+├── README.ru.md                           # Russian README
+├── SECURITY.md                            # Vulnerability reporting policy
 └── THIRD-PARTY-NOTICES.md                 # Third-party licenses and attributions
 ```
+
+</details>
 
 How the pieces behave and interact — the two tiers, the data flow, the rule engine, overlays, input
 simulation and process monitoring — is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
@@ -230,7 +281,8 @@ Writes are atomic (temp file → flush → rename) and every section carries a s
 that fails to parse is quarantined as `<name>.corrupt-<timestamp>` before defaults replace it, so a
 hand-edited file is never silently destroyed. While the daemon is reachable it is the only writer;
 the GUI and CLI fall back to direct file writes only when IPC is unavailable. Back up or edit these
-files while Synector is stopped.
+files while Synector is stopped. The write path, read caches and coalescing rules are described in
+[docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
 
 ## Rule authoring from the CLI
 
@@ -247,7 +299,21 @@ Synector.exe --rules-share my_rule
 ```
 
 See [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md) for the full command reference, quota semantics,
-JSON report shapes and `SYN1:` share-code behavior.
+JSON report shapes and `SYN1:` share-code behavior, and [docs/EXAMPLES.md](docs/EXAMPLES.md) for
+complete recipes you can validate and apply.
+
+## Documentation
+
+| Document | Audience | Contents |
+|---|---|---|
+| [docs/README.md](docs/README.md) | Everyone | Documentation map and rules |
+| [docs/RULE_AUTHORING.md](docs/RULE_AUTHORING.md) | Rule authors | CLI reference, JSON format, quotas, share codes |
+| [docs/EXAMPLES.md](docs/EXAMPLES.md) | Rule authors | Ready-to-apply rule recipes |
+| [docs/FAQ.md](docs/FAQ.md) | Users | Common questions and troubleshooting |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Developers | Subsystems, data flow and design rationale |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contributors | Build, test, style and pull-request process |
+| [SECURITY.md](SECURITY.md) | Security researchers | Private vulnerability reporting |
+| [CHANGELOG.md](CHANGELOG.md) | Everyone | Release history |
 
 ## License
 
@@ -260,5 +326,12 @@ This project is licensed under the [MIT License](LICENSE). Third-party component
 
 ## Support & Contributing
 
-For issues, questions, or feature requests, please open an issue on
-[**GitHub Issues**](https://github.com/psyattack/Synector/issues).
+- **Bugs and feature requests:** open an issue on
+  [**GitHub Issues**](https://github.com/psyattack/Synector/issues/new/choose). Include the Synector
+  version, `winver`, whether the app was elevated, reproduction steps and relevant log lines with
+  secrets removed.
+- **Questions and troubleshooting:** see [docs/FAQ.md](docs/FAQ.md).
+- **Contributing:** the build, style and review process is in [CONTRIBUTING.md](CONTRIBUTING.md);
+  community standards are in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- **Security:** report privately as described in [SECURITY.md](SECURITY.md). Do not open a public
+  issue for a vulnerability.

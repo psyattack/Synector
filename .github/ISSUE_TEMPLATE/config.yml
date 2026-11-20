@@ -1,8 +1,14 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Questions and troubleshooting
+    url: https://github.com/psyattack/Synector/blob/main/docs/FAQ.md
+    about: Installation, elevation, updates, logs, rules, overlays and common failures.
   - name: Architecture and internals
     url: https://github.com/psyattack/Synector/blob/main/docs/ARCHITECTURE.md
     about: How the daemon, rule engine, overlays and input simulation work.
   - name: Command-line rule authoring and JSON schema
     url: https://github.com/psyattack/Synector/blob/main/docs/RULE_AUTHORING.md
     about: Validate and apply rules from JSON, discover the schema and templates.
+  - name: Security policy
+    url: https://github.com/psyattack/Synector/blob/main/SECURITY.md
+    about: Report vulnerabilities privately; do not open a public issue.

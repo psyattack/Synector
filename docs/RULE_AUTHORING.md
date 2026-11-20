@@ -6,6 +6,9 @@ immediately; when it is not, the same operation is written to
 `%LOCALAPPDATA%\Synector\rules.json` (and `runtime.json` where counters change) and applied on the
 next daemon start.
 
+Related documents: [documentation map](README.md) · [rule examples](EXAMPLES.md) ·
+[architecture](ARCHITECTURE.md#rule-engine).
+
 ## Commands
 
 | Command | Description |
@@ -178,6 +181,12 @@ SHA-256 checksum and bounded payload, and imports the rules plus the library ent
 Duplicates are skipped by content, colliding ids are re-identified, and imported rules are created
 disabled unless `--enable-imported` is passed. With a running daemon the whole import is one
 `ImportShare` request; otherwise `rules.json` and `library.json` are updated directly.
+
+## Ready-to-use recipes
+
+See [EXAMPLES.md](EXAMPLES.md) for complete rules: companion processes, hotkey actions, webhooks
+with quotas, file watchers and archives, weekday schedules, If/Else branching, sleep/resume audio
+toggles, and launch-wait-tune pipelines.
 
 ## Console notes
 

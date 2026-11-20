@@ -83,6 +83,17 @@ jobs:
               throw 'Installer artifact was not created'
           }
 
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $lines = Get-ChildItem -Path dist_artifacts -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            }
+          $lines | Set-Content -Path dist_artifacts/SHA256SUMS.txt -Encoding ascii
+
       - name: Extract Release Notes from CHANGELOG.md
         id: extract_notes
         shell: powershell

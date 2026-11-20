@@ -5,8 +5,11 @@ background execution from user interaction: a tray daemon owns rules, triggers, 
 system monitoring, while the egui desktop GUI is a controlling client that renders daemon state and
 edits drafts.
 
-Per-file layout lives in the Structure section of [README.md](../README.md); this document explains
-how the pieces behave and why.
+Per-file layout lives in the Project structure section of [README.md](../README.md); this document
+explains how the pieces behave and why.
+
+Related documents: [documentation map](README.md) · [rule authoring](RULE_AUTHORING.md) ·
+[rule examples](EXAMPLES.md) · [FAQ and troubleshooting](FAQ.md) · [contributing](../CONTRIBUTING.md).
 
 ## Two tiers
 
@@ -47,13 +50,7 @@ only owner of runtime state; the GUI keeps a draft copy for editing and reconcil
 | `--status` | Print daemon status over IPC and exit |
 | `--overlay-window <id>` | Standalone borderless overlay window for one overlay (`--calibration`, `--duration`, `--override-text`, `--overlay-data`) |
 | `--run-rule <id_or_title>` | Invoke a rule directly (IPC when the daemon runs, otherwise an autonomous runner fallback) |
-| `--rules-validate <file\|->` | Parse and validate a JSON rule file without changing anything |
-| `--rules-apply <file\|->` | Upsert rules from JSON (IPC when the daemon runs, direct `rules.json` edit otherwise) |
-| `--rules-sync <file\|->` | Replace the configured rule set with the file's rules |
-| `--rules-list`, `--rules-export [<file>]`, `--rules-delete <id>` | Inspect, export or delete rules |
-| `--rules-enable`, `--rules-disable`, `--rules-reset <id>` | Toggle or reset one rule |
-| `--rules-share [<id>]`, `--rules-import-share <code\|file\|->` | Print or import a compact `SYN1:` share code |
-| `--rules-schema`, `--rules-reference`, `--rules-template <t[:a]>` | Discover the JSON format |
+| `--rules-*` | Rule authoring CLI: validate, apply, sync, list, export, enable/disable, reset, delete, share, import, schema and templates. See [RULE_AUTHORING.md#commands](RULE_AUTHORING.md#commands). |
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation enables kernel ETW process
 tracing, UIPI-safe input simulation into elevated applications, and silent highest-privilege logon
@@ -96,15 +93,10 @@ CLI rule commands run before elevation because they are console tools.
 
 The configuration is split into four independent, versioned JSON files in
 `%LOCALAPPDATA%\Synector\` (relocatable through `SYNECTOR_CONFIG_DIR` for portable or isolated runs).
+The sections and their user-facing contents are listed in
+[README.md#configuration](../README.md#configuration); this section covers how they are written.
 `AppConfig` exists only in memory: it is assembled from the sections on load and exchanged over IPC,
 never written as one document. This keeps write volume proportional to what changed.
-
-| File | Contents | Written by |
-|---|---|---|
-| `settings.json` | Window geometry, tray visibility, daemon masking, language, theme, update preferences | Settings changes |
-| `rules.json` | Rule definitions; counter fields are written zeroed | Rule create/update/delete/reorder |
-| `library.json` | Overlay and macro presets | Preset save/delete, overlay calibration |
-| `runtime.json` | Per-rule `execution_count`, `last_executed_at` and the custom quota-window anchor | Coalesced daemon flush |
 
 Every write goes through a temporary file that is flushed and renamed over the target, so a crash
 mid-write cannot truncate user data. Every section carries a schema version that is re-stamped on
@@ -172,10 +164,9 @@ enforces quotas and cooldowns, tracks active executions and reports analytics.
 - **Cooldown:** minimum time between two triggered runs.
 - **Lifetime quota:** `max_executions` without `quota_period`. When it is reached the rule is paused
   automatically and can be re-enabled with `--rules-reset` or the GUI reset action.
-- **Periodic quota:** `quota_period` (`minute`, `hour`, `day`, `week`, `month` or a custom
-  first-run window). The rule stays enabled and skips executions until the counter rolls over.
-  Calendar periods align to local time; a custom window is anchored at its first execution, and a
-  `months` component is added as calendar months (month-end dates are clamped).
+- **Periodic quota:** `quota_period` keeps the rule enabled and skips executions until the counter
+  rolls over. The exact reset rules and custom windows are documented in
+  [RULE_AUTHORING.md#quotas](RULE_AUTHORING.md#quotas).
 - **Runtime counter ownership:** `execution_count`, `last_executed_at` and `quota_window_start` live
   in `runtime.json`, are zeroed in `rules.json`, and are preserved across ordinary rule updates. A
   changed `quota_period`, or enabling a limit where there was none, starts a fresh counter; changing
@@ -264,7 +255,9 @@ installs: it resolves the latest release, verifies the chosen artifact's SHA-256
 extracts the portable archive or calls the uninstaller.
 
 The daemon owns update work: it checks GitHub releases, streams and verifies the download against the
-SHA-256 digest published by the GitHub API, and applies it according to the install mode. A portable
+SHA-256 digest published by the GitHub API, and applies it according to the install mode. Every
+release also publishes `SHA256SUMS.txt` alongside the artifacts for manual verification; the updater
+itself uses the API digest. A portable
 copy replaces its own executable in place; an installed copy downloads the release's setup and starts
 it silently with `/VERYSILENT /UpdateMode=gui|daemon`, letting the installer replace files, refresh
 the uninstaller metadata and restart Synector. The restart follows the update origin: a background
@@ -303,3 +296,8 @@ errors that may embed script output are routed through the engine's `SensitiveLo
 
 - Localization is mandatory for regular views; the guide's inline bilingual prose is the documented
   exception.
+- Documentation has one owner per topic: user overview in `README.md`/`README.ru.md`, subsystem
+  behavior in this file, CLI and JSON format in [RULE_AUTHORING.md](RULE_AUTHORING.md), recipes in
+  [EXAMPLES.md](EXAMPLES.md), and user questions in [FAQ.md](FAQ.md). Link instead of copying text
+  across files.
+- `README.md` and `README.ru.md` are mirrors and must change together.
