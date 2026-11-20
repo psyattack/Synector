@@ -1,0 +1,9 @@
+# The site branch keeps every text file on LF, matching the main branch.
+* text=auto eol=lf
+
+# Binary assets.
+*.png binary
+*.woff2 binary
+
+# The logo is XML, so keep it text and diffable.
+*.svg text eol=lf

@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Synector - Windows automation suite and process supervisor</title>
+  <meta name="description" content="A native Windows automation suite written in pure Rust. A tray daemon owns rules, triggers and monitoring; the GUI is an optional editor. No telemetry.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Synector - the GUI is optional">
+  <meta property="og:description" content="A native Windows automation suite in pure Rust. The tray daemon owns rules, triggers and monitoring. The window is only an editor.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/">
+  <meta property="og:image" content="https://psyattack.github.io/Synector/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Synector - the GUI is optional">
+  <meta name="twitter:description" content="A native Windows automation suite in pure Rust. Rules keep running when the window closes.">
+  <meta name="twitter:image" content="https://psyattack.github.io/Synector/assets/og.png">
+
+  <link rel="icon" type="image/png" href="assets/icon-256.png">
+  <link rel="apple-touch-icon" href="assets/icon-256.png">
+  <link rel="preload" href="fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    (function () {
+      try {
+        var query = new URLSearchParams(location.search).get('lang');
+        var stored = localStorage.getItem('synector-lang');
+        var auto = (navigator.language || 'en').toLowerCase().indexOf('ru') === 0 ? 'ru' : 'en';
+        var lang = query === 'ru' || query === 'en' ? query : (stored === 'ru' || stored === 'en' ? stored : auto);
+        document.documentElement.dataset.lang = lang;
+        document.documentElement.lang = lang;
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main"><span class="en">Skip to content</span><span class="ru" lang="ru">Перейти к содержимому</span></a>
+
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="#top" aria-label="Synector">
+        <img src="assets/logo.svg" width="26" height="26" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <div class="nav-links">
+          <a href="#architecture"><span class="en">Architecture</span><span class="ru" lang="ru">Архитектура</span></a>
+          <a href="#features"><span class="en">Features</span><span class="ru" lang="ru">Возможности</span></a>
+          <a href="#detection"><span class="en">Detection</span><span class="ru" lang="ru">Триггеры</span></a>
+          <a href="#install"><span class="en">Install</span><span class="ru" lang="ru">Установка</span></a>
+        </div>
+        <a class="nav-ext" href="https://github.com/psyattack/Synector">GitHub<span class="ext-mark" aria-hidden="true">↗</span></a>
+        <div class="lang" role="group" aria-label="Language">
+          <button type="button" data-set-lang="en" aria-label="English" aria-pressed="true">EN</button>
+          <span aria-hidden="true">/</span>
+          <button type="button" data-set-lang="ru" aria-label="Русский" aria-pressed="false">RU</button>
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero shell" id="top">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="en">Windows automation suite</span><span class="ru" lang="ru">Набор автоматизации для Windows</span></p>
+        <h1><span class="en">The GUI is optional<span class="accent">.</span></span><span class="ru" lang="ru">Интерфейс не обязателен<span class="accent">.</span></span></h1>
+        <p class="lede">
+          <span class="en">A native tray daemon owns rules, triggers and monitoring. The GUI is an editor you can close without stopping anything.</span>
+          <span class="ru" lang="ru">Фоновый демон в трее ведёт правила, триггеры и мониторинг. Окно служит только редактором: закрывайте его, автоматизация продолжится.</span>
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="https://github.com/psyattack/Synector/releases/latest">
+            <span class="en">Download for Windows</span><span class="ru" lang="ru">Скачать для Windows</span>
+            <span class="btn-glyph" aria-hidden="true">↓</span>
+          </a>
+          <a class="btn btn-ghost" href="https://github.com/psyattack/Synector">
+            <span class="en">View source</span><span class="ru" lang="ru">Исходный код</span>
+          </a>
+        </div>
+      </div>
+      <figure class="hero-shot">
+        <img src="assets/inspector.png" width="1280" height="820"
+             alt="Synector rule inspector showing a process trigger and a companion process step"
+             data-alt-en="Synector rule inspector showing a process trigger and a companion process step"
+             data-alt-ru="Инспектор правила Synector с триггером процесса и шагом запуска спутника">
+        <figcaption>
+          <span class="en">Rule inspector, live daemon state</span>
+          <span class="ru" lang="ru">Инспектор правила и состояние демона</span>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="section shell" id="architecture">
+      <div class="section-head">
+        <h2><span class="en">Two processes. One owner of state.</span><span class="ru" lang="ru">Два процесса. Один владелец состояния.</span></h2>
+        <p class="section-lede">
+          <span class="en">The daemon starts with Windows and owns every rule and counter. The GUI edits a draft and sends only changed sections over a named pipe.</span>
+          <span class="ru" lang="ru">Демон стартует вместе с Windows и владеет правилами и счётчиками. Интерфейс редактирует черновик и отправляет по именованному каналу только изменённые секции.</span>
+        </p>
+      </div>
+
+      <div class="architecture">
+        <article class="arch-card">
+          <div class="arch-head">
+            <span class="mono label"><span class="en">Daemon</span><span class="ru" lang="ru">Демон</span></span>
+            <span class="arch-state"><span class="en">Only writer</span><span class="ru" lang="ru">Пишет только он</span></span>
+          </div>
+          <h3><span class="en">Rules and state live here</span><span class="ru" lang="ru">Здесь живут правила и состояние</span></h3>
+          <p>
+            <span class="en">Tokio runtime, Win32 APIs and no browser engine. It owns the rule engine, triggers, counters, telemetry and analytics.</span>
+            <span class="ru" lang="ru">Среда Tokio, Win32 API и никакого браузерного движка. Здесь работают движок правил, триггеры, счётчики, телеметрия и аналитика.</span>
+          </p>
+          <ul class="facts">
+            <li><span class="en">Starts with Windows through Task Scheduler.</span><span class="ru" lang="ru">Стартует с Windows через Планировщик заданий.</span></li>
+            <li><span class="en">Owns rules, triggers, counters and telemetry.</span><span class="ru" lang="ru">Владеет правилами, триггерами, счётчиками и телеметрией.</span></li>
+            <li><span class="en">Keeps running when the GUI closes.</span><span class="ru" lang="ru">Продолжает работу после закрытия окна.</span></li>
+          </ul>
+        </article>
+
+        <div class="arch-link" aria-hidden="true">
+          <span class="pipe-label">IPC</span>
+        </div>
+
+        <article class="arch-card arch-gui">
+          <div class="arch-head">
+            <span class="mono label"><span class="en">GUI</span><span class="ru" lang="ru">Интерфейс</span></span>
+            <span class="arch-state neutral"><span class="en">Control client</span><span class="ru" lang="ru">Клиент управления</span></span>
+          </div>
+          <h3><span class="en">An editor, not the runtime</span><span class="ru" lang="ru">Редактор, а не среда выполнения</span></h3>
+          <p>
+            <span class="en">eframe and egui on the GPU. It renders daemon state, edits draft rules and sends section-scoped mutations.</span>
+            <span class="ru" lang="ru">eframe и egui на GPU. Он показывает состояние демона, редактирует черновики правил и отправляет изменения по секциям.</span>
+          </p>
+          <ul class="facts">
+            <li><span class="en">Draft editing with 50-step undo and redo per rule.</span><span class="ru" lang="ru">Черновики с 50 шагами отмены и повтора для каждого правила.</span></li>
+            <li><span class="en">Closes without stopping automation.</span><span class="ru" lang="ru">Закрывается, не останавливая автоматизацию.</span></li>
+            <li><span class="en">Pipe: <code class="inline">\\.\pipe\Synector_Daemon</code></span><span class="ru" lang="ru">Канал: <code class="inline">\\.\pipe\Synector_Daemon</code></span></li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="reliability">
+        <article>
+          <h3><span class="en">Atomic writes</span><span class="ru" lang="ru">Атомарная запись</span></h3>
+          <p><span class="en">Temp file, flush, rename. A crash never leaves half a JSON section on disk.</span><span class="ru" lang="ru">Временный файл, сброс на диск, переименование. Сбой не оставит половину JSON на диске.</span></p>
+        </article>
+        <article>
+          <h3><span class="en">Four versioned sections</span><span class="ru" lang="ru">Четыре версионированные секции</span></h3>
+          <p><span class="en">Settings, rules, library and runtime are independent files with their own schema version.</span><span class="ru" lang="ru">Настройки, правила, библиотека и runtime это независимые файлы со своей версией схемы.</span></p>
+        </article>
+        <article>
+          <h3><span class="en">Quarantine, not a silent reset</span><span class="ru" lang="ru">Карантин вместо тихого сброса</span></h3>
+          <p><span class="en">A corrupt section is preserved as <code class="inline">&lt;name&gt;.corrupt-&lt;timestamp&gt;</code> before defaults load.</span><span class="ru" lang="ru">Повреждённая секция сохраняется как <code class="inline">&lt;name&gt;.corrupt-&lt;timestamp&gt;</code> до загрузки значений по умолчанию.</span></p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" id="features">
+      <div class="section-head">
+        <h2><span class="en">Built as a supervisor, <span class="nowrap">not a script runner.</span></span><span class="ru" lang="ru">Создан как супервизор, <span class="nowrap">а не запуск скриптов.</span></span></h2>
+        <p class="section-lede">
+          <span class="en">Rules, overlays, macros and companion processes share one engine, one schema and one daemon.</span>
+          <span class="ru" lang="ru">Правила, оверлеи, макросы и процессы-спутники работают на одном движке, одной схеме и одном демоне.</span>
+        </p>
+      </div>
+
+      <div class="bento">
+        <article class="cell cell-7">
+          <h3><span class="en">Pipelines with real control flow</span><span class="ru" lang="ru">Пайплайны с настоящей логикой</span></h3>
+          <p>
+            <span class="en">Waits, inline checks, If/Else branches and toggles run in order. Cooldowns and lifetime or periodic quotas stop accidental loops.</span>
+            <span class="ru" lang="ru">Ожидания, проверки, ветвления If/Else и переключатели выполняются по порядку. Кулдауны и лимиты запусков останавливают случайные циклы.</span>
+          </p>
+<pre class="code"><code><span class="tok-p">{</span>
+  <span class="tok-k">"trigger"</span><span class="tok-p">:</span> <span class="tok-p">{</span>
+    <span class="tok-k">"$trigger_type"</span><span class="tok-p">:</span> <span class="tok-s">"process"</span><span class="tok-p">,</span>
+    <span class="tok-k">"process_name"</span><span class="tok-p">:</span> <span class="tok-s">"cs2.exe"</span>
+  <span class="tok-p">},</span>
+  <span class="tok-k">"actions"</span><span class="tok-p">:</span> <span class="tok-p">[</span>
+    <span class="tok-p">{</span> <span class="tok-k">"$action_type"</span><span class="tok-p">:</span> <span class="tok-s">"start_process"</span><span class="tok-p">,</span>
+      <span class="tok-k">"file_path"</span><span class="tok-p">:</span> <span class="tok-s">"recorder.exe"</span> <span class="tok-p">},</span>
+    <span class="tok-p">{</span> <span class="tok-k">"$action_type"</span><span class="tok-p">:</span> <span class="tok-s">"wait"</span><span class="tok-p">,</span>
+      <span class="tok-k">"seconds"</span><span class="tok-p">:</span> <span class="tok-n">2.0</span> <span class="tok-p">},</span>
+    <span class="tok-p">{</span> <span class="tok-k">"$action_type"</span><span class="tok-p">:</span> <span class="tok-s">"notification"</span><span class="tok-p">,</span>
+      <span class="tok-k">"title"</span><span class="tok-p">:</span> <span class="tok-s">"Profile active"</span> <span class="tok-p">}</span>
+  <span class="tok-p">]</span>
+<span class="tok-p">}</span></code></pre>
+        </article>
+
+        <article class="cell cell-5 cell-tinted">
+          <h3>Overlay Studio</h3>
+          <p>
+            <span class="en">GPU overlays for crosshairs, telemetry badges, graphs, timers and media widgets. Multi-monitor and DPI aware.</span>
+            <span class="ru" lang="ru">GPU-оверлеи для прицелов, телеметрии, графиков, таймеров и медиавиджетов. Поддержка нескольких мониторов и DPI.</span>
+          </p>
+          <dl class="mini-spec">
+            <div>
+              <dt>WDA_EXCLUDEFROMCAPTURE</dt>
+              <dd><span class="en">Keeps overlays out of recordings</span><span class="ru" lang="ru">Не попадает на запись экрана</span></dd>
+            </div>
+            <div>
+              <dt>MULTI-MONITOR</dt>
+              <dd><span class="en">Per-monitor placement and DPI</span><span class="ru" lang="ru">Размещение на каждом мониторе с учётом DPI</span></dd>
+            </div>
+            <div>
+              <dt>INTERACTIVE</dt>
+              <dd><span class="en">Clickable controls on the HUD</span><span class="ru" lang="ru">Кнопки и переключатели на оверлее</span></dd>
+            </div>
+            <div>
+              <dt>SYN1 SHARING</dt>
+              <dd><span class="en">Overlay presets travel in share codes</span><span class="ru" lang="ru">Пресеты оверлеев переносятся в кодах SYN1</span></dd>
+            </div>
+          </dl>
+        </article>
+
+        <article class="cell cell-3">
+          <h3>Macro Studio</h3>
+          <p>
+            <span class="en">Records through low-level Windows hooks and replays hardware scan codes, so DirectInput games register presses.</span>
+            <span class="ru" lang="ru">Пишет через низкоуровневые хуки Windows и воспроизводит аппаратные скан-коды, поэтому DirectInput-игры видят нажатия.</span>
+          </p>
+          <div class="keys">
+            <span>F9</span>
+            <span>F10</span>
+            <span>30-35 MS</span>
+            <span>RAW INPUT</span>
+          </div>
+        </article>
+
+        <article class="cell cell-4">
+          <h3><span class="en">Companion processes</span><span class="ru" lang="ru">Процессы-спутники</span></h3>
+          <p>
+            <span class="en">Bind a recorder, HUD or helper to a primary app. It starts with the app, is supervised while the app runs, and exits with it.</span>
+            <span class="ru" lang="ru">Привяжите рекордер, HUD или помощника к основной программе. Он запускается вместе с ней, работает под присмотром и завершается вместе с ней.</span>
+          </p>
+          <div class="chain">
+            <div class="chain-node"><code>game.exe</code><small><span class="en">Primary</span><span class="ru" lang="ru">Основной</span></small></div>
+            <div class="chain-node"><code>recorder.exe</code><small><span class="en">Bound</span><span class="ru" lang="ru">Связанный</span></small></div>
+            <div class="chain-node"><code>terminate</code><small><span class="en">On exit</span><span class="ru" lang="ru">При выходе</span></small></div>
+          </div>
+        </article>
+
+        <article class="cell cell-5 cell-tinted">
+          <h3><span class="en">One schema, any shell</span><span class="ru" lang="ru">Одна схема для любой оболочки</span></h3>
+          <p>
+            <span class="en">Validate, apply and share rules from PowerShell. Scripts run on embedded Lua 5.4.9 with the <code class="inline">ph</code> API.</span>
+            <span class="ru" lang="ru">Проверяйте, применяйте и передавайте правила из PowerShell. Скрипты выполняются во встроенном Lua 5.4.9 с API <code class="inline">ph</code>.</span>
+          </p>
+<pre class="code code-compact"><code><span class="tok-c"># rules</span>
+Synector.exe --rules-validate rule.json
+Synector.exe --rules-apply rule.json</code></pre>
+<pre class="code code-compact"><code><span class="tok-c">-- lua</span>
+local name = ph.get("ProcessName")
+ph.log("Started " .. name)
+return "ok"</code></pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="section shell" id="detection">
+      <div class="section-head">
+        <h2><span class="en">Events where Windows has them. Polling where it does not.</span><span class="ru" lang="ru">События там, где Windows их даёт. Опрос там, где их нет.</span></h2>
+        <p class="section-lede">
+          <span class="en">No pretending every source is event-driven. Kernel ETW covers process lifecycles when elevated. Polled sources use adaptive intervals, not fixed timers.</span>
+          <span class="ru" lang="ru">Никаких заявлений, что все источники событийные. При повышенных правах жизненный цикл процессов отслеживается через kernel ETW. Опрашиваемые источники используют адаптивные интервалы, а не фиксированные таймеры.</span>
+        </p>
+      </div>
+
+      <div class="detect-grid">
+        <article class="detect-panel detect-event">
+          <header class="detect-head">
+            <span class="tag tag-event"><span class="en">Event</span><span class="ru" lang="ru">Событие</span></span>
+            <h3><span class="en">OS and kernel notifications</span><span class="ru" lang="ru">Уведомления ОС и ядра</span></h3>
+          </header>
+          <dl class="detect-list">
+            <div><dt><span class="en">Process lifecycle</span><span class="ru" lang="ru">Жизненный цикл процессов</span></dt><dd>kernel ETW</dd></div>
+            <div><dt><span class="en">Macro recording</span><span class="ru" lang="ru">Запись макроса</span></dt><dd><span class="en">low-level hooks</span><span class="ru" lang="ru">низкоуровневые хуки</span></dd></div>
+            <div><dt><span class="en">Webhooks</span><span class="ru" lang="ru">Вебхуки</span></dt><dd>127.0.0.1:48123</dd></div>
+            <div><dt><span class="en">Camera deltas</span><span class="ru" lang="ru">Повороты камеры</span></dt><dd>Raw Input</dd></div>
+            <div><dt><span class="en">Sleep and resume</span><span class="ru" lang="ru">Сон и пробуждение</span></dt><dd>WM_POWERBROADCAST</dd></div>
+            <div><dt><span class="en">Display state</span><span class="ru" lang="ru">Состояние дисплея</span></dt><dd>GUID_CONSOLE_DISPLAY_STATE</dd></div>
+            <div><dt><span class="en">Devices</span><span class="ru" lang="ru">Устройства</span></dt><dd>WM_DEVICECHANGE</dd></div>
+          </dl>
+        </article>
+
+        <article class="detect-panel detect-poll">
+          <header class="detect-head">
+            <span class="tag tag-poll"><span class="en">Poll</span><span class="ru" lang="ru">Опрос</span></span>
+            <h3><span class="en">Adaptive sampling</span><span class="ru" lang="ru">Адаптивная выборка</span></h3>
+          </header>
+          <dl class="detect-list">
+            <div><dt><span class="en">Window focus</span><span class="ru" lang="ru">Фокус окна</span></dt><dd><span class="en">foreground polling</span><span class="ru" lang="ru">опрос активного окна</span></dd></div>
+            <div><dt><span class="en">Files and folders</span><span class="ru" lang="ru">Файлы и папки</span></dt><dd><span class="en">size and timestamp checks</span><span class="ru" lang="ru">проверка размера и времени</span></dd></div>
+            <div><dt><span class="en">Resource limits</span><span class="ru" lang="ru">Лимиты ресурсов</span></dt><dd><span class="en">CPU and RAM thresholds</span><span class="ru" lang="ru">пороги CPU и RAM</span></dd></div>
+            <div><dt><span class="en">Session lock</span><span class="ru" lang="ru">Блокировка сеанса</span></dt><dd><span class="en">sampled lock state</span><span class="ru" lang="ru">опрос состояния блокировки</span></dd></div>
+            <div><dt><span class="en">Power source</span><span class="ru" lang="ru">Питание</span></dt><dd><span class="en">AC and battery</span><span class="ru" lang="ru">сеть и батарея</span></dd></div>
+            <div><dt><span class="en">Idle and active</span><span class="ru" lang="ru">Простой и активность</span></dt><dd><span class="en">input activity</span><span class="ru" lang="ru">активность ввода</span></dd></div>
+            <div><dt><span class="en">Network</span><span class="ru" lang="ru">Сеть</span></dt><dd><span class="en">connectivity state</span><span class="ru" lang="ru">состояние подключения</span></dd></div>
+          </dl>
+        </article>
+      </div>
+      <p class="detect-note">
+        <span class="en">Both paths feed the same trigger surface. Intervals adapt to the source instead of running on a fixed timer.</span>
+        <span class="ru" lang="ru">Оба пути питают один набор триггеров. Интервалы подстраиваются под источник, а не работают по фиксированному таймеру.</span>
+      </p>
+    </section>
+
+    <section class="section shell" id="install">
+      <div class="install-grid">
+        <div class="install-copy">
+          <h2><span class="en">One executable. <span class="nowrap">Three ways in.</span></span><span class="ru" lang="ru">Один файл. Три способа установки.</span></h2>
+          <p class="section-lede">
+            <span class="en">Windows 10 or 11, x64. Installed and portable builds update themselves from GitHub releases with SHA-256 verification.</span>
+            <span class="ru" lang="ru">Windows 10 или 11, x64. Установленная и портативная версии обновляются из GitHub Releases с проверкой SHA-256.</span>
+          </p>
+          <div class="elevation">
+            <span class="mono"><span class="en">Elevation</span><span class="ru" lang="ru">Права</span></span>
+            <p>
+              <span class="en">Synector starts elevated for kernel ETW, input into elevated windows and Task Scheduler autostart. Use <code class="inline">--no-elevate</code> to opt out.</span>
+              <span class="ru" lang="ru">Synector запускается с правами администратора для kernel ETW, ввода в повышенные окна и автозапуска через Планировщик заданий. Отключите это флагом <code class="inline">--no-elevate</code>.</span>
+            </p>
+          </div>
+        </div>
+
+        <div class="install-options">
+          <article class="install-option">
+            <h3><span class="en">Installer</span><span class="ru" lang="ru">Установщик</span></h3>
+            <a href="https://github.com/psyattack/Synector/releases/latest">Download .exe</a>
+            <p><span class="en">Start Menu shortcut, uninstaller and App Paths entry.</span><span class="ru" lang="ru">Ярлык в меню Пуск, деинсталлятор и запись App Paths.</span></p>
+          </article>
+          <article class="install-option">
+            <h3><span class="en">Portable</span><span class="ru" lang="ru">Портативная версия</span></h3>
+            <a href="https://github.com/psyattack/Synector/releases/latest">Download .zip</a>
+            <p><span class="en">Extract anywhere and run Synector.exe. SYNECTOR_CONFIG_DIR moves user data with it.</span><span class="ru" lang="ru">Распакуйте в любую папку и запустите Synector.exe. SYNECTOR_CONFIG_DIR переносит данные вместе с программой.</span></p>
+          </article>
+          <article class="install-option">
+            <h3>PowerShell</h3>
+            <p><span class="en">Downloads the latest release, verifies SHA-256 and installs it.</span><span class="ru" lang="ru">Скачивает последний релиз, проверяет SHA-256 и устанавливает.</span></p>
+            <div class="code-shell">
+              <pre class="code code-line"><code>irm https://raw.githubusercontent.com/psyattack/Synector/main/installer/install.ps1 | iex</code></pre>
+              <button class="copy-btn" type="button" data-copy="irm https://raw.githubusercontent.com/psyattack/Synector/main/installer/install.ps1 | iex">
+                <span class="copy-idle"><span class="en">Copy</span><span class="ru" lang="ru">Копировать</span></span>
+                <span class="copy-done" role="status" aria-live="polite"><span class="en">Copied</span><span class="ru" lang="ru">Скопировано</span></span>
+              </button>
+            </div>
+          </article>
+          <p class="requirements">
+            <span class="en">Rust 1.95+ is only required to build from source.</span>
+            <span class="ru" lang="ru">Rust 1.95+ нужен только для сборки из исходников.</span>
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="shell">
+      <div class="footer-main">
+        <div class="footer-brand">
+          <a class="brand" href="#top" aria-label="Synector">
+            <img src="assets/logo.svg" width="26" height="26" alt="">
+            <span class="wordmark">SYN<span>ECTOR</span></span>
+          </a>
+          <p><span class="en">Windows automation suite and process supervisor. MIT licensed.</span><span class="ru" lang="ru">Набор автоматизации и супервизор процессов для Windows. Лицензия MIT.</span></p>
+        </div>
+        <nav class="footer-cols" aria-label="Footer">
+          <div class="footer-col">
+            <h4><span class="en">Product</span><span class="ru" lang="ru">Продукт</span></h4>
+            <a href="https://github.com/psyattack/Synector/releases/latest"><span class="en">Latest release</span><span class="ru" lang="ru">Последний релиз</span></a>
+            <a href="https://github.com/psyattack/Synector/releases"><span class="en">All releases</span><span class="ru" lang="ru">Все релизы</span></a>
+            <a href="https://github.com/psyattack/Synector/issues"><span class="en">Issues</span><span class="ru" lang="ru">Ошибки</span></a>
+            <a href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md"><span class="en">Changelog</span><span class="ru" lang="ru">Изменения</span></a>
+          </div>
+          <div class="footer-col">
+            <h4><span class="en">Docs</span><span class="ru" lang="ru">Документация</span></h4>
+            <a href="https://github.com/psyattack/Synector/blob/main/docs/RULE_AUTHORING.md"><span class="en">Rule authoring</span><span class="ru" lang="ru">Правила из CLI</span></a>
+            <a href="https://github.com/psyattack/Synector/blob/main/docs/ARCHITECTURE.md"><span class="en">Architecture</span><span class="ru" lang="ru">Архитектура</span></a>
+            <a href="https://github.com/psyattack/Synector/blob/main/README.md"><span class="en">README</span><span class="ru" lang="ru">README</span></a>
+          </div>
+          <div class="footer-col">
+            <h4><span class="en">Source</span><span class="ru" lang="ru">Код</span></h4>
+            <a href="https://github.com/psyattack/Synector">GitHub</a>
+            <a href="https://github.com/psyattack/Synector/blob/main/LICENSE"><span class="en">License</span><span class="ru" lang="ru">Лицензия</span></a>
+            <a href="https://github.com/psyattack/Synector/blob/main/THIRD-PARTY-NOTICES.md"><span class="en">Third-party notices</span><span class="ru" lang="ru">Сторонние компоненты</span></a>
+          </div>
+        </nav>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 <span class="en">Synector contributors</span><span class="ru" lang="ru">Участники Synector</span></span>
+        <span><span class="en">UI direction</span><span class="ru" lang="ru">Идея интерфейса</span>: <a href="https://github.com/storytold/craft-launcher">ArtCraft Launcher</a></span>
+        <span><span class="en">Built in Rust</span><span class="ru" lang="ru">Написано на Rust</span></span>
+      </div>
+    </div>
+  </footer>
+
+  <script src="main.js" defer></script>
+</body>
+</html>
