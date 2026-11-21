@@ -20,10 +20,134 @@ use crate::daemon::engine::DaemonEngine;
 use crate::daemon::ipc_server::IpcServer;
 use crate::daemon::system_events::SystemEventsWatcher;
 use crate::daemon::tray::TrayManager;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex as StdMutex};
 use tokio::sync::Mutex;
 
+/// Coordinates a daemon shutdown request with the main thread.
+///
+/// When the tray cannot be created the daemon runs headless, so there is no message loop that can
+/// end and no place to fall through to the shutdown sequence. The main thread waits on this
+/// signal instead of parking forever; `request_shutdown()` makes it proceed to On App Close rules
+/// and the final runtime/overlay persistence.
+struct ShutdownSignal {
+    requested: StdMutex<bool>,
+    signal: Condvar,
+}
+
+impl ShutdownSignal {
+    const fn new() -> Self {
+        Self {
+            requested: StdMutex::new(false),
+            signal: Condvar::new(),
+        }
+    }
+
+    fn request(&self) {
+        let mut requested = self
+            .requested
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *requested = true;
+        self.signal.notify_all();
+    }
+
+    fn wait(&self) {
+        let mut requested = self
+            .requested
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while !*requested {
+            requested = self
+                .signal
+                .wait(requested)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+}
+
+static DAEMON_SHUTDOWN: ShutdownSignal = ShutdownSignal::new();
+
+/// Requests a coordinated daemon shutdown. Safe to call from any thread and more than once; the
+/// main thread then runs the On App Close rules and final persistence before the process exits.
+pub fn request_shutdown() {
+    DAEMON_SHUTDOWN.request();
+    // The tray message loop blocks in `GetMessageW` and only re-checks its run flag after a
+    // message, so a shutdown requested from another thread (the IPC `ShutdownDaemon` handler) has
+    // to stop the flag and wake the loop. Hiding the icon posts that wake-up message and is a
+    // no-op for a process that is already exiting; in headless mode there is no window at all.
+    crate::daemon::tray::RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    crate::daemon::tray::set_tray_visible(false);
+}
+
+fn wait_for_shutdown_request() {
+    DAEMON_SHUTDOWN.wait();
+}
+
+/// Executable of the GUI that spawned this daemon (`--gui-exe <path>`), when it reported one.
+///
+/// The updater replaces this executable for a portable installation with process masking: the
+/// daemon then runs from the masked copy in `%LOCALAPPDATA%\Synector\bin`, which is only a cache,
+/// and the GUI window may already be closed when the update starts.
+static LAUNCHING_GUI_EXE: StdMutex<Option<PathBuf>> = StdMutex::new(None);
+
+/// Parses the `--gui-exe <path>` argument. An absent flag or an empty value means "unknown" and
+/// leaves the updater with its GUI-window lookup.
+pub(crate) fn parse_gui_exe_argument(args: &[String]) -> Option<PathBuf> {
+    let position = args.iter().position(|arg| arg == "--gui-exe")?;
+    let path = PathBuf::from(args.get(position + 1)?);
+    (!path.as_os_str().is_empty()).then_some(path)
+}
+
+/// Records the launching GUI executable once, at daemon start-up.
+fn record_launching_gui_exe(args: &[String]) {
+    let Some(path) = parse_gui_exe_argument(args) else {
+        return;
+    };
+    let mut lock = LAUNCHING_GUI_EXE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *lock = Some(path);
+}
+
+/// The executable the updater must replace when this daemon runs as the masked copy.
+///
+/// The path is recorded as the GUI passed it; the consumer validates that it still exists before
+/// replacing it. `None` when the daemon was not spawned by the GUI (`--daemon` directly or by
+/// autostart).
+pub fn launching_gui_exe() -> Option<PathBuf> {
+    LAUNCHING_GUI_EXE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+
+/// Runs the post-loop graceful shutdown steps in their fixed order: On App Close rules stop the
+/// engine, then the overlays close synchronously (so their fade-out plays instead of the
+/// kill-on-close Job Object terminating them), and only then the coalesced runtime counters and
+/// overlay positions are flushed. Kept as one sequence so the order cannot drift.
+fn run_shutdown_sequence(
+    stop_engine: impl FnOnce(),
+    hide_overlays: impl FnOnce(),
+    flush_state: impl FnOnce(),
+) {
+    stop_engine();
+    hide_overlays();
+    flush_state();
+}
+
 pub fn run_daemon() {
+    let args: Vec<String> = std::env::args().collect();
+    record_launching_gui_exe(&args);
+    // Recorded once here; the updater targets this executable for a portable update while this
+    // daemon runs as the masked copy, even after the GUI window is gone.
+    if let Some(gui_exe) = launching_gui_exe() {
+        crate::logging::debug(
+            "DAEMON",
+            &format!("Launched by GUI executable: {}", gui_exe.display()),
+        );
+    }
+
     let _instance_guard = match crate::single_instance::SingleInstanceGuard::acquire_daemon() {
         Some(guard) => guard,
         None => {
@@ -56,7 +180,23 @@ pub fn run_daemon() {
     // Reconcile state that can outlive an update or an installation: a stale masked daemon copy
     // and an autostart task pointing at an old portable location.
     if config.mask_daemon_process {
-        let _ = pe_mask::prepare_masked_daemon();
+        if let Err(err) = pe_mask::prepare_masked_daemon() {
+            // The daemon keeps running unmasked; make the fallback visible instead of silently
+            // appearing as a successful masked deployment.
+            crate::logging::error(
+                "DAEMON",
+                &format!("Could not prepare the masked daemon image; running unmasked: {err}"),
+            );
+        }
+    } else if !pe_mask::running_from_masked_copy() {
+        // Masking was disabled while a masked copy from an earlier run is still deployed. This
+        // daemon is not that copy, so the stale image can be removed here.
+        pe_mask::cleanup_masked_daemon();
+    } else {
+        crate::logging::debug(
+            "DAEMON",
+            "Masking is disabled but this daemon is the masked copy; keeping the running image",
+        );
     }
     crate::autorun::ensure_autorun_target_current(config.mask_daemon_process);
 
@@ -274,7 +414,8 @@ pub fn run_daemon() {
                     if let Some(h) = hold_tasks_loop.lock().await.remove(&rule_id) {
                         h.abort();
                     }
-                    eng.stop_rule_execution(&rule_id);
+                    // Releasing the hotkey aborts the run; it must not disable the rule.
+                    eng.abort_rule_executions(&rule_id);
                     crate::daemon::actions::release_all_simulated_inputs();
                 }
             }
@@ -338,7 +479,7 @@ pub fn run_daemon() {
                                     | crate::models::Trigger::ResourceThreshold { .. }
                             )
                         )
-                }) || !eng.active_bound_processes.is_empty();
+                }) || !eng.has_active_bound_companions();
 
                 if eng.watcher.is_etw_active() {
                     if has_proc_rules {
@@ -524,6 +665,8 @@ pub fn run_daemon() {
     ) {
         Ok(tray) => {
             tray.run_message_loop();
+            // The tray message loop ends only on an explicit shutdown request.
+            request_shutdown();
         }
         Err(err) => {
             crate::logging::error(
@@ -531,7 +674,10 @@ pub fn run_daemon() {
                 &format!("Tray initialization failed: {err}; running headless"),
             );
             eprintln!("[DAEMON] Tray initialization error: {err}. Running headless loop.");
-            std::thread::park();
+            // Block until something asks the daemon to stop (for example the IPC ShutdownDaemon
+            // handler), then fall through to the shared shutdown sequence below instead of
+            // parking forever with no way to persist the final state.
+            wait_for_shutdown_request();
         }
     }
 
@@ -542,11 +688,109 @@ pub fn run_daemon() {
         crate::single_instance::close_existing_gui_window();
     }
 
-    // Execute On App Close / Shutdown rules when tray message loop ends
-    rt.block_on(async {
-        let mut eng = engine.lock().await;
-        eng.execute_shutdown_rules().await;
-        eng.persist_overlay_positions_now();
-        eng.persist_runtime_now();
-    });
+    // One graceful sequence for both the tray Exit path and the headless shutdown request:
+    // On App Close rules run first, then the overlays close synchronously (the kill-on-close Job
+    // Object would otherwise terminate them before their fade-out plays), and the coalesced
+    // runtime counters / overlay positions are flushed last.
+    run_shutdown_sequence(
+        || {
+            rt.block_on(async {
+                let mut eng = engine.lock().await;
+                eng.execute_shutdown_rules().await;
+            });
+        },
+        overlay_manager::hide_all_sync,
+        || {
+            rt.block_on(async {
+                let mut eng = engine.lock().await;
+                eng.persist_overlay_positions_now();
+                eng.persist_runtime_now();
+            });
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shutdown_signal_wakes_waiter() {
+        let signal = Arc::new(ShutdownSignal::new());
+        let waiter = {
+            let signal = Arc::clone(&signal);
+            std::thread::spawn(move || signal.wait())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !waiter.is_finished(),
+            "the headless wait must block until a shutdown is requested"
+        );
+        signal.request();
+        waiter.join().expect("waiter must finish after the shutdown request");
+    }
+
+    #[test]
+    fn test_shutdown_request_is_idempotent() {
+        let signal = ShutdownSignal::new();
+        signal.request();
+        signal.request();
+        signal.wait();
+    }
+
+    #[test]
+    fn test_parse_gui_exe_argument_keeps_the_launching_path() {
+        let args = vec![
+            "Synector.exe".to_string(),
+            "--daemon".to_string(),
+            "--spawned-by-gui".to_string(),
+            "--gui-exe".to_string(),
+            "C:\\Program Files\\Synector\\Synector.exe".to_string(),
+        ];
+        assert_eq!(
+            parse_gui_exe_argument(&args),
+            Some(PathBuf::from("C:\\Program Files\\Synector\\Synector.exe"))
+        );
+        assert_eq!(
+            parse_gui_exe_argument(&[
+                "Synector.exe".to_string(),
+                "--daemon".to_string()
+            ]),
+            None
+        );
+        assert_eq!(
+            parse_gui_exe_argument(&[
+                "Synector.exe".to_string(),
+                "--daemon".to_string(),
+                "--gui-exe".to_string(),
+                String::new()
+            ]),
+            None,
+            "an empty value is treated as unknown, not as an empty path"
+        );
+        assert_eq!(
+            parse_gui_exe_argument(&[
+                "Synector.exe".to_string(),
+                "--daemon".to_string(),
+                "--gui-exe".to_string()
+            ]),
+            None,
+            "a missing value is ignored"
+        );
+    }
+
+    #[test]
+    fn test_shutdown_sequence_keeps_engine_first_and_flushes_last() {
+        let order = std::cell::RefCell::new(Vec::new());
+        run_shutdown_sequence(
+            || order.borrow_mut().push("shutdown-rules"),
+            || order.borrow_mut().push("overlays"),
+            || order.borrow_mut().push("persist"),
+        );
+        assert_eq!(
+            *order.borrow(),
+            vec!["shutdown-rules", "overlays", "persist"],
+            "overlays must fade out before the final runtime/overlay-position flush"
+        );
+    }
 }

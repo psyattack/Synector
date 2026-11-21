@@ -32,6 +32,16 @@ use crate::config::{Settings, WindowState};
 /// and persisted at this rate, and `on_exit`/`Drop` always write the exact final geometry.
 const WINDOW_STATE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// Whether this frame must report a confirmed daemon outage once. Kept as a pure decision so the
+/// "log once, keep the window" contract is testable without a GUI.
+fn should_report_daemon_outage(
+    has_connected_daemon: bool,
+    is_daemon_connected: bool,
+    already_reported: bool,
+) -> bool {
+    has_connected_daemon && !is_daemon_connected && !already_reported
+}
+
 pub struct SynectorApp {
     state: GuiState,
     fonts_ready: bool,
@@ -42,6 +52,10 @@ pub struct SynectorApp {
     persisted_window_state: Option<WindowState>,
     last_window_persist: std::time::Instant,
     startup_focused_frames: u8,
+    /// Set after the shutdown flush ran, so `Drop` does not repeat it after `on_exit`.
+    exit_flushed: bool,
+    /// Set after a confirmed daemon outage was reported, so it is logged once per outage.
+    daemon_outage_reported: bool,
 }
 
 impl SynectorApp {
@@ -63,6 +77,8 @@ impl SynectorApp {
             // Persist the first change immediately instead of waiting out the first window.
             last_window_persist: std::time::Instant::now() - WINDOW_STATE_SAVE_INTERVAL,
             startup_focused_frames: 0,
+            exit_flushed: false,
+            daemon_outage_reported: false,
         }
     }
 
@@ -184,13 +200,25 @@ impl App for SynectorApp {
         // Background share-code compression finishes on a worker thread; collect it here.
         self.state.poll_share_events(&ctx);
 
-        // If background daemon was closed/terminated, close GUI window immediately
-        if self.state.has_connected_daemon
-            && (!self.state.is_daemon_connected && self.state.failed_daemon_syncs >= 2
-                || !crate::single_instance::is_daemon_running())
-        {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            std::process::exit(0);
+        // A confirmed daemon outage must never destroy unsaved drafts. Keep the window open with
+        // the offline state (reported by the settings view and the outage toast) and log the
+        // failure once; the sync layer stored the failure detail when the outage was confirmed.
+        if should_report_daemon_outage(
+            self.state.has_connected_daemon,
+            self.state.is_daemon_connected,
+            self.daemon_outage_reported,
+        ) {
+            self.daemon_outage_reported = true;
+            crate::logging::error(
+                "GUI",
+                &format!(
+                    "Daemon connection lost after {} failed polls; keeping the window open with the offline state so unsaved drafts survive (the failure detail was logged by the state sync)",
+                    self.state.failed_daemon_syncs
+                ),
+            );
+        } else if self.state.is_daemon_connected {
+            // A recovered daemon must be able to report a later outage again.
+            self.daemon_outage_reported = false;
         }
         self.state.poll_update_events();
         if self.state.is_any_rule_executing() {
@@ -349,19 +377,33 @@ impl App for SynectorApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.state.cleanup_on_exit();
-        if let Some(ws) = &self.last_window_state {
-            persist_window_state(ws);
-        }
+        self.flush_on_exit();
     }
 }
 
 impl Drop for SynectorApp {
     fn drop(&mut self) {
-        self.state.cleanup_on_exit();
+        self.flush_on_exit();
+    }
+}
+
+impl SynectorApp {
+    /// Shutdown flush, bounded by the IPC client's exit budget. eframe calls `on_exit` and then
+    /// drops the app, so the flag keeps the flush to one pass. Window geometry (settings) is
+    /// persisted first, so a hung daemon cannot starve it behind the preview-hide round-trips;
+    /// `persist_window_state` still falls back to a direct section write when the daemon does not
+    /// answer. Without the budget a hung daemon could hold the process for the 5 s per-call bound
+    /// on every preview and again for the geometry.
+    fn flush_on_exit(&mut self) {
+        if self.exit_flushed {
+            return;
+        }
+        self.exit_flushed = true;
+        crate::ipc::IpcClient::begin_shutdown_budget();
         if let Some(ws) = &self.last_window_state {
             persist_window_state(ws);
         }
+        self.state.cleanup_on_exit();
     }
 }
 
@@ -414,4 +456,29 @@ pub fn run_gui() -> eframe::Result<()> {
         native_options,
         Box::new(|cc| Ok(Box::new(SynectorApp::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_daemon_outage_is_reported_once_and_the_window_is_kept() {
+        assert!(
+            !should_report_daemon_outage(false, false, false),
+            "a GUI that never reached the daemon has no outage to report"
+        );
+        assert!(
+            should_report_daemon_outage(true, false, false),
+            "a confirmed outage of a previously connected daemon is reported"
+        );
+        assert!(
+            !should_report_daemon_outage(true, false, true),
+            "one log line per outage, not one per frame"
+        );
+        assert!(
+            !should_report_daemon_outage(true, true, false),
+            "a live daemon is not an outage"
+        );
+    }
 }

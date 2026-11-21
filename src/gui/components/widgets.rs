@@ -103,6 +103,73 @@ pub enum Kind {
     Danger,
 }
 
+/// Fill, border and ink resolved for one button paint pass.
+struct KindPaint {
+    fill: Color32,
+    stroke: Stroke,
+    ink: Color32,
+}
+
+/// Resolves a [`Kind`] once so [`button`] and [`compact_button`] always paint a variant
+/// the same way. Compact buttons live in dense bars, so their resting `Secondary` fill
+/// uses the recessed surface; every other variant is identical for both callers.
+fn kind_paint(kind: Kind, t: &Tokens, hovered: bool, compact: bool) -> KindPaint {
+    let dim = if hovered { 0.85 } else { 1.0 };
+    match kind {
+        Kind::Primary => KindPaint {
+            fill: t.invert_bg.gamma_multiply(dim),
+            stroke: Stroke::NONE,
+            ink: t.invert_fg,
+        },
+        Kind::Danger => KindPaint {
+            fill: t.bad.gamma_multiply(dim),
+            stroke: Stroke::NONE,
+            ink: Color32::WHITE,
+        },
+        Kind::Secondary if hovered => KindPaint {
+            fill: t.invert_bg,
+            stroke: Stroke::NONE,
+            ink: t.invert_fg,
+        },
+        Kind::Secondary => KindPaint {
+            fill: if compact { t.sunken } else { t.bg },
+            stroke: Stroke::new(1.0, t.line_strong),
+            ink: t.ink,
+        },
+    }
+}
+
+/// The paint pass shared by both button helpers: fades disabled content, fills the
+/// frame, centres the galley and registers the label with egui.
+fn paint_kind_button(
+    ui: &Ui,
+    resp: &Response,
+    galley: Arc<Galley>,
+    text: &str,
+    enabled: bool,
+    paint: KindPaint,
+) {
+    let fade = |c: Color32| if enabled { c } else { c.gamma_multiply(0.4) };
+    ui.painter().rect(
+        resp.rect,
+        CornerRadius::ZERO,
+        fade(paint.fill),
+        Stroke::new(paint.stroke.width, fade(paint.stroke.color)),
+        egui::StrokeKind::Inside,
+    );
+    paint_centred(ui, resp.rect, galley, fade(paint.ink));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
+}
+
+/// Applies the shared hover cursor to an enabled button response.
+fn finish_kind_button(resp: Response, enabled: bool) -> Response {
+    if enabled {
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        resp
+    }
+}
+
 /// Helper to calculate exact button width including padding and spacing
 pub fn button_width(ui: &Ui, text: &str, min_width: f32) -> f32 {
     let t = Tokens::get(ui.ctx());
@@ -115,40 +182,13 @@ pub fn button(ui: &mut Ui, text: &str, kind: Kind, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, t.ink);
     let size = vec2((galley.size().x + 28.0).max(width), theme::CONTROL_H);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (_, resp) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;
 
-    let (fill, stroke, color) = match kind {
-        Kind::Primary => (
-            t.invert_bg.gamma_multiply(if hovered { 0.85 } else { 1.0 }),
-            Stroke::NONE,
-            t.invert_fg,
-        ),
-        Kind::Danger => (
-            t.bad.gamma_multiply(if hovered { 0.85 } else { 1.0 }),
-            Stroke::NONE,
-            Color32::WHITE,
-        ),
-        Kind::Secondary if hovered => (t.invert_bg, Stroke::NONE, t.invert_fg),
-        Kind::Secondary => (t.bg, Stroke::new(1.0, t.line_strong), t.ink),
-    };
-
-    let fade = |c: Color32| if enabled { c } else { c.gamma_multiply(0.4) };
-    ui.painter().rect(
-        rect,
-        CornerRadius::ZERO,
-        fade(fill),
-        Stroke::new(stroke.width, fade(stroke.color)),
-        egui::StrokeKind::Inside,
-    );
-    paint_centred(ui, rect, galley, fade(color));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
-    if enabled {
-        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-    } else {
-        resp
-    }
+    let paint = kind_paint(kind, &t, hovered, false);
+    paint_kind_button(ui, &resp, galley, text, enabled, paint);
+    finish_kind_button(resp, enabled)
 }
 
 /// Full-width outlined action button with plus glyph and tracking, 1-in-1 matching ADD STEP / ADD CONDITION.
@@ -259,40 +299,13 @@ pub fn compact_button(ui: &mut Ui, text: &str, kind: Kind, height: f32) -> Respo
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, 10.0, theme::mono_bold(), theme::BUTTON_SPACING, t.ink);
     let size = vec2(galley.size().x + 14.0, height);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let (_, resp) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;
 
-    let (fill, stroke, color) = match kind {
-        Kind::Primary => (
-            t.accent.gamma_multiply(if hovered { 0.85 } else { 1.0 }),
-            Stroke::NONE,
-            Color32::WHITE,
-        ),
-        Kind::Danger => (
-            t.bad.gamma_multiply(if hovered { 0.85 } else { 1.0 }),
-            Stroke::NONE,
-            Color32::WHITE,
-        ),
-        Kind::Secondary if hovered => (t.invert_bg, Stroke::NONE, t.invert_fg),
-        Kind::Secondary => (t.sunken, Stroke::new(1.0, t.line_strong), t.ink),
-    };
-
-    let fade = |c: Color32| if enabled { c } else { c.gamma_multiply(0.4) };
-    ui.painter().rect(
-        rect,
-        CornerRadius::ZERO,
-        fade(fill),
-        Stroke::new(stroke.width, fade(stroke.color)),
-        egui::StrokeKind::Inside,
-    );
-    paint_centred(ui, rect, galley, fade(color));
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
-    if enabled {
-        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
-    } else {
-        resp
-    }
+    let paint = kind_paint(kind, &t, hovered, true);
+    paint_kind_button(ui, &resp, galley, text, enabled, paint);
+    finish_kind_button(resp, enabled)
 }
 
 /// One option in a segmented [`cells`] group.
@@ -438,9 +451,8 @@ fn window_button(ui: &mut Ui, button: WindowButton, height: f32, tip: &str) -> R
 
     let s = 5.0;
     match button {
-        WindowButton::Minimize => {
-            p.hline(c.x - s..=c.x + s, c.y, stroke);
-        }
+        WindowButton::Close => paint_line_glyph(p, Glyph::Close, c, s, stroke),
+        WindowButton::Minimize => paint_line_glyph(p, Glyph::Minimize, c, s, stroke),
         WindowButton::Maximize => {
             p.rect_stroke(Rect::from_center_size(c, vec2(2.0 * s, 2.0 * s)), CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
         }
@@ -449,10 +461,6 @@ fn window_button(ui: &mut Ui, button: WindowButton, height: f32, tip: &str) -> R
             p.rect_stroke(front, CornerRadius::ZERO, stroke, egui::StrokeKind::Inside);
             p.hline(c.x - s + 2.0..=c.x + s, c.y - s, stroke);
             p.vline(c.x + s, c.y - s..=c.y + s - 2.0, stroke);
-        }
-        WindowButton::Close => {
-            p.line_segment([c + vec2(-s, -s), c + vec2(s, s)], stroke);
-            p.line_segment([c + vec2(-s, s), c + vec2(s, -s)], stroke);
         }
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
@@ -504,7 +512,10 @@ pub fn window_edges(ctx: &egui::Context) {
     };
     if let Some((direction, cursor)) = hit {
         ctx.set_cursor_icon(cursor);
-        if ctx.input(|i| i.pointer.primary_pressed()) {
+        // Do not steal a press that egui is already routing to a widget under the
+        // pointer: the inspector's scrollbar sits inside the right edge band, and
+        // starting a window resize there would break scrolling.
+        if ctx.input(|i| i.pointer.primary_pressed()) && !ctx.egui_is_using_pointer() {
             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(direction));
         }
     }
@@ -524,6 +535,77 @@ pub enum Glyph {
     Shortcut,
     Trash,
     Question,
+}
+
+impl Glyph {
+    /// The Phosphor codepoint for icon-font variants; `None` for glyphs drawn from
+    /// primitives. Kept in one place so the studio buttons and title bars cannot drift.
+    fn phosphor(self) -> Option<&'static str> {
+        match self {
+            Self::Reset => Some(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE),
+            Self::Play => Some(egui_phosphor::regular::PLAY),
+            Self::Stop => Some(egui_phosphor::regular::STOP),
+            Self::Edit => Some(egui_phosphor::regular::PENCIL_SIMPLE),
+            Self::Share => Some(egui_phosphor::regular::SHARE_NETWORK),
+            Self::Shortcut => Some(egui_phosphor::regular::ARROW_SQUARE_OUT),
+            Self::Trash => Some(egui_phosphor::regular::TRASH),
+            Self::Question => Some(egui_phosphor::regular::QUESTION_MARK),
+            Self::Close | Self::Minimize | Self::Clone | Self::Expand => None,
+        }
+    }
+}
+
+/// Draws the line glyphs (`Close`, `Minimize`); `half` is the distance from the centre
+/// to the stroke ends, so callers can keep their own button size.
+fn paint_line_glyph(p: &egui::Painter, glyph: Glyph, centre: egui::Pos2, half: f32, stroke: Stroke) {
+    match glyph {
+        Glyph::Close => {
+            p.line_segment([centre + vec2(-half, -half), centre + vec2(half, half)], stroke);
+            p.line_segment([centre + vec2(-half, half), centre + vec2(half, -half)], stroke);
+        }
+        Glyph::Minimize => {
+            p.line_segment([centre + vec2(-half, 0.0), centre + vec2(half, 0.0)], stroke);
+        }
+        _ => {}
+    }
+}
+
+/// Draws the overlapping-squares (`Clone`) and expand-arrow (`Expand`) glyphs.
+fn paint_box_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, color: Color32) {
+    match glyph {
+        Glyph::Clone => {
+            let back = Rect::from_center_size(m + vec2(-2.0, -2.0), vec2(7.0, 7.0));
+            let front = Rect::from_center_size(m + vec2(1.8, 1.8), vec2(7.0, 7.0));
+            p.line_segment([back.left_top(), back.right_top()], Stroke::new(1.2, color));
+            p.line_segment([back.left_top(), back.left_bottom()], Stroke::new(1.2, color));
+            p.line_segment([back.right_top(), back.right_top() + vec2(0.0, 2.0)], Stroke::new(1.2, color));
+            p.line_segment([back.left_bottom(), back.left_bottom() + vec2(2.0, 0.0)], Stroke::new(1.2, color));
+            p.rect_stroke(front, CornerRadius::ZERO, Stroke::new(1.2, color), egui::StrokeKind::Inside);
+        }
+        Glyph::Expand => {
+            let s = (size * 0.14).clamp(3.2, 4.2);
+            p.line_segment([m + vec2(s - 3.2, -s), m + vec2(s, -s)], Stroke::new(1.3, color));
+            p.line_segment([m + vec2(s, -s), m + vec2(s, -s + 3.2)], Stroke::new(1.3, color));
+            p.line_segment([m + vec2(-s, s - 3.2), m + vec2(-s, s)], Stroke::new(1.3, color));
+            p.line_segment([m + vec2(-s, s), m + vec2(-s + 3.2, s)], Stroke::new(1.3, color));
+            p.line_segment([m + vec2(0.5, -0.5), m + vec2(s - 0.5, -s + 0.5)], Stroke::new(1.3, color));
+            p.line_segment([m + vec2(-0.5, 0.5), m + vec2(-s + 0.5, s - 0.5)], Stroke::new(1.3, color));
+        }
+        _ => {}
+    }
+}
+
+/// Draws every icon-font glyph in one pass.
+fn paint_font_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, color: Color32) {
+    let Some(text) = glyph.phosphor() else { return };
+    let font_size = (size * 0.48).clamp(12.0, 15.0);
+    p.text(
+        m,
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::new(font_size, theme::phosphor()),
+        color,
+    );
 }
 
 /// Small outlined square button with a drawn glyph (X, Clone, Expand, More, Reset); inverts on hover.
@@ -555,113 +637,10 @@ pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, t
     p.rect(rect, CornerRadius::ZERO, fill, stroke, egui::StrokeKind::Inside);
     let m = rect.center();
     match glyph {
-        Glyph::Close => {
-            let s = (size * 0.15).clamp(3.5, 4.5);
-            p.line_segment([m + vec2(-s, -s), m + vec2(s, s)], Stroke::new(1.5, c));
-            p.line_segment([m + vec2(-s, s), m + vec2(s, -s)], Stroke::new(1.5, c));
-        }
-        Glyph::Minimize => {
-            let s = (size * 0.18).clamp(4.0, 5.0);
-            p.line_segment([m + vec2(-s, 0.0), m + vec2(s, 0.0)], Stroke::new(1.5, c));
-        }
-        Glyph::Clone => {
-            let back = Rect::from_center_size(m + vec2(-2.0, -2.0), vec2(7.0, 7.0));
-            let front = Rect::from_center_size(m + vec2(1.8, 1.8), vec2(7.0, 7.0));
-            p.line_segment([back.left_top(), back.right_top()], Stroke::new(1.2, c));
-            p.line_segment([back.left_top(), back.left_bottom()], Stroke::new(1.2, c));
-            p.line_segment([back.right_top(), back.right_top() + vec2(0.0, 2.0)], Stroke::new(1.2, c));
-            p.line_segment([back.left_bottom(), back.left_bottom() + vec2(2.0, 0.0)], Stroke::new(1.2, c));
-            p.rect_stroke(front, CornerRadius::ZERO, Stroke::new(1.2, c), egui::StrokeKind::Inside);
-        }
-        Glyph::Expand => {
-            let s = (size * 0.14).clamp(3.2, 4.2);
-            p.line_segment([m + vec2(s - 3.2, -s), m + vec2(s, -s)], Stroke::new(1.3, c));
-            p.line_segment([m + vec2(s, -s), m + vec2(s, -s + 3.2)], Stroke::new(1.3, c));
-            p.line_segment([m + vec2(-s, s - 3.2), m + vec2(-s, s)], Stroke::new(1.3, c));
-            p.line_segment([m + vec2(-s, s), m + vec2(-s + 3.2, s)], Stroke::new(1.3, c));
-            p.line_segment([m + vec2(0.5, -0.5), m + vec2(s - 0.5, -s + 0.5)], Stroke::new(1.3, c));
-            p.line_segment([m + vec2(-0.5, 0.5), m + vec2(-s + 0.5, s - 0.5)], Stroke::new(1.3, c));
-        }
-        Glyph::Reset => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Play => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::PLAY,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Stop => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::STOP,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Edit => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::PENCIL_SIMPLE,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Share => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::SHARE_NETWORK,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Shortcut => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::ARROW_SQUARE_OUT,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Trash => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::TRASH,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
-        Glyph::Question => {
-            let font_size = (size * 0.48).clamp(12.0, 15.0);
-            p.text(
-                m,
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::QUESTION_MARK,
-                egui::FontId::new(font_size, theme::phosphor()),
-                c,
-            );
-        }
+        Glyph::Close => paint_line_glyph(p, glyph, m, (size * 0.15).clamp(3.5, 4.5), Stroke::new(1.5, c)),
+        Glyph::Minimize => paint_line_glyph(p, glyph, m, (size * 0.18).clamp(4.0, 5.0), Stroke::new(1.5, c)),
+        Glyph::Clone | Glyph::Expand => paint_box_glyph(p, glyph, m, size, c),
+        _ => paint_font_glyph(p, glyph, m, size, c),
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let resp = if !tip.trim().is_empty() {
@@ -881,4 +860,116 @@ pub fn catalog_search_box(
     }
 
     edit_resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_paint_resolves_every_variant_for_both_button_sizes() {
+        let t = Tokens::DARK;
+
+        let primary = kind_paint(Kind::Primary, &t, false, false);
+        assert_eq!(primary.fill, t.invert_bg);
+        assert_eq!(primary.ink, t.invert_fg);
+        assert_eq!(primary.stroke, Stroke::NONE);
+        // The compact helper used to paint Primary with the accent colour instead.
+        let primary_compact = kind_paint(Kind::Primary, &t, false, true);
+        assert_eq!(primary_compact.fill, t.invert_bg);
+        assert_eq!(primary_compact.ink, t.invert_fg);
+        assert_ne!(kind_paint(Kind::Primary, &t, true, false).fill, t.invert_bg);
+
+        let secondary = kind_paint(Kind::Secondary, &t, false, false);
+        assert_eq!(secondary.fill, t.bg);
+        assert_eq!(secondary.ink, t.ink);
+        assert_eq!(secondary.stroke.width, 1.0);
+        assert_eq!(kind_paint(Kind::Secondary, &t, false, true).fill, t.sunken);
+        let secondary_hovered = kind_paint(Kind::Secondary, &t, true, false);
+        assert_eq!(secondary_hovered.fill, t.invert_bg);
+        assert_eq!(secondary_hovered.ink, t.invert_fg);
+
+        let danger = kind_paint(Kind::Danger, &t, false, true);
+        assert_eq!(danger.fill, t.bad);
+        assert_eq!(danger.ink, Color32::WHITE);
+    }
+
+    #[test]
+    fn glyph_phosphor_mapping_covers_icon_font_variants() {
+        for glyph in [
+            Glyph::Reset,
+            Glyph::Play,
+            Glyph::Stop,
+            Glyph::Edit,
+            Glyph::Share,
+            Glyph::Shortcut,
+            Glyph::Trash,
+            Glyph::Question,
+        ] {
+            assert!(glyph.phosphor().is_some(), "{glyph:?} should use the icon font");
+        }
+        for glyph in [Glyph::Close, Glyph::Minimize, Glyph::Clone, Glyph::Expand] {
+            assert_eq!(glyph.phosphor(), None, "{glyph:?} should be drawn from primitives");
+        }
+    }
+
+    fn run_edge_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        scrollbar_like_widget: bool,
+    ) -> Vec<egui::ViewportCommand> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(800.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            if scrollbar_like_widget {
+                // Stand-in for the inspector scrollbar inside the right resize band.
+                let rect = Rect::from_min_max(pos2(790.0, 200.0), pos2(800.0, 400.0));
+                let _ = ui.allocate_rect(rect, Sense::click_and_drag());
+            }
+            window_edges(ui.ctx());
+        });
+        output.textures_delta.clear();
+        output
+            .viewport_output
+            .values()
+            .flat_map(|viewport| viewport.commands.iter().cloned())
+            .collect()
+    }
+
+    #[test]
+    fn window_edges_defers_begin_resize_to_a_widget_using_the_pointer() {
+        let pointer = pos2(797.0, 300.0);
+        let press = vec![egui::Event::PointerButton {
+            pos: pointer,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }];
+
+        // A widget was hovered last frame and now receives the press: no resize.
+        let ctx = egui::Context::default();
+        let _ = run_edge_frame(&ctx, vec![], true);
+        let _ = run_edge_frame(&ctx, vec![egui::Event::PointerMoved(pointer)], true);
+        let commands = run_edge_frame(&ctx, press.clone(), true);
+        assert!(
+            !commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::BeginResize(_))),
+            "a widget under the pointer must keep the press instead of resizing the window"
+        );
+
+        // The bare border still starts a resize.
+        let ctx = egui::Context::default();
+        let _ = run_edge_frame(&ctx, vec![egui::Event::PointerMoved(pointer)], false);
+        let commands = run_edge_frame(&ctx, press, false);
+        assert!(
+            commands
+                .iter()
+                .any(|command| matches!(command, egui::ViewportCommand::BeginResize(_))),
+            "the bare border must still start a resize"
+        );
+    }
 }

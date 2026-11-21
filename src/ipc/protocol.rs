@@ -2,6 +2,12 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AppConfig, Settings};
 use crate::models::{Action, AnalyticsSummary, LogItem, ProcessSnapshotItem, Rule};
 
+/// Upper bound on one framed IPC message (request or response), excluding the 4-byte length
+/// prefix. The client rejects a larger response length before reading the body; the daemon
+/// must apply the same cap to a response so an oversized state snapshot is an `Error`
+/// response instead of a connection failure.
+pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum IpcRequest {
@@ -41,7 +47,6 @@ pub enum IpcRequest {
     DeleteOverlay(String),
     SaveMacroPreset(crate::models::MacroPreset),
     DeleteMacroPreset(String),
-    SetOverlayText { id: String, text: String },
     ShowOverlayPreview { overlay: crate::models::OverlayDefinition, calibration_mode: bool },
     HideOverlayPreview(String),
     GetOverlayPosition(String),
@@ -51,6 +56,9 @@ pub enum IpcRequest {
     TriggerUpdate,
     StartUpdate,
     AcknowledgeAutoStartUpdate,
+    /// Narrow updater query for the standalone update-progress overlay: answers with the two
+    /// updater fields instead of projecting the whole [`DaemonState`] (config and logs).
+    GetUpdateProgress,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +72,12 @@ pub enum IpcResponse {
     TestStepResult(Result<(), String>),
     OverlayPosition(Option<(f32, f32)>),
     ShareImportResult(crate::sharing::ShareImportSummary),
+    /// Answer to [`IpcRequest::GetUpdateProgress`]. `progress` is `Some` only while an update
+    /// is downloading; `status` is the updater's current status line.
+    UpdateProgress {
+        progress: Option<f32>,
+        status: Option<String>,
+    },
     Error(String),
 }
 
@@ -80,7 +94,6 @@ pub struct DaemonState {
     pub autorun_enabled: bool,
     pub uptime_secs: u64,
     pub daemon_memory_bytes: u64,
-    pub daemon_cpu_usage: f32,
     pub active_rules_count: usize,
     pub total_rules_count: usize,
     pub config: AppConfig,
@@ -308,7 +321,6 @@ mod tests {
             autorun_enabled: false,
             uptime_secs: 42,
             daemon_memory_bytes: 5000,
-            daemon_cpu_usage: 0.1,
             active_rules_count: 0,
             total_rules_count: 0,
             config: AppConfig::default(),
@@ -330,5 +342,72 @@ mod tests {
         assert_eq!(decoded_state.update_progress, Some(0.75));
         assert!(decoded_state.pending_open_update_modal);
         assert!(decoded_state.pending_auto_start_update);
+    }
+
+    #[test]
+    fn test_ipc_update_progress_query_round_trip() {
+        let request = IpcRequest::GetUpdateProgress;
+        let request_json = serde_json::to_string(&request).unwrap();
+        assert!(request_json.contains("GetUpdateProgress"));
+        assert!(
+            matches!(
+                serde_json::from_str::<IpcRequest>(&request_json).unwrap(),
+                IpcRequest::GetUpdateProgress
+            ),
+            "the narrow query must survive a round trip"
+        );
+
+        let response = IpcResponse::UpdateProgress {
+            progress: Some(0.42),
+            status: Some("42%".to_string()),
+        };
+        let response_json = serde_json::to_string(&response).unwrap();
+        match serde_json::from_str::<IpcResponse>(&response_json).unwrap() {
+            IpcResponse::UpdateProgress { progress, status } => {
+                assert_eq!(progress, Some(0.42));
+                assert_eq!(status.as_deref(), Some("42%"));
+            }
+            other => panic!("wrong response variant: {other:?}"),
+        }
+
+        let idle = IpcResponse::UpdateProgress {
+            progress: None,
+            status: None,
+        };
+        let idle_json = serde_json::to_string(&idle).unwrap();
+        assert!(matches!(
+            serde_json::from_str::<IpcResponse>(&idle_json).unwrap(),
+            IpcResponse::UpdateProgress {
+                progress: None,
+                status: None
+            }
+        ));
+    }
+
+    /// The overlay query must stay narrow: its wire form carries exactly the two updater
+    /// fields, never the config or the log buffer (U06-013).
+    #[test]
+    fn test_ipc_update_progress_answer_carries_no_config_or_logs() {
+        let response = IpcResponse::UpdateProgress {
+            progress: Some(0.5),
+            status: Some("Downloading".to_string()),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        for forbidden in ["\"config\"", "\"logs\"", "\"rules\"", "\"overlays\""] {
+            assert!(
+                !json.contains(forbidden),
+                "the narrow update answer must not carry {forbidden}: {json}"
+            );
+        }
+
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["type"], "UpdateProgress");
+        let payload = value["payload"]
+            .as_object()
+            .expect("an UpdateProgress answer has an object payload");
+        let keys: Vec<&str> = payload.keys().map(String::as_str).collect();
+        assert_eq!(keys.len(), 2, "only progress and status are projected: {keys:?}");
+        assert!(payload.contains_key("progress"));
+        assert!(payload.contains_key("status"));
     }
 }

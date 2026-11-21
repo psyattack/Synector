@@ -33,29 +33,29 @@ pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
 
     // 4. Center: Navigation Tabs (strictly centered in the middle of the window)
     let tabs = [
-        (ActiveView::Rules, loc.tab_automations, ""),
-        (ActiveView::Analytics, loc.tab_analytics, ""),
-        (ActiveView::Settings, loc.tab_settings, ""),
+        (ActiveView::Rules, loc.tab_automations),
+        (ActiveView::Analytics, loc.tab_analytics),
+        (ActiveView::Settings, loc.tab_settings),
     ];
 
     let galleys: Vec<_> = tabs
         .iter()
-        .map(|&(view, label, tip)| {
+        .map(|&(view, label)| {
             let galley = widgets::hud_galley(ui, label, t.muted);
             let w = galley.size().x + 24.0;
-            (view, label, tip, galley, w)
+            (view, galley, w)
         })
         .collect();
 
-    let total_tabs_w: f32 = galleys.iter().map(|(_, _, _, _, w)| *w).sum();
+    let total_tabs_w: f32 = galleys.iter().map(|(_, _, w)| *w).sum();
     let center_x = full_rect.center().x;
     let mut current_x = (center_x - total_tabs_w / 2.0).round();
 
-    for (view, _label, tip, galley, w) in galleys {
+    for (view, galley, w) in galleys {
         let tab_rect = Rect::from_min_size(pos2(current_x, full_rect.top()), vec2(w, h));
         current_x += w;
 
-        let mut resp = ui.interact(tab_rect, ui.scope_id().with(view as usize), egui::Sense::click());
+        let resp = ui.interact(tab_rect, ui.scope_id().with(view as usize), egui::Sense::click());
         if resp.clicked() {
             if view != state.active_view {
                 if let Some(rule) = state.editing_rule.take() {
@@ -76,9 +76,6 @@ pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
             ui.painter().rect_filled(span, CornerRadius::ZERO, t.invert_bg);
         }
         widgets::paint_centred(ui, tab_rect, galley, if on { t.invert_fg } else { t.muted });
-        if !tip.trim().is_empty() {
-            resp = resp.on_hover_text(tip);
-        }
         resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 }

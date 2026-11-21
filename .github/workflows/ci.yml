@@ -21,10 +21,10 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Cargo Check
-        run: cargo check
+        run: cargo check --locked
 
       - name: Cargo Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Cargo Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked -- -D warnings

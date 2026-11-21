@@ -15,6 +15,35 @@ static NONCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// Discord IPC OpCodes
 const OP_HANDSHAKE: u32 = 0;
 const OP_FRAME: u32 = 1;
+const OP_PING: u32 = 3;
+const OP_PONG: u32 = 4;
+/// A reply that is still a Discord keepalive is tolerated, but a server that
+/// floods PINGs instead of answering must not keep us reading forever.
+const MAX_REPLY_FRAMES: usize = 4;
+
+/// Validates a `SET_ACTIVITY` confirmation frame. Discord answers with
+/// `{"cmd":"SET_ACTIVITY","evt":null,"nonce":"<our nonce>","data":{...}}`; an
+/// `evt == "ERROR"` reply is a rejection (bad asset key, over-long strings).
+fn validate_reply(opcode: u32, value: &Value, expected_nonce: &str) -> Result<(), String> {
+    if opcode != OP_FRAME {
+        return Err(format!("unexpected Discord IPC opcode {opcode}"));
+    }
+    if value.get("evt").and_then(Value::as_str) == Some("ERROR") {
+        let reason = value
+            .get("data")
+            .and_then(|data| data.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("no reason given");
+        return Err(format!("Discord rejected the activity: {reason}"));
+    }
+    match value.get("nonce").and_then(Value::as_str) {
+        Some(nonce) if nonce == expected_nonce => Ok(()),
+        Some(nonce) => Err(format!(
+            "Discord IPC nonce mismatch (expected {expected_nonce}, got {nonce})"
+        )),
+        None => Err("Discord IPC reply has no nonce".to_string()),
+    }
+}
 
 pub struct DiscordRpcClient {
     pipe: NamedPipeClient,
@@ -98,6 +127,22 @@ impl DiscordRpcClient {
 
         let val: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
         Ok((opcode, val))
+    }
+
+    /// Reads the reply to a `SET_ACTIVITY` frame. Discord keepalives are answered
+    /// transparently; any other unexpected frame (or a read timeout, which leaves
+    /// the pipe at an unknown frame boundary) is an error that makes the caller
+    /// drop the client so the next update reconnects instead of desynchronising.
+    async fn read_reply(pipe: &mut NamedPipeClient, nonce: &str) -> Result<(), String> {
+        for _ in 0..MAX_REPLY_FRAMES {
+            let (opcode, value) = Self::read_raw(pipe).await?;
+            if opcode == OP_PING {
+                Self::send_raw(pipe, OP_PONG, &value).await?;
+                continue;
+            }
+            return validate_reply(opcode, &value, nonce);
+        }
+        Err("Discord IPC sent too many keepalive frames before the reply".to_string())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -185,9 +230,9 @@ impl DiscordRpcClient {
         });
 
         Self::send_raw(&mut self.pipe, OP_FRAME, &payload).await?;
-        // Drain optional confirmation response
-        let _ = Self::read_raw(&mut self.pipe).await;
-        Ok(())
+        // Discord answers every SET_ACTIVITY, with `evt == "ERROR"` on rejection;
+        // surface that instead of reporting success for a discard.
+        Self::read_reply(&mut self.pipe, &nonce).await
     }
 
     pub async fn clear_activity(&mut self) -> Result<(), String> {
@@ -202,8 +247,7 @@ impl DiscordRpcClient {
         });
 
         Self::send_raw(&mut self.pipe, OP_FRAME, &payload).await?;
-        let _ = Self::read_raw(&mut self.pipe).await;
-        Ok(())
+        Self::read_reply(&mut self.pipe, &nonce).await
     }
 }
 
@@ -264,4 +308,50 @@ pub async fn clear_presence() -> Result<(), String> {
     }
     *lock = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_reply_accepts_matching_confirmation() {
+        let reply = json!({
+            "cmd": "SET_ACTIVITY",
+            "evt": null,
+            "nonce": "7",
+            "data": {}
+        });
+        assert!(validate_reply(OP_FRAME, &reply, "7").is_ok());
+    }
+
+    #[test]
+    fn test_validate_reply_surfaces_error_event() {
+        let reply = json!({
+            "cmd": "SET_ACTIVITY",
+            "evt": "ERROR",
+            "nonce": "7",
+            "data": { "code": 4000, "message": "Invalid asset key" }
+        });
+        let err = validate_reply(OP_FRAME, &reply, "7").expect_err("an EVT ERROR is a rejection");
+        assert!(err.contains("rejected"), "{err}");
+        assert!(err.contains("Invalid asset key"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_reply_rejects_nonce_mismatch_or_missing_nonce() {
+        let mismatch = json!({ "cmd": "SET_ACTIVITY", "evt": null, "nonce": "8" });
+        let err = validate_reply(OP_FRAME, &mismatch, "7").expect_err("stale frames must be rejected");
+        assert!(err.contains("nonce"), "{err}");
+
+        let missing = json!({ "cmd": "SET_ACTIVITY", "evt": null });
+        let err = validate_reply(OP_FRAME, &missing, "7").expect_err("a reply without a nonce is a desync");
+        assert!(err.contains("nonce"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_reply_rejects_unexpected_opcode() {
+        assert!(validate_reply(OP_PING, &json!({}), "7").is_err());
+        assert!(validate_reply(OP_PONG, &json!({}), "7").is_err());
+    }
 }

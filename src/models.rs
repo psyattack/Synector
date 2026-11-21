@@ -44,8 +44,6 @@ pub enum Trigger {
     SystemEvent {
         event_type: SystemEventType,
         #[serde(default)]
-        idle_duration_sec: u32,
-        #[serde(default)]
         device_id_filter: Option<String>,
     },
     #[serde(rename = "schedule")]
@@ -59,8 +57,6 @@ pub enum Trigger {
         days_of_week: Vec<u8>,      // 1 = Monday .. 7 = Sunday
         #[serde(default, skip_serializing_if = "Option::is_none")]
         day_of_month: Option<u8>,   // 1..31 for Monthly schedule
-        #[serde(default)]
-        delay_sec: u64,
         #[serde(default)]
         target_datetime: Option<String>,
     },
@@ -85,6 +81,71 @@ pub enum Trigger {
 
 fn default_threshold_duration() -> u64 {
     5
+}
+
+impl Trigger {
+    /// Structural problems inside a schedule payload, shared by `--rules-apply`, share import
+    /// and the GUI save path. Empty for every other trigger.
+    ///
+    /// Each schedule type has its own mandatory fields: a Daily or OneShot rule without its
+    /// time used to apply cleanly and then never fire, which looked like a broken engine.
+    pub fn schedule_errors(&self) -> Vec<&'static str> {
+        let Trigger::Schedule {
+            schedule_type,
+            interval_sec,
+            daily_time,
+            days_of_week,
+            day_of_month,
+            target_datetime,
+        } = self
+        else {
+            return Vec::new();
+        };
+        let mut errors = Vec::new();
+        if !days_of_week_are_valid(days_of_week) {
+            errors.push("days_of_week must list days between 1 (Monday) and 7 (Sunday)");
+        }
+        let daily_time_ok = |daily_time: &Option<String>, errors: &mut Vec<&'static str>| match daily_time {
+            Some(time) if is_valid_hh_mm_ss(time) => {}
+            Some(_) => errors.push(
+                "daily_time must be a zero-padded \"HH:MM\" or \"HH:MM:SS\" between 00:00 and 23:59",
+            ),
+            None => errors.push("this schedule needs daily_time"),
+        };
+        match schedule_type {
+            ScheduleType::Interval => {
+                if *interval_sec == 0 {
+                    errors.push("interval schedule needs interval_sec > 0");
+                }
+                if let Some(target) = target_datetime {
+                    if !is_valid_target_datetime(target) {
+                        errors.push(
+                            "target_datetime must be a valid \"YYYY-MM-DD HH:MM[:SS]\" timestamp",
+                        );
+                    }
+                }
+            }
+            ScheduleType::Daily => {
+                daily_time_ok(daily_time, &mut errors);
+            }
+            ScheduleType::OneShot => match target_datetime {
+                Some(target) if is_valid_target_datetime(target) => {}
+                Some(_) => errors.push(
+                    "one_shot schedule needs target_datetime as \"YYYY-MM-DD HH:MM[:SS]\"",
+                ),
+                None => errors.push("one_shot schedule needs target_datetime"),
+            },
+            ScheduleType::Monthly => {
+                daily_time_ok(daily_time, &mut errors);
+                match day_of_month {
+                    Some(day) if is_valid_day_of_month(*day) => {}
+                    _ => errors.push("monthly schedule needs day_of_month between 1 and 31"),
+                }
+            }
+            ScheduleType::AppStartup | ScheduleType::AppShutdown => {}
+        }
+        errors
+    }
 }
 
 
@@ -230,8 +291,6 @@ pub enum RuleCondition {
         cpu_percent: Option<f32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ram_mb: Option<u64>,
-        #[serde(default = "default_threshold_duration")]
-        duration_sec: u64,
     },
     #[serde(rename = "file_watcher")]
     FileWatcher {
@@ -269,6 +328,36 @@ impl RuleCondition {
             Self::ResourceThreshold { .. } => egui_phosphor::regular::CHART_LINE,
             Self::FileWatcher { .. } => egui_phosphor::regular::FILE,
             Self::RuleRunning { .. } => egui_phosphor::regular::PLAY,
+        }
+    }
+
+    /// Shared value checks used by `--rules-apply` and share import.
+    pub fn validation_errors(&self) -> Vec<&'static str> {
+        match self {
+            RuleCondition::TimeRange {
+                start_time,
+                end_time,
+                days_of_week,
+            } => {
+                let mut errors = Vec::new();
+                if !start_time.is_empty() && !is_valid_hh_mm(start_time) {
+                    errors.push("time_range start_time must be a zero-padded HH:MM between 00:00 and 23:59");
+                }
+                if !end_time.is_empty() && !is_valid_hh_mm(end_time) {
+                    errors.push("time_range end_time must be a zero-padded HH:MM between 00:00 and 23:59");
+                }
+                if !days_of_week_are_valid(days_of_week) {
+                    errors.push("days_of_week must list days between 1 (Monday) and 7 (Sunday)");
+                }
+                errors
+            }
+            RuleCondition::ResourceThreshold {
+                process_name,
+                cpu_percent,
+                ram_mb,
+                ..
+            } => resource_threshold_errors(process_name, *cpu_percent, *ram_mb),
+            _ => Vec::new(),
         }
     }
 }
@@ -919,6 +1008,46 @@ pub enum WaitCondition {
     },
 }
 
+impl WaitCondition {
+    /// Value checks shared by `--rules-apply` and share import. A condition whose key is
+    /// empty can never match and would silently burn the whole timeout.
+    pub fn validation_errors(&self) -> Vec<&'static str> {
+        match self {
+            WaitCondition::WindowOpened { process_name, .. }
+            | WaitCondition::WindowClosed { process_name, .. }
+            | WaitCondition::ProcessStarted { process_name, .. }
+            | WaitCondition::ProcessExited { process_name, .. } => {
+                if process_name.trim().is_empty() {
+                    vec!["wait condition needs a non-empty process_name"]
+                } else {
+                    Vec::new()
+                }
+            }
+            WaitCondition::Hotkey { key_combination } => {
+                if key_combination.trim().is_empty() {
+                    vec!["wait condition needs a non-empty key_combination"]
+                } else {
+                    Vec::new()
+                }
+            }
+            WaitCondition::File { path, .. } => {
+                if path.trim().is_empty() {
+                    vec!["wait condition needs a non-empty path"]
+                } else {
+                    Vec::new()
+                }
+            }
+            WaitCondition::RuleStarted { rule_id } | WaitCondition::RuleStopped { rule_id } => {
+                if rule_id.trim().is_empty() {
+                    vec!["wait condition needs a non-empty rule_id"]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+    }
+}
+
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitFileCondition {
@@ -933,6 +1062,106 @@ pub fn default_wait_seconds() -> f64 {
 
 pub fn default_wait_timeout() -> f64 {
     30.0
+}
+
+/// Longest wait a rule may express, in seconds. A day-long pipeline is already an authoring
+/// mistake, and an unbounded `seconds` is what makes `Duration::from_secs_f64` panic.
+pub const MAX_WAIT_SECONDS: f64 = 86_400.0;
+
+/// Fallible conversion of a rule-authored second count into a [`std::time::Duration`].
+///
+/// A rule file is untrusted input and `Duration::from_secs_f64` panics on negative,
+/// non-finite and huge values. Every runtime use of `seconds`/`timeout_sec` goes through
+/// this helper so a hand-edited rule becomes a normal action error instead of a dead task.
+pub fn duration_from_secs(seconds: f64) -> Result<std::time::Duration, String> {
+    if !seconds.is_finite() {
+        return Err("duration must be a finite number of seconds".to_string());
+    }
+    if seconds < 0.0 {
+        return Err("duration must not be negative".to_string());
+    }
+    if seconds > MAX_WAIT_SECONDS {
+        return Err(format!(
+            "duration must not exceed {MAX_WAIT_SECONDS:.0} seconds"
+        ));
+    }
+    Ok(std::time::Duration::from_secs_f64(seconds))
+}
+
+fn parse_two_digits(part: &str) -> Option<u8> {
+    if part.len() != 2 || !part.as_bytes().iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    part.parse().ok()
+}
+
+/// True for a zero-padded `HH:MM` between 00:00 and 23:59.
+pub fn is_valid_hh_mm(value: &str) -> bool {
+    let Some((hour, minute)) = value.split_once(':') else {
+        return false;
+    };
+    matches!(
+        (parse_two_digits(hour), parse_two_digits(minute)),
+        (Some(hour), Some(minute)) if hour < 24 && minute < 60
+    )
+}
+
+/// True for a zero-padded `HH:MM` or `HH:MM:SS` between 00:00:00 and 23:59:59.
+pub fn is_valid_hh_mm_ss(value: &str) -> bool {
+    let parts: Vec<&str> = value.split(':').collect();
+    match parts.as_slice() {
+        [hour, minute] => matches!(
+            (parse_two_digits(hour), parse_two_digits(minute)),
+            (Some(hour), Some(minute)) if hour < 24 && minute < 60
+        ),
+        [hour, minute, second] => matches!(
+            (parse_two_digits(hour), parse_two_digits(minute), parse_two_digits(second)),
+            (Some(hour), Some(minute), Some(second)) if hour < 24 && minute < 60 && second < 60
+        ),
+        _ => false,
+    }
+}
+
+/// True for a local datetime in the wire format `YYYY-MM-DD HH:MM[:SS]`.
+pub fn is_valid_target_datetime(value: &str) -> bool {
+    chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S").is_ok()
+        || chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M").is_ok()
+}
+
+/// True when every weekday number is in the ISO range 1 (Monday) ..= 7 (Sunday).
+pub fn days_of_week_are_valid(days: &[u8]) -> bool {
+    days.iter().all(|day| (1..=7).contains(day))
+}
+
+/// True when a monthly schedule day is in 1 ..= 31.
+pub fn is_valid_day_of_month(day: u8) -> bool {
+    (1..=31).contains(&day)
+}
+
+/// Shared value checks for the resource trigger and the resource condition. Both need a
+/// process and at least one threshold; without one they would silently degrade to
+/// "process is running", which `process_running` already expresses.
+pub fn resource_threshold_errors(
+    process_name: &str,
+    cpu_percent: Option<f32>,
+    ram_mb: Option<u64>,
+) -> Vec<&'static str> {
+    let mut errors = Vec::new();
+    if process_name.trim().is_empty() {
+        errors.push("resource threshold needs a non-empty process_name");
+    }
+    if cpu_percent.is_none() && ram_mb.is_none() {
+        errors.push("resource threshold needs cpu_percent or ram_mb");
+    }
+    if let Some(cpu) = cpu_percent {
+        if !cpu.is_finite() || cpu < 0.0 {
+            errors.push("cpu_percent must be a finite non-negative number");
+        }
+    }
+    if ram_mb == Some(0) {
+        errors.push("ram_mb must be greater than 0");
+    }
+    errors
 }
 
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
@@ -994,6 +1223,17 @@ pub struct RuleTag {
     pub icon: Option<String>,
 }
 
+/// Parses a tag colour written as `#RRGGBB` or `RRGGBB`. Only six ASCII hex digits are
+/// accepted; anything else returns `None` so callers can fall back or reject the rule.
+pub fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let clean = value.trim().trim_start_matches('#');
+    if clean.len() != 6 || !clean.is_ascii() {
+        return None;
+    }
+    let rgb = u32::from_str_radix(clean, 16).ok()?;
+    Some([(rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8])
+}
+
 impl RuleTag {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
@@ -1014,19 +1254,11 @@ impl RuleTag {
     }
 
     pub fn parse_color(&self, fallback: egui::Color32) -> egui::Color32 {
-        if let Some(c) = &self.color {
-            let clean = c.trim().trim_start_matches('#');
-            if clean.len() == 6 {
-                if let (Ok(r), Ok(g), Ok(b)) = (
-                    u8::from_str_radix(&clean[0..2], 16),
-                    u8::from_str_radix(&clean[2..4], 16),
-                    u8::from_str_radix(&clean[4..6], 16),
-                ) {
-                    return egui::Color32::from_rgb(r, g, b);
-                }
-            }
-        }
-        fallback
+        self.color
+            .as_deref()
+            .and_then(parse_hex_color)
+            .map(|[r, g, b]| egui::Color32::from_rgb(r, g, b))
+            .unwrap_or(fallback)
     }
 }
 
@@ -1088,14 +1320,37 @@ pub enum QuotaPeriod {
 }
 
 impl QuotaPeriod {
+    /// Largest allowed length of a custom window, in `unit`s. Matches the GUI clamp so the
+    /// CLI, share import and the editor accept exactly the same range.
+    pub const MAX_CUSTOM_WINDOW_UNITS: u32 = 100_000;
+
+    /// Rejects custom window lengths that are zero or absurdly large, which would overflow
+    /// the calendar arithmetic and silently break the reset.
+    pub fn validation_error(self) -> Option<&'static str> {
+        match self {
+            QuotaPeriod::Custom { value, .. }
+                if !(1..=Self::MAX_CUSTOM_WINDOW_UNITS).contains(&value) =>
+            {
+                Some("a custom quota window length must be between 1 and 100000")
+            }
+            _ => None,
+        }
+    }
+
     /// End of a custom window that started at `start`; calendar months are added as
     /// calendar months (Jan 31 + 1 month = Feb 28/29), other units as fixed time.
+    ///
+    /// Lengths are clamped into the accepted range first, and the arithmetic is checked:
+    /// `None` means the end cannot be represented and the window must be treated as lapsed.
     pub fn custom_window_end(self, start: DateTime<Local>) -> Option<DateTime<Local>> {
         match self {
             QuotaPeriod::Custom { value, unit } => {
-                let value = value.max(1);
+                let value = value.clamp(1, Self::MAX_CUSTOM_WINDOW_UNITS);
                 match unit.fixed_seconds() {
-                    Some(seconds) => Some(start + chrono::Duration::seconds(seconds as i64 * value as i64)),
+                    Some(seconds) => {
+                        let total = i64::try_from(seconds).ok()?.checked_mul(i64::from(value))?;
+                        start.checked_add_signed(chrono::Duration::seconds(total))
+                    }
                     None => start.checked_add_months(chrono::Months::new(value)),
                 }
             }
@@ -1205,10 +1460,89 @@ impl Action {
         }
     }
 
+    /// Makes the two overlay identities of an [`Action::Overlay`] agree: the embedded
+    /// definition takes the action's `overlay_id` (or donates its id when that is empty).
+    ///
+    /// The runner shows the embedded definition while the engine binds `close_on_exit`
+    /// under the action's id; a mismatch between them leaks the overlay. Called on every
+    /// path that accepts a rule definition (config load, share import, CLI apply).
+    pub fn normalize_overlay_ids(&mut self) {
+        match self {
+            Action::Overlay {
+                overlay_id,
+                custom_overlay,
+                ..
+            } => {
+                if let Some(definition) = custom_overlay.as_deref_mut() {
+                    if overlay_id.trim().is_empty() {
+                        *overlay_id = definition.id.clone();
+                    } else {
+                        definition.id = overlay_id.clone();
+                    }
+                }
+            }
+            Action::IfElse {
+                then_actions,
+                else_if_branches,
+                else_actions,
+                ..
+            } => {
+                for action in then_actions {
+                    action.normalize_overlay_ids();
+                }
+                for branch in else_if_branches {
+                    for action in &mut branch.actions {
+                        action.normalize_overlay_ids();
+                    }
+                }
+                for action in else_actions {
+                    action.normalize_overlay_ids();
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub fn duplicate_with_fresh_ids(&self) -> Self {
         let mut cloned = self.clone();
+        cloned.normalize_overlay_ids();
         cloned.refresh_overlay_ids();
         cloned
+    }
+
+    /// Value checks for one action, shared by `--rules-apply` and share import. Nested
+    /// if/else pipelines are walked by the callers.
+    pub fn validation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        match self {
+            Action::Wait {
+                mode,
+                condition,
+                seconds,
+                timeout_sec,
+                ..
+            } => {
+                if *mode == WaitMode::UntilCondition {
+                    match condition {
+                        Some(condition) => {
+                            errors.extend(condition.validation_errors().into_iter().map(str::to_string));
+                        }
+                        None => errors.push("an until_condition wait needs a condition".to_string()),
+                    }
+                }
+                if let Err(err) = duration_from_secs(*seconds) {
+                    errors.push(format!("wait seconds: {err}"));
+                }
+                if let Err(err) = duration_from_secs(*timeout_sec) {
+                    errors.push(format!("wait timeout_sec: {err}"));
+                }
+            }
+            Action::Check { condition } => {
+                errors.extend(condition.validation_errors().into_iter().map(str::to_string));
+            }
+            _ => {}
+        }
+        errors
     }
 }
 
@@ -1233,6 +1567,7 @@ impl Rule {
         cloned.auto_process_icon = self.auto_process_icon;
 
         // Ensure cloned overlay actions get their own fresh unique IDs so they don't collide with original rule
+        cloned.normalize();
         for action in cloned.actions.iter_mut() {
             action.refresh_overlay_ids();
         }
@@ -1248,6 +1583,43 @@ impl Rule {
         self.execution_count = 0;
         self.last_executed_at = None;
         self.quota_window_start = None;
+    }
+
+    /// True when `self` redefines the quota relative to `previous`: the reset period changed,
+    /// or a limit was enabled where there was none. Changing only the numeric limit keeps
+    /// the running counter, which is the documented update semantics.
+    pub fn quota_redefined_from(&self, previous: &Rule) -> bool {
+        self.quota_period != previous.quota_period
+            || (previous.max_executions.is_none() && self.max_executions.is_some())
+    }
+
+    /// Clears the quota counter and the custom-window anchor but keeps `last_executed_at`,
+    /// which schedule triggers use for deduplication.
+    pub fn reset_quota_progress(&mut self) {
+        self.execution_count = 0;
+        self.quota_window_start = None;
+    }
+
+    /// Description of the first tag colour that is not `#RRGGBB`, for apply/import rejection.
+    pub fn tag_color_error(&self) -> Option<String> {
+        self.tags.iter().find_map(|tag| {
+            let color = tag.color.as_deref()?;
+            if parse_hex_color(color).is_some() {
+                None
+            } else {
+                Some(format!(
+                    "tag \"{}\" has colour \"{}\"; expected #RRGGBB",
+                    tag.name, color
+                ))
+            }
+        })
+    }
+
+    /// Normalizes every action definition of the rule (currently overlay ids).
+    pub fn normalize(&mut self) {
+        for action in self.actions.iter_mut().chain(self.on_exit_actions.iter_mut()) {
+            action.normalize_overlay_ids();
+        }
     }
 
     fn parsed_timestamp(stamp: Option<&str>) -> Option<DateTime<Local>> {
@@ -1284,7 +1656,9 @@ impl Rule {
                     return false;
                 };
                 let Some(end) = period.custom_window_end(start) else {
-                    return true;
+                    // An unrepresentable window end (calendar overflow or a corrupt value)
+                    // is treated as lapsed so the quota cannot get stuck forever.
+                    return false;
                 };
                 now < end
             }
@@ -1375,64 +1749,6 @@ impl Rule {
                 };
                 Some(next)
             }
-        }
-    }
-
-    pub fn default_icon_glyph(&self) -> &'static str {
-        if let Some(action) = self.actions.first() {
-            match action {
-                Action::AudioControl { target, .. } => match target {
-                    AudioTarget::Playback => egui_phosphor::regular::SPEAKER_HIGH,
-                    AudioTarget::Microphone => egui_phosphor::regular::MICROPHONE,
-                    AudioTarget::Process => egui_phosphor::regular::FADERS,
-                },
-                Action::AudioFormat { .. } => egui_phosphor::regular::EQUALIZER,
-                Action::DefaultDevice { target, .. } => match target {
-                    AudioTarget::Playback => egui_phosphor::regular::HEADPHONES,
-                    AudioTarget::Microphone => egui_phosphor::regular::MICROPHONE,
-                    AudioTarget::Process => egui_phosphor::regular::FADERS,
-                },
-                Action::ExecuteScript { interpreter, .. } => match interpreter {
-                    ScriptType::PowerShell | ScriptType::Lua => egui_phosphor::regular::CODE,
-                    ScriptType::Batch => egui_phosphor::regular::TERMINAL_WINDOW,
-                },
-                Action::Macro { .. } => egui_phosphor::regular::KEYBOARD,
-                Action::StartProcess { .. } => egui_phosphor::regular::ROCKET,
-                Action::KillProcess { .. } => egui_phosphor::regular::STOP,
-                Action::Window { .. } => egui_phosphor::regular::APP_WINDOW,
-                Action::ProcessTuning { .. } => egui_phosphor::regular::GAUGE,
-                Action::PowerPlan { .. } => egui_phosphor::regular::PLUG,
-                Action::PlaySound { .. } => egui_phosphor::regular::MUSIC_NOTES,
-                Action::Firewall { .. } => egui_phosphor::regular::SHIELD,
-                Action::Notification { .. } => egui_phosphor::regular::BELL,
-                Action::SystemPower { .. } => egui_phosphor::regular::POWER,
-                Action::Wait { .. } => egui_phosphor::regular::HOURGLASS,
-                Action::Check { .. } => egui_phosphor::regular::CHECK_CIRCLE,
-                Action::HttpWebhook { .. } => egui_phosphor::regular::GLOBE,
-                Action::Display { .. } => egui_phosphor::regular::MONITOR,
-                Action::IfElse { .. } => egui_phosphor::regular::GIT_FORK,
-                Action::RuleControl { .. } => egui_phosphor::regular::FLOW_ARROW,
-                Action::TrimWorkingSet { .. } => egui_phosphor::regular::BROOM,
-                Action::DiscordRpcSet { .. } => egui_phosphor::regular::GAME_CONTROLLER,
-                Action::DiscordRpcClear => egui_phosphor::regular::X_CIRCLE,
-                Action::Archive { .. } => egui_phosphor::regular::ARCHIVE,
-                Action::FileSystem { .. } => egui_phosphor::regular::FOLDER,
-                Action::Overlay { .. } => egui_phosphor::regular::FRAME_CORNERS,
-            }
-        } else if let Some(trigger) = &self.trigger {
-            match trigger {
-                Trigger::Manual => egui_phosphor::regular::PLAY,
-                Trigger::Process { .. } => egui_phosphor::regular::CPU,
-                Trigger::WindowFocus { .. } => egui_phosphor::regular::EYE,
-                Trigger::ResourceThreshold { .. } => egui_phosphor::regular::CHART_LINE,
-                Trigger::GlobalHotkey { .. } => egui_phosphor::regular::COMMAND,
-                Trigger::SystemEvent { .. } => egui_phosphor::regular::LIGHTNING,
-                Trigger::Schedule { .. } => egui_phosphor::regular::CALENDAR,
-                Trigger::FileWatcher { .. } => egui_phosphor::regular::FOLDER_NOTCH_OPEN,
-                Trigger::Webhook { .. } => egui_phosphor::regular::GLOBE_HEMISPHERE_WEST,
-            }
-        } else {
-            egui_phosphor::regular::GEAR
         }
     }
 }
@@ -2468,6 +2784,698 @@ impl OverlayDefinition {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Strict JSON key checking
+// ---------------------------------------------------------------------------
+
+/// One key in a rule document that is not part of the rule model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownRuleKey {
+    /// JSON path of the object carrying the key, for example `rule.actions[0]`.
+    pub path: String,
+    /// The key itself.
+    pub key: String,
+}
+
+impl std::fmt::Display for UnknownRuleKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown key \"{}\" in {}", self.key, self.path)
+    }
+}
+
+/// Rejects unknown keys in one rule object before it is deserialized.
+///
+/// Serde silently drops unknown keys, so a typo such as `max_execution` used to apply and
+/// run with the default. This pass walks the raw JSON against the same key sets the types
+/// declare and reports every unknown key with its path. Callers decide the policy:
+/// `--rules-apply` and share import refuse the rule, the daemon load logs and skips it.
+pub fn validate_rule_keys(value: &serde_json::Value) -> Result<(), Vec<UnknownRuleKey>> {
+    let mut errors = Vec::new();
+    check_rule_keys(value, "rule", &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn check_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    allowed: &[&str],
+    path: &str,
+    errors: &mut Vec<UnknownRuleKey>,
+) {
+    for key in object.keys() {
+        if !allowed.contains(&key.as_str()) {
+            errors.push(UnknownRuleKey {
+                path: path.to_string(),
+                key: key.clone(),
+            });
+        }
+    }
+}
+
+fn variant_keys<'a>(
+    tag: &str,
+    table: &'a [(&'static str, &'static [&'static str])],
+) -> Option<&'a [&'static str]> {
+    table
+        .iter()
+        .find(|(name, _)| *name == tag)
+        .map(|(_, keys)| *keys)
+}
+
+fn check_rule_keys(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    check_keys(object, RULE_KEYS, path, errors);
+    if let Some(trigger) = object.get("trigger") {
+        check_trigger_keys(trigger, &format!("{path}.trigger"), errors);
+    }
+    if let Some(conditions) = object.get("conditions") {
+        check_condition_items(conditions, &format!("{path}.conditions"), errors);
+    }
+    for field in ["actions", "on_exit_actions"] {
+        if let Some(actions) = object.get(field) {
+            check_action_list(actions, &format!("{path}.{field}"), errors);
+        }
+    }
+    if let Some(tags) = object.get("tags").and_then(serde_json::Value::as_array) {
+        for (index, tag) in tags.iter().enumerate() {
+            let Some(tag) = tag.as_object() else { continue };
+            check_keys(tag, TAG_KEYS, &format!("{path}.tags[{index}]"), errors);
+        }
+    }
+    if let Some(period) = object.get("quota_period") {
+        check_quota_period(period, &format!("{path}.quota_period"), errors);
+    }
+}
+
+fn check_quota_period(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    check_keys(object, QUOTA_PERIOD_KEYS, path, errors);
+    if let Some(custom) = object.get("custom").and_then(serde_json::Value::as_object) {
+        check_keys(custom, CUSTOM_QUOTA_KEYS, &format!("{path}.custom"), errors);
+    }
+}
+
+fn check_trigger_keys(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let Some(tag) = object.get("$trigger_type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if let Some(allowed) = variant_keys(tag, TRIGGER_VARIANTS) {
+        check_keys(object, allowed, path, errors);
+    }
+}
+
+fn check_condition_items(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for (index, item) in items.iter().enumerate() {
+        let item_path = format!("{path}[{index}]");
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        if object.contains_key("condition") {
+            check_keys(object, CONDITION_ITEM_KEYS, &item_path, errors);
+            if let Some(condition) = object.get("condition") {
+                check_condition_keys(condition, &format!("{item_path}.condition"), errors);
+            }
+        } else {
+            check_condition_keys(item, &item_path, errors);
+        }
+    }
+}
+
+fn check_condition_keys(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let Some(tag) = object.get("$condition_type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if let Some(allowed) = variant_keys(tag, CONDITION_VARIANTS) {
+        check_keys(object, allowed, path, errors);
+    }
+}
+
+fn check_action_list(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(actions) = value.as_array() else {
+        return;
+    };
+    for (index, action) in actions.iter().enumerate() {
+        check_action(action, &format!("{path}[{index}]"), errors);
+    }
+}
+
+fn check_action(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let Some(tag) = object.get("$action_type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if let Some(allowed) = variant_keys(tag, ACTION_VARIANTS) {
+        check_keys(object, allowed, path, errors);
+    }
+    match tag {
+        "if_else" => {
+            if let Some(items) = object.get("conditions") {
+                check_condition_items(items, &format!("{path}.conditions"), errors);
+            }
+            if let Some(items) = object.get("then_actions") {
+                check_action_list(items, &format!("{path}.then_actions"), errors);
+            }
+            if let Some(branches) = object
+                .get("else_if_branches")
+                .and_then(serde_json::Value::as_array)
+            {
+                for (index, branch) in branches.iter().enumerate() {
+                    let branch_path = format!("{path}.else_if_branches[{index}]");
+                    let Some(branch) = branch.as_object() else {
+                        continue;
+                    };
+                    check_keys(branch, ELSE_IF_KEYS, &branch_path, errors);
+                    if let Some(items) = branch.get("conditions") {
+                        check_condition_items(items, &format!("{branch_path}.conditions"), errors);
+                    }
+                    if let Some(items) = branch.get("actions") {
+                        check_action_list(items, &format!("{branch_path}.actions"), errors);
+                    }
+                }
+            }
+            if let Some(items) = object.get("else_actions") {
+                check_action_list(items, &format!("{path}.else_actions"), errors);
+            }
+        }
+        "wait" => {
+            if let Some(condition) = object.get("condition") {
+                check_wait_condition(condition, &format!("{path}.condition"), errors);
+            }
+        }
+        "check" => {
+            if let Some(condition) = object.get("condition") {
+                check_condition_keys(condition, &format!("{path}.condition"), errors);
+            }
+        }
+        "macro" => {
+            if let Some(events) = object.get("events").and_then(serde_json::Value::as_array) {
+                for (index, event) in events.iter().enumerate() {
+                    let event_path = format!("{path}.events[{index}]");
+                    let Some(event) = event.as_object() else {
+                        continue;
+                    };
+                    if let Some(tag) = event.get("type").and_then(serde_json::Value::as_str) {
+                        if let Some(allowed) = variant_keys(tag, MACRO_EVENT_VARIANTS) {
+                            check_keys(event, allowed, &event_path, errors);
+                        }
+                    }
+                }
+            }
+        }
+        "overlay" => {
+            if let Some(overlay) = object.get("custom_overlay") {
+                check_overlay_definition(overlay, &format!("{path}.custom_overlay"), errors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_wait_condition(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    let Some(tag) = object.get("type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    if let Some(allowed) = variant_keys(tag, WAIT_CONDITION_VARIANTS) {
+        check_keys(object, allowed, path, errors);
+    }
+}
+
+fn check_overlay_definition(value: &serde_json::Value, path: &str, errors: &mut Vec<UnknownRuleKey>) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    check_keys(object, OVERLAY_DEFINITION_KEYS, path, errors);
+    if let Some(rect) = object.get("rect").and_then(serde_json::Value::as_object) {
+        check_keys(rect, OVERLAY_RECT_KEYS, &format!("{path}.rect"), errors);
+    }
+    if let Some(style) = object.get("style").and_then(serde_json::Value::as_object) {
+        check_keys(style, OVERLAY_STYLE_KEYS, &format!("{path}.style"), errors);
+    }
+    if let Some(elements) = object.get("elements").and_then(serde_json::Value::as_array) {
+        for (index, element) in elements.iter().enumerate() {
+            let element_path = format!("{path}.elements[{index}]");
+            let Some(element) = element.as_object() else {
+                continue;
+            };
+            let Some(tag) = element.get("type").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if let Some(allowed) = variant_keys(tag, OVERLAY_ELEMENT_VARIANTS) {
+                check_keys(element, allowed, &element_path, errors);
+            }
+            if tag == "interactive_control" {
+                if let Some(control) = element.get("control").and_then(serde_json::Value::as_object) {
+                    let control_path = format!("{element_path}.control");
+                    if let Some(kind) = control.get("type").and_then(serde_json::Value::as_str) {
+                        if let Some(allowed) = variant_keys(kind, INTERACTIVE_CONTROL_VARIANTS) {
+                            check_keys(control, allowed, &control_path, errors);
+                        }
+                    }
+                    for action_field in ["on_enable", "on_disable", "action"] {
+                        if let Some(action) = control.get(action_field) {
+                            check_overlay_click_action(
+                                action,
+                                &format!("{control_path}.{action_field}"),
+                                errors,
+                            );
+                        }
+                    }
+                }
+            }
+            for action_field in ["on_click", "on_finish"] {
+                if let Some(action) = element.get(action_field) {
+                    check_overlay_click_action(
+                        action,
+                        &format!("{element_path}.{action_field}"),
+                        errors,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn check_overlay_click_action(
+    value: &serde_json::Value,
+    path: &str,
+    errors: &mut Vec<UnknownRuleKey>,
+) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    check_keys(object, OVERLAY_CLICK_ACTION_KEYS, path, errors);
+    let Some(tag) = object.get("type").and_then(serde_json::Value::as_str) else {
+        return;
+    };
+    let payload_keys: &[&str] = match tag {
+        "trigger_rule" | "toggle_rule" => &["rule_id"],
+        "kill_process" | "trim_memory" => &["process_name"],
+        _ => return,
+    };
+    if let Some(payload) = object.get("payload").and_then(serde_json::Value::as_object) {
+        check_keys(payload, payload_keys, &format!("{path}.payload"), errors);
+    }
+}
+
+const RULE_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "description",
+    "is_enabled",
+    "cooldown_seconds",
+    "max_executions",
+    "quota_period",
+    "execution_count",
+    "stop_on_error",
+    "trigger",
+    "conditions",
+    "actions",
+    "on_exit_actions",
+    "custom_icon_path",
+    "auto_process_icon",
+    "last_executed_at",
+    "quota_window_start",
+    "tags",
+];
+
+const QUOTA_PERIOD_KEYS: &[&str] = &["custom"];
+const CUSTOM_QUOTA_KEYS: &[&str] = &["value", "unit"];
+const TAG_KEYS: &[&str] = &["name", "color", "icon"];
+const CONDITION_ITEM_KEYS: &[&str] = &["operator", "condition"];
+const ELSE_IF_KEYS: &[&str] = &["conditions", "actions"];
+
+const TRIGGER_VARIANTS: &[(&str, &[&str])] = &[
+    ("manual", &["$trigger_type"]),
+    (
+        "process",
+        &["$trigger_type", "process_name", "match_mode", "single_instance"],
+    ),
+    (
+        "window_focus",
+        &[
+            "$trigger_type",
+            "process_name",
+            "on_focus_gained",
+            "on_focus_lost",
+        ],
+    ),
+    (
+        "resource",
+        &[
+            "$trigger_type",
+            "process_name",
+            "cpu_percent",
+            "ram_mb",
+            "duration_sec",
+        ],
+    ),
+    (
+        "hotkey",
+        &[
+            "$trigger_type",
+            "key_combination",
+            "hold_mode",
+            "repeat_while_held",
+        ],
+    ),
+    (
+        "system",
+        &["$trigger_type", "event_type", "device_id_filter"],
+    ),
+    (
+        "schedule",
+        &[
+            "$trigger_type",
+            "schedule_type",
+            "interval_sec",
+            "daily_time",
+            "days_of_week",
+            "day_of_month",
+            "target_datetime",
+        ],
+    ),
+    (
+        "file_watcher",
+        &[
+            "$trigger_type",
+            "folder_path",
+            "filter_extension",
+            "on_created",
+            "on_modified",
+            "on_deleted",
+        ],
+    ),
+    ("webhook", &["$trigger_type", "endpoint_path"]),
+];
+
+const CONDITION_VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "process_running",
+        &[
+            "$condition_type",
+            "process_name",
+            "match_mode",
+            "must_be_running",
+        ],
+    ),
+    (
+        "window_focused",
+        &[
+            "$condition_type",
+            "process_name",
+            "match_mode",
+            "must_be_focused",
+        ],
+    ),
+    (
+        "time_range",
+        &["$condition_type", "start_time", "end_time", "days_of_week"],
+    ),
+    (
+        "event",
+        &["$condition_type", "event_type", "idle_duration_sec"],
+    ),
+    (
+        "resource",
+        &["$condition_type", "process_name", "cpu_percent", "ram_mb"],
+    ),
+    (
+        "file_watcher",
+        &["$condition_type", "path", "filter_extension", "must_exist"],
+    ),
+    (
+        "rule_running",
+        &["$condition_type", "rule_id", "must_be_running"],
+    ),
+];
+
+const ACTION_VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "start_process",
+        &[
+            "$action_type",
+            "file_path",
+            "arguments",
+            "working_directory",
+            "run_as_admin",
+            "only_if_not_running",
+            "run_hidden",
+            "close_on_exit",
+        ],
+    ),
+    (
+        "kill_process",
+        &["$action_type", "process_name", "kill_tree", "force"],
+    ),
+    (
+        "window",
+        &[
+            "$action_type",
+            "target_process",
+            "window_action",
+            "x",
+            "y",
+            "width",
+            "height",
+            "transparency",
+        ],
+    ),
+    (
+        "process_tuning",
+        &["$action_type", "target_process", "priority", "affinity_mask", "trim_memory"],
+    ),
+    ("power_plan", &["$action_type", "plan"]),
+    (
+        "play_sound",
+        &["$action_type", "file_path", "play_beep", "beep_frequency", "beep_duration_ms"],
+    ),
+    ("firewall", &["$action_type", "process_name", "action"]),
+    ("notification", &["$action_type", "title", "message"]),
+    (
+        "http_webhook",
+        &["$action_type", "url", "method", "headers", "payload"],
+    ),
+    (
+        "audio_control",
+        &[
+            "$action_type",
+            "target",
+            "process_name",
+            "action_type",
+            "volume_level",
+            "left_volume",
+            "right_volume",
+        ],
+    ),
+    (
+        "audio_format",
+        &["$action_type", "target", "device_name", "sample_rate", "bit_depth", "channels"],
+    ),
+    ("default_device", &["$action_type", "target", "device_name"]),
+    (
+        "execute_script",
+        &["$action_type", "interpreter", "script", "run_in_window"],
+    ),
+    (
+        "macro",
+        &["$action_type", "preset_id", "operation", "events", "repeat", "speed", "infinite"],
+    ),
+    ("system_power", &["$action_type", "power_type"]),
+    (
+        "wait",
+        &["$action_type", "mode", "seconds", "condition", "timeout_sec", "timeout_policy"],
+    ),
+    ("check", &["$action_type", "condition"]),
+    (
+        "display",
+        &["$action_type", "width", "height", "refresh_rate", "monitor_index"],
+    ),
+    (
+        "if_else",
+        &["$action_type", "conditions", "then_actions", "else_if_branches", "else_actions"],
+    ),
+    (
+        "rule_control",
+        &["$action_type", "rule_id", "operation", "wait"],
+    ),
+    (
+        "trim_working_set",
+        &["$action_type", "target_process", "soft_limit_mb", "skip_if_focused"],
+    ),
+    (
+        "discord_rpc_set",
+        &[
+            "$action_type",
+            "app_id",
+            "details",
+            "state",
+            "large_image",
+            "large_text",
+            "small_image",
+            "small_text",
+            "show_elapsed",
+            "buttons",
+            "auto_clear_on_process_exit",
+        ],
+    ),
+    ("discord_rpc_clear", &["$action_type"]),
+    (
+        "archive",
+        &["$action_type", "operation", "format", "source_path", "destination_path", "compression_level", "overwrite"],
+    ),
+    (
+        "file_system",
+        &["$action_type", "operation", "path", "target_path", "content", "create_parents", "overwrite"],
+    ),
+    (
+        "overlay",
+        &["$action_type", "overlay_id", "custom_overlay", "operation", "override_text", "duration_ms", "close_on_exit"],
+    ),
+];
+
+const WAIT_CONDITION_VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "window_opened",
+        &["type", "process_name", "match_mode"],
+    ),
+    (
+        "window_closed",
+        &["type", "process_name", "match_mode"],
+    ),
+    (
+        "process_started",
+        &["type", "process_name", "match_mode"],
+    ),
+    (
+        "process_exited",
+        &["type", "process_name", "match_mode"],
+    ),
+    ("hotkey", &["type", "key_combination"]),
+    ("file", &["type", "path", "condition"]),
+    ("rule_started", &["type", "rule_id"]),
+    ("rule_stopped", &["type", "rule_id"]),
+];
+
+const MACRO_EVENT_VARIANTS: &[(&str, &[&str])] = &[
+    ("key_down", &["type", "key"]),
+    ("key_up", &["type", "key"]),
+    ("key_press", &["type", "key"]),
+    ("text", &["type", "text", "delay_ms", "organic"]),
+    (
+        "mouse_move",
+        &["type", "x", "y", "coord_mode", "smooth", "duration_ms", "organic"],
+    ),
+    ("mouse_down", &["type", "button"]),
+    ("mouse_up", &["type", "button"]),
+    (
+        "mouse_click",
+        &["type", "button", "clicks", "x", "y", "coord_mode", "smooth"],
+    ),
+    ("mouse_wheel", &["type", "delta"]),
+    ("delay", &["type", "ms", "organic", "jitter_percent"]),
+];
+
+const OVERLAY_DEFINITION_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "rect",
+    "anchor",
+    "click_through",
+    "draggable",
+    "opacity",
+    "style",
+    "elements",
+    "auto_hide_seconds",
+    "target_process",
+    "hide_from_capture",
+    "fade_in_ms",
+    "fade_out_ms",
+    "monitor_index",
+    "close_with_target",
+];
+const OVERLAY_RECT_KEYS: &[&str] = &["x", "y", "width", "height"];
+const OVERLAY_STYLE_KEYS: &[&str] = &[
+    "bg_color",
+    "border_color",
+    "border_width",
+    "corner_radius",
+    "glow",
+];
+const OVERLAY_CLICK_ACTION_KEYS: &[&str] = &["type", "payload"];
+
+const OVERLAY_ELEMENT_VARIANTS: &[(&str, &[&str])] = &[
+    (
+        "text",
+        &["type", "id", "text", "font_size", "color", "x", "y", "width", "height", "lock_aspect", "bold", "font_family", "rotation", "on_click"],
+    ),
+    (
+        "image",
+        &["type", "id", "path", "x", "y", "width", "height", "opacity", "lock_aspect", "rotation", "on_click"],
+    ),
+    (
+        "crosshair",
+        &["type", "id", "style", "size", "color", "center_dot", "thickness", "gap", "x", "y", "rotation"],
+    ),
+    (
+        "shape",
+        &["type", "id", "shape_type", "x", "y", "width", "height", "thickness", "color", "filled", "fill_color", "corner_radius", "lock_aspect", "rotation", "on_click"],
+    ),
+    (
+        "graph",
+        &["type", "id", "metric", "style", "sample_count", "color", "fill_color", "bg_color", "show_current_val", "x", "y", "width", "height", "rotation"],
+    ),
+    (
+        "clock_timer",
+        &["type", "id", "mode", "format_str", "countdown_total_ms", "countdown_remaining_ms", "stopwatch_elapsed_ms", "is_running", "font_size", "color", "bg_color", "bold", "font_family", "x", "y", "width", "height", "rotation", "on_finish"],
+    ),
+    (
+        "interactive_control",
+        &["type", "id", "control", "color", "bg_color", "active_color", "x", "y", "width", "height", "rotation"],
+    ),
+    (
+        "system_telemetry",
+        &["type", "id", "kind", "style", "color", "bg_color", "x", "y", "width", "height", "rotation", "on_click"],
+    ),
+    (
+        "media_widget",
+        &["type", "id", "show_controls", "compact", "color", "bg_color", "x", "y", "width", "height", "rotation"],
+    ),
+    (
+        "key_visualizer",
+        &["type", "id", "layout", "max_keys", "decay_seconds", "show_modifiers_only", "color", "bg_color", "active_color", "x", "y", "width", "height", "rotation"],
+    ),
+];
+
+const INTERACTIVE_CONTROL_VARIANTS: &[(&str, &[&str])] = &[
+    ("button", &["type", "label", "icon", "action"]),
+    (
+        "toggle_switch",
+        &["type", "label", "is_active", "bind_rule_id", "on_enable", "on_disable"],
+    ),
+    ("slider", &["type", "label", "value", "min", "max", "bind_target"]),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2569,103 +3577,6 @@ mod tests {
         } else {
             panic!("Expected Action::Overlay");
         }
-    }
-
-    #[test]
-    fn test_rule_default_icon_glyph_per_action_and_trigger() {
-        let mut rule = Rule {
-            id: "r1".into(),
-            name: "Test".into(),
-            description: "".into(),
-            is_enabled: true,
-            cooldown_seconds: 0.0,
-            max_executions: None,
-            quota_period: None,
-            execution_count: 0,
-            stop_on_error: true,
-            trigger: None,
-            actions: vec![],
-            on_exit_actions: vec![],
-            custom_icon_path: None,
-            auto_process_icon: false,
-            conditions: vec![],
-            tags: vec![],
-            last_executed_at: None,
-            quota_window_start: None,
-        };
-
-        // Fallback when empty
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::GEAR);
-
-        // Manual trigger icon
-        rule.trigger = Some(Trigger::Manual);
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::PLAY);
-
-        // Action icons
-        rule.actions = vec![Action::StartProcess {
-            file_path: "app.exe".into(),
-            arguments: "".into(),
-            working_directory: None,
-            run_as_admin: false,
-            only_if_not_running: false,
-            run_hidden: false,
-            close_on_exit: false,
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::ROCKET);
-
-        rule.actions = vec![Action::KillProcess {
-            process_name: "app.exe".into(),
-            kill_tree: true,
-            force: false,
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::STOP);
-
-        rule.actions = vec![Action::ExecuteScript {
-            interpreter: ScriptType::PowerShell,
-            script: "echo 1".into(),
-            run_in_window: false,
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::CODE);
-
-        rule.actions = vec![Action::Wait {
-            mode: WaitMode::Timer,
-            seconds: 5.0,
-            condition: None,
-            timeout_sec: 30.0,
-            timeout_policy: WaitTimeoutPolicy::Abort,
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::HOURGLASS);
-
-        rule.actions = vec![Action::Check {
-            condition: RuleCondition::default_process(),
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::CHECK_CIRCLE);
-
-        rule.actions = vec![Action::AudioControl {
-            target: AudioTarget::Microphone,
-            process_name: None,
-            action_type: AudioVolumeAction::Mute,
-            volume_level: 100,
-            left_volume: None,
-            right_volume: None,
-        }];
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::MICROPHONE);
-
-        // Trigger icons when actions empty
-        rule.actions.clear();
-        rule.trigger = Some(Trigger::Process {
-            process_name: "notepad.exe".into(),
-            match_mode: ProcessMatchMode::Exact,
-            single_instance: false,
-        });
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::CPU);
-
-        rule.trigger = Some(Trigger::SystemEvent {
-            event_type: SystemEventType::SessionLock,
-            idle_duration_sec: 0,
-            device_id_filter: None,
-        });
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::LIGHTNING);
     }
 
     #[test]
@@ -2962,12 +3873,6 @@ mod tests {
         assert_eq!(serialized, r#"{"$trigger_type":"manual"}"#);
         let deserialized: Trigger = serde_json::from_str(&serialized).unwrap();
         assert_eq!(deserialized, Trigger::Manual);
-
-        let rule = Rule {
-            trigger: Some(Trigger::Manual),
-            ..Default::default()
-        };
-        assert_eq!(rule.default_icon_glyph(), egui_phosphor::regular::PLAY);
     }
 
     #[test]
@@ -3002,7 +3907,6 @@ mod tests {
             process_name: "game.exe".to_string(),
             cpu_percent: Some(75.5),
             ram_mb: Some(2048),
-            duration_sec: 10,
         };
         let serialized = serde_json::to_string(&res_cond).unwrap();
         let deserialized: RuleCondition = serde_json::from_str(&serialized).unwrap();
@@ -3661,5 +4565,340 @@ mod tests {
             minutes.quota_period,
             Some(QuotaPeriod::Custom { value: 30, unit: QuotaUnit::Minutes })
         );
+    }
+
+    #[test]
+    fn test_duration_from_secs_rejects_invalid_values() {
+        assert_eq!(
+            duration_from_secs(1.5).expect("valid").as_millis(),
+            1_500
+        );
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, MAX_WAIT_SECONDS + 1.0, 1e300] {
+            assert!(
+                duration_from_secs(invalid).is_err(),
+                "{invalid} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_quota_window_rejects_invalid_and_lapses_on_overflow() {
+        for value in [0, QuotaPeriod::MAX_CUSTOM_WINDOW_UNITS + 1] {
+            assert!(
+                QuotaPeriod::Custom { value, unit: QuotaUnit::Minutes }
+                    .validation_error()
+                    .is_some(),
+                "value {value} must be rejected"
+            );
+        }
+        assert!(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Minutes }
+            .validation_error()
+            .is_none());
+        assert!(QuotaPeriod::Day.validation_error().is_none());
+
+        // An unrepresentable window end must read as a lapsed window, never as "still counting".
+        let extreme = Local
+            .with_ymd_and_hms(262_140, 1, 1, 0, 0, 0)
+            .single()
+            .expect("chrono supports this year");
+        assert!(QuotaPeriod::Custom {
+            value: QuotaPeriod::MAX_CUSTOM_WINDOW_UNITS,
+            unit: QuotaUnit::Months,
+        }
+        .custom_window_end(extreme)
+        .is_none());
+
+        // A corrupt anchor is likewise not a current window.
+        let mut rule = Rule {
+            max_executions: Some(1),
+            quota_period: Some(QuotaPeriod::Custom {
+                value: 1,
+                unit: QuotaUnit::Days,
+            }),
+            execution_count: 1,
+            quota_window_start: Some("not a timestamp".into()),
+            ..Default::default()
+        };
+        let now = local_at(2026, 11, 19, 12, 0);
+        assert_eq!(rule.quota_used(now), 0);
+        assert!(!rule.quota_exhausted(now));
+        assert!(rule.normalize_quota(now));
+    }
+
+    #[test]
+    fn test_parse_hex_color_rejects_non_ascii_tag_colour() {
+        assert_eq!(parse_hex_color("#10B981"), Some([0x10, 0xB9, 0x81]));
+        assert_eq!(parse_hex_color("10b981"), Some([0x10, 0xB9, 0x81]));
+        for invalid in ["a\u{e9}\u{20ac}", "12345", "#12345G", "1234567"] {
+            assert_eq!(parse_hex_color(invalid), None, "{invalid}");
+        }
+
+        let fallback = egui::Color32::from_rgb(1, 2, 3);
+        let broken = RuleTag::new("Broken").with_color("a\u{e9}\u{20ac}");
+        assert_eq!(broken.parse_color(fallback), fallback);
+
+        let mut rule = Rule {
+            tags: vec![broken],
+            ..Default::default()
+        };
+        assert!(rule.tag_color_error().is_some());
+        rule.tags = vec![RuleTag::new("Good").with_color("#10B981")];
+        assert!(rule.tag_color_error().is_none());
+    }
+
+    #[test]
+    fn test_quota_redefinition_helpers() {
+        let lifetime = Rule::default();
+        let mut defined = lifetime.clone();
+        defined.max_executions = Some(5);
+        assert!(defined.quota_redefined_from(&lifetime));
+
+        // Changing only the numeric limit keeps the running counter.
+        let mut same = defined.clone();
+        same.max_executions = Some(9);
+        assert!(!same.quota_redefined_from(&defined));
+
+        let mut periodic = same.clone();
+        periodic.quota_period = Some(QuotaPeriod::Day);
+        assert!(periodic.quota_redefined_from(&same));
+
+        let mut progress = defined.clone();
+        progress.execution_count = 4;
+        progress.last_executed_at = Some("2026-11-19 10:00:00".into());
+        progress.quota_window_start = Some("2026-11-19 09:00:00".into());
+        progress.reset_quota_progress();
+        assert_eq!(progress.execution_count, 0);
+        assert!(progress.quota_window_start.is_none());
+        // Schedules deduplicate on this stamp, so it must survive a quota reset.
+        assert_eq!(
+            progress.last_executed_at.as_deref(),
+            Some("2026-11-19 10:00:00")
+        );
+    }
+
+    #[test]
+    fn test_overlay_ids_normalize_across_load_and_nesting() {
+        let mut action = Action::Overlay {
+            overlay_id: "action_id".into(),
+            custom_overlay: Some(Box::new(OverlayDefinition {
+                id: "definition_id".into(),
+                ..Default::default()
+            })),
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: true,
+        };
+        action.normalize_overlay_ids();
+        if let Action::Overlay {
+            overlay_id,
+            custom_overlay,
+            ..
+        } = &action
+        {
+            assert_eq!(overlay_id, "action_id");
+            assert_eq!(
+                custom_overlay.as_ref().map(|definition| definition.id.as_str()),
+                Some("action_id")
+            );
+        } else {
+            panic!("expected an overlay action");
+        }
+
+        // An empty action id adopts the embedded definition id instead.
+        let mut empty = Action::Overlay {
+            overlay_id: String::new(),
+            custom_overlay: Some(Box::new(OverlayDefinition {
+                id: "embedded".into(),
+                ..Default::default()
+            })),
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        };
+        empty.normalize_overlay_ids();
+        if let Action::Overlay { overlay_id, .. } = &empty {
+            assert_eq!(overlay_id, "embedded");
+        }
+
+        let mut nested = Rule {
+            actions: vec![Action::IfElse {
+                conditions: Vec::new(),
+                then_actions: vec![action],
+                else_if_branches: Vec::new(),
+                else_actions: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        nested.normalize();
+        if let Action::IfElse { then_actions, .. } = &nested.actions[0] {
+            if let Action::Overlay { custom_overlay, .. } = &then_actions[0] {
+                assert_eq!(
+                    custom_overlay.as_ref().map(|definition| definition.id.as_str()),
+                    Some("action_id")
+                );
+            } else {
+                panic!("expected a nested overlay action");
+            }
+        } else {
+            panic!("expected an if_else action");
+        }
+    }
+
+    #[test]
+    fn test_validate_rule_keys_rejects_typos() {
+        let rule = Rule {
+            id: "r".into(),
+            name: "R".into(),
+            actions: vec![Action::StartProcess {
+                file_path: "app.exe".into(),
+                arguments: String::new(),
+                working_directory: None,
+                run_as_admin: false,
+                only_if_not_running: false,
+                run_hidden: false,
+                close_on_exit: false,
+            }],
+            tags: vec![RuleTag::new("tag")],
+            ..Default::default()
+        };
+        let mut value = serde_json::to_value(&rule).expect("serialize");
+        assert!(validate_rule_keys(&value).is_ok());
+
+        value["max_execution"] = serde_json::json!(5);
+        value["actions"][0]["max_execution"] = serde_json::json!(5);
+        value["tags"][0]["colour"] = serde_json::json!("#fff");
+        let errors = validate_rule_keys(&value).expect_err("typos must be reported");
+        let rendered = errors
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(rendered.contains("max_execution"), "{rendered}");
+        assert!(rendered.contains("actions[0]"), "{rendered}");
+        assert!(rendered.contains("tags[0]"), "{rendered}");
+    }
+
+    #[test]
+    fn test_schedule_per_type_validation() {
+        let schedule = |schedule_type: ScheduleType,
+                        interval_sec: u64,
+                        daily_time: Option<&str>,
+                        days_of_week: Vec<u8>,
+                        day_of_month: Option<u8>,
+                        target_datetime: Option<&str>| Trigger::Schedule {
+            schedule_type,
+            interval_sec,
+            daily_time: daily_time.map(str::to_string),
+            days_of_week,
+            day_of_month,
+            target_datetime: target_datetime.map(str::to_string),
+        };
+
+        assert!(schedule(ScheduleType::Daily, 0, None, vec![], None, None)
+            .schedule_errors()
+            .iter()
+            .any(|error| error.contains("daily_time")));
+        assert!(!schedule(ScheduleType::Daily, 0, Some("9:00"), vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(schedule(ScheduleType::Daily, 0, Some("09:00"), vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(schedule(ScheduleType::Daily, 0, Some("09:00:00"), vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(!schedule(ScheduleType::Interval, 0, None, vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(!schedule(ScheduleType::OneShot, 0, None, vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(schedule(
+            ScheduleType::OneShot,
+            0,
+            None,
+            vec![],
+            None,
+            Some("2026-12-31 23:59")
+        )
+        .schedule_errors()
+        .is_empty());
+        assert!(!schedule(ScheduleType::Monthly, 0, Some("12:00:00"), vec![], None, None)
+            .schedule_errors()
+            .is_empty());
+        assert!(schedule(
+            ScheduleType::Monthly,
+            0,
+            Some("12:00:00"),
+            vec![],
+            Some(1),
+            None
+        )
+        .schedule_errors()
+        .is_empty());
+        assert!(!schedule(ScheduleType::Daily, 0, Some("09:00"), vec![0], None, None)
+            .schedule_errors()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_time_of_day_and_day_validators() {
+        assert!(is_valid_hh_mm("00:00"));
+        assert!(is_valid_hh_mm("23:59"));
+        assert!(!is_valid_hh_mm("9:00"));
+        assert!(!is_valid_hh_mm("24:00"));
+        assert!(!is_valid_hh_mm("23:60"));
+        assert!(!is_valid_hh_mm("23:5"));
+        assert!(is_valid_hh_mm_ss("23:59:59"));
+        assert!(!is_valid_hh_mm_ss("23:59:60"));
+        assert!(days_of_week_are_valid(&[1, 7]));
+        assert!(!days_of_week_are_valid(&[0]));
+        assert!(!days_of_week_are_valid(&[8]));
+        assert!(is_valid_day_of_month(31));
+        assert!(!is_valid_day_of_month(0));
+        assert!(!is_valid_day_of_month(32));
+    }
+
+    #[test]
+    fn test_resource_threshold_and_wait_validation() {
+        assert_eq!(resource_threshold_errors("", None, None).len(), 2);
+        assert_eq!(resource_threshold_errors("game.exe", None, None).len(), 1);
+        assert!(resource_threshold_errors("game.exe", Some(80.0), None).is_empty());
+
+        let missing_condition = Action::Wait {
+            mode: WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: WaitTimeoutPolicy::Abort,
+        };
+        assert!(missing_condition
+            .validation_errors()
+            .iter()
+            .any(|error| error.contains("needs a condition")));
+
+        let negative_timer = Action::Wait {
+            mode: WaitMode::Timer,
+            seconds: -5.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: WaitTimeoutPolicy::Abort,
+        };
+        assert!(!negative_timer.validation_errors().is_empty());
+
+        let empty_wait = WaitCondition::ProcessStarted {
+            process_name: String::new(),
+            match_mode: ProcessMatchMode::Exact,
+        };
+        assert!(!empty_wait.validation_errors().is_empty());
+
+        let bad_range = RuleCondition::TimeRange {
+            start_time: "09:00".into(),
+            end_time: "25:00".into(),
+            days_of_week: vec![1, 2],
+        };
+        assert!(!bad_range.validation_errors().is_empty());
     }
 }

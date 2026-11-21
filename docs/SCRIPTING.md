@@ -53,7 +53,7 @@ The `ph` table is the only global Synector adds.
 | `ph.get(key)` | string | `""` when the key is missing |
 | `ph.set(key, value)` | — | Writes to a run-local table; return a value instead (see Output) |
 | `ph.log(text)` | — | Writes `[LUA] text` to the daemon's standard output |
-| `ph.run_cmd(command)` | string | Runs `cmd /C <command>`, returns stdout; a failure comes back as an `Error: ...` string instead of raising |
+| `ph.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure or timeout comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
 | `ph.overlay_show(id)` | — | Shows a saved overlay |
 | `ph.overlay_hide(id)` | — | Hides it |
 | `ph.overlay_toggle(id)` | — | Shows or hides it |
@@ -62,13 +62,30 @@ The `ph` table is the only global Synector adds.
 Overlay lookups accept the overlay id or its name (case-insensitive). When `overlay_show` or
 `overlay_toggle` gets an unknown id, it falls back to a default overlay instead of failing.
 
+## Limits
+
+Every execution is bounded so a runaway script cannot pin a daemon worker: 5,000,000 Lua
+instructions and 3 seconds of wall-clock time enforced by the VM hook, and a 64 MiB Lua heap. The
+hook is reached only between Lua instructions, so a native call such as `ph.run_cmd` is not
+interrupted by it and is bounded separately by its own 5 s deadline; one execution can therefore
+hold a daemon worker for roughly the 3 s budget plus such a call. A returned string longer than
+64 KiB fails the step. `ph.set` stores at most 64 output variables, 256-byte keys and 16 KiB values;
+exceeding a cap raises a Lua error.
+
+`ph.run_cmd` captures at most 64 KiB of stdout — cut output ends with `[output truncated]` — and
+2 KiB of stderr, and kills the child process after 5 seconds (`Error: command timed out after 5s`).
+A non-zero exit returns `Error: exit code <code>`, followed by the trimmed stderr when it is not
+empty.
+
 ## Output
 
 The value the chunk returns becomes the action output: strings are used as is, integers and floats are
 converted, booleans become `true`/`false`, and anything else (tables, functions, `nil`) counts as
 empty. The engine stores a non-empty result in the run context as `PrevOutput` and `StepN.Output`
 (`Step1.Output` for the first step), so later actions can use `{PrevOutput}` or `{Step1.Output}`.
-`ph.set` writes into a run-local table that nothing reads back today — return the value instead.
+An If/Else step passes on the output of the last output-bearing action in the branch it took, so a
+script nested in a branch feeds the parent pipeline's tokens like a top-level step. `ph.set` writes
+into a run-local table that nothing reads back today — return the value instead.
 
 ## Errors
 

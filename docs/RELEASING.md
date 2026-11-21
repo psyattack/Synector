@@ -4,21 +4,15 @@ How a release is cut: which files change, in what order, and what automation pub
 user-facing result is described in the README and in `CHANGELOG.md`; this document covers the
 mechanics only.
 
-Releases are cut by maintainers. Contributors land changes through pull requests; they do not bump the
-version in `Cargo.toml` or `build.rs`, edit `CHANGELOG.md` or push `v*` tags.
+Releases are cut by maintainers. Contributors land changes through pull requests; they do not bump
+the version in `Cargo.toml`, edit `CHANGELOG.md` or push `v*` tags.
 
 ## Version source
 
-The version is not derived; it is written in two places and they must match:
-
-| File | What changes | Example for 2.9.2 |
-|---|---|---|
-| `Cargo.toml` | `version = "X.Y.Z"` | `version = "2.9.2"` |
-| `build.rs` | `FILEVERSION` and `PRODUCTVERSION`, packed as `0x00AA00BB00CC0000` | `0x0002000900020000` |
-
-`build.rs` values are what Explorer shows in the executable's file properties. Each dotted component
-fills one 16-bit field, so `2.9.2` is `0x0002 0009 0002 0000` and the fourth field stays zero;
-`2.10.0` would be `0x0002 000A 0000 0000`.
+The version is single-sourced in `Cargo.toml` (`version = "X.Y.Z"`). `winres` derives both the
+numeric `FILEVERSION`/`PRODUCTVERSION` resource fields and the string version Explorer shows from
+`CARGO_PKG_VERSION`; `build.rs` supplies only the icon, manifest and descriptive strings, so do not
+add a second version there.
 
 `Cargo.lock` records the package version, so it changes on the same commit.
 
@@ -56,27 +50,32 @@ is pushed. Entry shape:
 ## Steps
 
 1. Pick the SemVer bump: breaking change — major, new feature — minor, fixes only — patch.
-2. Update `Cargo.toml` and `build.rs` as described in [Version source](#version-source).
+2. Update `Cargo.toml` as described in [Version source](#version-source); `Cargo.lock` follows.
 3. Write the `CHANGELOG.md` section per [Changelog entry](#changelog-entry).
 4. Run `cargo check`, `cargo test` and `cargo clippy -- -D warnings` on the release commit.
 5. Commit with the release message used in this repository, for example
-   `chore(release): bump version to 2.9.2`, including `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock` and
-   `build.rs`.
-6. Tag the commit `vX.Y.Z` and push the tag. Pushing `v*` is what starts the release workflow.
+   `chore(release): bump version to 2.9.2`, including `CHANGELOG.md`, `Cargo.toml` and `Cargo.lock`.
+6. Tag the commit `vX.Y.Z` and push the tag. Pushing `v*` is what starts the release workflow; the
+   tag name must equal `v<Cargo.toml version>` or the workflow aborts.
 7. Watch `.github/workflows/release.yml` and verify the published release.
 
 ## What CI publishes
 
-`.github/workflows/release.yml` runs on a `v*` tag (or manually through `workflow_dispatch`) on
+`.github/workflows/release.yml` runs on a `v*` tag. A manual `workflow_dispatch` must select the tag
+too: the workflow aborts unless `GITHUB_REF_TYPE` is `tag` and the ref name equals
+`v<Cargo.toml version>`. That gate exports `APP_VERSION` for every later step. The job runs on
 `windows-latest`:
 
-1. `cargo build --release`.
+1. `cargo build --release --locked`, then the executable's `FileVersion` and `ProductVersion`
+   resources are asserted to equal `<version>.0` before anything is packaged.
 2. Portable archive `Synector-v<version>-Windows-x64.zip`: `Synector.exe` plus `LICENSE` and
-   `NOTICES.md`. The version is read from `Cargo.toml`, falling back to the tag name.
-3. Inno Setup 7.1.1 compiler is downloaded and extracted without installing it, then
-   `installer/synector.iss` is compiled with `/DAppVersion=<version>` into
-   `Synector-Setup-<version>-Windows-x64.exe`. The installer places `LICENSE` and `NOTICES.md` next
-   to the executable.
+   `NOTICES.md`. The version comes from the tag gate (`APP_VERSION`), not from a second Cargo.toml
+   parse and not from a tag-name fallback.
+3. Inno Setup 7.1.1 is downloaded from a pinned URL and accepted only when its SHA-256 matches the
+   pinned `INNO_SETUP_SHA256`; a mismatch aborts the release before the installer runs. The compiler
+   is extracted without installing, then `installer/synector.iss` is compiled with
+   `/DAppVersion=<version>` into `Synector-Setup-<version>-Windows-x64.exe`. The installer places
+   `LICENSE` and `NOTICES.md` next to the executable.
 4. `SHA256SUMS.txt`: lowercase SHA-256 hashes, one per artifact, sorted by file name.
 5. Release notes extracted from the first `CHANGELOG.md` section, with a generic fallback if the
    heading is missing.

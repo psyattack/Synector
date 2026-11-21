@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Mutex as TokioMutex;
 use crate::daemon::engine::DaemonEngine;
 
@@ -8,7 +8,6 @@ static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static GLOBAL_ICON_PATH: Mutex<Option<String>> = Mutex::new(None);
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static HIDE_TRAY_ICON: AtomicBool = AtomicBool::new(false);
-static IS_MASKED: AtomicBool = AtomicBool::new(false);
 
 static AVAILABLE_UPDATE: Mutex<Option<crate::updater::ReleaseInfo>> = Mutex::new(None);
 static GLOBAL_ENGINE: Mutex<Option<Arc<TokioMutex<DaemonEngine>>>> = Mutex::new(None);
@@ -69,25 +68,68 @@ use windows::Win32::UI::Shell::{
 };
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DispatchMessageW,
-    GetCursorPos, GetMessageW, GetSystemMetrics, InsertMenuItemW, LoadIconW, LoadImageW,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    SetMenuDefaultItem, TrackPopupMenu, TranslateMessage, HICON, IDI_APPLICATION, IMAGE_ICON,
-    LR_LOADFROMFILE, MENUITEMINFOW, MFS_DISABLED, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID,
-    MIIM_STATE, MIIM_STRING, SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
-    WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
+    CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW,
+    GetCursorPos, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, InsertMenuItemW, LoadIconW,
+    LoadImageW, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetMenuDefaultItem, SetWindowLongPtrW, TrackPopupMenu, TranslateMessage,
+    GWLP_USERDATA, HICON, IDI_APPLICATION, IMAGE_ICON, LR_LOADFROMFILE, MENUITEMINFOW,
+    MFS_DISABLED, MFT_SEPARATOR, MIIM_BITMAP, MIIM_FTYPE, MIIM_ID, MIIM_STATE, MIIM_STRING,
+    SM_CXSMICON, SM_CYSMICON, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP,
+    WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW,
 };
 #[cfg(windows)]
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 
 const WM_TRAYICON: u32 = WM_APP + 1;
 const WM_UPDATE_ICON: u32 = WM_APP + 2;
+const WM_TRAY_VISIBILITY: u32 = WM_APP + 3;
 const IDM_OPEN: usize = 1001;
 const IDM_UPDATE: usize = 1002;
 const IDM_EXIT: usize = 1003;
 
+/// An icon handle together with its ownership: `LoadIconW` returns shared handles that must not
+/// be destroyed, while `LoadImageW`/`ExtractIconExW` return caller-owned handles that must.
 #[cfg(windows)]
-pub fn load_tray_icon(custom_path: Option<&str>) -> HICON {
+struct TrayIconHandle {
+    handle: HICON,
+    owned: bool,
+}
+
+#[cfg(windows)]
+impl TrayIconHandle {
+    fn shared(handle: HICON) -> Self {
+        Self {
+            handle,
+            owned: false,
+        }
+    }
+
+    fn owned(handle: HICON) -> Self {
+        Self {
+            handle,
+            owned: true,
+        }
+    }
+
+    #[cfg(test)]
+    fn is_owned(&self) -> bool {
+        self.owned
+    }
+}
+
+#[cfg(windows)]
+impl Drop for TrayIconHandle {
+    fn drop(&mut self) {
+        if self.owned && !self.handle.is_invalid() {
+            unsafe {
+                let _ = DestroyIcon(self.handle);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn load_tray_icon(custom_path: Option<&str>) -> TrayIconHandle {
     unsafe {
         // 1. If custom path provided in config
         if let Some(path) = custom_path {
@@ -109,7 +151,7 @@ pub fn load_tray_icon(custom_path: Option<&str>) -> HICON {
                             LR_LOADFROMFILE,
                         ) {
                             if !handle.is_invalid() {
-                                return HICON(handle.0);
+                                return TrayIconHandle::owned(HICON(handle.0));
                             }
                         }
                     } else if ext == "exe" || ext == "dll" {
@@ -122,7 +164,7 @@ pub fn load_tray_icon(custom_path: Option<&str>) -> HICON {
                             1,
                         );
                         if count > 0 && !hicon_small.is_invalid() {
-                            return hicon_small;
+                            return TrayIconHandle::owned(hicon_small);
                         }
                     }
                 }
@@ -133,7 +175,7 @@ pub fn load_tray_icon(custom_path: Option<&str>) -> HICON {
         if let Ok(hinst) = GetModuleHandleW(None) {
             if let Ok(icon) = LoadIconW(Some(hinst.into()), PCWSTR(1 as _)) {
                 if !icon.is_invalid() {
-                    return icon;
+                    return TrayIconHandle::shared(icon);
                 }
             }
         }
@@ -149,12 +191,12 @@ pub fn load_tray_icon(custom_path: Option<&str>) -> HICON {
                 1,
             );
             if count > 0 && !hicon_small.is_invalid() {
-                return hicon_small;
+                return TrayIconHandle::owned(hicon_small);
             }
         }
 
         // 3. Fallback
-        LoadIconW(None, IDI_APPLICATION).unwrap_or_default()
+        TrayIconHandle::shared(LoadIconW(None, IDI_APPLICATION).unwrap_or_default())
     }
 }
 
@@ -167,6 +209,73 @@ fn expand_path(path: &str) -> String {
         }
     }
     result
+}
+
+/// Tray state owned by the window: the current icon handle and the tooltip identity. The pointer
+/// is stored in the window's user data and dropped by `TrayManager`.
+#[cfg(windows)]
+struct TrayIconState {
+    masked: bool,
+    icon: TrayIconHandle,
+}
+
+#[cfg(windows)]
+unsafe fn tray_state(hwnd: HWND) -> Option<&'static mut TrayIconState> {
+    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayIconState;
+    ptr.as_mut()
+}
+
+/// Builds the single `NOTIFYICONDATAW` shape used by add, modify and delete calls.
+#[cfg(windows)]
+fn build_tray_icon_data(hwnd: HWND, masked: bool, icon: HICON) -> NOTIFYICONDATAW {
+    let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_TRAYICON;
+    nid.hIcon = icon;
+    let tip_str = if masked {
+        "Windows Service Host\0"
+    } else {
+        "Synector\0"
+    };
+    let tip_text = tip_str.encode_utf16().collect::<Vec<_>>();
+    let tip_len = tip_text.len().min(128);
+    nid.szTip[..tip_len].copy_from_slice(&tip_text[..tip_len]);
+    nid
+}
+
+#[cfg(windows)]
+unsafe fn reload_tray_icon() -> TrayIconHandle {
+    let icon_path = GLOBAL_ICON_PATH.lock().ok().and_then(|l| l.clone());
+    load_tray_icon(icon_path.as_deref())
+}
+
+/// Adds the tray icon with a freshly loaded handle (startup, TaskbarCreated, re-show).
+#[cfg(windows)]
+unsafe fn add_tray_icon(hwnd: HWND, state: &mut TrayIconState) {
+    let icon = reload_tray_icon();
+    let nid = build_tray_icon_data(hwnd, state.masked, icon.handle);
+    let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+    state.icon = icon;
+}
+
+/// Replaces the icon of an existing tray item (settings change). The previous handle is destroyed
+/// after the shell accepted the new one.
+#[cfg(windows)]
+unsafe fn modify_tray_icon(hwnd: HWND, state: &mut TrayIconState) {
+    let icon = reload_tray_icon();
+    let nid = build_tray_icon_data(hwnd, state.masked, icon.handle);
+    if Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+        state.icon = icon;
+    }
+}
+
+#[cfg(windows)]
+unsafe fn delete_tray_icon(hwnd: HWND, state: &TrayIconState) {
+    let nid = build_tray_icon_data(hwnd, state.masked, state.icon.handle);
+    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
 }
 
 pub struct TrayManager {
@@ -192,7 +301,6 @@ impl TrayManager {
         }
         let is_masked = masked || std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case("WindowsServiceHost.exe"))).unwrap_or(false);
         HIDE_TRAY_ICON.store(hide_tray_icon, Ordering::SeqCst);
-        IS_MASKED.store(is_masked, Ordering::SeqCst);
         if let Ok(mut lock) = GLOBAL_ICON_PATH.lock() {
             *lock = tray_icon_path.clone();
         }
@@ -229,21 +337,15 @@ impl TrayManager {
                 None,
             ).map_err(|e| format!("CreateWindowEx failed: {e}"))?;
 
-            let hicon = load_tray_icon(tray_icon_path.as_deref());
+            let icon = load_tray_icon(tray_icon_path.as_deref());
+            let hicon = icon.handle;
+            let state = Box::new(TrayIconState {
+                masked: is_masked,
+                icon,
+            });
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
-            let mut tip = [0u16; 128];
-            let tip_str = if is_masked { "Windows Service Host\0" } else { "Synector\0" };
-            let tip_text = tip_str.encode_utf16().collect::<Vec<_>>();
-            tip[..tip_text.len().min(128)].copy_from_slice(&tip_text[..tip_text.len().min(128)]);
-
-            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAYICON;
-            nid.hIcon = hicon;
-            nid.szTip = tip;
+            let nid = build_tray_icon_data(hwnd, is_masked, hicon);
 
             let msg_id = RegisterWindowMessageW(w!("TaskbarCreated"));
             WM_TASKBAR_CREATED.store(msg_id, Ordering::SeqCst);
@@ -289,6 +391,12 @@ impl Drop for TrayManager {
         #[cfg(windows)]
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &self.nid);
+            // Takes back the state boxed in `new`, dropping the last icon handle with it.
+            let state = GetWindowLongPtrW(self._hwnd, GWLP_USERDATA) as *mut TrayIconState;
+            if !state.is_null() {
+                SetWindowLongPtrW(self._hwnd, GWLP_USERDATA, 0);
+                drop(Box::from_raw(state));
+            }
         }
     }
 }
@@ -312,28 +420,17 @@ pub fn update_tray_icon(new_path: Option<String>) {
 pub fn set_tray_visible(visible: bool) {
     HIDE_TRAY_ICON.store(!visible, Ordering::SeqCst);
     #[cfg(windows)]
-    unsafe {
+    {
         let raw = TRAY_HWND.load(Ordering::SeqCst);
         if raw != 0 {
-            let hwnd = HWND(raw as *mut _);
-            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            if visible {
-                let icon_path = GLOBAL_ICON_PATH.lock().ok().and_then(|l| l.clone());
-                let hicon = load_tray_icon(icon_path.as_deref());
-                let mut tip = [0u16; 128];
-                let tip_str = if IS_MASKED.load(Ordering::SeqCst) { "Windows Service Host\0" } else { "Synector\0" };
-                let tip_text = tip_str.encode_utf16().collect::<Vec<_>>();
-                tip[..tip_text.len().min(128)].copy_from_slice(&tip_text[..tip_text.len().min(128)]);
-                nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-                nid.uCallbackMessage = WM_TRAYICON;
-                nid.hIcon = hicon;
-                nid.szTip = tip;
-                let _ = Shell_NotifyIconW(NIM_ADD, &nid);
-            } else {
-                let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+            unsafe {
+                let hwnd = HWND(raw as *mut _);
+                let _ = PostMessageW(
+                    Some(hwnd),
+                    WM_TRAY_VISIBILITY,
+                    WPARAM(usize::from(visible)),
+                    LPARAM(0),
+                );
             }
         }
     }
@@ -344,22 +441,9 @@ unsafe extern "system" fn tray_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
     let taskbar_msg = WM_TASKBAR_CREATED.load(Ordering::SeqCst);
     if taskbar_msg != 0 && msg == taskbar_msg {
         if !HIDE_TRAY_ICON.load(Ordering::SeqCst) {
-            let icon_path = GLOBAL_ICON_PATH.lock().ok().and_then(|l| l.clone());
-            let hicon = load_tray_icon(icon_path.as_deref());
-            let mut tip = [0u16; 128];
-            let tip_str = if IS_MASKED.load(Ordering::SeqCst) { "Windows Service Host\0" } else { "Synector\0" };
-            let tip_text = tip_str.encode_utf16().collect::<Vec<_>>();
-            tip[..tip_text.len().min(128)].copy_from_slice(&tip_text[..tip_text.len().min(128)]);
-
-            let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-            nid.hWnd = hwnd;
-            nid.uID = 1;
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-            nid.uCallbackMessage = WM_TRAYICON;
-            nid.hIcon = hicon;
-            nid.szTip = tip;
-            let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+            if let Some(state) = tray_state(hwnd) {
+                add_tray_icon(hwnd, state);
+            }
         }
         return LRESULT(0);
     }
@@ -367,15 +451,20 @@ unsafe extern "system" fn tray_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
     match msg {
         WM_UPDATE_ICON => {
             if !HIDE_TRAY_ICON.load(Ordering::SeqCst) {
-                let icon_path = GLOBAL_ICON_PATH.lock().ok().and_then(|l| l.clone());
-                let hicon = load_tray_icon(icon_path.as_deref());
-                let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
-                nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
-                nid.hWnd = hwnd;
-                nid.uID = 1;
-                nid.uFlags = NIF_ICON;
-                nid.hIcon = hicon;
-                let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
+                if let Some(state) = tray_state(hwnd) {
+                    modify_tray_icon(hwnd, state);
+                }
+            }
+            LRESULT(0)
+        }
+
+        WM_TRAY_VISIBILITY => {
+            if let Some(state) = tray_state(hwnd) {
+                if wparam.0 != 0 {
+                    add_tray_icon(hwnd, state);
+                } else {
+                    delete_tray_icon(hwnd, state);
+                }
             }
             LRESULT(0)
         }
@@ -684,33 +773,60 @@ fn handle_tray_update_click() {
 }
 
 #[cfg(windows)]
-pub fn apply_menu_theme(hwnd: Option<HWND>, is_dark: bool) {
-    unsafe {
-        // uxtheme.dll ordinals:
-        // 135: SetPreferredAppMode (0 = Default, 1 = AllowDark, 2 = ForceDark, 3 = ForceLight)
-        // 136: FlushMenuThemes
-        // 133: AllowDarkModeForWindow
+struct UxThemeFns {
+    // uxtheme.dll ordinals:
+    // 135: SetPreferredAppMode (0 = Default, 1 = AllowDark, 2 = ForceDark, 3 = ForceLight)
+    // 136: FlushMenuThemes
+    // 133: AllowDarkModeForWindow
+    set_preferred_app_mode: Option<unsafe extern "system" fn(i32) -> i32>,
+    flush_menu_themes: Option<unsafe extern "system" fn()>,
+    allow_dark_for_window: Option<unsafe extern "system" fn(HWND, bool) -> bool>,
+}
+
+/// Ordinals are resolved once; the module stays loaded for the process lifetime so the resolved
+/// addresses remain valid and repeated menu opens do not raise its reference count.
+#[cfg(windows)]
+fn uxtheme_fns() -> &'static UxThemeFns {
+    static FUNCS: OnceLock<UxThemeFns> = OnceLock::new();
+    FUNCS.get_or_init(|| unsafe {
+        let mut fns = UxThemeFns {
+            set_preferred_app_mode: None,
+            flush_menu_themes: None,
+            allow_dark_for_window: None,
+        };
         if let Ok(uxtheme) = LoadLibraryW(w!("uxtheme.dll")) {
-            let mode = if is_dark { 2 } else { 3 };
-            let set_preferred_app_mode: Option<unsafe extern "system" fn(i32) -> i32> =
-                std::mem::transmute(GetProcAddress(uxtheme, windows::core::PCSTR(135 as _)));
-            if let Some(set_mode) = set_preferred_app_mode {
-                set_mode(mode);
-            }
+            fns.set_preferred_app_mode = std::mem::transmute::<
+                Option<unsafe extern "system" fn() -> isize>,
+                Option<unsafe extern "system" fn(i32) -> i32>,
+            >(GetProcAddress(uxtheme, windows::core::PCSTR(135 as _)));
+            fns.flush_menu_themes = std::mem::transmute::<
+                Option<unsafe extern "system" fn() -> isize>,
+                Option<unsafe extern "system" fn()>,
+            >(GetProcAddress(uxtheme, windows::core::PCSTR(136 as _)));
+            fns.allow_dark_for_window = std::mem::transmute::<
+                Option<unsafe extern "system" fn() -> isize>,
+                Option<unsafe extern "system" fn(HWND, bool) -> bool>,
+            >(GetProcAddress(uxtheme, windows::core::PCSTR(133 as _)));
+        }
+        fns
+    })
+}
 
-            let flush_menu_themes: Option<unsafe extern "system" fn()> =
-                std::mem::transmute(GetProcAddress(uxtheme, windows::core::PCSTR(136 as _)));
-            if let Some(flush) = flush_menu_themes {
-                flush();
-            }
+#[cfg(windows)]
+pub fn apply_menu_theme(hwnd: Option<HWND>, is_dark: bool) {
+    let fns = uxtheme_fns();
+    let mode = if is_dark { 2 } else { 3 };
+    unsafe {
+        if let Some(set_mode) = fns.set_preferred_app_mode {
+            set_mode(mode);
+        }
 
-            if let Some(h) = hwnd {
-                let allow_dark_for_window: Option<unsafe extern "system" fn(HWND, bool) -> bool> =
-                    std::mem::transmute(GetProcAddress(uxtheme, windows::core::PCSTR(133 as _)));
-                if let Some(allow_wnd) = allow_dark_for_window {
-                    let _ = allow_wnd(h, is_dark);
-                }
-            }
+        if let Some(flush) = fns.flush_menu_themes {
+            flush();
+        }
+
+        if let (Some(h), Some(allow_wnd)) = (hwnd, fns.allow_dark_for_window) {
+            let _ = allow_wnd(h, is_dark);
         }
     }
 }
@@ -980,6 +1096,63 @@ pub fn generate_update_menu_bitmap(size: u32, is_dark: bool) -> Option<HBITMAP> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn test_build_tray_icon_data_flags() {
+        use windows::Win32::UI::Shell::{NIF_ICON, NIF_MESSAGE, NIF_TIP};
+
+        let hwnd = HWND(0x1234 as *mut core::ffi::c_void);
+        let icon = HICON(0x5678 as *mut core::ffi::c_void);
+        let nid = build_tray_icon_data(hwnd, false, icon);
+        assert_eq!(nid.cbSize, std::mem::size_of::<NOTIFYICONDATAW>() as u32);
+        assert_eq!(nid.hWnd, hwnd);
+        assert_eq!(nid.uID, 1);
+        assert_eq!(nid.uCallbackMessage, WM_TRAYICON);
+        assert_ne!(nid.uFlags.0 & NIF_ICON.0, 0);
+        assert_ne!(nid.uFlags.0 & NIF_MESSAGE.0, 0);
+        assert_ne!(nid.uFlags.0 & NIF_TIP.0, 0);
+        assert_eq!(nid.hIcon, icon);
+        assert_eq!(
+            String::from_utf16_lossy(&nid.szTip[.."Synector".len()]),
+            "Synector"
+        );
+
+        let masked = build_tray_icon_data(hwnd, true, icon);
+        assert_eq!(
+            String::from_utf16_lossy(&masked.szTip[.."Windows Service Host".len()]),
+            "Windows Service Host"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_tray_icon_ownership_wrapper() {
+        use windows::Win32::UI::WindowsAndMessaging::LoadIconW;
+
+        unsafe {
+            let shared = TrayIconHandle::shared(LoadIconW(None, IDI_APPLICATION).unwrap_or_default());
+            assert!(!shared.is_owned());
+            drop(shared);
+
+            let system_root =
+                std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+            let mut shell32 = std::path::PathBuf::from(system_root);
+            shell32.push("System32");
+            shell32.push("shell32.dll");
+            let path_w: Vec<u16> = shell32
+                .to_string_lossy()
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut hicon = HICON::default();
+            let count = ExtractIconExW(PCWSTR(path_w.as_ptr()), 0, None, Some(&mut hicon), 1);
+            if count > 0 && !hicon.is_invalid() {
+                let owned = TrayIconHandle::owned(hicon);
+                assert!(owned.is_owned());
+            }
+        }
+    }
 
     #[test]
     #[cfg(windows)]

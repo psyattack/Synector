@@ -79,10 +79,7 @@ async fn handle_client(mut server: NamedPipeServer, engine: Arc<Mutex<DaemonEngi
         }
 
         let response = match serde_json::from_slice::<IpcRequest>(&payload_buf) {
-            Ok(req) => {
-                let mut eng = engine.lock().await;
-                eng.handle_request(req).await
-            }
+            Ok(req) => dispatch(Arc::clone(&engine), req).await,
             Err(e) => {
                 crate::logging::warn("IPC", &format!("Rejected a malformed IPC request: {e}"));
                 IpcResponse::Error(format!("Invalid request JSON: {e}"))
@@ -100,6 +97,89 @@ async fn handle_client(mut server: NamedPipeServer, engine: Arc<Mutex<DaemonEngi
         }
         if server.write_all(&resp_bytes).await.is_err() {
             break;
+        }
+    }
+}
+
+/// Routes one request to the engine.
+///
+/// A `TestStep` runs its action *before* the engine lock is taken. The lock serializes every
+/// daemon task and every other IPC request, so executing a wait or a script while holding it
+/// would stall process polling, schedules and the whole GUI for the action's duration. The lock
+/// is then taken only to record the outcome.
+pub async fn dispatch(engine: Arc<Mutex<DaemonEngine>>, req: IpcRequest) -> IpcResponse {
+    match req {
+        IpcRequest::TestStep { action, context } => {
+            let outcome = DaemonEngine::execute_test_step(&action, &context).await;
+            let mut eng = engine.lock().await;
+            eng.record_test_step(outcome)
+        }
+        req => {
+            let mut eng = engine.lock().await;
+            eng.handle_request(req).await
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::models::{Action, WaitMode, WaitTimeoutPolicy};
+    use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn test_test_step_runs_before_taking_the_engine_lock() {
+        let engine = Arc::new(Mutex::new(DaemonEngine::new(AppConfig::default())));
+        let step = tokio::spawn(dispatch(
+            Arc::clone(&engine),
+            IpcRequest::TestStep {
+                action: Action::Wait {
+                    mode: WaitMode::Timer,
+                    seconds: 0.4,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: WaitTimeoutPolicy::Abort,
+                },
+                context: HashMap::new(),
+            },
+        ));
+
+        // While the wait runs, the engine mutex must stay free for the scheduler and other
+        // clients; holding it across the action is exactly what the audit found.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!step.is_finished(), "the step test must still be running");
+        let guard = tokio::time::timeout(std::time::Duration::from_millis(200), engine.lock()).await;
+        assert!(
+            guard.is_ok(),
+            "the engine lock must not be held while a step test executes"
+        );
+        drop(guard);
+
+        let response = step.await.expect("dispatch finished");
+        assert!(
+            matches!(response, IpcResponse::TestStepResult(Ok(()))),
+            "a successful wait must report a successful step"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_answers_update_progress_without_a_state_snapshot() {
+        let engine = Arc::new(Mutex::new(DaemonEngine::new(AppConfig::default())));
+        {
+            let mut eng = engine.lock().await;
+            eng.is_downloading_update = true;
+            eng.update_download_progress = 0.3;
+            eng.update_status = Some("30%".to_string());
+        }
+
+        let response = dispatch(Arc::clone(&engine), IpcRequest::GetUpdateProgress).await;
+        match response {
+            IpcResponse::UpdateProgress { progress, status } => {
+                assert_eq!(progress, Some(0.3));
+                assert_eq!(status.as_deref(), Some("30%"));
+            }
+            other => panic!("the narrow update query must answer with UpdateProgress: {other:?}"),
         }
     }
 }

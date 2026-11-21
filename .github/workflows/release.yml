@@ -9,6 +9,11 @@ on:
 permissions:
   contents: write
 
+env:
+  # Pinned Inno Setup release asset (jrsoftware/issrc, tag is-7_1_1); the workflow refuses to
+  # execute the installer when the download does not hash to this value.
+  INNO_SETUP_SHA256: 8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0
+
 jobs:
   release:
     name: Build & Publish Release
@@ -19,6 +24,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          # Publishing is only allowed from a v* tag (a manual dispatch must select the tag too):
+          # the release is published under github.ref_name, so a branch or a mismatched tag would
+          # publish artifacts whose version disagrees with the tag and with the updater's checks.
+          if ($env:GITHUB_REF_TYPE -ne 'tag') {
+              throw "Release builds must run from a v* tag, not '$env:GITHUB_REF'."
+          }
+          $cargoToml = Get-Content Cargo.toml -Raw
+          if ($cargoToml -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+              throw 'Unable to read the package version from Cargo.toml'
+          }
+          $version = $matches[1]
+          $tag = $env:GITHUB_REF_NAME
+          if ($tag -ne "v$version") {
+              throw "Tag '$tag' does not match the Cargo.toml version '$version' (expected 'v$version')."
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building release $tag from $env:GITHUB_REF."
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -26,18 +52,29 @@ jobs:
         uses: swatinem/rust-cache@v2
 
       - name: Build Release Binary
-        run: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Verify executable version resources
+        shell: pwsh
+        run: |
+          # winres derives the resource versions from Cargo.toml; fail before publishing if the
+          # VERSIONINFO the updater and Explorer see does not match the release version.
+          $exe = 'target/release/Synector.exe'
+          if (-not (Test-Path $exe)) {
+              throw "Release executable not found at $exe"
+          }
+          $info = (Get-Item $exe).VersionInfo
+          $expected = [version]"$($env:APP_VERSION).0"
+          if ($info.FileVersionRaw -ne $expected -or $info.ProductVersionRaw -ne $expected) {
+              throw "Executable version resources report FileVersion '$($info.FileVersionRaw)' and ProductVersion '$($info.ProductVersionRaw)', expected '$expected'."
+          }
+          Write-Host "Executable version resources verified: $expected"
 
       - name: Prepare Artifacts & Zip Portable
         id: prepare_artifacts
         shell: powershell
         run: |
-          $cargoToml = Get-Content Cargo.toml -Raw
-          if ($cargoToml -match 'version\s*=\s*"([^"]+)"') {
-              $ver = $matches[1]
-          } else {
-              $ver = "${{ github.ref_name }}".TrimStart('v')
-          }
+          $ver = $env:APP_VERSION
           $distDir = "dist_artifacts"
           New-Item -ItemType Directory -Force -Path $distDir
 
@@ -58,6 +95,11 @@ jobs:
           $url = 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe'
           $exe = Join-Path $env:RUNNER_TEMP 'innosetup-7.1.1-x64.exe'
           Invoke-WebRequest -Uri $url -OutFile $exe
+          $actual = (Get-FileHash -Algorithm SHA256 -Path $exe).Hash.ToLowerInvariant()
+          if ($actual -ne $env:INNO_SETUP_SHA256) {
+              throw "Inno Setup checksum mismatch: expected $env:INNO_SETUP_SHA256, got $actual"
+          }
+          Write-Host 'Inno Setup checksum verified.'
           $dir = Join-Path $env:RUNNER_TEMP 'inno-setup'
           # /PORTABLE=1 extracts the compiler without installing it or touching the registry.
           Start-Process -FilePath $exe -ArgumentList @('/PORTABLE=1', '/CURRENTUSER', '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$dir") -Wait
@@ -70,11 +112,7 @@ jobs:
       - name: Build Installer
         shell: pwsh
         run: |
-          $cargoToml = Get-Content Cargo.toml -Raw
-          if ($cargoToml -notmatch 'version\s*=\s*"([^"]+)"') {
-              throw 'Unable to read the version from Cargo.toml'
-          }
-          $ver = $matches[1]
+          $ver = $env:APP_VERSION
           & $env:INNO_ISCC "installer/synector.iss" "/DAppVersion=$ver" "/DAppVersion4=$ver.0" "--messages-jsonl"
           if ($LASTEXITCODE -ne 0) {
               throw "Inno Setup compiler failed with exit code $LASTEXITCODE"

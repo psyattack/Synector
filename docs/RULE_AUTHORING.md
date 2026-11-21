@@ -38,6 +38,13 @@ Flags:
   rules are created disabled.
 - A path of `-` reads the rule file or share code from stdin.
 
+Arguments are validated against the selected command. An unknown argument such as `--dry-runn`, two
+command flags in one invocation, or the same command flag twice is a usage error: the command
+reference is printed and the process exits with code 2. Other process flags, including
+`--no-elevate`, are not valid together with a rule command, and a misspelled `--rules-*` command is
+reported instead of falling through to a daemon or GUI start. `--run-rule <id>` is a runtime command,
+not a rule-authoring one; a missing or empty id is likewise a usage error that exits with code 2.
+
 ## File format
 
 A rule file is one rule object, an array of rules, or `{"rules": [...]}`. `id` is the upsert key and
@@ -48,6 +55,18 @@ Runtime state is not part of the file format in practice: the daemon keeps `exec
 `last_executed_at` and the custom quota window anchor in `runtime.json`, writes those fields zeroed
 in `rules.json`, and preserves the live values when an existing rule is updated. Counters included
 in a rule file are therefore ignored.
+
+Keys are checked against the model before deserialization. An unknown key — a typo such as
+`max_execution`, or a field removed from the format — is reported with its JSON path:
+`--rules-validate`, `--rules-apply` and `--rules-import-share` reject the input, while the daemon
+logs the rule id and keys and skips only that rule when it loads `rules.json`. Values are checked on
+the same load with the per-rule validator the GUI Save and apply paths use: a rule with invalid
+values (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
+likewise skipped alone with its id and errors, so neither check drops a rule that would otherwise
+be accepted. There is no migration: update the file. The removed fields are `schedule.delay_sec`,
+the `system` trigger's `idle_duration_sec` and the `resource` condition's `duration_sec`. The
+`resource` trigger keeps its own `duration_sec` (default 5 s), and the `event` condition keeps a
+rule-authored `idle_duration_sec`.
 
 Minimal example:
 
@@ -79,6 +98,13 @@ A rule with a schedule trigger, a beep action and a three-run lifetime quota:
 `max_executions` without `quota_period` is a lifetime quota: when it is reached the engine disables
 the rule automatically; `--rules-reset <id>` clears the counter and enables it again.
 
+Two field details are easy to get wrong. `start_process.arguments` is split with the Windows
+command-line rules (`CommandLineToArgvW`), so a path with spaces must stay quoted and an embedded
+quote is escaped as `\"` or `\"\"`. Audio actions address endpoints by display name:
+`audio_format.device_name` must match an active endpoint, and `default_device` requires the
+AudioDeviceCmdlets PowerShell module — a missing module or device is an action error, not a silent
+no-op.
+
 ## Quotas
 
 A quota that resets on its own sets `quota_period`:
@@ -99,7 +125,7 @@ A quota that resets on its own sets `quota_period`:
 | `quota_period` | Reset point |
 |---|---|
 | `"minute"`, `"hour"`, `"day"`, `"week"`, `"month"` | Calendar-aligned local time: the next minute, the next hour, midnight, Monday 00:00 (ISO week), the 1st at 00:00 |
-| `{"custom": {"value": 90, "unit": "minutes"}}` | Fixed window of `value` `unit`s (`minutes`, `hours`, `days`, `weeks`, `months`); it starts with the rule's first execution and resets when the window ends. A `months` window is added as calendar months (e.g. first run on the 19th ends on the 19th; month-end days are clamped) |
+| `{"custom": {"value": 90, "unit": "minutes"}}` | Fixed window of `value` `unit`s (`minutes`, `hours`, `days`, `weeks`, `months`); `value` must be between 1 and 100000. It starts with the rule's first execution and resets when the window ends. A `months` window is added as calendar months (e.g. first run on the 19th ends on the 19th; month-end days are clamped) |
 | omitted | Lifetime quota |
 
 A periodic quota never disables the rule: when the period is spent the engine skips executions until
@@ -109,9 +135,11 @@ progress plus the period, e.g. `exec 3/10 (daily)`.
 Updating a rule preserves its counter unless the quota definition changes in a way that makes the old
 counter meaningless:
 
-- changing `quota_period` (adding, removing or replacing it) starts a fresh counting window;
+- changing `quota_period` (adding, removing or replacing it) starts a fresh counting window and
+  keeps `last_executed_at`, which schedule triggers use for deduplication;
 - enabling `max_executions` where the rule previously had no limit also starts a fresh window;
-- changing only the numeric limit (for example `10` → `20`) keeps the current counter.
+- changing only the numeric limit (for example `10` → `20`) keeps the current counter and window
+  anchor.
 
 ## Calling and stopping other rules
 
@@ -153,9 +181,9 @@ and `wait` only matters for `call`:
 - A rule called by another rule is not a manual run: it does not tear down the target's companion
   processes when its pipeline ends.
 
-Share codes carry only the rules you export. Rule references — `rule_control` actions and
-rule-activity conditions — are never rewritten, so export both rules together to keep the reference
-intact.
+Share codes carry only the rules you export. Overlay button and toggle targets inside a bundled
+overlay are rewritten to the final imported rule ids, but `rule_control` actions and rule-activity
+conditions are not, so export both rules together to keep those references intact.
 
 ### Observing rule activity
 
@@ -208,7 +236,12 @@ Anything that can make a local HTTP request can start a rule: the daemon listens
 
 A `200` means a rule was found, not that the pipeline ran: the engine still applies cooldowns and
 quotas, so a request can be accepted and then skipped. The server is local-only; if another process
-owns the port it does not start and webhook rules never fire.
+owns the port, the bind error is logged and the daemon retries with a capped backoff (1 s doubling
+to 30 s), so webhook rules start working once the port is free.
+
+Outbound `http_webhook` actions send the rule's custom `headers` as HTTP headers, not through a
+shell; the method and header names/values must be valid or the action fails. A non-2xx response is
+an action error.
 
 ```powershell
 Invoke-RestMethod http://127.0.0.1:48123/api/v1/trigger/backup
@@ -223,16 +256,35 @@ curl http://127.0.0.1:48123/api/v1/trigger/backup
 `--rules-validate` performs structural validation and exits non-zero on errors:
 
 - `id` and `name` must be non-empty, and `id` must be unique within the file;
+- `cooldown_seconds` must be finite and non-negative;
 - triggers that need a target must have one (process name, hotkey, folder, interval);
-- a resource trigger needs `cpu_percent` or `ram_mb`;
-- a custom quota window needs `value > 0`;
+- schedule triggers are validated per type: Daily and Monthly need a zero-padded `daily_time`
+  (`HH:MM` or `HH:MM:SS`, 00:00–23:59), Monthly needs `day_of_month` 1..=31, OneShot needs a valid
+  `target_datetime` (`YYYY-MM-DD HH:MM[:SS]`), Interval needs `interval_sec > 0`, and
+  `days_of_week` is 1..=7;
+- a time-range condition needs zero-padded `HH:MM` boundaries; an empty boundary stays open;
+- an `until_condition` wait needs a condition, wait condition keys may not be empty, and
+  `seconds`/`timeout_sec` must be finite, non-negative and at most 86400;
+- a resource trigger or condition needs a non-empty `process_name` plus `cpu_percent` or
+  `ram_mb`; every configured limit must hold, so with both set a process has to meet both, and a
+  CPU-only limit fires on CPU alone;
+- a custom quota window needs `value` between 1 and 100000;
+- tag colours must be six ASCII hex digits, written as `#RRGGBB` (the leading `#` is optional in a
+  rule file);
 - an infinite macro requires a global-hotkey trigger.
 
 Non-blocking warnings cover rules that are valid but likely not what the author intended: no trigger,
 an empty action pipeline, `max_executions: 0`, a `quota_period` without `max_executions`, missing
-macro presets or overlays, a wait without a condition, an empty `start_process` path, a
-`rule_control` step with an empty target, a missing target or a call to the rule itself, and a wait
-or check that observes an empty or unknown rule.
+macro presets or overlays, an empty `start_process` path, a `rule_control` step with an empty target,
+a missing target or a call to the rule itself, and a wait or check that observes an empty or unknown
+rule.
+
+The Rule Builder runs the same validator before it saves: the errors are listed in the inspector and
+the editor stays open, so an invalid draft is never sent. The daemon also runs it before it applies
+a change: a rule draft saved from the Rule Builder (`SaveRule`) and a `SyncRules` replace are
+rejected with the validation message, and a rejected write leaves the stored rules untouched.
+`--rules-sync` also validates the whole desired set before sending it, so a bad rule or a duplicate
+id fails without changing the configuration.
 
 ## Discovering the schema
 
@@ -240,7 +292,8 @@ The format is self-describing, so an AI agent or a person without the source can
 
 - `--rules-schema` prints the draft-07 JSON Schema for one rule object. It is generated with
   `schemars` from the same `models::Rule` types the daemon deserializes, so it cannot drift from the
-  real format. Validate generated rules against it with any JSON Schema validator before applying.
+  real format. The schema contains only the current fields; the strict key check rejects anything
+  else. Validate generated rules against it with any JSON Schema validator before applying.
 - `--rules-reference` prints a compact catalogue of every trigger, action, condition, wait condition
   and macro event with field names, types and required markers.
 - `--rules-template <trigger>[:<action>]` prints a minimal valid skeleton with the required fields
@@ -262,9 +315,11 @@ neither wait for the process nor capture its output or exit code. See [Console n
 
 `--rules-apply` only upserts the rules present in the file: rules missing from it stay in the
 configuration. `--rules-sync` is the declarative variant and makes the configured rules match the
-file exactly, deleting rules that are absent. While the daemon is running it applies the sync as a
-single replace: surviving rules keep their runtime counters and hotkeys are reloaded once. Use
-`--dry-run` to preview the result and `--json` for a machine-readable report:
+file exactly, deleting rules that are absent. An empty array (`[]` or `{"rules": []}`) is the exact
+"no rules" file and deletes every configured rule, while `--rules-apply` and `--rules-validate`
+still reject an empty set. While the daemon is running a sync is applied as a single replace:
+surviving rules keep their runtime counters and hotkeys are reloaded once. Use `--dry-run` to
+preview the result and `--json` for a machine-readable report:
 
 ```powershell
 cmd /c "Synector.exe --rules-sync rules.json --dry-run --json"
@@ -273,24 +328,31 @@ cmd /c "Synector.exe --rules-sync rules.json --json"
 
 An apply/sync JSON report has the shape
 `{"ok": true, "target": "daemon"|"rules", "dry_run": false, "created": [...], "updated": [...],
-"deleted": [...], "warnings": [...]}`. Failures report
-`{"ok": false, "error": "...", "errors": ["..."]}` and exit with a non-zero status.
-`--rules-list --json` prints the rule array itself; validation, toggle and reset commands return a
-small object with `ok` plus the affected rule ids, counts or counters.
+"deleted": [...], "warnings": [...]}`. Every `--json` failure — validation, read, list/export,
+import and IPC errors alike — uses one envelope
+`{"ok": false, "error": "...", "errors": [...], "warnings": [...], "target": "daemon"|"rules"|null}`
+and exits with a non-zero status. `--rules-list --json` prints the rule array itself; toggle and
+reset commands return a small object with `ok` plus the affected rule ids, counts or counters.
 
 ## Share codes
 
 `--rules-share [<id>]` prints one compact `SYN1:` code. With no selector it exports every configured
 rule; with an id or rule name it exports that rule only. The code bundles the macro presets and
-overlays the exported rules reference, resets sender-local runtime counters and drops custom icon
-paths (with a warning). `--json` returns
+overlays the exported rules reference, resets sender-local runtime counters and drops custom icon,
+overlay image and button icon paths (with a warning). `--json` returns
 `{"ok": true, "rules": N, "bytes": N, "code": "SYN1:...", "warnings": [...]}`.
 
 `--rules-import-share <code|file|->` decodes a code from the argument, a file or stdin, verifies its
-SHA-256 checksum and bounded payload, and imports the rules plus the library entries they need.
-Duplicates are skipped by content, colliding ids are re-identified, and imported rules are created
-disabled unless `--enable-imported` is passed. With a running daemon the whole import is one
-`ImportShare` request; otherwise `rules.json` and `library.json` are updated directly.
+SHA-256 checksum and bounded payload, and imports the rules plus the library entries they need. A
+literal argument must start with `SYN1:`; any other non-`-` argument is read as a file path, and a
+missing path is reported as a read error. Duplicates are skipped by content, colliding ids are
+re-identified, and imported rules are created disabled unless `--enable-imported` is passed. Library
+entries whose content already exists locally are reused instead of duplicated, so importing the
+same code twice adds nothing; bundled overlay button and toggle targets are re-pointed at the final
+rule ids, and a target that neither the code nor the local rules provide is reported as a warning.
+One code carries at most 500 rules, 500 overlays and 500 macro presets. With a running daemon the
+whole import is one `ImportShare` request; otherwise `library.json` is committed before `rules.json`
+so an imported rule never references a missing preset or overlay.
 
 ## Ready-to-use recipes
 

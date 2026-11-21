@@ -103,10 +103,11 @@ Documentation has one owner per topic. The document set and its owners are liste
 elsewhere.
 
 User-visible GUI strings belong to `Strings` in `src/i18n.rs`, with values in `src/i18n/en.rs` and
-`src/i18n/ru.rs`; views must not embed literals. The in-app guide is the documented exception: its
-long prose uses Russian/English `if lang == Language::Russian { ... } else { ... }` branches in
-`src/gui/views/guide_modal.rs`, and both branches must be updated together. Chrome labels in the
-guide still come from `Strings`.
+`src/i18n/ru.rs`; views must not embed literals. The same `{...}` placeholders must appear in the
+English and Russian value of a field — `test_catalog_placeholder_parity` fails the test suite when
+they differ. The in-app guide is the documented exception: its long prose uses Russian/English
+`if lang == Language::Russian { ... } else { ... }` branches in `src/gui/views/guide_modal.rs`, and
+both branches must be updated together. Chrome labels in the guide still come from `Strings`.
 
 When dependencies change, update the dependency table and license texts in `NOTICES.md`. When CLI
 commands or quota behavior change, update `docs/RULE_AUTHORING.md`. When subsystems change, update

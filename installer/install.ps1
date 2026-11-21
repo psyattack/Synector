@@ -94,13 +94,21 @@ function Expand-ZipArchive {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $fullTarget = [System.IO.Path]::GetFullPath($Target)
     New-Item -ItemType Directory -Force -Path $fullTarget | Out-Null
+    # Compare against the target with a trailing separator: a bare prefix test would also accept a
+    # sibling directory such as C:\Apps\Synector-evil for a target of C:\Apps\Synector.
+    $targetRoot = $fullTarget.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
 
     $zip = [System.IO.Compression.ZipFile]::OpenRead($Archive)
     try {
         foreach ($entry in $zip.Entries) {
             $relative = $entry.FullName.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+            $segments = $relative -split '[\\/]'
+            # Reject rooted names and parent-directory traversal before resolving the destination.
+            if ([System.IO.Path]::IsPathRooted($relative) -or $segments -contains '..') {
+                throw "Unsafe archive entry: $($entry.FullName)"
+            }
             $destination = [System.IO.Path]::GetFullPath((Join-Path $fullTarget $relative))
-            if (-not $destination.StartsWith($fullTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if (-not $destination.StartsWith($targetRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
                 throw "Unsafe archive entry: $($entry.FullName)"
             }
             if ([string]::IsNullOrEmpty($entry.Name)) {

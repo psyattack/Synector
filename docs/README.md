@@ -29,7 +29,7 @@ keeping their own list.
 
 | Document | Contents |
 |---|---|
-| [RELEASING.md](RELEASING.md) | Version sources, changelog entry shape, tag flow and what CI publishes. |
+| [RELEASING.md](RELEASING.md) | Version source, changelog entry shape, tag flow and what CI publishes. |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release history, one section per version. |
 | [../NOTICES.md](../NOTICES.md) | Direct dependencies and their license texts. |
 

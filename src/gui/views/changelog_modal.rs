@@ -114,7 +114,7 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
     }
 }
 
-/// Renders changelog content supporting HTML tags (<p>, <br>, <h1>-<h6>, <b>, <i>, <code>, <a>, <ul>, <li>)
+/// Renders changelog content supporting HTML tags (<p>, <br>, <pre>, <h1>-<h6>, <b>, <i>, <code>, <a>, <ul>, <li>)
 /// and Markdown syntax (#, ##, bullets, `code`, **bold**, links).
 fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
     let clean = text
@@ -130,10 +130,51 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
     for raw_line in clean.lines() {
         let line = raw_line.trim_end();
 
-        // 1. Code Block Fence (Markdown or HTML)
-        if line.starts_with("```") || line.contains("<pre>") || line.contains("</pre>") {
+        // 1. HTML <pre> tags are handled independently of the Markdown fence: a lone opening
+        //    tag starts a block, a lone closing tag ends it, and `<pre>…</pre>` on one line
+        //    keeps its content without leaving the block open for every following line. (The
+        //    old combined toggle consumed the line and dropped inline content.)
+        match classify_pre_line(line) {
+            PreLine::Open(content) => {
+                in_code_block = true;
+                if !content.trim().is_empty() {
+                    code_block_buf.push_str(content);
+                    code_block_buf.push('\n');
+                }
+                continue;
+            }
+            PreLine::Close(rest) => {
+                if in_code_block {
+                    render_code_block(ui, &code_block_buf, t);
+                    code_block_buf.clear();
+                    in_code_block = false;
+                }
+                if !rest.trim().is_empty() {
+                    render_plain_changelog_line(ui, rest, t);
+                }
+                continue;
+            }
+            PreLine::Inline { before, code, after } => {
+                if !before.trim().is_empty() {
+                    render_plain_changelog_line(ui, before, t);
+                }
+                if in_code_block {
+                    code_block_buf.push_str(code);
+                    code_block_buf.push('\n');
+                } else {
+                    render_code_block(ui, code, t);
+                }
+                if !after.trim().is_empty() {
+                    render_plain_changelog_line(ui, after, t);
+                }
+                continue;
+            }
+            PreLine::None => {}
+        }
+
+        // 2. Markdown code fence
+        if line.starts_with("```") {
             if in_code_block {
-                // End code block
                 render_code_block(ui, &code_block_buf, t);
                 code_block_buf.clear();
                 in_code_block = false;
@@ -149,7 +190,7 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        // 2. Horizontal divider
+        // 3. Horizontal divider
         if line == "---" || line == "***" || line == "___" || line.contains("<hr>") || line.contains("<hr/>") {
             widgets::hrule(ui);
             continue;
@@ -161,7 +202,7 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        // 3. Headings (Markdown: #, ##, ### or HTML: <h1>, <h2>, <h3>, <h4>)
+        // 4. Headings (Markdown: #, ##, ### or HTML: <h1>, <h2>, <h3>, <h4>)
         if let Some(title) = trimmed.strip_prefix("### ")
             .or_else(|| trimmed.strip_prefix("<h4>"))
             .or_else(|| trimmed.strip_prefix("<h3>"))
@@ -205,7 +246,7 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        // 4. Bullet list items
+        // 5. Bullet list items
         if let Some(item_text) = trimmed.strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
             .or_else(|| trimmed.strip_prefix("• "))
@@ -219,15 +260,54 @@ fn render_rich_changelog(ui: &mut Ui, text: &str, t: &Tokens) {
             continue;
         }
 
-        // 5. Standard paragraph / line
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            render_inline_markup(ui, trimmed, t);
-        });
+        // 6. Standard paragraph / line
+        render_plain_changelog_line(ui, trimmed, t);
     }
 
     if in_code_block && !code_block_buf.is_empty() {
         render_code_block(ui, &code_block_buf, t);
+    }
+}
+
+/// One line of changelog text with inline HTML/Markdown markup.
+fn render_plain_changelog_line(ui: &mut Ui, line: &str, t: &Tokens) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        render_inline_markup(ui, line.trim(), t);
+    });
+}
+
+/// Where a `<pre>` tag sits on a changelog line.
+#[derive(Debug, PartialEq, Eq)]
+enum PreLine<'a> {
+    /// No `<pre>`/`</pre>` on this line.
+    None,
+    /// An opening tag without a closing one; the rest of the line starts the code block.
+    Open(&'a str),
+    /// A closing tag without a matching opening one; `rest` follows the tag.
+    Close(&'a str),
+    /// An inline `<pre>…</pre>` pair with the text before and after it.
+    Inline { before: &'a str, code: &'a str, after: &'a str },
+}
+
+/// Classifies the `<pre>` tags on one changelog line. Open and close tags are independent, so a
+/// lone closing tag cannot start a code block and an inline pair keeps the content between the
+/// tags instead of consuming the whole line.
+fn classify_pre_line(line: &str) -> PreLine<'_> {
+    let Some(open) = line.find("<pre>") else {
+        return match line.find("</pre>") {
+            Some(close) => PreLine::Close(&line[close + "</pre>".len()..]),
+            None => PreLine::None,
+        };
+    };
+    let after_open = open + "<pre>".len();
+    match line[after_open..].find("</pre>") {
+        Some(close) => PreLine::Inline {
+            before: &line[..open],
+            code: &line[after_open..after_open + close],
+            after: &line[after_open + close + "</pre>".len()..],
+        },
+        None => PreLine::Open(&line[after_open..]),
     }
 }
 
@@ -448,5 +528,28 @@ mod tests {
         let first_line = clean.lines().next().unwrap();
         assert_eq!(first_line, "### Added");
         assert_eq!(first_line.strip_prefix("### "), Some("Added"));
+    }
+
+    /// U03-012: `<pre>` and `</pre>` are classified independently. An inline pair keeps its
+    /// content (it used to be consumed and left the block open for every later line), and a
+    /// stray closing tag no longer opens a block.
+    #[test]
+    fn test_classify_pre_line_keeps_inline_content() {
+        assert_eq!(classify_pre_line("plain text"), PreLine::None);
+        assert_eq!(
+            classify_pre_line("  <pre>cargo build --release</pre>"),
+            PreLine::Inline {
+                before: "  ",
+                code: "cargo build --release",
+                after: "",
+            }
+        );
+        assert_eq!(
+            classify_pre_line("<pre></pre>"),
+            PreLine::Inline { before: "", code: "", after: "" }
+        );
+        assert_eq!(classify_pre_line("<pre><b>code</b>"), PreLine::Open("<b>code</b>"));
+        assert_eq!(classify_pre_line("text before</pre>"), PreLine::Close(""));
+        assert_eq!(classify_pre_line("</pre> trailing text"), PreLine::Close(" trailing text"));
     }
 }

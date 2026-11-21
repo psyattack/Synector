@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::models::{GraphMetric, TelemetryKind, TelemetryStyle};
 
@@ -84,65 +84,11 @@ pub fn get_network_speed_bytes_per_sec() -> f32 {
     }
 }
 
-struct MediaPlaybackTracker {
-    track_id: String,
-    accumulated_secs: f32,
-    last_update: Instant,
-    estimated_duration_sec: f32,
-}
+// ---------------- MEDIA PLAYBACK PROGRESS ----------------
 
-static MEDIA_PLAYBACK_TRACKER: Mutex<Option<MediaPlaybackTracker>> = Mutex::new(None);
-
-pub fn compute_media_progress(is_playing: bool, artist: &str, title: &str) -> f32 {
-    let track_id = format!("{} - {}", artist.trim(), title.trim());
-    let mut lock = match MEDIA_PLAYBACK_TRACKER.lock() {
-        Ok(g) => g,
-        Err(_) => return 0.0,
-    };
-
-    let now = Instant::now();
-    if let Some(ref mut tracker) = *lock {
-        if tracker.track_id == track_id {
-            if is_playing {
-                let dt = now.duration_since(tracker.last_update).as_secs_f32().min(1.0);
-                tracker.accumulated_secs += dt;
-            }
-            tracker.last_update = now;
-            let frac = (tracker.accumulated_secs % tracker.estimated_duration_sec) / tracker.estimated_duration_sec;
-            frac.clamp(0.0, 1.0)
-        } else {
-            *tracker = MediaPlaybackTracker {
-                track_id,
-                accumulated_secs: 0.0,
-                last_update: now,
-                estimated_duration_sec: 210.0,
-            };
-            0.0
-        }
-    } else {
-        *lock = Some(MediaPlaybackTracker {
-            track_id,
-            accumulated_secs: 0.0,
-            last_update: now,
-            estimated_duration_sec: 210.0,
-        });
-        0.0
-    }
-}
-
-pub fn seek_media_progress(pct: f32) {
-    if let Ok(mut lock) = MEDIA_PLAYBACK_TRACKER.lock() {
-        if let Some(ref mut tracker) = *lock {
-            tracker.accumulated_secs = pct.clamp(0.0, 1.0) * tracker.estimated_duration_sec;
-            tracker.last_update = Instant::now();
-        }
-    }
-    if let Ok(mut lock) = CACHED_MEDIA.lock() {
-        if let Some((_, ref mut status)) = *lock {
-            status.progress_pct = pct.clamp(0.0, 1.0);
-        }
-    }
-}
+// Track position and duration are only available through a media-session integration
+// (GSMTC/SMTC), which this build does not consume. Nothing is synthesised from wall-clock time:
+// media overlays show the current title/artist and transport controls only.
 
 #[derive(Debug, Clone)]
 pub struct SystemTelemetryData {
@@ -153,8 +99,8 @@ pub struct SystemTelemetryData {
     pub battery_pct: Option<u8>,
     pub is_ac_online: bool,
     pub uptime_secs: u64,
-    pub master_volume: u8,
-    pub is_muted: bool,
+    pub master_volume: Option<u8>,
+    pub is_muted: Option<bool>,
     pub target_process_ram_mb: Option<u64>,
     pub target_process_cpu_pct: Option<f32>,
 }
@@ -302,8 +248,48 @@ pub fn sample_system_cpu() -> f32 {
     }
 }
 
+// ---------------- SYSTEM METRICS SNAPSHOT CACHE ----------------
+
+struct MetricsSnapshot {
+    sampled_at: Instant,
+    target: Option<String>,
+    data: SystemTelemetryData,
+}
+
+/// Overlay frame rate must not drive a Toolhelp snapshot + OpenProcess per element: graph samples,
+/// the current label and formatted telemetry all read this one snapshot per target.
+const METRICS_SNAPSHOT_TTL: Duration = Duration::from_millis(400);
+
+static METRICS_SNAPSHOT: Mutex<Option<MetricsSnapshot>> = Mutex::new(None);
+
+fn metrics_snapshot_is_fresh(sampled_at: Instant, target_matches: bool) -> bool {
+    target_matches && sampled_at.elapsed() < METRICS_SNAPSHOT_TTL
+}
+
 pub fn get_system_metrics(target_process: Option<&str>) -> SystemTelemetryData {
-    #[cfg(windows)]
+    let target_key = target_process.map(|target| target.to_string());
+
+    if let Ok(lock) = METRICS_SNAPSHOT.lock() {
+        if let Some(cached) = lock.as_ref() {
+            if metrics_snapshot_is_fresh(cached.sampled_at, cached.target == target_key) {
+                return cached.data.clone();
+            }
+        }
+    }
+
+    let data = sample_system_metrics(target_process);
+    if let Ok(mut lock) = METRICS_SNAPSHOT.lock() {
+        *lock = Some(MetricsSnapshot {
+            sampled_at: Instant::now(),
+            target: target_key,
+            data: data.clone(),
+        });
+    }
+    data
+}
+
+#[cfg(windows)]
+fn sample_system_metrics(target_process: Option<&str>) -> SystemTelemetryData {
     unsafe {
         let cpu_usage_pct = sample_system_cpu();
 
@@ -331,6 +317,11 @@ pub fn get_system_metrics(target_process: Option<&str>) -> SystemTelemetryData {
             (None, None)
         };
 
+        let (master_volume, is_muted) = match get_master_volume_state() {
+            Some((volume, muted)) => (Some(volume), Some(muted)),
+            None => (None, None),
+        };
+
         SystemTelemetryData {
             cpu_usage_pct,
             ram_usage_pct,
@@ -339,39 +330,39 @@ pub fn get_system_metrics(target_process: Option<&str>) -> SystemTelemetryData {
             battery_pct,
             is_ac_online,
             uptime_secs,
-            master_volume: 75,
-            is_muted: false,
+            master_volume,
+            is_muted,
             target_process_ram_mb,
             target_process_cpu_pct,
         }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = target_process;
-        SystemTelemetryData {
-            cpu_usage_pct: 18.0,
-            ram_usage_pct: 45.0,
-            ram_used_mb: 7200,
-            ram_total_mb: 16000,
-            battery_pct: Some(85),
-            is_ac_online: true,
-            uptime_secs: 14200,
-            master_volume: 75,
-            is_muted: false,
-            target_process_ram_mb: None,
-            target_process_cpu_pct: None,
-        }
+}
+
+#[cfg(not(windows))]
+fn sample_system_metrics(_target_process: Option<&str>) -> SystemTelemetryData {
+    SystemTelemetryData {
+        cpu_usage_pct: 0.0,
+        ram_usage_pct: 0.0,
+        ram_used_mb: 0,
+        ram_total_mb: 0,
+        battery_pct: None,
+        is_ac_online: false,
+        uptime_secs: 0,
+        master_volume: None,
+        is_muted: None,
+        target_process_ram_mb: None,
+        target_process_cpu_pct: None,
     }
 }
 
 #[cfg(windows)]
 fn get_target_process_metrics(target_name: &str) -> (Option<u64>, Option<f32>) {
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
     use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
-    use windows::Win32::Foundation::CloseHandle;
 
     let target_clean = std::path::Path::new(target_name)
         .file_name()
@@ -418,20 +409,128 @@ fn get_target_process_metrics(target_name: &str) -> (Option<u64>, Option<f32>) {
                 } else {
                     None
                 };
+                let cpu_pct = sample_process_cpu(pid, h_proc);
                 let _ = CloseHandle(h_proc);
-                return (ram_mb, Some(14.0));
+                return (ram_mb, cpu_pct);
             }
         }
     }
     (None, None)
 }
 
+struct ProcessCpuSampler {
+    pid: u32,
+    sampled_at: Instant,
+    total_100ns: u64,
+}
+
+static PROCESS_CPU_SAMPLER: Mutex<Option<ProcessCpuSampler>> = Mutex::new(None);
+
+/// Process CPU is a delta of kernel+user `GetProcessTimes` against wall-clock time, normalised to
+/// all logical cores so the value matches the 0-100 % figure shown by Task Manager. The first
+/// sample after a process appears has no interval yet and is reported as unknown.
+#[cfg(windows)]
+fn sample_process_cpu(pid: u32, process: windows::Win32::Foundation::HANDLE) -> Option<f32> {
+    use windows::Win32::System::Threading::GetProcessTimes;
+
+    let mut creation = FILETIME::default();
+    let mut exit = FILETIME::default();
+    let mut kernel = FILETIME::default();
+    let mut user = FILETIME::default();
+    if unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) }.is_err()
+    {
+        return None;
+    }
+    let total_100ns = filetime_to_u64(kernel).saturating_add(filetime_to_u64(user));
+
+    let now = Instant::now();
+    let mut lock = PROCESS_CPU_SAMPLER.lock().ok()?;
+    let percent = match lock.as_ref() {
+        Some(state) if state.pid == pid => process_cpu_percent(
+            total_100ns.saturating_sub(state.total_100ns),
+            now.duration_since(state.sampled_at),
+            cpu_core_count(),
+        ),
+        _ => None,
+    };
+    *lock = Some(ProcessCpuSampler {
+        pid,
+        sampled_at: now,
+        total_100ns,
+    });
+    percent
+}
+
+fn process_cpu_percent(delta_100ns: u64, elapsed: Duration, cores: u32) -> Option<f32> {
+    let elapsed_100ns = elapsed.as_secs_f64() * 10_000_000.0;
+    if elapsed_100ns <= 0.0 || cores == 0 {
+        return None;
+    }
+    Some(((delta_100ns as f64 / elapsed_100ns) * 100.0 / cores as f64).clamp(0.0, 100.0) as f32)
+}
+
+fn cpu_core_count() -> u32 {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get() as u32)
+        .unwrap_or(1)
+}
+
+/// Reads the default render endpoint's master volume and mute state. `None` means the endpoint
+/// could not be queried (no audio device, COM unavailable), which overlays must display as n/a.
+#[cfg(windows)]
+fn get_master_volume_state() -> Option<(u8, bool)> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+
+    with_com_apartment(|| {
+        let enumerator: IMMDeviceEnumerator =
+            unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }.ok()?;
+        let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) }.ok()?;
+        let endpoint = unsafe { device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) }.ok()?;
+        let scalar = unsafe { endpoint.GetMasterVolumeLevelScalar() }.ok()?;
+        let muted = unsafe { endpoint.GetMute() }.map(|flag| flag.as_bool()).unwrap_or(false);
+        let volume = (scalar * 100.0).round().clamp(0.0, 100.0) as u8;
+        Some((volume, muted))
+    })
+}
+
+#[cfg(not(windows))]
+fn get_master_volume_state() -> Option<(u8, bool)> {
+    None
+}
+
+/// Runs `f` inside an MTA apartment. `CoUninitialize` is called only when this call actually
+/// initialised COM (S_OK); S_FALSE and RPC_E_CHANGED_MODE mean another component owns the
+/// apartment and must not be decremented here.
+#[cfg(windows)]
+fn with_com_apartment<T>(f: impl FnOnce() -> T) -> T {
+    use windows::Win32::Foundation::S_OK;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let must_uninitialize = hr == S_OK;
+        let result = f();
+        if must_uninitialize {
+            CoUninitialize();
+        }
+        result
+    }
+}
+
 // ---------------- METRIC HISTORY RING BUFFERS ----------------
 
-struct MetricHistoryTracker {
+struct MetricBuffer {
     last_push: Instant,
-    buffers: HashMap<GraphMetric, VecDeque<f32>>,
+    samples: VecDeque<f32>,
 }
+
+struct MetricHistoryTracker {
+    buffers: HashMap<GraphMetric, MetricBuffer>,
+}
+
+const METRIC_PUSH_INTERVAL: Duration = Duration::from_millis(400);
 
 static METRIC_HISTORY: Mutex<Option<MetricHistoryTracker>> = Mutex::new(None);
 
@@ -439,73 +538,75 @@ pub fn get_graph_samples(metric: GraphMetric, sample_count: usize, target_proces
     let count = sample_count.clamp(8, 100);
     let metrics = get_system_metrics(target_process);
 
+    // Metrics without a real source produce no history instead of a fabricated line.
     let current_val = match metric {
-        GraphMetric::SystemCpu => metrics.cpu_usage_pct / 100.0,
-        GraphMetric::ProcessCpu => metrics.target_process_cpu_pct.unwrap_or(metrics.cpu_usage_pct * 0.4) / 100.0,
-        GraphMetric::SystemRam => metrics.ram_usage_pct / 100.0,
-        GraphMetric::ProcessRam => (metrics.target_process_ram_mb.unwrap_or(250) as f32 / 2048.0).clamp(0.05, 1.0),
-        GraphMetric::Fps => 0.85,
-        GraphMetric::Battery => metrics.battery_pct.unwrap_or(100) as f32 / 100.0,
+        GraphMetric::SystemCpu => Some(metrics.cpu_usage_pct / 100.0),
+        GraphMetric::ProcessCpu => metrics.target_process_cpu_pct.map(|cpu| cpu / 100.0),
+        GraphMetric::SystemRam => Some(metrics.ram_usage_pct / 100.0),
+        GraphMetric::ProcessRam => metrics
+            .target_process_ram_mb
+            .map(|mb| (mb as f32 / metrics.ram_total_mb.max(1) as f32).clamp(0.0, 1.0)),
+        // No frame-rate source is available in the daemon; the label reports n/a.
+        GraphMetric::Fps => None,
+        GraphMetric::Battery => metrics.battery_pct.map(|pct| pct as f32 / 100.0),
         GraphMetric::Network => {
             let speed = get_network_speed_bytes_per_sec();
-            if speed <= 10.0 {
+            Some(if speed <= 10.0 {
                 0.03
             } else {
                 ((speed.log10() - 1.0) / 6.0).clamp(0.04, 0.96)
-            }
+            })
         }
+    };
+    let Some(current_val) = current_val else {
+        return Vec::new();
     };
 
     let mut lock = match METRIC_HISTORY.lock() {
         Ok(g) => g,
-        Err(_) => return vec![current_val; count],
+        Err(_) => return Vec::new(),
     };
 
     let now = Instant::now();
     let tracker = lock.get_or_insert_with(|| MetricHistoryTracker {
-        last_push: now,
         buffers: HashMap::new(),
     });
 
-    let buf = tracker.buffers.entry(metric).or_insert_with(VecDeque::new);
+    // Each metric has its own sample latch: two graphs in one frame must both advance.
+    let buffer = tracker
+        .buffers
+        .entry(metric)
+        .or_insert_with(|| MetricBuffer {
+            last_push: now,
+            samples: VecDeque::new(),
+        });
 
-    if now.duration_since(tracker.last_push).as_millis() >= 400 || buf.is_empty() {
-        tracker.last_push = now;
-        buf.push_back(current_val.clamp(0.02, 0.98));
-        while buf.len() > 100 {
-            buf.pop_front();
+    if buffer.samples.is_empty() || now.duration_since(buffer.last_push) >= METRIC_PUSH_INTERVAL {
+        buffer.last_push = now;
+        buffer.samples.push_back(current_val.clamp(0.02, 0.98));
+        while buffer.samples.len() > 100 {
+            buffer.samples.pop_front();
         }
     }
 
-    if buf.len() < count {
-        let mut padded = Vec::with_capacity(count);
-        let needed = count - buf.len();
-        let base = *buf.front().unwrap_or(&current_val);
-        for i in 0..needed {
-            let offset = ((i as f32 * 0.3).sin() * 0.05).clamp(-0.1, 0.1);
-            padded.push((base + offset).clamp(0.05, 0.95));
-        }
-        padded.extend(buf.iter().copied());
-        padded
-    } else {
-        buf.iter().rev().take(count).rev().copied().collect()
-    }
+    // A short history is rendered short rather than padded with generated samples.
+    buffer.samples.iter().rev().take(count).rev().copied().collect()
 }
 
 pub fn get_graph_current_label(metric: GraphMetric, target_process: Option<&str>) -> String {
     let metrics = get_system_metrics(target_process);
     match metric {
         GraphMetric::SystemCpu => format!("CPU: {:.0}%", metrics.cpu_usage_pct),
-        GraphMetric::ProcessCpu => {
-            let p_cpu = metrics.target_process_cpu_pct.unwrap_or(metrics.cpu_usage_pct * 0.4);
-            format!("P-CPU: {:.0}%", p_cpu)
-        }
+        GraphMetric::ProcessCpu => match metrics.target_process_cpu_pct {
+            Some(cpu) => format!("P-CPU: {:.0}%", cpu),
+            None => "P-CPU: n/a".to_string(),
+        },
         GraphMetric::SystemRam => format!("RAM: {:.0}% ({:.1}/{:.1} GB)", metrics.ram_usage_pct, metrics.ram_used_mb as f32 / 1024.0, metrics.ram_total_mb as f32 / 1024.0),
-        GraphMetric::ProcessRam => {
-            let mb = metrics.target_process_ram_mb.unwrap_or(180);
-            format!("P-RAM: {} MB", mb)
-        }
-        GraphMetric::Fps => "FPS: 144".to_string(),
+        GraphMetric::ProcessRam => match metrics.target_process_ram_mb {
+            Some(mb) => format!("P-RAM: {} MB", mb),
+            None => "P-RAM: n/a".to_string(),
+        },
+        GraphMetric::Fps => "FPS: n/a".to_string(),
         GraphMetric::Battery => {
             if let Some(bat) = metrics.battery_pct {
                 format!("BAT: {}%", bat)
@@ -529,13 +630,32 @@ pub fn get_graph_current_label(metric: GraphMetric, target_process: Option<&str>
 // ---------------- SYSTEM TELEMETRY FORMATTER ----------------
 
 pub fn format_telemetry_text(kind: TelemetryKind, style: TelemetryStyle, target_process: Option<&str>) -> String {
+    if kind == TelemetryKind::EngineStatus {
+        let engine = get_engine_telemetry();
+        let pulse = if engine.heartbeat_pulse { "●" } else { "○" };
+        return match style {
+            TelemetryStyle::Compact => {
+                format!("{} ONLINE | {} RUN", pulse, engine.active_rules_count)
+            }
+            TelemetryStyle::Badge => {
+                format!("{} SYNECTOR: ONLINE ({} active) | {}", pulse, engine.active_rules_count, engine.quota_status)
+            }
+            TelemetryStyle::Detailed => {
+                let status = if engine.is_daemon_alive { "Online" } else { "Offline" };
+                format!("Synector {}: Pulse 1s | Rules: {} | Macros: {} | {}", status, engine.active_rules_count, engine.active_macros_count, engine.quota_status)
+            }
+        };
+    }
+
     let metrics = get_system_metrics(target_process);
-    let engine = get_engine_telemetry();
 
     match kind {
         TelemetryKind::Battery => {
             let pwr_icon = if metrics.is_ac_online { "⚡" } else { "🔋" };
-            let pct_str = metrics.battery_pct.map(|p| format!("{}%", p)).unwrap_or_else(|| "100%".to_string());
+            let pct_str = metrics
+                .battery_pct
+                .map(|p| format!("{}%", p))
+                .unwrap_or_else(|| "n/a".to_string());
             match style {
                 TelemetryStyle::Compact => format!("{} {}", pwr_icon, pct_str),
                 TelemetryStyle::Badge => {
@@ -555,42 +675,37 @@ pub fn format_telemetry_text(kind: TelemetryKind, style: TelemetryStyle, target_
             }
         }
         TelemetryKind::AudioMicStatus => {
-            let vol_icon = if metrics.is_muted { "🔇" } else { "🔊" };
+            let is_muted = metrics.is_muted == Some(true);
+            let vol_icon = if is_muted { "🔇" } else { "🔊" };
+            let volume = metrics
+                .master_volume
+                .map(|volume| format!("{}%", volume))
+                .unwrap_or_else(|| "n/a".to_string());
             match style {
                 TelemetryStyle::Compact => {
-                    if metrics.is_muted { "MUTE".to_string() } else { format!("VOL: {}%", metrics.master_volume) }
+                    if is_muted {
+                        "MUTE".to_string()
+                    } else {
+                        format!("VOL: {}", volume)
+                    }
                 }
                 TelemetryStyle::Badge => {
-                    if metrics.is_muted {
-                        "🔇 MUTE | MIC: OFF".to_string()
+                    if is_muted {
+                        "🔇 MUTE".to_string()
                     } else {
-                        format!("{} VOL: {}% | MIC: ON", vol_icon, metrics.master_volume)
+                        format!("{} VOL: {}", vol_icon, volume)
                     }
                 }
                 TelemetryStyle::Detailed => {
-                    if metrics.is_muted {
-                        "Audio: Muted | Microphone: Idle".to_string()
+                    if is_muted {
+                        "Audio: Muted".to_string()
                     } else {
-                        format!("Master Volume: {}% | Microphone: Active", metrics.master_volume)
+                        format!("Master Volume: {}", volume)
                     }
                 }
             }
         }
-        TelemetryKind::EngineStatus => {
-            let pulse = if engine.heartbeat_pulse { "●" } else { "○" };
-            match style {
-                TelemetryStyle::Compact => {
-                    format!("{} ONLINE | {} RUN", pulse, engine.active_rules_count)
-                }
-                TelemetryStyle::Badge => {
-                    format!("{} SYNECTOR: ONLINE ({} active) | {}", pulse, engine.active_rules_count, engine.quota_status)
-                }
-                TelemetryStyle::Detailed => {
-                    let status = if engine.is_daemon_alive { "Online" } else { "Offline" };
-                    format!("Synector {}: Pulse 1s | Rules: {} | Macros: {} | {}", status, engine.active_rules_count, engine.active_macros_count, engine.quota_status)
-                }
-            }
-        }
+        TelemetryKind::EngineStatus => unreachable!("engine status is formatted above"),
     }
 }
 
@@ -668,15 +783,51 @@ pub fn get_active_or_recent_keys(max_keys: usize, decay_sec: f32) -> String {
 
 // ---------------- MEDIA HELPER ----------------
 
+/// Volume and media keys are E0-prefixed; they need the extended flag in addition to the scan
+/// code so players receive a real WM_APPCOMMAND.
+fn media_key_is_extended(vk: u8) -> bool {
+    matches!(vk, 0xA6..=0xB7)
+}
+
 pub fn simulate_media_key(vk: u8) {
     if !crate::daemon::actions::INPUT_INJECTION_ENABLED {
         return;
     }
     #[cfg(windows)]
     unsafe {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP};
-        keybd_event(vk, 0, windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0), 0);
-        keybd_event(vk, 0, KEYEVENTF_KEYUP, 0);
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC, VIRTUAL_KEY,
+        };
+
+        let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
+        let mut flags = KEYBD_EVENT_FLAGS(0);
+        if scan != 0 {
+            flags |= KEYEVENTF_SCANCODE;
+        }
+        if media_key_is_extended(vk) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+
+        let down = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk as u16),
+                    wScan: scan,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let mut up = down;
+        up.Anonymous.ki.dwFlags |= KEYEVENTF_KEYUP;
+
+        let _ = SendInput(&[down], std::mem::size_of::<INPUT>() as i32);
+        // Hold long enough for DirectInput-style players to register the press.
+        std::thread::sleep(Duration::from_millis(35));
+        let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
     }
     #[cfg(not(windows))]
     {
@@ -689,29 +840,26 @@ pub fn simulate_media_key(vk: u8) {
 
 pub fn is_system_audio_playing() -> bool {
     #[cfg(windows)]
-    unsafe {
-        use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+    {
         use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
-        use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+        use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
+        use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
-
-        let mut peak = 0.0f32;
-        if let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) {
-            if let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
-                if let Ok(meter) = device.Activate::<IAudioMeterInformation>(CLSCTX_ALL, None) {
-                    if let Ok(v) = meter.GetPeakValue() {
-                        peak = v;
+        with_com_apartment(|| {
+            let mut peak = 0.0f32;
+            if let Ok(enumerator) = unsafe {
+                CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            } {
+                if let Ok(device) = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) } {
+                    if let Ok(meter) = unsafe { device.Activate::<IAudioMeterInformation>(CLSCTX_ALL, None) } {
+                        if let Ok(value) = unsafe { meter.GetPeakValue() } {
+                            peak = value;
+                        }
                     }
                 }
             }
-        }
-
-        if must_uninit {
-            CoUninitialize();
-        }
-        peak > 0.0005
+            peak > 0.0005
+        })
     }
     #[cfg(not(windows))]
     false
@@ -723,7 +871,6 @@ pub struct SystemMediaStatus {
     pub title: String,
     pub artist: String,
     pub player_name: String,
-    pub progress_pct: f32,
 }
 
 static CACHED_MEDIA: Mutex<Option<(Instant, SystemMediaStatus)>> = Mutex::new(None);
@@ -732,14 +879,7 @@ pub fn get_system_media_status() -> SystemMediaStatus {
     if let Ok(lock) = CACHED_MEDIA.lock() {
         if let Some((time, ref status)) = *lock {
             if time.elapsed() < std::time::Duration::from_millis(200) {
-                let mut s = status.clone();
-                if let Ok(trk) = MEDIA_PLAYBACK_TRACKER.lock() {
-                    if let Some(ref tracker) = *trk {
-                        let frac = (tracker.accumulated_secs % tracker.estimated_duration_sec) / tracker.estimated_duration_sec;
-                        s.progress_pct = frac.clamp(0.0, 1.0);
-                    }
-                }
-                return s;
+                return status.clone();
             }
         }
     }
@@ -751,10 +891,6 @@ pub fn get_system_media_status() -> SystemMediaStatus {
         use windows::Win32::UI::WindowsAndMessaging::{
             EnumWindows, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible, GetWindowThreadProcessId,
         };
-        use windows::Win32::System::Diagnostics::ToolHelp::{
-            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-        };
-        use windows::Win32::Foundation::CloseHandle;
 
         struct EnumContext {
             found: Option<SystemMediaStatus>,
@@ -794,13 +930,11 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                         ("YouTube".to_string(), track_part.to_string())
                     };
                     let is_active = is_system_audio_playing();
-                    let progress_pct = compute_media_progress(is_active, &artist, &title);
                     ctx.found = Some(SystemMediaStatus {
                         is_playing: is_active,
                         title,
                         artist,
                         player_name: "YouTube".to_string(),
-                        progress_pct,
                     });
                     return BOOL(0);
                 }
@@ -815,13 +949,11 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                     ("SoundCloud".to_string(), track_part.to_string())
                 };
                 let is_active = is_system_audio_playing();
-                let progress_pct = compute_media_progress(is_active, &artist, &title);
                 ctx.found = Some(SystemMediaStatus {
                     is_playing: is_active,
                     title,
                     artist,
                     player_name: "SoundCloud".to_string(),
-                    progress_pct,
                 });
                 return BOOL(0);
             }
@@ -843,13 +975,11 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                     ("Yandex Music".to_string(), clean)
                 };
                 let is_active = is_system_audio_playing();
-                let progress_pct = compute_media_progress(is_active, &artist, &title);
                 ctx.found = Some(SystemMediaStatus {
                     is_playing: is_active,
                     title,
                     artist,
                     player_name: "Yandex Music".to_string(),
-                    progress_pct,
                 });
                 return BOOL(0);
             }
@@ -863,13 +993,11 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                     ("VLC Media Player".to_string(), track_part.to_string())
                 };
                 let is_active = is_system_audio_playing();
-                let progress_pct = compute_media_progress(is_active, &artist, &title);
                 ctx.found = Some(SystemMediaStatus {
                     is_playing: is_active,
                     title,
                     artist,
                     player_name: "VLC".to_string(),
-                    progress_pct,
                 });
                 return BOOL(0);
             }
@@ -883,18 +1011,17 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                     ("AIMP Player".to_string(), track_part.to_string())
                 };
                 let is_active = is_system_audio_playing();
-                let progress_pct = compute_media_progress(is_active, &artist, &title);
                 ctx.found = Some(SystemMediaStatus {
                     is_playing: is_active,
                     title,
                     artist,
                     player_name: "AIMP".to_string(),
-                    progress_pct,
                 });
                 return BOOL(0);
             }
 
-            // Check Spotify
+            // Check Spotify: the window title alone is ambiguous, so confirm the owner process
+            // with one image-path query instead of enumerating all processes per window.
             let mut pid = 0u32;
             GetWindowThreadProcessId(hwnd, Some(&mut pid));
             if pid != 0 {
@@ -903,46 +1030,25 @@ pub fn get_system_media_status() -> SystemMediaStatus {
                     || full_title.eq_ignore_ascii_case("spotify premium");
                 
                 if !is_spotify_idle && full_title.contains(" - ") {
-                    let h_snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-                    if let Ok(snap) = h_snap {
-                        let mut pe = PROCESSENTRY32W {
-                            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-                            ..Default::default()
-                        };
-                        let mut is_spotify = false;
-                        if Process32FirstW(snap, &mut pe).is_ok() {
-                            loop {
-                                if pe.th32ProcessID == pid {
-                                    let exe = String::from_utf16_lossy(&pe.szExeFile).trim_matches('\0').to_lowercase();
-                                    if exe == "spotify.exe" {
-                                        is_spotify = true;
-                                    }
-                                    break;
-                                }
-                                if Process32NextW(snap, &mut pe).is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        let _ = CloseHandle(snap);
+                    let is_spotify = crate::daemon::watcher::ProcessWatcher::get_process_image_path(pid)
+                        .as_deref()
+                        .and_then(|path| std::path::Path::new(path).file_name().and_then(|name| name.to_str()))
+                        .is_some_and(|name| name.eq_ignore_ascii_case("spotify.exe"));
 
-                        if is_spotify {
-                            let (artist, title) = if let Some((a, t)) = full_title.split_once(" - ") {
-                                (a.trim().to_string(), t.trim().to_string())
-                            } else {
-                                ("Spotify".to_string(), full_title)
-                            };
-                            let is_active = is_system_audio_playing();
-                            let progress_pct = compute_media_progress(is_active, &artist, &title);
-                            ctx.found = Some(SystemMediaStatus {
-                                is_playing: is_active,
-                                title,
-                                artist,
-                                player_name: "Spotify".to_string(),
-                                progress_pct,
-                            });
-                            return BOOL(0);
-                        }
+                    if is_spotify {
+                        let (artist, title) = if let Some((a, t)) = full_title.split_once(" - ") {
+                            (a.trim().to_string(), t.trim().to_string())
+                        } else {
+                            ("Spotify".to_string(), full_title)
+                        };
+                        let is_active = is_system_audio_playing();
+                        ctx.found = Some(SystemMediaStatus {
+                            is_playing: is_active,
+                            title,
+                            artist,
+                            player_name: "Spotify".to_string(),
+                        });
+                        return BOOL(0);
                     }
                 }
             }
@@ -960,7 +1066,6 @@ pub fn get_system_media_status() -> SystemMediaStatus {
             title: "No Track Playing".to_string(),
             artist: "Synector Media".to_string(),
             player_name: "Media".to_string(),
-            progress_pct: 0.0,
         });
 
         if let Ok(mut lock) = CACHED_MEDIA.lock() {
@@ -975,7 +1080,85 @@ pub fn get_system_media_status() -> SystemMediaStatus {
             title: "No Track Playing".to_string(),
             artist: "Synector Media".to_string(),
             player_name: "Media".to_string(),
-            progress_pct: 0.0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_process_cpu_percent_math() {
+        // One fully busy core for one second is 100 % of a single-core machine.
+        let one_core = process_cpu_percent(10_000_000, Duration::from_secs(1), 1).unwrap();
+        assert!((one_core - 100.0).abs() < 0.01);
+
+        // The same CPU time spread over four cores is 25 % of total capacity.
+        let four_cores = process_cpu_percent(10_000_000, Duration::from_secs(1), 4).unwrap();
+        assert!((four_cores - 25.0).abs() < 0.01);
+
+        assert_eq!(process_cpu_percent(10, Duration::ZERO, 4), None);
+        assert_eq!(process_cpu_percent(10, Duration::from_secs(1), 0), None);
+    }
+
+    #[test]
+    fn test_metric_history_advances_per_metric() {
+        if let Ok(mut lock) = METRIC_HISTORY.lock() {
+            *lock = None;
+        }
+
+        let cpu_first = get_graph_samples(GraphMetric::SystemCpu, 8, None);
+        let ram_first = get_graph_samples(GraphMetric::SystemRam, 8, None);
+        assert_eq!(cpu_first.len(), 1);
+        assert_eq!(ram_first.len(), 1);
+
+        std::thread::sleep(Duration::from_millis(410));
+
+        let cpu_second = get_graph_samples(GraphMetric::SystemCpu, 8, None);
+        let ram_second = get_graph_samples(GraphMetric::SystemRam, 8, None);
+        assert_eq!(cpu_second.len(), 2, "the CPU buffer must advance");
+        assert_eq!(
+            ram_second.len(),
+            2,
+            "a second graph must advance even when another metric sampled in the same frame"
+        );
+        assert!(cpu_second.iter().all(|value| value.is_finite()));
+        assert!(ram_second.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn test_unsupported_graph_metrics_return_no_samples() {
+        assert!(get_graph_samples(GraphMetric::Fps, 16, None).is_empty());
+        assert!(get_graph_samples(GraphMetric::ProcessCpu, 16, None).is_empty());
+        assert!(get_graph_samples(GraphMetric::ProcessRam, 16, None).is_empty());
+
+        assert_eq!(get_graph_current_label(GraphMetric::Fps, None), "FPS: n/a");
+        assert_eq!(
+            get_graph_current_label(GraphMetric::ProcessCpu, None),
+            "P-CPU: n/a"
+        );
+        assert_eq!(
+            get_graph_current_label(GraphMetric::ProcessRam, None),
+            "P-RAM: n/a"
+        );
+    }
+
+    #[test]
+    fn test_media_key_extended_flags() {
+        assert!(media_key_is_extended(0xAD)); // VK_VOLUME_MUTE
+        assert!(media_key_is_extended(0xAF)); // VK_VOLUME_UP
+        assert!(media_key_is_extended(0xB3)); // VK_MEDIA_PLAY_PAUSE
+        assert!(!media_key_is_extended(b'A'));
+    }
+
+    #[test]
+    fn test_metrics_snapshot_cache_freshness() {
+        assert!(metrics_snapshot_is_fresh(Instant::now(), true));
+        assert!(!metrics_snapshot_is_fresh(Instant::now(), false));
+        assert!(!metrics_snapshot_is_fresh(
+            Instant::now() - Duration::from_millis(800),
+            true
+        ));
     }
 }

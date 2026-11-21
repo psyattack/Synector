@@ -7,12 +7,17 @@
 //! in place, a notice line explains the restart and the newest events stay at the end, so the name
 //! never changes, no extra files appear and one chatty rule cannot produce an unbounded log.
 //!
-//! The logger is dependency-free and must never take a process down: every I/O failure is
-//! dropped, the stdout/stderr console behaviour of the call site is unchanged, and a panic is
-//! recorded by [`install_panic_hook`]. Call sites log identifiers and outcomes only - script
-//! bodies, webhook payloads, rule JSON and other user secrets never belong in a log line; the
-//! daemon routes action errors that may embed script output through its `SensitiveLog` event
-//! instead.
+//! The logger is dependency-free and must never take a process down: an I/O failure drops that
+//! event, the first failure of a day is reported once on stderr and the open is not retried
+//! until the next day (so a permanently unwritable directory cannot turn every event into a
+//! failed `create_dir_all` + open), and a panic is recorded by [`install_panic_hook`]. [`init`]
+//! returns an [`InitReport`] so the caller can surface a failure that happened before the first
+//! event. All file access is serialized across Synector processes with a named mutex, so
+//! compaction cannot discard an event another process appended in the meantime.
+//!
+//! Call sites log identifiers and outcomes only - script bodies, webhook payloads, rule JSON
+//! and other user secrets never belong in a log line; the daemon routes action errors that may
+//! embed script output through its `SensitiveLog` event instead.
 
 use std::any::Any;
 use std::fs::{self, File, OpenOptions};
@@ -98,6 +103,8 @@ pub struct Logger {
     max_level: Level,
     max_file_bytes: u64,
     open: Mutex<Option<OpenLog>>,
+    /// First I/O failure of the day. Until the date changes the open is not attempted again.
+    failure: Mutex<Option<LogFailure>>,
 }
 
 #[derive(Debug)]
@@ -107,14 +114,79 @@ struct OpenLog {
     file: File,
 }
 
+#[derive(Debug)]
+struct LogFailure {
+    date: String,
+    message: String,
+}
+
+/// Outcome of [`init`]: the first logging failure of the current day, if any. The message is
+/// also emitted once on stderr; callers such as `main` can surface it (for example in the CLI
+/// or a GUI toast) because a release build has no visible console.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct InitReport {
+    pub error: Option<String>,
+}
+
+/// One process-wide named-mutex guard per log write. Every process that logs takes it, so an
+/// append and a ring-buffer compaction can never interleave across the daemon, the GUI and the
+/// CLI. If the mutex cannot be opened (for example an elevated daemon created it with a DACL
+/// that a lower-integrity process cannot open) logging stays best-effort per process instead of
+/// failing.
+#[cfg(windows)]
+mod cross_process {
+    use std::sync::OnceLock;
+
+    use windows::core::w;
+    use windows::Win32::Foundation::{HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{
+        CreateMutexW, ReleaseMutex, WaitForSingleObject, INFINITE,
+    };
+
+    struct LogLock(HANDLE);
+
+    // Safety: the handle is only passed to the kernel's wait/release calls, which serialize
+    // access across threads and processes.
+    unsafe impl Send for LogLock {}
+    unsafe impl Sync for LogLock {}
+
+    static LOG_LOCK: OnceLock<Option<LogLock>> = OnceLock::new();
+
+    pub struct Guard(&'static LogLock);
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = ReleaseMutex(self.0 .0);
+            }
+        }
+    }
+
+    pub fn lock() -> Option<Guard> {
+        let log_lock = LOG_LOCK
+            .get_or_init(|| unsafe {
+                // A handle is returned whether the named mutex was just created or already
+                // existed; ownership is always taken explicitly below.
+                CreateMutexW(None, false, w!(r"Local\Synector_Log_File"))
+                    .ok()
+                    .map(LogLock)
+            })
+            .as_ref()?;
+        let wait = unsafe { WaitForSingleObject(log_lock.0, INFINITE) };
+        (wait == WAIT_OBJECT_0).then_some(Guard(log_lock))
+    }
+}
+
 impl Logger {
-    /// Creates a logger that will write into `dir`; the directory is created on the first write.
+    /// Creates a logger that will write into `dir`; the directory is created on the first write
+    /// or when [`init`] primes the daily file.
     pub fn new(dir: impl Into<PathBuf>, max_level: Level) -> Self {
         Self {
             dir: dir.into(),
             max_level,
             max_file_bytes: MAX_FILE_BYTES,
             open: Mutex::new(None),
+            failure: Mutex::new(None),
         }
     }
 
@@ -125,6 +197,7 @@ impl Logger {
             max_level,
             max_file_bytes,
             open: Mutex::new(None),
+            failure: Mutex::new(None),
         }
     }
 
@@ -143,9 +216,15 @@ impl Logger {
 
     fn write(&self, now: DateTime<Local>, level: Level, category: &str, message: &str) {
         let date = now.format("%Y-%m-%d").to_string();
+        if self.failed_on(&date) {
+            return;
+        }
         let line = format_line(&now, level, category, message);
         let line_bytes = line.len() as u64 + 1;
 
+        // Serialize the whole append/compaction with the other Synector processes, so a
+        // compaction cannot truncate an event appended between its read and `set_len`.
+        let _file_lock = cross_process::lock();
         let mut open = self
             .open
             .lock()
@@ -155,8 +234,15 @@ impl Logger {
                 Ok(current) => {
                     self.prune(now.date_naive());
                     *open = Some(current);
+                    self.clear_failure();
                 }
-                Err(_) => return,
+                Err(error) => {
+                    self.record_failure(
+                        &date,
+                        &format!("cannot open the daily log file: {error}"),
+                    );
+                    return;
+                }
             }
         }
 
@@ -164,24 +250,101 @@ impl Logger {
             current.size > 0 && current.size.saturating_add(line_bytes) > self.max_file_bytes
         });
         if full {
+            let mut compact_error = None;
             if let Some(current) = open.as_mut() {
                 // Another process may have compacted the file already; trust the handle, not the
                 // cached size, before dropping somebody else's fresh events.
                 if let Ok(metadata) = current.file.metadata() {
                     current.size = metadata.len();
                 }
-                if current.size.saturating_add(line_bytes) > self.max_file_bytes
-                    && self.compact_file(current).is_err()
-                {
-                    return;
+                if current.size.saturating_add(line_bytes) > self.max_file_bytes {
+                    if let Err(error) = self.compact_file(current) {
+                        compact_error = Some(error);
+                    }
                 }
+            }
+            if let Some(error) = compact_error {
+                self.record_failure(
+                    &date,
+                    &format!("cannot compact the daily log file: {error}"),
+                );
+                *open = None;
+                return;
             }
         }
 
+        let mut write_error = None;
         if let Some(current) = open.as_mut() {
-            if writeln!(current.file, "{line}").is_ok() {
-                current.size = current.size.saturating_add(line_bytes);
+            match writeln!(current.file, "{line}") {
+                Ok(()) => current.size = current.size.saturating_add(line_bytes),
+                Err(error) => write_error = Some(error),
             }
+        }
+        if let Some(error) = write_error {
+            self.record_failure(&date, &format!("cannot write to the daily log file: {error}"));
+            *open = None;
+        }
+    }
+
+    fn failed_on(&self, date: &str) -> bool {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|failure| failure.date == date)
+    }
+
+    fn record_failure(&self, date: &str, message: &str) {
+        let mut failure = self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if failure.as_ref().is_some_and(|current| current.date == date) {
+            return;
+        }
+        *failure = Some(LogFailure {
+            date: date.to_string(),
+            message: message.to_string(),
+        });
+        // The file log is what failed, so this is the one diagnostic that cannot go through it.
+        eprintln!("Synector logging disabled for {date}: {message}");
+    }
+
+    fn clear_failure(&self) {
+        *self
+            .failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    fn failure_text(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|failure| failure.message.clone())
+    }
+
+    /// Opens today's file once at start-up so an unwritable logs directory is reported through
+    /// [`init`] instead of staying silent until the first event.
+    fn prime(&self) {
+        let now = Local::now();
+        let date = now.format("%Y-%m-%d").to_string();
+        let _file_lock = cross_process::lock();
+        let mut open = self
+            .open
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match self.open_day(&date) {
+            Ok(current) => {
+                self.prune(now.date_naive());
+                *open = Some(current);
+                self.clear_failure();
+            }
+            Err(error) => self.record_failure(
+                &date,
+                &format!("cannot open {}: {error}", self.dir.display()),
+            ),
         }
     }
 
@@ -288,7 +451,10 @@ static GLOBAL: OnceLock<Logger> = OnceLock::new();
 
 /// Installs the process-wide logger, reading the threshold from [`ENV_VAR`]. Later calls are
 /// ignored, so every process can call it defensively.
-pub fn init() {
+///
+/// The first call primes today's file: an unwritable logs directory is reported once on stderr
+/// and returned in the [`InitReport`], and the open is not retried until the next day.
+pub fn init() -> InitReport {
     let (max_level, problem) = match std::env::var(ENV_VAR) {
         Ok(raw) if !raw.trim().is_empty() => match Level::parse(&raw) {
             Some(level) => (level, None),
@@ -303,10 +469,19 @@ pub fn init() {
         _ => (Level::Info, None),
     };
 
-    if GLOBAL.set(Logger::new(log_dir(), max_level)).is_ok() {
-        if let Some(problem) = problem {
-            warn("LOGGING", &problem);
+    if GLOBAL.get().is_none() {
+        let logger = Logger::new(log_dir(), max_level);
+        if max_level != Level::Off {
+            logger.prime();
         }
+        let _ = GLOBAL.set(logger);
+    }
+    if let Some(problem) = problem {
+        warn("LOGGING", &problem);
+    }
+
+    InitReport {
+        error: GLOBAL.get().and_then(Logger::failure_text),
     }
 }
 
@@ -610,6 +785,41 @@ mod tests {
         assert!(!dir.exists());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_open_failure_is_reported_once_and_retried_the_next_day() {
+        let blocker = std::env::temp_dir().join(format!(
+            "synector_logging_blocker_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&blocker);
+        let _ = fs::remove_dir_all(&blocker);
+        fs::write(&blocker, "not a directory").expect("create the obstacle file");
+
+        // The log directory path is occupied by a file, so every open fails.
+        let logger = Logger::new(&blocker, Level::Info);
+        logger.write(at(2026, 3, 4), Level::Info, "DAEMON", "lost event");
+        assert!(
+            logger.failure_text().is_some(),
+            "the first open failure must be recorded"
+        );
+        // A second event on the same day must not re-attempt the open (and must not panic).
+        logger.write(at(2026, 3, 4), Level::Info, "DAEMON", "another lost event");
+
+        fs::remove_file(&blocker).expect("remove the obstacle file");
+        fs::create_dir_all(&blocker).expect("create the log directory");
+        logger.write(at(2026, 3, 5), Level::Info, "DAEMON", "recovered");
+        assert!(
+            logger.failure_text().is_none(),
+            "the next day must retry and clear the failure"
+        );
+
+        let files = read_logs(&blocker);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].1.contains("recovered"));
+        assert!(!files[0].1.contains("lost event"));
+        let _ = fs::remove_dir_all(&blocker);
     }
 
     #[test]

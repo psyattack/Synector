@@ -61,7 +61,7 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
                     let prefix = if modal.is_exit_pipeline { loc.inspector_exit_prefix } else { loc.inspector_step_prefix };
                     widgets::hud(ui, &format!("{} {:02}", prefix, modal.step_idx + 1), t.accent_ink);
                     ui.add_space(8.0);
-                    widgets::badge(ui, modal.language.badge_name(), t.accent_ink);
+                    widgets::badge(ui, modal.language.badge_name(loc), t.accent_ink);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(20.0);

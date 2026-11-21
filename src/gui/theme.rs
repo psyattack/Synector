@@ -32,7 +32,7 @@ pub const HEADER_H: f32 = 48.0;
 /// Height of the bottom telemetry/status bar.
 pub const FOOTER_H: f32 = 34.0;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Tokens {
     pub dark: bool,
     /// Page and card surface.
@@ -135,13 +135,19 @@ impl Tokens {
         bad: hex(0xf25f52),
     };
 
-    pub fn get(ctx: &egui::Context) -> Self {
-        let theme = ctx.data(|d| d.get_temp::<AppTheme>(egui::Id::unique("app_theme"))).unwrap_or(AppTheme::Dark);
+    /// The palette for a configured [`AppTheme`]; the single derivation used by
+    /// [`Tokens::get`] and [`apply_theme`] so the two cannot drift apart.
+    pub fn of(theme: AppTheme) -> Self {
         match theme {
             AppTheme::Dark => Self::DARK,
             AppTheme::Light => Self::LIGHT,
             AppTheme::Chocolate => Self::CHOCOLATE,
         }
+    }
+
+    pub fn get(ctx: &egui::Context) -> Self {
+        let theme = ctx.data(|d| d.get_temp::<AppTheme>(egui::Id::unique("app_theme"))).unwrap_or(AppTheme::Dark);
+        Self::of(theme)
     }
 
     pub fn hairline(&self) -> Stroke {
@@ -338,20 +344,21 @@ fn visuals(t: &Tokens) -> Visuals {
 }
 
 pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
-    let tokens = match theme {
-        AppTheme::Dark => Tokens::DARK,
-        AppTheme::Light => Tokens::LIGHT,
-        AppTheme::Chocolate => Tokens::CHOCOLATE,
-    };
+    let tokens = Tokens::of(theme);
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("app_theme"), theme));
+
+    // The preference must be set before the visuals: `Context::set_visuals` writes into
+    // whichever egui theme is currently active. Applying Chocolate while Light is active
+    // used to leave the chocolate palette in the Light style while `Tokens::get` already
+    // reported CHOCOLATE, so native widgets rendered with the plain dark palette.
+    ctx.set_theme(if tokens.dark {
+        egui::ThemePreference::Dark
+    } else {
+        egui::ThemePreference::Light
+    });
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::DARK));
     ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::LIGHT));
     ctx.set_visuals(visuals(&tokens));
-    if tokens.dark {
-        ctx.set_theme(egui::ThemePreference::Dark);
-    } else {
-        ctx.set_theme(egui::ThemePreference::Light);
-    }
 
     ctx.all_styles_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
@@ -393,5 +400,28 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn apply_theme_applies_the_palette_to_the_active_egui_theme() {
+        let ctx = egui::Context::default();
+
+        // The regression scenario: switch Light -> Chocolate. The chocolate palette (a
+        // dark theme with different colours) must land in the Dark style, not in Light.
+        apply_theme(&ctx, AppTheme::Light);
+        assert_eq!(Tokens::get(&ctx), Tokens::LIGHT);
+        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::LIGHT.bg);
+
+        apply_theme(&ctx, AppTheme::Chocolate);
+        assert_eq!(Tokens::get(&ctx), Tokens::CHOCOLATE);
+        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::CHOCOLATE.bg);
+        assert_eq!(
+            ctx.global_style().visuals.text_edit_bg_color,
+            Some(Tokens::CHOCOLATE.sunken)
+        );
+
+        apply_theme(&ctx, AppTheme::Dark);
+        assert_eq!(Tokens::get(&ctx), Tokens::DARK);
+        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::DARK.bg);
     }
 }

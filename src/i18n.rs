@@ -102,25 +102,20 @@ pub struct Strings {
     pub summary_action_wait: &'static str,
     pub summary_action_power: &'static str,
 
-    // Process Hunter View (processes_view.rs)
+    // Process Hunter View (process_picker_modal.rs)
     pub hunter_cell_all: &'static str,
     pub hunter_cell_all_tip: &'static str,
     pub hunter_cell_windowed: &'static str,
     pub hunter_cell_windowed_tip: &'static str,
     pub hunter_cell_services: &'static str,
     pub hunter_cell_services_tip: &'static str,
-    pub hunter_btn_rescan: &'static str,
     pub hunter_search_placeholder: &'static str,
     pub hunter_empty_title: &'static str,
     pub hunter_col_process_name: &'static str,
     pub hunter_col_pid: &'static str,
-    pub hunter_col_working_set: &'static str,
     pub hunter_col_window_title: &'static str,
     pub hunter_col_quick_actions: &'static str,
-    pub hunter_btn_rule: &'static str,
     pub hunter_btn_select: &'static str,
-    pub hunter_modal_title: &'static str,
-    pub hunter_modal_subtitle: &'static str,
 
     // Activity Log Stream View (logs_view.rs)
     pub logs_cell_all: &'static str,
@@ -163,18 +158,9 @@ pub struct Strings {
     pub settings_updates_auto_install_title: &'static str,
     pub settings_updates_auto_install_desc: &'static str,
     pub settings_updates_check_title: &'static str,
-    pub settings_updates_check_desc: &'static str,
-    pub settings_eyebrow_system: &'static str,
-    pub settings_btn_enable_autorun: &'static str,
-    pub settings_btn_disable_autorun: &'static str,
-    pub settings_tray_icon_override: &'static str,
     pub settings_btn_browse: &'static str,
     pub settings_btn_reset: &'static str,
     pub settings_tray_icon_placeholder: &'static str,
-    pub settings_eyebrow_language: &'static str,
-    pub settings_language_label: &'static str,
-    pub settings_eyebrow_appearance: &'static str,
-    pub settings_theme_label: &'static str,
     pub settings_theme_dark: &'static str,
     pub settings_theme_light: &'static str,
     pub settings_theme_chocolate: &'static str,
@@ -182,7 +168,6 @@ pub struct Strings {
     // Inspector Drawer (inspector.rs)
     pub inspector_eyebrow_task_details: &'static str,
     pub inspector_btn_close_tip: &'static str,
-    pub inspector_field_rule_name: &'static str,
     pub inspector_tags_add: &'static str,
     pub inspector_tags_create_title: &'static str,
     pub inspector_tags_name_placeholder: &'static str,
@@ -206,11 +191,6 @@ pub struct Strings {
     pub inspector_trigger_hotkey: &'static str,
     pub inspector_trigger_file: &'static str,
     pub inspector_trigger_webhook: &'static str,
-    pub inspector_trigger_system: &'static str,
-    pub inspector_trigger_timer: &'static str,
-    pub inspector_trigger_tab_process: &'static str,
-    pub inspector_trigger_tab_schedule: &'static str,
-    pub inspector_trigger_tab_events: &'static str,
     pub inspector_manual_title: &'static str,
     pub inspector_manual_desc: &'static str,
     pub inspector_match_tab_exact: &'static str,
@@ -219,14 +199,11 @@ pub struct Strings {
     pub inspector_sched_tab_interval: &'static str,
     pub inspector_sched_tab_daily: &'static str,
     pub inspector_sched_tab_specific: &'static str,
-    pub inspector_sched_tab_app_start: &'static str,
-    pub inspector_sched_tab_app_close: &'static str,
     pub inspector_field_target_process: &'static str,
     pub inspector_field_target_process_hint: &'static str,
     pub inspector_field_match_mode: &'static str,
     pub inspector_match_mode_exact: &'static str,
     pub inspector_match_mode_wildcard: &'static str,
-    pub inspector_match_mode_contains: &'static str,
     pub inspector_checkbox_single_instance: &'static str,
     pub inspector_field_sys_event_type: &'static str,
     pub inspector_sys_event_lock: &'static str,
@@ -261,18 +238,11 @@ pub struct Strings {
 
     pub inspector_schedule_app_start_desc: &'static str,
     pub inspector_schedule_app_close_desc: &'static str,
-    pub inspector_field_startup_delay: &'static str,
     pub inspector_field_idle_duration: &'static str,
-    pub inspector_schedule_interval: &'static str,
-    pub inspector_schedule_daily: &'static str,
-    pub inspector_schedule_oneshot: &'static str,
     pub inspector_schedule_app_start: &'static str,
     pub inspector_schedule_app_close: &'static str,
     pub inspector_preset_intervals: &'static str,
     pub inspector_custom_interval: &'static str,
-    pub inspector_interval_hours: &'static str,
-    pub inspector_interval_minutes: &'static str,
-    pub inspector_interval_seconds: &'static str,
     pub inspector_checkbox_first_execution: &'static str,
     pub inspector_daily_execution_time: &'static str,
     pub inspector_active_days_of_week: &'static str,
@@ -295,8 +265,6 @@ pub struct Strings {
     pub inspector_cal_month_names: [&'static str; 12],
     pub inspector_cal_day_names: [&'static str; 7],
     pub inspector_execution_time: &'static str,
-    pub inspector_badge_app_startup: &'static str,
-    pub inspector_badge_app_shutdown: &'static str,
 
     // Inspector Pre-conditions (Section 03)
     pub inspector_eyebrow_conditions: &'static str,
@@ -305,18 +273,10 @@ pub struct Strings {
     pub inspector_cond_type_process: &'static str,
     pub inspector_cond_type_window: &'static str,
     pub inspector_cond_type_time: &'static str,
-    pub inspector_cond_type_system: &'static str,
     pub inspector_cond_type_event: &'static str,
     pub inspector_cond_type_resource: &'static str,
     pub inspector_cond_type_file: &'static str,
     pub inspector_cond_type_rule: &'static str,
-    pub inspector_cond_tab_system: &'static str,
-    pub inspector_cond_tab_event: &'static str,
-    pub inspector_cond_tab_process: &'static str,
-    pub inspector_cond_tab_window: &'static str,
-    pub inspector_cond_tab_time: &'static str,
-    pub inspector_cond_sub_resource: &'static str,
-    pub inspector_cond_sub_file_watcher: &'static str,
     pub inspector_cond_state_running: &'static str,
     pub inspector_cond_state_not_running: &'static str,
     pub inspector_cond_state_focused: &'static str,
@@ -344,12 +304,8 @@ pub struct Strings {
     pub inspector_ifelse_add_elseif: &'static str,
     pub inspector_ifelse_add_else: &'static str,
     pub inspector_ifelse_remove_branch_tip: &'static str,
-    pub inspector_ifelse_no_then: &'static str,
-    pub inspector_ifelse_no_branch_steps: &'static str,
-    pub inspector_ifelse_no_else: &'static str,
     pub inspector_ifelse_nested_not_supported: &'static str,
     pub inspector_ifelse_then_execute: &'static str,
-    pub inspector_cond_type_label: &'static str,
     pub inspector_cond_state_label: &'static str,
     pub inspector_cond_rule_state_label: &'static str,
     pub inspector_cond_focus_label: &'static str,
@@ -360,7 +316,6 @@ pub struct Strings {
     pub inspector_eyebrow_actions_start: &'static str,
     pub inspector_eyebrow_actions_pipeline: &'static str,
     pub inspector_eyebrow_actions_exit: &'static str,
-    pub inspector_btn_add_action: &'static str,
     pub inspector_btn_save_rule: &'static str,
     pub inspector_btn_clone: &'static str,
     pub inspector_btn_cancel: &'static str,
@@ -372,15 +327,10 @@ pub struct Strings {
     pub inspector_menu_notification: &'static str,
     pub inspector_menu_system_power: &'static str,
     pub inspector_menu_webhook: &'static str,
-    pub inspector_search_action_hint: &'static str,
-    pub inspector_no_matching_actions: &'static str,
     pub inspector_btn_open_catalog: &'static str,
 
     // Action Catalog Modal
     pub catalog_modal_eyebrow: &'static str,
-    pub catalog_modal_title: &'static str,
-    pub catalog_target_start: &'static str,
-    pub catalog_target_exit: &'static str,
     pub catalog_search_hint: &'static str,
     pub catalog_cat_all: &'static str,
     pub catalog_cat_process: &'static str,
@@ -460,8 +410,6 @@ pub struct Strings {
     pub catalog_cond_rule_title: &'static str,
     pub catalog_cond_rule_desc: &'static str,
     pub catalog_no_matches: &'static str,
-    pub catalog_esc_hint: &'static str,
-    pub catalog_actions_count: &'static str,
 
     // Action Descriptions for Catalog
     pub catalog_desc_launch_process: &'static str,
@@ -546,7 +494,6 @@ pub struct Strings {
     pub inspector_power_screen_off: &'static str,
     pub inspector_power_restart: &'static str,
     pub inspector_power_shutdown: &'static str,
-    pub inspector_field_pause_delay: &'static str,
     pub inspector_field_webhook_url: &'static str,
     pub inspector_field_webhook_url_hint: &'static str,
     pub inspector_field_json_body: &'static str,
@@ -561,18 +508,12 @@ pub struct Strings {
     pub inspector_btn_terminate_process: &'static str,
     pub inspector_rule_track_prefix: &'static str,
     pub inspector_pick_running: &'static str,
-    pub inspector_search_process_hint: &'static str,
-    pub inspector_no_matching_processes: &'static str,
 
     // Inspector Rule Icon (inspector.rs)
-    pub inspector_sec_icon: &'static str,
-    pub inspector_icon_browse: &'static str,
     pub inspector_icon_browse_tip: &'static str,
-    pub inspector_icon_reset: &'static str,
     pub inspector_icon_reset_tip: &'static str,
     pub inspector_icon_auto_process: &'static str,
     pub inspector_icon_auto_process_tip: &'static str,
-    pub inspector_icon_detect_now: &'static str,
     pub inspector_icon_default_label: &'static str,
     pub inspector_icon_custom_label: &'static str,
     pub inspector_badge_executing_now: &'static str,
@@ -581,14 +522,10 @@ pub struct Strings {
     pub modal_tip_close: &'static str,
     pub modal_lines: &'static str,
     pub modal_chars: &'static str,
-    pub modal_bytes: &'static str,
-    pub modal_esc_hint: &'static str,
-    pub modal_btn_done: &'static str,
     pub modal_btn_copy_script: &'static str,
 
     // Toasts
     pub toast_script_copied: &'static str,
-    pub toast_process_refreshed: &'static str,
     pub toast_stream_cleared: &'static str,
     pub toast_config_saved: &'static str,
     pub toast_rule_saved: &'static str,
@@ -604,15 +541,10 @@ pub struct Strings {
     pub toast_import_success: &'static str,
     pub toast_import_invalid: &'static str,
     pub toast_import_clipboard_err: &'static str,
-    pub toast_icon_detected: &'static str,
-    pub toast_icon_not_found: &'static str,
 
     // Settings Updates (settings_view.rs)
-    pub settings_eyebrow_updates: &'static str,
-    pub settings_check_startup_checkbox: &'static str,
     pub settings_btn_check_updates: &'static str,
     pub settings_btn_checking_updates: &'static str,
-    pub settings_last_checked: &'static str,
 
     // Footer Updates (gui.rs)
     pub footer_update_available: &'static str,
@@ -625,7 +557,6 @@ pub struct Strings {
 
     // Changelog Modal (changelog_modal.rs)
     pub changelog_eyebrow: &'static str,
-    pub changelog_modal_title: &'static str,
     pub changelog_btn_close: &'static str,
     pub changelog_btn_update: &'static str,
     pub changelog_open_github: &'static str,
@@ -727,7 +658,6 @@ pub struct Strings {
     pub inspector_cell_unmute: &'static str,
     pub inspector_cell_toggle: &'static str,
     pub inspector_cell_volume: &'static str,
-    pub inspector_cell_beep: &'static str,
     pub inspector_cell_lock: &'static str,
     pub inspector_cell_sleep: &'static str,
     pub inspector_cell_screen_off: &'static str,
@@ -946,10 +876,6 @@ pub struct Strings {
     pub overlay_studio_btn_calibrate: &'static str,
     pub overlay_studio_btn_calibrate_hide: &'static str,
     pub overlay_studio_field_anchor: &'static str,
-    pub overlay_studio_target_monitor: &'static str,
-    pub overlay_studio_monitor_primary: &'static str,
-    pub overlay_studio_monitor_landscape: &'static str,
-    pub overlay_studio_monitor_portrait: &'static str,
     pub overlay_studio_target_process_title: &'static str,
     pub overlay_studio_close_with_target: &'static str,
     pub overlay_studio_close_with_target_tip: &'static str,
@@ -964,18 +890,14 @@ pub struct Strings {
     pub overlay_studio_opacity: &'static str,
     pub overlay_studio_card_dimensions: &'static str,
     pub overlay_studio_card_colors: &'static str,
-    pub overlay_studio_canvas_title: &'static str,
     pub overlay_studio_btn_browse: &'static str,
     pub overlay_studio_hint_process: &'static str,
     pub overlay_studio_hint_text: &'static str,
-    pub overlay_studio_hint_badge: &'static str,
     pub overlay_studio_hint_img_path: &'static str,
-    pub overlay_studio_elem_progress_fill: &'static str,
     pub overlay_studio_elem_img_opacity: &'static str,
     pub overlay_studio_crosshair_center_dot: &'static str,
     pub overlay_studio_text_bold: &'static str,
     pub overlay_studio_elements_title: &'static str,
-    pub overlay_studio_btn_add_element: &'static str,
     pub overlay_studio_draggable: &'static str,
     pub overlay_studio_hide_from_capture: &'static str,
     pub overlay_studio_on_click: &'static str,
@@ -992,18 +914,7 @@ pub struct Strings {
     pub overlay_studio_on_click_trim_prefix: &'static str,
     pub overlay_studio_img_lock_aspect: &'static str,
     pub overlay_studio_img_unlock_aspect: &'static str,
-    pub overlay_studio_elem_text: &'static str,
-    pub overlay_studio_elem_crosshair: &'static str,
-    pub overlay_studio_elem_image: &'static str,
-    pub overlay_studio_elem_shape: &'static str,
-    pub overlay_studio_elem_graph: &'static str,
-    pub overlay_studio_elem_clock_timer: &'static str,
-    pub overlay_studio_elem_control: &'static str,
-    pub overlay_studio_elem_telemetry: &'static str,
-    pub overlay_studio_elem_media: &'static str,
-    pub overlay_studio_elem_key_visualizer: &'static str,
     pub overlay_studio_graph_metric: &'static str,
-    pub overlay_studio_graph_style: &'static str,
     pub overlay_studio_graph_samples: &'static str,
     pub overlay_studio_graph_show_val: &'static str,
     pub overlay_studio_timer_mode: &'static str,
@@ -1015,7 +926,6 @@ pub struct Strings {
     pub overlay_studio_control_slider: &'static str,
     pub overlay_studio_control_initial_state: &'static str,
     pub overlay_studio_control_label: &'static str,
-    pub overlay_studio_control_action: &'static str,
     pub overlay_studio_control_slider_target: &'static str,
     pub overlay_studio_slider_master_volume: &'static str,
     pub overlay_studio_slider_process_volume: &'static str,
@@ -1051,7 +961,6 @@ pub struct Strings {
     pub overlay_studio_keyvis_action_rpg: &'static str,
     pub overlay_studio_keyvis_mouse_only: &'static str,
     pub overlay_studio_keyvis_text_stream: &'static str,
-    pub overlay_studio_keyvis_active_color: &'static str,
     pub overlay_studio_key_modifiers_only: &'static str,
     pub overlay_studio_key_decay: &'static str,
     pub overlay_studio_key_max: &'static str,
@@ -1068,13 +977,10 @@ pub struct Strings {
     pub overlay_studio_reset_zoom: &'static str,
     pub overlay_studio_card_lock_aspect: &'static str,
     pub overlay_studio_card_unlock_aspect: &'static str,
-    pub overlay_studio_no_elements: &'static str,
     pub overlay_studio_snap_grid: &'static str,
-    pub overlay_studio_canvas_short: &'static str,
     pub overlay_studio_undo_tooltip: &'static str,
     pub overlay_studio_redo_tooltip: &'static str,
     pub overlay_studio_btn_add_element_large: &'static str,
-    pub overlay_studio_no_elements_hint: &'static str,
     pub element_catalog_modal_eyebrow: &'static str,
     pub element_catalog_search_hint: &'static str,
     pub element_catalog_cat_all: &'static str,
@@ -1200,6 +1106,8 @@ pub struct Strings {
     pub share_warn_admin: &'static str,
     pub share_warn_webhook: &'static str,
     pub share_warn_icon: &'static str,
+    pub share_warn_asset: &'static str,
+    pub share_warn_missing_rule: &'static str,
     pub share_err_empty: &'static str,
     pub share_err_legacy: &'static str,
     pub share_err_missing_prefix: &'static str,
@@ -1209,6 +1117,7 @@ pub struct Strings {
     pub share_err_checksum: &'static str,
     pub share_err_payload_too_large: &'static str,
     pub share_err_too_many_rules: &'static str,
+    pub share_err_too_many_library_items: &'static str,
     pub share_err_empty_payload: &'static str,
     pub share_err_invalid_payload: &'static str,
     pub share_err_unsupported_version: &'static str,
@@ -1218,6 +1127,504 @@ pub struct Strings {
     pub toast_import_failed: &'static str,
     pub toast_import_skipped: &'static str,
     pub toast_import_disabled: &'static str,
+
+    // ------------------------------------------------------------------
+    // Inspector localization prep: strings that src/gui/views/inspector.rs
+    // still embeds. The conversion pass reads them from here instead; the
+    // mapping (call site + placeholder order) is i18n-map-inspector.md.
+    // ------------------------------------------------------------------
+
+    // Inspector HUD captions (widgets::hud)
+    pub inspector_field_hotkey_combo: &'static str,
+    pub inspector_field_window_operation: &'static str,
+    pub inspector_field_opacity: &'static str,
+    pub inspector_field_pos_x: &'static str,
+    pub inspector_field_pos_y: &'static str,
+    pub inspector_field_width: &'static str,
+    pub inspector_field_height: &'static str,
+    pub inspector_field_priority: &'static str,
+    pub inspector_field_energy_scheme: &'static str,
+    pub inspector_field_audio_file_path: &'static str,
+    pub inspector_field_monitor: &'static str,
+    pub inspector_field_resolution: &'static str,
+    pub inspector_field_refresh_rate: &'static str,
+    pub inspector_field_device_name: &'static str,
+
+    // Inspector text field hints (hint_text)
+    pub inspector_hint_process_executable: &'static str,
+    pub inspector_hint_hotkey_combo: &'static str,
+    pub inspector_hint_watch_path: &'static str,
+    pub inspector_hint_filter_ext: &'static str,
+    pub inspector_hint_webhook_endpoint: &'static str,
+    pub inspector_hint_wait_window_process: &'static str,
+    pub inspector_hint_wait_hotkey: &'static str,
+    pub inspector_hint_wait_file_path: &'static str,
+    pub inspector_hint_webhook_body: &'static str,
+    pub inspector_hint_window_process: &'static str,
+    pub inspector_hint_tuning_process: &'static str,
+    pub inspector_hint_sound_file: &'static str,
+    pub inspector_hint_action_process: &'static str,
+    pub inspector_hint_discord_app_id: &'static str,
+    pub inspector_hint_discord_details: &'static str,
+    pub inspector_hint_discord_state: &'static str,
+    pub inspector_hint_discord_large_image: &'static str,
+    pub inspector_hint_discord_large_text: &'static str,
+    pub inspector_hint_discord_small_image: &'static str,
+    pub inspector_hint_discord_small_text: &'static str,
+    pub inspector_hint_fs_target_path: &'static str,
+    pub inspector_hint_fs_content: &'static str,
+    pub inspector_hint_cond_process: &'static str,
+    pub inspector_hint_cond_time_from: &'static str,
+    pub inspector_hint_cond_time_to: &'static str,
+    pub inspector_hint_cond_file_path: &'static str,
+    pub inspector_hint_device_playback: &'static str,
+    pub inspector_hint_device_mic: &'static str,
+    pub inspector_hint_device_process: &'static str,
+    pub inspector_hint_archive_source_pack: &'static str,
+    pub inspector_hint_archive_source_unpack: &'static str,
+    pub inspector_hint_archive_dest_pack: &'static str,
+    pub inspector_hint_archive_dest_unpack: &'static str,
+    pub inspector_hint_fs_new_folder: &'static str,
+    pub inspector_hint_fs_new_file: &'static str,
+    pub inspector_hint_fs_path: &'static str,
+
+    // Inspector Cell labels and tooltips (widgets::Cell)
+    pub inspector_power_plan_high: &'static str,
+    pub inspector_power_plan_high_tip: &'static str,
+    pub inspector_power_plan_balanced: &'static str,
+    pub inspector_power_plan_balanced_tip: &'static str,
+    pub inspector_power_plan_saver: &'static str,
+    pub inspector_power_plan_saver_tip: &'static str,
+    pub inspector_beep_alert: &'static str,
+    pub inspector_beep_alert_tip: &'static str,
+    pub inspector_beep_custom: &'static str,
+    pub inspector_beep_custom_tip: &'static str,
+    pub inspector_audio_rate_44100: &'static str,
+    pub inspector_audio_rate_44100_tip: &'static str,
+    pub inspector_audio_rate_48000: &'static str,
+    pub inspector_audio_rate_48000_tip: &'static str,
+    pub inspector_audio_rate_96000: &'static str,
+    pub inspector_audio_rate_96000_tip: &'static str,
+    pub inspector_audio_rate_192000: &'static str,
+    pub inspector_audio_rate_192000_tip: &'static str,
+    pub inspector_audio_depth_16: &'static str,
+    pub inspector_audio_depth_16_tip: &'static str,
+    pub inspector_audio_depth_24: &'static str,
+    pub inspector_audio_depth_24_tip: &'static str,
+    pub inspector_audio_depth_32: &'static str,
+    pub inspector_audio_depth_32_tip: &'static str,
+    pub inspector_audio_channels_stereo: &'static str,
+    pub inspector_audio_channels_stereo_tip: &'static str,
+    pub inspector_audio_channels_mono: &'static str,
+    pub inspector_audio_channels_mono_tip: &'static str,
+    pub inspector_script_type_powershell: &'static str,
+    pub inspector_script_type_powershell_tip: &'static str,
+    pub inspector_script_type_cmd: &'static str,
+    pub inspector_script_type_cmd_tip: &'static str,
+    pub inspector_script_type_lua: &'static str,
+    pub inspector_script_type_lua_tip: &'static str,
+    pub inspector_archive_fmt_zip: &'static str,
+    pub inspector_archive_fmt_7z: &'static str,
+    pub inspector_archive_fmt_tar_gz: &'static str,
+    pub inspector_archive_fmt_tar: &'static str,
+    pub inspector_archive_fmt_rar: &'static str,
+    pub inspector_match_mode_regex: &'static str,
+
+    // Inspector checkbox and selector labels
+    pub inspector_focus_gained: &'static str,
+    pub inspector_focus_lost: &'static str,
+    pub inspector_display_monitor_enable: &'static str,
+    pub inspector_display_refresh_enable: &'static str,
+    pub inspector_win_action_minimize: &'static str,
+    pub inspector_win_action_maximize: &'static str,
+    pub inspector_win_action_restore: &'static str,
+    pub inspector_win_action_hide: &'static str,
+    pub inspector_win_action_show: &'static str,
+    pub inspector_win_action_close: &'static str,
+    pub inspector_win_action_always_on_top: &'static str,
+    pub inspector_win_action_remove_topmost: &'static str,
+    pub inspector_win_action_toggle_topmost: &'static str,
+    pub inspector_win_action_transparency: &'static str,
+    pub inspector_win_action_position: &'static str,
+    pub inspector_priority_unchanged: &'static str,
+    pub inspector_priority_idle: &'static str,
+    pub inspector_priority_below_normal: &'static str,
+    pub inspector_priority_normal: &'static str,
+    pub inspector_priority_above_normal: &'static str,
+    pub inspector_priority_high: &'static str,
+    pub inspector_priority_realtime: &'static str,
+
+    // Inspector toasts
+    pub toast_url_copied: &'static str,
+
+    // Inspector test-step result messages
+    pub inspector_test_step_passed: &'static str,
+    pub inspector_test_step_failed: &'static str,
+    pub inspector_test_step_error: &'static str,
+    pub inspector_test_step_ipc_error: &'static str,
+    pub inspector_test_step_unknown: &'static str,
+
+    // Inspector action summary preview (action_summary_preview)
+    pub summary_preview_launch_empty: &'static str,
+    pub summary_preview_launch: &'static str,
+    pub summary_preview_kill: &'static str,
+    pub summary_preview_notify: &'static str,
+    pub summary_preview_power: &'static str,
+    pub summary_preview_wait_timer: &'static str,
+    pub summary_preview_wait_window_open: &'static str,
+    pub summary_preview_wait_window_close: &'static str,
+    pub summary_preview_wait_process_start: &'static str,
+    pub summary_preview_wait_process_exit: &'static str,
+    pub summary_preview_wait_hotkey: &'static str,
+    pub summary_preview_wait_file_exists: &'static str,
+    pub summary_preview_wait_file_deleted: &'static str,
+    pub summary_preview_wait_rule_start: &'static str,
+    pub summary_preview_wait_rule_stop: &'static str,
+    pub summary_preview_wait_condition: &'static str,
+    pub summary_preview_check_running: &'static str,
+    pub summary_preview_check_not_running: &'static str,
+    pub summary_preview_check_window: &'static str,
+    pub summary_preview_check_file_exists: &'static str,
+    pub summary_preview_check_file_deleted: &'static str,
+    pub summary_preview_check_rule_running: &'static str,
+    pub summary_preview_check_rule_stopped: &'static str,
+    pub summary_preview_active_window: &'static str,
+    pub summary_preview_window: &'static str,
+    pub summary_preview_window_toggle_min: &'static str,
+    pub summary_preview_window_toggle_show: &'static str,
+    pub summary_preview_trigger_process: &'static str,
+    pub summary_preview_tuning: &'static str,
+    pub summary_preview_power_plan: &'static str,
+    pub summary_preview_beep: &'static str,
+    pub summary_preview_sound: &'static str,
+    pub summary_preview_firewall_block: &'static str,
+    pub summary_preview_firewall_allow: &'static str,
+    pub summary_preview_firewall_toggle: &'static str,
+    pub summary_preview_auto_resolution: &'static str,
+    pub summary_monitor_prefix: &'static str,
+    pub summary_preview_display_refresh: &'static str,
+    pub summary_preview_display: &'static str,
+    pub summary_audio_target_playback: &'static str,
+    pub summary_audio_target_mic: &'static str,
+    pub summary_audio_target_process: &'static str,
+    pub summary_preview_audio_mute: &'static str,
+    pub summary_preview_audio_unmute: &'static str,
+    pub summary_preview_audio_toggle: &'static str,
+    pub summary_preview_audio_balance: &'static str,
+    pub summary_preview_audio_process_volume: &'static str,
+    pub summary_preview_audio_volume: &'static str,
+    pub summary_preview_audio_play_beep: &'static str,
+    pub summary_audio_output: &'static str,
+    pub summary_audio_input: &'static str,
+    pub summary_preview_audio_format: &'static str,
+    pub summary_device_output: &'static str,
+    pub summary_device_process: &'static str,
+    pub summary_preview_default_device: &'static str,
+    pub summary_preview_execute: &'static str,
+    pub summary_preview_macro_stop_all: &'static str,
+    pub summary_preview_macro_events: &'static str,
+    pub summary_preview_ifelse: &'static str,
+    pub summary_preview_ifelse_elif: &'static str,
+    pub summary_preview_active_process: &'static str,
+    pub summary_preview_trim_limit: &'static str,
+    pub summary_preview_trim: &'static str,
+    pub summary_preview_discord: &'static str,
+    pub summary_preview_discord_set: &'static str,
+    pub summary_preview_discord_clear: &'static str,
+    pub summary_overlay_op_toggle: &'static str,
+    pub summary_overlay_op_flash: &'static str,
+    pub summary_preview_overlay: &'static str,
+    pub summary_preview_overlay_text: &'static str,
+    pub summary_preview_rule_call_wait: &'static str,
+    pub summary_preview_rule_call: &'static str,
+    pub summary_preview_rule_stop: &'static str,
+
+    // Inspector tooltips (hover text)
+    pub inspector_hotkey_record_tip: &'static str,
+
+    // Inspector conversion pass: strings the inspector map did not pre-add.
+    pub inspector_save_errors_title: &'static str,
+    pub inspector_terminate_confirm: &'static str,
+    pub toast_request_failed_unexpected: &'static str,
+    pub inspector_archive_fmt_tar_xz: &'static str,
+
+    // ------------------------------------------------------------------
+    // Localization prep B: strings the remaining localization pass needs in
+    // rules_view, overlay_modal, guide_modal, settings_view, macro_modal,
+    // GuiState and script_highlighter. Field-by-field mapping (call site and
+    // placeholder order) is in .agents/3.0(rename to audit)/i18n-map-*.md.
+    // ------------------------------------------------------------------
+
+    // Rules view: condition tooltips (U04-003 / U16-004)
+    pub rules_tip_cond_process_running: &'static str,
+    pub rules_tip_cond_process_not_running: &'static str,
+    pub rules_tip_cond_window_focused: &'static str,
+    pub rules_tip_cond_window_not_focused: &'static str,
+    pub rules_tip_cond_time_range: &'static str,
+    pub rules_tip_cond_event: &'static str,
+    pub rules_tip_cond_file_exists: &'static str,
+    pub rules_tip_cond_file_missing: &'static str,
+    pub rules_tip_cond_resource: &'static str,
+    pub rules_tip_cond_rule_running: &'static str,
+    pub rules_tip_cond_rule_not_running: &'static str,
+
+    // Rules view: condition badge and one-shot fallback (U16-010 / U16-011)
+    pub rules_badge_cond_event: &'static str,
+    pub rules_summary_trigger_once_unspecified: &'static str,
+
+    // Rules view: action chip labels, audio (U16-005)
+    pub rules_brief_audio_sound: &'static str,
+    pub rules_brief_audio_mic: &'static str,
+    pub rules_brief_audio_proc: &'static str,
+    pub rules_brief_audio_balance: &'static str,
+    pub rules_brief_audio_beep: &'static str,
+    pub rules_brief_audio_format: &'static str,
+    pub rules_brief_audio_out: &'static str,
+    pub rules_brief_audio_in: &'static str,
+    pub rules_brief_audio_dev_output: &'static str,
+    pub rules_brief_audio_dev_mic: &'static str,
+    pub rules_brief_audio_dev_process: &'static str,
+
+    // Rules view: action chip labels, scripts and macros (U16-005)
+    pub rules_brief_script_lua: &'static str,
+    pub rules_brief_macro_run: &'static str,
+    pub rules_brief_macro_stop: &'static str,
+    pub rules_brief_macro_toggle: &'static str,
+    pub rules_brief_macro_stop_all: &'static str,
+    pub rules_brief_macro_stop_preset: &'static str,
+    pub rules_brief_macro_events: &'static str,
+
+    // Rules view: action chip labels, notification and wait (U16-005)
+    pub rules_brief_notify: &'static str,
+    pub rules_brief_wait_window_open: &'static str,
+    pub rules_brief_wait_window_close: &'static str,
+    pub rules_brief_wait_process_start: &'static str,
+    pub rules_brief_wait_process_exit: &'static str,
+    pub rules_brief_wait_hotkey: &'static str,
+    pub rules_brief_wait_file_created: &'static str,
+    pub rules_brief_wait_file_deleted: &'static str,
+    pub rules_brief_wait_rule_start: &'static str,
+    pub rules_brief_wait_rule_stop: &'static str,
+    pub rules_brief_wait_until: &'static str,
+    pub rules_brief_seconds: &'static str,
+
+    // Rules view: action chip labels, window (U16-005 / U16-010)
+    pub rules_brief_active_process: &'static str,
+    pub rules_brief_window_toggle_min_restore: &'static str,
+    pub rules_brief_window_toggle_show_hide: &'static str,
+    pub rules_brief_window_minimize: &'static str,
+    pub rules_brief_window_maximize: &'static str,
+    pub rules_brief_window_restore: &'static str,
+    pub rules_brief_window_hide: &'static str,
+    pub rules_brief_window_show: &'static str,
+    pub rules_brief_window_close: &'static str,
+    pub rules_brief_window_toggle_on_top: &'static str,
+    pub rules_brief_window_on_top: &'static str,
+    pub rules_brief_window_remove_on_top: &'static str,
+    pub rules_brief_window_transparency: &'static str,
+    pub rules_brief_window_snap: &'static str,
+
+    // Rules view: action chip labels, process tuning and sound (U16-005)
+    pub rules_brief_process_tuning: &'static str,
+    pub rules_brief_play_sound: &'static str,
+    pub rules_brief_firewall_block: &'static str,
+    pub rules_brief_firewall_allow: &'static str,
+
+    // Rules view: action chip labels, display (U16-005)
+    pub rules_brief_display: &'static str,
+    pub rules_brief_display_refresh: &'static str,
+    pub rules_brief_display_auto: &'static str,
+    pub rules_brief_display_monitor: &'static str,
+
+    // Rules view: action chip labels, if/else, trim and Discord (U16-005)
+    pub rules_brief_ifelse: &'static str,
+    pub rules_brief_cond_fallback: &'static str,
+    pub rules_brief_trim_limit: &'static str,
+    pub rules_brief_trim: &'static str,
+    pub rules_brief_discord_text: &'static str,
+
+    // Rules view: action chip labels, archive and filesystem (U16-005)
+    pub rules_brief_archive_pack: &'static str,
+    pub rules_brief_archive_unpack: &'static str,
+    pub rules_brief_archive_tar_xz: &'static str,
+    pub rules_brief_fs_create_file: &'static str,
+    pub rules_brief_fs_create_dir: &'static str,
+    pub rules_brief_fs_rename: &'static str,
+    pub rules_brief_fs_copy: &'static str,
+    pub rules_brief_fs_delete: &'static str,
+    pub rules_brief_fs_write: &'static str,
+    pub rules_brief_fs_append: &'static str,
+
+    // Rules view: action chip labels, overlay and rule control (U16-005)
+    pub rules_brief_overlay_toggle: &'static str,
+    pub rules_brief_overlay_flash: &'static str,
+    pub rules_brief_overlay_show: &'static str,
+    pub rules_brief_overlay_hide: &'static str,
+    pub rules_brief_overlay_set_text: &'static str,
+    pub rules_brief_rule_call: &'static str,
+    pub rules_brief_rule_stop: &'static str,
+
+    // Overlay modal: field prefixes and units (U02-012)
+    pub overlay_studio_field_screen_x: &'static str,
+    pub overlay_studio_field_screen_y: &'static str,
+    pub overlay_studio_field_width: &'static str,
+    pub overlay_studio_field_height: &'static str,
+    pub overlay_studio_field_border: &'static str,
+    pub overlay_studio_field_radius: &'static str,
+    pub overlay_studio_field_w: &'static str,
+    pub overlay_studio_field_h: &'static str,
+    pub overlay_studio_field_x: &'static str,
+    pub overlay_studio_field_y: &'static str,
+    pub overlay_studio_field_size: &'static str,
+    pub overlay_studio_field_thick: &'static str,
+    pub overlay_studio_field_gap: &'static str,
+    pub overlay_studio_field_min: &'static str,
+    pub overlay_studio_field_max: &'static str,
+    pub overlay_studio_unit_px: &'static str,
+    pub overlay_studio_unit_pt: &'static str,
+
+    // Overlay modal: colour chip labels (U02-012)
+    pub overlay_studio_chip_bg: &'static str,
+    pub overlay_studio_chip_border: &'static str,
+    pub overlay_studio_chip_color: &'static str,
+    pub overlay_studio_chip_text_color: &'static str,
+    pub overlay_studio_chip_text: &'static str,
+    pub overlay_studio_chip_fill: &'static str,
+    pub overlay_studio_chip_line: &'static str,
+    pub overlay_studio_chip_active: &'static str,
+    pub overlay_studio_chip_glow: &'static str,
+
+    // Overlay modal: inline palette tooltips (U02-012)
+    pub overlay_studio_palette_cyan: &'static str,
+    pub overlay_studio_palette_green: &'static str,
+    pub overlay_studio_palette_red: &'static str,
+    pub overlay_studio_palette_amber: &'static str,
+    pub overlay_studio_palette_white: &'static str,
+    pub overlay_studio_palette_dark: &'static str,
+    pub overlay_studio_palette_clear: &'static str,
+
+    // Overlay modal: crosshair style labels (U02-012)
+    pub overlay_studio_crosshair_cross: &'static str,
+    pub overlay_studio_crosshair_t: &'static str,
+    pub overlay_studio_crosshair_circle: &'static str,
+    pub overlay_studio_crosshair_dot: &'static str,
+
+    // Overlay modal: clock panel (U02-012)
+    pub overlay_studio_font_size: &'static str,
+
+    // Overlay modal: control kind default labels (U02-012)
+    pub overlay_studio_control_default_action: &'static str,
+    pub overlay_studio_control_default_volume: &'static str,
+
+    // Overlay modal: element badges (U02-012)
+    pub overlay_studio_badge_crosshair: &'static str,
+    pub overlay_studio_badge_text: &'static str,
+    pub overlay_studio_badge_image: &'static str,
+    pub overlay_studio_badge_square: &'static str,
+    pub overlay_studio_badge_circle: &'static str,
+    pub overlay_studio_badge_arrow: &'static str,
+    pub overlay_studio_badge_line: &'static str,
+    pub overlay_studio_badge_graph: &'static str,
+    pub overlay_studio_badge_clock: &'static str,
+    pub overlay_studio_badge_control: &'static str,
+    pub overlay_studio_badge_status: &'static str,
+    pub overlay_studio_badge_media: &'static str,
+    pub overlay_studio_badge_keys: &'static str,
+
+    // Overlay modal: canvas pills and coordinate tag (U02-012)
+    pub overlay_studio_canvas_display: &'static str,
+    pub overlay_studio_canvas_overlay: &'static str,
+    pub overlay_studio_canvas_coords: &'static str,
+
+    // Overlay modal: image filter and on-click action (U02-012)
+    pub overlay_studio_file_filter_image: &'static str,
+    pub overlay_studio_on_click_toggle: &'static str,
+
+    // Overlay presets modal (U02-012 + OVERLAY-MODAL needs)
+    pub overlay_default_preset_name: &'static str,
+    pub presets_save_invalid_name: &'static str,
+    pub presets_save_failed: &'static str,
+    pub presets_delete_failed: &'static str,
+
+    // Guide modal (U03-001 / U16-013)
+    pub guide_eyebrow: &'static str,
+    pub guide_topic_architecture: &'static str,
+    pub guide_topic_shortcuts: &'static str,
+    pub guide_topic_triggers: &'static str,
+    pub guide_topic_actions: &'static str,
+    pub guide_topic_tokens: &'static str,
+    pub guide_topic_output_piping: &'static str,
+    pub guide_topic_recipes: &'static str,
+
+    // Settings view (U03-004 + SETTINGS-UI needs)
+    pub settings_updates_version: &'static str,
+    pub settings_language_en_desc: &'static str,
+    pub settings_language_ru_desc: &'static str,
+    pub settings_mask_restart_required: &'static str,
+    pub toast_settings_save_failed: &'static str,
+    pub settings_tray_icon_invalid: &'static str,
+    pub toast_clear_logs_failed: &'static str,
+
+    // Macro studio (U03-008 / U05-010)
+    pub macro_studio_custom_preset_name: &'static str,
+
+    // GUI state hub (U05-010 / U16-012 + GUI-STATE need)
+    pub toast_request_failed: &'static str,
+
+    // Script highlighter (U07-007)
+    pub script_badge_powershell: &'static str,
+    pub script_badge_batch: &'static str,
+    pub script_badge_lua: &'static str,
+
+    // I18N-GAP: inspector leftovers recorded by CONV-INSPECTOR ("Left over")
+    pub inspector_hotkey_record: &'static str,
+    pub inspector_hotkey_listening: &'static str,
+    pub inspector_wait_timeout_zero_hint: &'static str,
+    pub inspector_field_monitor_prefix: &'static str,
+    pub inspector_field_w_prefix: &'static str,
+    pub inspector_field_h_prefix: &'static str,
+    pub inspector_preset_prefix: &'static str,
+    pub inspector_preset_unknown: &'static str,
+    pub inspector_ifelse_elif_badge: &'static str,
+    pub inspector_test_step_pass_badge: &'static str,
+    pub inspector_test_step_fail_badge: &'static str,
+    pub inspector_dialog_icon_title: &'static str,
+    pub inspector_dialog_filter_image_exe: &'static str,
+    pub inspector_dialog_filter_executables: &'static str,
+    pub inspector_dialog_filter_audio: &'static str,
+    pub inspector_dialog_filter_archive: &'static str,
+    pub inspector_dialog_filter_all: &'static str,
+    pub inspector_dialog_filter_archive_typed: &'static str,
+
+    // I18N-GAP: rules_view leftovers recorded by CONV-RULES ("Unmapped")
+    pub rules_tip_dnd_disabled_filter: &'static str,
+    pub rules_trigger_proc: &'static str,
+    pub rules_trigger_window: &'static str,
+    pub rules_trigger_focus: &'static str,
+    pub rules_trigger_blur: &'static str,
+    pub rules_trigger_focus_blur: &'static str,
+    pub rules_trigger_hold: &'static str,
+    pub rules_trigger_hold_loop: &'static str,
+    pub rules_trigger_folder: &'static str,
+    pub rules_trigger_cpu: &'static str,
+    pub rules_trigger_ram: &'static str,
+    pub rules_brief_cond_run: &'static str,
+    pub rules_brief_cond_focus: &'static str,
+    pub rules_brief_cond_file: &'static str,
+    pub rules_brief_cond_res: &'static str,
+    pub rules_brief_cond_rule: &'static str,
+    pub rules_brief_cond_cpu: &'static str,
+    pub rules_brief_cond_ram: &'static str,
+    pub rules_brief_cond_any_file: &'static str,
+    pub rules_brief_cond_any_res: &'static str,
+    pub rules_brief_cond_any_rule: &'static str,
+
+    // I18N-GAP: settings tray-icon filter recorded by CONV-SMALL-A ("Out-of-scope handoff")
+    pub settings_tray_icon_filter: &'static str,
+
+    // I18N-GAP: GUI state update/offline details recorded by CONV-SMALL-B ("Unmapped")
+    pub toast_update_failed_unexpected: &'static str,
+    pub toast_daemon_no_response: &'static str,
 }
 
 pub fn get(lang: Language) -> &'static Strings {
@@ -1230,6 +1637,8 @@ pub fn get(lang: Language) -> &'static Strings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_language_defaults_and_labels() {
@@ -1262,23 +1671,190 @@ mod tests {
         assert_eq!(en.rules_tag_filter_all, "All Tags");
         assert_eq!(ru.rules_tag_filter_all, "Все теги");
 
-        assert_eq!(en.hunter_btn_rule, "+ RULE");
-        assert_eq!(ru.hunter_btn_rule, "+ ПРАВИЛО");
-
-        assert_eq!(en.settings_language_label, "ACTIVE LANGUAGE:");
-        assert_eq!(ru.settings_language_label, "ТЕКУЩИЙ ЯЗЫК:");
-        assert_eq!(en.settings_eyebrow_language, "INTERFACE LANGUAGE");
-        assert_eq!(ru.settings_eyebrow_language, "ЯЗЫК ИНТЕРФЕЙСА");
-        assert_eq!(en.settings_eyebrow_appearance, "APPEARANCE & COLOR THEME");
-        assert_eq!(ru.settings_eyebrow_appearance, "ОФОРМЛЕНИЕ И ЦВЕТОВАЯ ТЕМА");
         assert_eq!(en.settings_theme_chocolate, "CHOCOLATE");
         assert_eq!(ru.settings_theme_chocolate, "ШОКОЛАДНАЯ");
 
-        assert_eq!(en.settings_eyebrow_updates, "APPLICATION UPDATES");
-        assert_eq!(ru.settings_eyebrow_updates, "ОБНОВЛЕНИЕ ПРИЛОЖЕНИЯ");
         assert_eq!(en.footer_btn_update, "UPDATE");
         assert_eq!(ru.footer_btn_update, "ОБНОВИТЬ");
         assert_eq!(en.footer_btn_info, "INFO");
         assert_eq!(ru.footer_btn_info, "ИНФО");
+    }
+
+    /// Parse `field: "value",` catalog lines into field name → `{...}`
+    /// placeholder set. Escaped quotes do not terminate the value, so the
+    /// parser keeps working when a future value contains `\"`.
+    fn catalog_placeholders(source: &str) -> BTreeMap<&str, BTreeSet<&str>> {
+        let mut fields = BTreeMap::new();
+        for line in source.lines() {
+            let line = line.trim_start();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            let Some(colon) = line.find(':') else {
+                continue;
+            };
+            let name = line[..colon].trim();
+            if name.is_empty()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                continue;
+            }
+            let Some(open) = line[colon + 1..].find('"') else {
+                continue;
+            };
+            let Some(value) = quoted_value(&line[colon + 1 + open + 1..]) else {
+                continue;
+            };
+            fields.insert(name, placeholders(value));
+        }
+        fields
+    }
+
+    /// Slice a Rust string literal body at its first unescaped `"`.
+    fn quoted_value(text: &str) -> Option<&str> {
+        let mut chars = text.char_indices();
+        loop {
+            let (i, c) = chars.next()?;
+            match c {
+                '\\' => {
+                    chars.next()?;
+                }
+                '"' => return Some(&text[..i]),
+                _ => {}
+            }
+        }
+    }
+
+    /// Collect the `{...}` tokens of a catalog value (deduplicated).
+    fn placeholders(value: &str) -> BTreeSet<&str> {
+        let mut set = BTreeSet::new();
+        let mut rest = value;
+        while let Some(open) = rest.find('{') {
+            let Some(close) = rest[open + 1..].find('}') else {
+                break;
+            };
+            set.insert(&rest[open..open + close + 2]);
+            rest = &rest[open + close + 2..];
+        }
+        set
+    }
+
+    /// The catalogs must agree on every field and on the placeholder spelling
+    /// inside each value, so a value can be formatted from either language.
+    #[test]
+    fn test_catalog_placeholder_parity() {
+        let en = catalog_placeholders(include_str!("i18n/en.rs"));
+        let ru = catalog_placeholders(include_str!("i18n/ru.rs"));
+
+        assert!(!en.is_empty(), "no fields parsed from en.rs");
+        assert!(
+            en.keys().eq(ru.keys()),
+            "en.rs and ru.rs declare different field sets"
+        );
+
+        for (field, en_placeholders) in &en {
+            let ru_placeholders = &ru[*field];
+            assert_eq!(
+                en_placeholders, ru_placeholders,
+                "placeholder mismatch in catalog field `{field}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_catalog_parser_handles_escaped_quotes() {
+        let parsed = catalog_placeholders(
+            "field_one: \"say \\\"{token}\\\" here\",\nfield_two: \"{}\",\n// ignored: \"x\"\n",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed["field_one"], BTreeSet::from(["{token}"]));
+        assert_eq!(parsed["field_two"], BTreeSet::from(["{}"]));
+    }
+
+    /// Recursively collect every `.rs` file under `dir`.
+    fn collect_rust_sources(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rust_sources(&path, out)?;
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    /// True when `haystack` contains `.<field>` as a complete identifier.
+    fn references_field(haystack: &str, field: &str) -> bool {
+        let needle = format!(".{field}");
+        haystack.match_indices(&needle).any(|(index, _)| {
+            haystack[index + needle.len()..]
+                .chars()
+                .next()
+                .is_none_or(|next| !(next.is_ascii_alphanumeric() || next == '_'))
+        })
+    }
+
+    /// Every `Strings` field must be consumed by real code outside the catalog:
+    /// a field only the catalog mentions is dead UI surface (U16-001). The
+    /// source tree is present in a checkout but not necessarily in a packaged
+    /// build, so an unreadable `src/` skips the check instead of failing it.
+    #[test]
+    fn test_every_strings_field_is_referenced() {
+        let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut sources = Vec::new();
+        if collect_rust_sources(&src_root, &mut sources).is_err() {
+            return;
+        }
+
+        let catalog = [
+            src_root.join("i18n.rs"),
+            src_root.join("i18n").join("en.rs"),
+            src_root.join("i18n").join("ru.rs"),
+        ];
+        let mut code = String::new();
+        for source in &sources {
+            if catalog.contains(source) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(source) else {
+                continue;
+            };
+            for line in text.lines() {
+                code.push_str(line.split("//").next().unwrap_or(""));
+                code.push('\n');
+            }
+        }
+
+        let declaration = include_str!("i18n.rs");
+        let mut fields = Vec::new();
+        for line in declaration.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("pub ") else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(':') else {
+                continue;
+            };
+            if rest.trim_end().ends_with("&'static str,") {
+                fields.push(name);
+            }
+        }
+        assert!(
+            !fields.is_empty(),
+            "no `Strings` fields parsed from i18n.rs"
+        );
+
+        let unused: Vec<_> = fields
+            .into_iter()
+            .filter(|field| !references_field(&code, field))
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "`Strings` fields referenced nowhere outside the i18n catalog: {unused:?}"
+        );
     }
 }

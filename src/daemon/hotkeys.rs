@@ -44,13 +44,31 @@ pub fn is_hotkey_combination_pressed(vkeys: &[i32]) -> bool {
     #[cfg(windows)]
     {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-        !vkeys.is_empty() && vkeys.iter().all(|&vk| unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 })
+        combo_matches(vkeys, |vk| unsafe {
+            (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
+        })
     }
     #[cfg(not(windows))]
     {
         let _ = vkeys;
         false
     }
+}
+
+/// Matches one parsed key combination against the current key state. `VK_LWIN` stands for the
+/// generic "Win" key, so pressing the right Windows key satisfies it as well.
+fn combo_matches(vkeys: &[i32], mut is_down: impl FnMut(i32) -> bool) -> bool {
+    const VK_LWIN: i32 = 0x5B;
+    const VK_RWIN: i32 = 0x5C;
+
+    !vkeys.is_empty()
+        && vkeys.iter().all(|&vk| {
+            if vk == VK_LWIN {
+                is_down(VK_LWIN) || is_down(VK_RWIN)
+            } else {
+                is_down(vk)
+            }
+        })
 }
 
 #[derive(Clone)]
@@ -60,17 +78,28 @@ pub struct HotkeyHandle {
 
 impl HotkeyHandle {
     pub fn reload(&self, rules: &[Rule]) {
+        let previous: Vec<MonitoredHotkey> = MONITORED_HOTKEYS
+            .lock()
+            .map(|lock| lock.clone())
+            .unwrap_or_default();
+
         let mut list = Vec::new();
         for r in rules {
             if r.is_enabled {
                 if let Some(Trigger::GlobalHotkey { key_combination, hold_mode, repeat_while_held }) = &r.trigger {
                     if let Some(vkeys) = parse_hotkey_vkeys(key_combination) {
+                        // A config reload must not re-arm a hotkey the user is still holding.
+                        let was_pressed = previous
+                            .iter()
+                            .find(|old| old.rule_id == r.id && old.vkeys == vkeys)
+                            .map(|old| old.was_pressed)
+                            .unwrap_or(false);
                         list.push(MonitoredHotkey {
                             rule_id: r.id.clone(),
                             vkeys,
                             hold_mode: *hold_mode,
                             repeat_while_held: *repeat_while_held,
-                            was_pressed: false,
+                            was_pressed,
                         });
                     }
                 }
@@ -129,8 +158,8 @@ fn run_hotkey_poll_loop(event_tx: tokio::sync::mpsc::UnboundedSender<HotkeyEvent
                 }
 
                 for hotkey in lock.iter_mut() {
-                    let is_down = !hotkey.vkeys.is_empty() && hotkey.vkeys.iter().all(|&vk| {
-                        unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
+                    let is_down = combo_matches(&hotkey.vkeys, |vk| unsafe {
+                        (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
                     });
 
                     if hotkey.hold_mode {
@@ -180,7 +209,8 @@ pub fn parse_hotkey_vkeys(combo: &str) -> Option<Vec<i32>> {
             "CTRL" | "CONTROL" | "LCTRL" | "RCTRL" => 0x11, // VK_CONTROL
             "ALT" | "MENU" | "LALT" | "RALT" => 0x12,       // VK_MENU
             "SHIFT" | "LSHIFT" | "RSHIFT" => 0x10,          // VK_SHIFT
-            "WIN" | "WINDOWS" | "LWIN" | "RWIN" => 0x5B,    // VK_LWIN
+            "WIN" | "WINDOWS" | "LWIN" => 0x5B,             // VK_LWIN (generic Win key)
+            "RWIN" => 0x5C,                                 // VK_RWIN
 
             // Mouse buttons (full hardware mouse button support!)
             "LBUTTON" | "LMB" | "MOUSE1" | "LEFTCLICK" => 0x01,   // VK_LBUTTON
@@ -246,6 +276,9 @@ pub fn parse_hotkey_vkeys(combo: &str) -> Option<Vec<i32>> {
 mod tests {
     use super::*;
 
+    /// Serialises tests that replace the process-wide monitored-hotkey list.
+    static HOTKEY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn test_parse_hotkey_vkeys_keyboard_and_mouse() {
         let vkeys_ctrl_m4 = parse_hotkey_vkeys("Ctrl+M4").expect("Valid combo");
@@ -262,7 +295,62 @@ mod tests {
     }
 
     #[test]
+    fn test_hotkey_combo_matches_either_win_key() {
+        let win = parse_hotkey_vkeys("Win+Shift").expect("Valid combo");
+        assert_eq!(win, vec![0x5B, 0x10]);
+        assert!(combo_matches(&win, |vk| vk == 0x5B || vk == 0x10));
+        assert!(combo_matches(&win, |vk| vk == 0x5C || vk == 0x10));
+        assert!(!combo_matches(&win, |vk| vk == 0x10));
+
+        let rwin = parse_hotkey_vkeys("RWIN+Shift").expect("Valid combo");
+        assert_eq!(rwin, vec![0x5C, 0x10]);
+        assert!(combo_matches(&rwin, |vk| vk == 0x5C || vk == 0x10));
+        assert!(!combo_matches(&rwin, |vk| vk == 0x5B || vk == 0x10));
+    }
+
+    #[test]
+    fn test_reload_preserves_pressed_state_for_unchanged_hotkey() {
+        let _guard = HOTKEY_TEST_LOCK.lock().unwrap();
+        let handle = HotkeyHandle { _private: () };
+        let mut rule = Rule {
+            id: "held_rule".to_string(),
+            is_enabled: true,
+            trigger: Some(Trigger::GlobalHotkey {
+                key_combination: "M4".to_string(),
+                hold_mode: true,
+                repeat_while_held: false,
+            }),
+            ..Default::default()
+        };
+
+        handle.reload(&[rule.clone()]);
+        if let Ok(mut lock) = MONITORED_HOTKEYS.lock() {
+            if let Some(hk) = lock.iter_mut().find(|h| h.rule_id == "held_rule") {
+                hk.was_pressed = true;
+            }
+        }
+        assert!(is_hotkey_held("held_rule"));
+
+        // Same rule id and key combination: the held state must survive a config reload.
+        handle.reload(&[rule.clone()]);
+        assert!(
+            is_hotkey_held("held_rule"),
+            "reload must not re-arm a hotkey that is still held"
+        );
+
+        // A changed key combination is a different hotkey and starts released.
+        rule.trigger = Some(Trigger::GlobalHotkey {
+            key_combination: "M5".to_string(),
+            hold_mode: true,
+            repeat_while_held: false,
+        });
+        handle.reload(&[rule]);
+        assert!(!is_hotkey_held("held_rule"));
+    }
+
+    #[test]
     fn test_monitored_hotkey_hold_loop_and_is_held() {
+        let _guard = HOTKEY_TEST_LOCK.lock().unwrap();
         let handle = HotkeyHandle { _private: () };
         let rule = Rule {
             id: "test_loop_rule".to_string(),

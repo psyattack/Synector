@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 use crate::models::{MacroEvent, MouseButton, MouseCoordMode};
 
@@ -43,9 +43,20 @@ pub struct MacroRecorder {
     pub last_was_mouse_move: Arc<AtomicBool>,
     pub events: Arc<Mutex<Vec<MacroEvent>>>,
     pub last_event_time: Arc<Mutex<Option<Instant>>>,
-    pub record_start_time: Arc<Mutex<Option<Instant>>>,
+    /// Recording start on the shared process clock (`process_elapsed_ms`), so the
+    /// low-level hook reads it without a mutex (U06-009). Only meaningful while
+    /// `is_recording` is set.
+    pub recording_started_ms: Arc<AtomicU64>,
     pub last_mouse_pos: Arc<Mutex<Option<(i32, i32, Instant)>>>,
-    pub last_key_events: Arc<Mutex<std::collections::HashMap<String, (bool, Instant)>>>,
+    /// Keys currently recorded as held down; closed with a synthetic `KeyUp` on
+    /// stop and read by the replay-hold floor (U06-011).
+    pub held_keys: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Mouse buttons currently recorded as held down, closed on stop (U06-011).
+    pub held_mouse_buttons: Arc<Mutex<std::collections::HashSet<MouseButton>>>,
+    /// Lock-free dedup state shared by the hook, the polling fallback and the GUI
+    /// capture path, indexed by a name hash: `(hash << 40) | (ms << 1) | down`
+    /// (U06-009).
+    pub key_gate: Arc<Vec<AtomicU64>>,
 }
 
 static RECORDER_INSTANCE: OnceLock<MacroRecorder> = OnceLock::new();
@@ -82,9 +93,11 @@ impl MacroRecorder {
             last_was_mouse_move: Arc::new(AtomicBool::new(false)),
             events: Arc::new(Mutex::new(Vec::new())),
             last_event_time: Arc::new(Mutex::new(None)),
-            record_start_time: Arc::new(Mutex::new(None)),
+            recording_started_ms: Arc::new(AtomicU64::new(0)),
             last_mouse_pos: Arc::new(Mutex::new(None)),
-            last_key_events: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            held_keys: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            held_mouse_buttons: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            key_gate: Arc::new((0..KEY_GATE_SLOTS).map(|_| AtomicU64::new(0)).collect()),
         }
     }
 
@@ -94,6 +107,15 @@ impl MacroRecorder {
 
     pub fn is_active(&self) -> bool {
         self.is_recording.load(Ordering::SeqCst)
+    }
+
+    /// Milliseconds since the current recording started, or `None` when nothing is
+    /// being recorded. Backed by atomics so the low-level hook needs no lock (U06-009).
+    fn recording_elapsed_ms(&self) -> Option<u64> {
+        if !self.is_recording.load(Ordering::SeqCst) {
+            return None;
+        }
+        Some(process_elapsed_ms().saturating_sub(self.recording_started_ms.load(Ordering::SeqCst)))
     }
 
     pub fn start_recording(&self, capture_mouse_moves: bool) {
@@ -110,14 +132,18 @@ impl MacroRecorder {
         if let Ok(mut t) = self.last_event_time.lock() {
             *t = Some(now);
         }
-        if let Ok(mut st) = self.record_start_time.lock() {
-            *st = Some(now);
-        }
+        self.recording_started_ms.store(process_elapsed_ms(), Ordering::SeqCst);
         if let Ok(mut mp) = self.last_mouse_pos.lock() {
             *mp = None;
         }
-        if let Ok(mut k) = self.last_key_events.lock() {
+        if let Ok(mut k) = self.held_keys.lock() {
             k.clear();
+        }
+        if let Ok(mut b) = self.held_mouse_buttons.lock() {
+            b.clear();
+        }
+        for slot in self.key_gate.iter() {
+            slot.store(0, Ordering::SeqCst);
         }
         if let Ok(mut lock) = LAST_RECORD_TOGGLE.lock() {
             *lock = Some(now);
@@ -130,20 +156,24 @@ impl MacroRecorder {
         #[cfg(windows)]
         {
             let rec = self.clone();
-            std::thread::Builder::new()
+            if let Err(err) = std::thread::Builder::new()
                 .name("macro-recorder-hook".into())
                 .spawn(move || {
                     run_recorder_hook_loop(rec);
                 })
-                .expect("Failed to spawn macro recorder hook thread");
+            {
+                crate::logging::error("MACRO", &format!("Failed to spawn macro recorder hook thread: {err}"));
+            }
 
             let rec_poller = self.clone();
-            std::thread::Builder::new()
+            if let Err(err) = std::thread::Builder::new()
                 .name("macro-recorder-poller".into())
                 .spawn(move || {
                     run_recorder_polling_loop(rec_poller);
                 })
-                .expect("Failed to spawn macro recorder polling thread");
+            {
+                crate::logging::error("MACRO", &format!("Failed to spawn macro recorder polling thread: {err}"));
+            }
         }
     }
 
@@ -158,6 +188,7 @@ impl MacroRecorder {
         }
 
         flush_raw_turn_accumulator(self);
+        self.close_held_inputs();
 
         #[cfg(windows)]
         {
@@ -183,6 +214,42 @@ impl MacroRecorder {
         }
     }
 
+    /// Closes every key and mouse button that is still recorded as pressed, so the
+    /// timeline never ends with an unmatched `KeyDown`/`MouseDown` that replay would
+    /// hold down for the rest of the macro (U06-011). Keys keep the replay hold floor.
+    fn close_held_inputs(&self) {
+        let held_keys: Vec<String> = self
+            .held_keys
+            .lock()
+            .map(|held| held.iter().cloned().collect())
+            .unwrap_or_default();
+        let held_buttons: Vec<MouseButton> = self
+            .held_mouse_buttons
+            .lock()
+            .map(|held| held.iter().copied().collect())
+            .unwrap_or_default();
+
+        if let Ok(mut events) = self.events.lock() {
+            for key in held_keys {
+                let extra = recorded_key_hold_ms(&events, &key).map_or(0, key_hold_floor_extra_ms);
+                if extra > 0 {
+                    events.push(MacroEvent::Delay { ms: extra, organic: false, jitter_percent: 30 });
+                }
+                events.push(MacroEvent::KeyUp { key });
+            }
+            for button in held_buttons {
+                events.push(MacroEvent::MouseUp { button });
+            }
+        }
+
+        if let Ok(mut held) = self.held_keys.lock() {
+            held.clear();
+        }
+        if let Ok(mut held) = self.held_mouse_buttons.lock() {
+            held.clear();
+        }
+    }
+
     pub fn drain_events(&self) -> Vec<MacroEvent> {
         if let Ok(mut ev) = self.events.lock() {
             std::mem::take(&mut *ev)
@@ -191,25 +258,45 @@ impl MacroRecorder {
         }
     }
 
-    /// Record key event safely with per-key deduplication window across hook, background poller, and GUI input
+    /// Records one key transition, deduplicated across the low-level hook, the
+    /// polling fallback and the GUI capture path.
+    ///
+    /// The hook runs for every physical key event, so the per-event path must not
+    /// take a mutex or allocate a map key: dedup uses the lock-free [`key_gate`]
+    /// and only accepted transitions touch the event log (U06-009).
     pub fn record_key(&self, key_name: &str, is_down: bool) {
         let clean = key_name.trim();
         if clean.is_empty() {
             return;
         }
-        let now = Instant::now();
-        if let Ok(mut last_map) = self.last_key_events.lock() {
-            if let Some((last_down, last_t)) = last_map.get(clean) {
-                if *last_down == is_down && now.duration_since(*last_t).as_millis() < 70 {
-                    return; // Deduplicate across hook, polling loop, and GUI event loop
-                }
+        if !key_gate_accepts(&self.key_gate, clean, is_down, process_elapsed_ms()) {
+            return;
+        }
+
+        if let Ok(mut held) = self.held_keys.lock() {
+            if is_down {
+                held.insert(clean.to_string());
+            } else {
+                held.remove(clean);
             }
-            last_map.insert(clean.to_string(), (is_down, now));
         }
 
         flush_raw_turn_accumulator(self);
 
-        record_delay_and_event(
+        // A tap shorter than the replay hold floor gets an extra recorded delay so the
+        // replayed key is held long enough for DirectInput games (U06-010).
+        let hold_floor_extra = if is_down {
+            0
+        } else {
+            let recorded_hold = self
+                .events
+                .lock()
+                .ok()
+                .and_then(|events| recorded_key_hold_ms(&events, clean));
+            recorded_hold.map_or(0, key_hold_floor_extra_ms)
+        };
+
+        record_delay_and_event_with_hold_floor(
             self,
             if is_down {
                 MacroEvent::KeyDown { key: clean.to_string() }
@@ -217,8 +304,127 @@ impl MacroRecorder {
                 MacroEvent::KeyUp { key: clean.to_string() }
             },
             true, // insert delay before key
+            hold_floor_extra,
         );
     }
+
+    /// Records a mouse button transition and remembers its down state so a stop
+    /// mid-click still closes it (U06-011).
+    pub fn record_mouse_button(&self, button: MouseButton, is_down: bool) {
+        if let Ok(mut held) = self.held_mouse_buttons.lock() {
+            if is_down {
+                held.insert(button);
+            } else {
+                held.remove(&button);
+            }
+        }
+        record_delay_and_event(
+            self,
+            if is_down {
+                MacroEvent::MouseDown { button }
+            } else {
+                MacroEvent::MouseUp { button }
+            },
+            true,
+        );
+    }
+}
+
+/// Milliseconds since the process started. One process-wide epoch backs the
+/// recorder clock, so readers need no shared lock.
+fn process_elapsed_ms() -> u64 {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    EPOCH
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis()
+        .min(u128::from(KEY_GATE_MAX_MS)) as u64
+}
+
+/// Slots in [`MacroRecorder::key_gate`]; comfortably above the number of distinct
+/// key names the recorder can see.
+const KEY_GATE_SLOTS: usize = 256;
+/// The same key in the same direction within this window is one physical
+/// transition (hook + polling fallback + GUI event loop all report it).
+const KEY_DEDUP_WINDOW_MS: u64 = 70;
+/// Linear probes before a colliding name evicts another entry. Eviction can only
+/// re-record an event, never drop one.
+const KEY_GATE_PROBES: usize = 8;
+/// Highest timestamp representable in a gate slot (39 bits of milliseconds).
+const KEY_GATE_MAX_MS: u64 = (1 << 39) - 1;
+const KEY_GATE_TAG_MASK: u32 = 0x00FF_FFFF;
+
+fn key_name_tag(key: &str) -> u32 {
+    let mut hash: u32 = 0x811C_9DC5;
+    for byte in key.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let tag = hash & KEY_GATE_TAG_MASK;
+    if tag == 0 { 1 } else { tag }
+}
+
+/// Lock-free "record or reject" for one key transition. A slot holds
+/// `(name_hash << 40) | (ms << 1) | is_down`; a matching hash with the same
+/// direction inside [`KEY_DEDUP_WINDOW_MS`] is the same physical event.
+fn key_gate_accepts(
+    gate: &[AtomicU64],
+    key: &str,
+    is_down: bool,
+    now_ms: u64,
+) -> bool {
+    let tag = u64::from(key_name_tag(key));
+    let state = (now_ms.min(KEY_GATE_MAX_MS) << 1) | u64::from(is_down);
+    let tagged = (tag << 40) | state;
+    let len = gate.len().max(1);
+    let start = (tag as usize) % len;
+
+    for probe in 0..KEY_GATE_PROBES {
+        let slot = &gate[(start + probe) % len];
+        let previous = slot.load(Ordering::Relaxed);
+        if previous == 0 {
+            slot.store(tagged, Ordering::Relaxed);
+            return true;
+        }
+        if (previous >> 40) as u32 == tag as u32 {
+            let previous_down = (previous & 1) != 0;
+            let previous_ms = (previous >> 1) & KEY_GATE_MAX_MS;
+            if previous_down == is_down && now_ms.saturating_sub(previous_ms) < KEY_DEDUP_WINDOW_MS {
+                return false;
+            }
+            slot.store(tagged, Ordering::Relaxed);
+            return true;
+        }
+    }
+    gate[(start + KEY_GATE_PROBES - 1) % len].store(tagged, Ordering::Relaxed);
+    true
+}
+
+/// Time a recorded tap must occupy in the timeline so replay holds the key long
+/// enough for DirectInput games to register it. Mirrors the 35-110 ms `KeyPress`
+/// clamp in `daemon::actions` (U06-010).
+pub const MIN_RECORDED_KEY_HOLD_MS: u32 = 35;
+
+/// Recorded milliseconds between the most recent `KeyDown` for `key` and the end
+/// of `events`; `None` when no matching down was recorded (for example when
+/// recording started while the key was already held).
+fn recorded_key_hold_ms(events: &[MacroEvent], key: &str) -> Option<u32> {
+    let mut hold_ms = 0u32;
+    for event in events.iter().rev() {
+        match event {
+            MacroEvent::KeyDown { key: down_key } if down_key == key => return Some(hold_ms),
+            MacroEvent::KeyUp { key: up_key } if up_key == key => return None,
+            MacroEvent::Delay { ms, .. } => hold_ms = hold_ms.saturating_add(*ms),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extra delay needed before a `KeyUp` so the recorded hold reaches
+/// [`MIN_RECORDED_KEY_HOLD_MS`].
+fn key_hold_floor_extra_ms(recorded_hold_ms: u32) -> u32 {
+    MIN_RECORDED_KEY_HOLD_MS.saturating_sub(recorded_hold_ms)
 }
 
 pub fn flush_raw_turn_accumulator(rec: &MacroRecorder) {
@@ -563,10 +769,7 @@ fn run_recorder_polling_loop(recorder: MacroRecorder) {
     }
 
     while recorder.is_recording.load(Ordering::SeqCst) {
-        let elapsed_start = recorder.record_start_time.lock().ok()
-            .and_then(|t| *t)
-            .map(|st| st.elapsed().as_millis())
-            .unwrap_or(1000);
+        let elapsed_start = recorder.recording_elapsed_ms().unwrap_or(1000);
 
         // Escape cancellation check (fallback if hook was bypassed)
         if elapsed_start > 250 {
@@ -612,10 +815,7 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
         let rec = MacroRecorder::global();
 
-        let elapsed_start = rec.record_start_time.lock().ok()
-            .and_then(|t| *t)
-            .map(|st| st.elapsed().as_millis())
-            .unwrap_or(1000);
+        let elapsed_start = rec.recording_elapsed_ms().unwrap_or(1000);
 
         // F9 controls start / stop recording - always swallow and never record into timeline!
         if vk == VK_F9.0 as u32 {
@@ -664,10 +864,7 @@ unsafe extern "system" fn low_level_mouse_proc(
         let rec = MacroRecorder::global();
 
         if rec.is_recording.load(Ordering::SeqCst) {
-            let elapsed_since_start = rec.record_start_time.lock().ok()
-                .and_then(|t| *t)
-                .map(|st| st.elapsed().as_millis())
-                .unwrap_or(1000);
+            let elapsed_since_start = rec.recording_elapsed_ms().unwrap_or(1000);
 
             let clicks_enabled = rec.capture_mouse_clicks.load(Ordering::SeqCst);
             let wheel_enabled = rec.capture_mouse_wheel.load(Ordering::SeqCst);
@@ -719,33 +916,21 @@ unsafe extern "system" fn low_level_mouse_proc(
                     }
 
                     match msg {
-                        WM_LBUTTONDOWN => {
-                            record_delay_and_event(&rec, MacroEvent::MouseDown { button: MouseButton::Left }, true);
-                        }
-                        WM_LBUTTONUP => {
-                            record_delay_and_event(&rec, MacroEvent::MouseUp { button: MouseButton::Left }, true);
-                        }
-                        WM_RBUTTONDOWN => {
-                            record_delay_and_event(&rec, MacroEvent::MouseDown { button: MouseButton::Right }, true);
-                        }
-                        WM_RBUTTONUP => {
-                            record_delay_and_event(&rec, MacroEvent::MouseUp { button: MouseButton::Right }, true);
-                        }
-                        WM_MBUTTONDOWN => {
-                            record_delay_and_event(&rec, MacroEvent::MouseDown { button: MouseButton::Middle }, true);
-                        }
-                        WM_MBUTTONUP => {
-                            record_delay_and_event(&rec, MacroEvent::MouseUp { button: MouseButton::Middle }, true);
-                        }
+                        WM_LBUTTONDOWN => rec.record_mouse_button(MouseButton::Left, true),
+                        WM_LBUTTONUP => rec.record_mouse_button(MouseButton::Left, false),
+                        WM_RBUTTONDOWN => rec.record_mouse_button(MouseButton::Right, true),
+                        WM_RBUTTONUP => rec.record_mouse_button(MouseButton::Right, false),
+                        WM_MBUTTONDOWN => rec.record_mouse_button(MouseButton::Middle, true),
+                        WM_MBUTTONUP => rec.record_mouse_button(MouseButton::Middle, false),
                         WM_XBUTTONDOWN => {
                             let hi = ((ms.mouseData >> 16) & 0xffff) as u16;
                             let btn = if hi == 1 { MouseButton::XButton1 } else { MouseButton::XButton2 };
-                            record_delay_and_event(&rec, MacroEvent::MouseDown { button: btn }, true);
+                            rec.record_mouse_button(btn, true);
                         }
                         WM_XBUTTONUP => {
                             let hi = ((ms.mouseData >> 16) & 0xffff) as u16;
                             let btn = if hi == 1 { MouseButton::XButton1 } else { MouseButton::XButton2 };
-                            record_delay_and_event(&rec, MacroEvent::MouseUp { button: btn }, true);
+                            rec.record_mouse_button(btn, false);
                         }
                         _ => {}
                     }
@@ -831,6 +1016,15 @@ unsafe extern "system" fn low_level_mouse_proc(
 }
 
 fn record_delay_and_event(rec: &MacroRecorder, event: MacroEvent, allow_delay: bool) {
+    record_delay_and_event_with_hold_floor(rec, event, allow_delay, 0);
+}
+
+fn record_delay_and_event_with_hold_floor(
+    rec: &MacroRecorder,
+    event: MacroEvent,
+    allow_delay: bool,
+    extra_hold_ms: u32,
+) {
     let now = Instant::now();
     let mut delay_to_insert = None;
 
@@ -849,6 +1043,11 @@ fn record_delay_and_event(rec: &MacroRecorder, event: MacroEvent, allow_delay: b
         }
     } else if let Ok(mut time_lock) = rec.last_event_time.lock() {
         *time_lock = Some(now);
+    }
+
+    if extra_hold_ms > 0 {
+        let natural = delay_to_insert.unwrap_or(0);
+        delay_to_insert = Some(natural.saturating_add(extra_hold_ms));
     }
 
     if let Ok(mut events) = rec.events.lock() {
@@ -1101,13 +1300,13 @@ pub fn run_macro_test_safe(events: Vec<MacroEvent>, speed: f32) {
     }
     TEST_CANCEL.store(false, Ordering::SeqCst);
 
-    std::thread::Builder::new()
+    let spawn_result = std::thread::Builder::new()
         .name("macro-test-runner".into())
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread().enable_time().build() {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("Failed to create tokio runtime for macro test runner: {e}");
+                    crate::logging::error("MACRO", &format!("Failed to create tokio runtime for macro test runner: {e}"));
                     TEST_RUNNING.store(false, Ordering::SeqCst);
                     return;
                 }
@@ -1152,7 +1351,13 @@ pub fn run_macro_test_safe(events: Vec<MacroEvent>, speed: f32) {
                                         break;
                                     }
                                 }
-                                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                                // Sleep only the remaining slice so a 12 ms pause is not rounded up
+                                // to the next 25 ms multiple (U06-012).
+                                let remaining = sleep_target.saturating_duration_since(std::time::Instant::now());
+                                if remaining.is_zero() {
+                                    break;
+                                }
+                                tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
                             }
                         }
                         _ => {
@@ -1170,8 +1375,16 @@ pub fn run_macro_test_safe(events: Vec<MacroEvent>, speed: f32) {
             if let Ok(mut lock) = LAST_TEST_TOGGLE.lock() {
                 *lock = Some(std::time::Instant::now());
             }
-        })
-        .expect("Failed to spawn macro test runner thread");
+        });
+    if let Err(err) = spawn_result {
+        // Never leave TEST_RUNNING latched: the F10 toggle would stop working for the
+        // whole session after a failed spawn (U06-014).
+        crate::logging::error("MACRO", &format!("Failed to spawn macro test runner thread: {err}"));
+        TEST_RUNNING.store(false, Ordering::SeqCst);
+        if let Ok(mut lock) = LAST_TEST_TOGGLE.lock() {
+            *lock = Some(Instant::now());
+        }
+    }
 }
 
 static STUDIO_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1207,12 +1420,17 @@ pub fn take_studio_drained_events() -> Option<Vec<MacroEvent>> {
 fn ensure_studio_hotkey_thread_started() {
     #[cfg(windows)]
     if !STUDIO_HOTKEY_THREAD_STARTED.swap(true, Ordering::SeqCst) {
-        std::thread::Builder::new()
+        let spawn_result = std::thread::Builder::new()
             .name("macro-studio-global-hotkeys".into())
             .spawn(|| {
                 run_studio_hotkey_loop();
-            })
-            .expect("Failed to spawn studio hotkey listener thread");
+            });
+        if let Err(err) = spawn_result {
+            // Re-arm the latch so a later studio open retries instead of leaving F9/F10
+            // dead for the rest of the session (U06-014).
+            crate::logging::error("MACRO", &format!("Failed to spawn studio hotkey listener thread: {err}"));
+            STUDIO_HOTKEY_THREAD_STARTED.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -1441,12 +1659,110 @@ mod tests {
         rec.stop_recording();
 
         let events = rec.drain_events();
-        assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], MacroEvent::KeyDown { key } if key == "A"));
-        assert!(matches!(&events[1], MacroEvent::KeyUp { key } if key == "A"));
+        let key_events: Vec<&MacroEvent> = events
+            .iter()
+            .filter(|event| matches!(event, MacroEvent::KeyDown { .. } | MacroEvent::KeyUp { .. }))
+            .collect();
+        assert_eq!(key_events.len(), 2);
+        assert!(matches!(key_events[0], MacroEvent::KeyDown { key } if key == "A"));
+        assert!(matches!(key_events[1], MacroEvent::KeyUp { key } if key == "A"));
 
         // After drain, it should be empty
         assert_eq!(rec.drain_events().len(), 0);
+    }
+
+    #[test]
+    fn test_recorded_tap_gets_replay_hold_floor() {
+        let rec = MacroRecorder::new();
+        rec.is_recording.store(true, Ordering::SeqCst);
+        rec.capture_delays.store(true, Ordering::SeqCst);
+
+        rec.record_key("A", true);
+        rec.record_key("A", false);
+
+        let events = rec.drain_events();
+        assert_eq!(events.len(), 3, "a fast tap must gain an explicit hold delay: {events:?}");
+        assert!(matches!(&events[0], MacroEvent::KeyDown { key } if key == "A"));
+        assert!(matches!(&events[1], MacroEvent::Delay { ms, .. } if *ms >= MIN_RECORDED_KEY_HOLD_MS));
+        assert!(matches!(&events[2], MacroEvent::KeyUp { key } if key == "A"));
+        assert_eq!(
+            recorded_key_hold_ms(&events[..2], "A"),
+            Some(MIN_RECORDED_KEY_HOLD_MS),
+            "the hold floor sits between the KeyDown and the KeyUp"
+        );
+    }
+
+    #[test]
+    fn test_long_key_hold_does_not_gain_extra_delay() {
+        let rec = MacroRecorder::new();
+        rec.is_recording.store(true, Ordering::SeqCst);
+        rec.capture_delays.store(true, Ordering::SeqCst);
+
+        rec.record_key("B", true);
+        std::thread::sleep(std::time::Duration::from_millis(45));
+        rec.record_key("B", false);
+
+        let events = rec.drain_events();
+        let delay = events
+            .iter()
+            .find_map(|event| match event {
+                MacroEvent::Delay { ms, .. } => Some(*ms),
+                _ => None,
+            })
+            .expect("a natural delay is recorded for a 45 ms hold");
+        assert!((40..100).contains(&delay), "unexpected delay {delay}");
+    }
+
+    #[test]
+    fn test_key_gate_deduplicates_capture_paths_without_locking() {
+        let gate: Vec<AtomicU64> = (0..KEY_GATE_SLOTS).map(|_| AtomicU64::new(0)).collect();
+
+        // Hook records the press; the polling fallback reports the same transition.
+        assert!(key_gate_accepts(&gate, "A", true, 1_000));
+        assert!(!key_gate_accepts(&gate, "A", true, 1_010));
+        // The release is a new transition.
+        assert!(key_gate_accepts(&gate, "A", false, 1_020));
+        // A fresh press after the dedup window is accepted again.
+        assert!(key_gate_accepts(&gate, "A", true, 1_100));
+        // Different keys keep independent state.
+        assert!(key_gate_accepts(&gate, "B", true, 1_101));
+        assert!(!key_gate_accepts(&gate, "B", true, 1_105));
+    }
+
+    #[test]
+    fn test_stop_closes_held_keys_and_mouse_buttons() {
+        let rec = MacroRecorder::new();
+        rec.is_recording.store(true, Ordering::SeqCst);
+
+        rec.record_key("Shift", true);
+        rec.record_mouse_button(MouseButton::Left, true);
+        rec.stop_recording();
+
+        let events = rec.drain_events();
+        let key_ups: Vec<&str> = events
+            .iter()
+            .filter_map(|event| match event {
+                MacroEvent::KeyUp { key } => Some(key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(key_ups, vec!["Shift"]);
+        assert!(
+            events.iter().any(|event| matches!(event, MacroEvent::MouseUp { button: MouseButton::Left })),
+            "a held mouse button must be released on stop: {events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|event| matches!(event, MacroEvent::KeyDown { .. })).count(),
+            1,
+            "the synthetic KeyUp must pair the recorded KeyDown"
+        );
+        assert!(recorded_key_hold_ms(&events, "Shift").is_none());
+        assert!(rec.held_keys.lock().unwrap().is_empty());
+        assert!(rec.held_mouse_buttons.lock().unwrap().is_empty());
+
+        // Stopping again must not synthesise duplicate releases.
+        rec.stop_recording();
+        assert!(rec.drain_events().is_empty());
     }
 
     #[test]

@@ -21,6 +21,7 @@ internals see [ARCHITECTURE.md](ARCHITECTURE.md).
   - [How do I back up or move my setup?](#how-do-i-back-up-or-move-my-setup)
   - [A configuration file is corrupt or I want a clean start](#a-configuration-file-is-corrupt-or-i-want-a-clean-start)
   - [Why are there two Synector processes?](#why-are-there-two-synector-processes)
+  - [A save failed — is my edit lost?](#a-save-failed--is-my-edit-lost)
   - [How do I create or change an overlay?](#how-do-i-create-or-change-an-overlay)
   - [How do I record and replay a macro?](#how-do-i-record-and-replay-a-macro)
 - [Rules and triggers](#rules-and-triggers)
@@ -88,8 +89,14 @@ creates `%LOCALAPPDATA%\Synector\` with the configuration files and logs.
 ### How do updates work?
 
 The daemon checks GitHub Releases, selects the right asset, downloads it and verifies the SHA-256
-digest published by the GitHub API. An installed copy downloads the release's setup and starts it
-silently; a portable copy replaces its own executable. Progress is shown in the tray and overlay
+digest published by the GitHub API. An asset without a published digest is refused and its download
+deleted, so an update is never applied unverified. An installed copy downloads the release's setup
+and starts it silently; a portable copy replaces its own executable. With process masking enabled the
+portable daemon runs from the masked copy, so the update targets the real executable: the GUI reports
+its path to the daemon when it starts it, which keeps the target known after that window is closed,
+and a running GUI window is the fallback. Only when neither source is available does the update fail
+with an error. If the executable swap fails, the previous executable is kept or restored and the
+update reports an error instead of claiming success. Progress is shown in the tray and overlay
 notifications. Auto-install is optional and can be turned off in Settings.
 
 If an update fails, check the log in `%LOCALAPPDATA%\Synector\logs\`, make sure the app is not
@@ -137,8 +144,13 @@ running it is the only writer; editing the files underneath it is not supported.
 ### A configuration file is corrupt or I want a clean start
 
 A section that fails to parse is renamed to `<name>.corrupt-<timestamp>` before defaults replace
-it, so the original is not destroyed. To start clean, stop Synector and remove or rename the
-section files; to recover, restore a backup over them while the daemon is stopped.
+it, so the original is not destroyed; a taken name gets a `-1`, `-2`, … suffix, so an earlier
+quarantine copy is never overwritten. If the file cannot be moved aside, Synector refuses to
+overwrite that section until you move it by hand, and the log names the blocking file. Rules are
+checked one by one: a rule that contains an unknown key — including a field removed from the format
+— or whose values fail validation is skipped, and the log names the rule id with the keys or
+errors, while the rest of `rules.json` still loads. To start clean, stop Synector and remove or
+rename the section files; to recover, restore a backup over them while the daemon is stopped.
 
 ### Why are there two Synector processes?
 
@@ -147,13 +159,27 @@ additional borderless processes supervised by the daemon. Seeing several Synecto
 normal when overlays are open. Each tier has a single-instance mutex, so a second daemon or GUI does
 not start.
 
+### A save failed — is my edit lost?
+
+No. Saving a rule validates the draft first: structural errors are listed in the inspector and
+nothing is sent, so an invalid rule never replaces the stored one. A rule or overlay edit also stays
+open with its draft intact when the daemon rejects or the request fails, and a toast names the
+error. When the daemon is confirmed unreachable, the GUI writes the affected config section directly
+after a failed liveness probe, so the edit can still be saved offline. A sustained outage is logged
+and shown as an offline toast. Settings edits keep the same guarantee: if neither the daemon nor the
+direct write accepts the change, the edited form stays and the failure is reported instead of a
+success toast.
+
 ### How do I create or change an overlay?
 
 Overlays are edited in the Overlay Studio: select an Overlay action in the rule inspector and press
 **OPEN →**. The studio arranges elements on a multi-monitor artboard; **POSITION ON SCREEN** switches
 the overlay into calibration, which makes it draggable so it can be placed on the intended display.
-The daemon then renders it in a separate process, so the overlay stays on screen when the GUI is
-closed.
+The canvas is a preview, not a live overlay: clicking an element in the editor never runs its click
+action. ToggleSwitch and ClockTimer state can still be exercised from the inspector, every property
+edit is undoable, and saving a preset under an existing name creates a new `_2`/`_3` copy instead of
+replacing the built-in one. The daemon then renders the overlay in a separate process, so it stays on
+screen when the GUI is closed.
 
 The action decides what happens at runtime: toggle visibility or flash on screen, optional override
 text (tokens such as `{ProcessName}` are allowed), duration and fade, and "close when process exits"
@@ -163,10 +189,10 @@ to bind the overlay to the triggering application. Saved definitions live in `li
 
 Record it in Macro Studio: select a Macro action in the inspector and press **OPEN →**, then **F9**
 starts and stops recording — the low-level hooks are active only while recording. **F10** test-runs
-the sequence on a background thread, **Esc** closes the studio. The action then decides playback:
-operation Run, Stop or Toggle, repeat count, and an optional preset stored in `library.json`.
-Playback uses hardware scan codes with short holds and humanized timing, so it also registers in
-DirectInput games.
+the sequence on a background thread, **Esc** stops recording, cancels an active drag-and-drop and
+closes the studio. The action then decides playback: operation Run, Stop or Toggle, repeat count, and
+an optional preset stored in `library.json`. Playback uses hardware scan codes with short holds and
+humanized timing, so it also registers in DirectInput games.
 
 ## Rules and triggers
 
@@ -221,10 +247,11 @@ the key is held; repeat-while-held without hold mode loops until the hotkey is p
 
 ### Are share codes safe?
 
-`SYN1:` codes carry a checksum and are decoded with bounds on code length, decompressed size and
-rule count. Imported rules are created disabled by default; review them before enabling. A share
-code can contain scripts, webhook actions and other powerful steps, so only import codes from people
-you trust. See [ARCHITECTURE.md#sharing-and-backup](ARCHITECTURE.md#sharing-and-backup).
+`SYN1:` codes carry a checksum and are decoded with bounds on code length and decompressed size,
+and at most 500 rules, 500 overlays and 500 macro presets per code. Imported rules are created
+disabled by default; review them before enabling. A share code can contain scripts, webhook actions
+and other powerful steps, so only import codes from people you trust. See
+[ARCHITECTURE.md#sharing-and-backup](ARCHITECTURE.md#sharing-and-backup).
 
 ### PowerShell does not show CLI output
 
@@ -265,9 +292,12 @@ Use automation only where the application permits it.
 ### Audio actions fail
 
 Check that the requested default device exists and is enabled, and that the target process is
-playing audio. Per-application volume and channel balance depend on the Windows audio session for
-that process; a stopped or suspended app may not expose one. Audio format changes can temporarily
-interrupt playback by design.
+playing audio. `default_device` uses the AudioDeviceCmdlets PowerShell module; if it is not
+installed the action reports an error instead of doing nothing. `audio_format.device_name` must
+match an active endpoint's display name — a name that matches nothing fails the action.
+Per-application volume and channel balance depend on the Windows audio session for that process; a
+stopped or suspended app may not expose one. Audio format changes can temporarily interrupt playback
+by design.
 
 ### High CPU or constant disk writes
 
@@ -279,8 +309,9 @@ positions are written coalesced, not on every event.
 ### The webhook port is busy
 
 The local webhook server binds `127.0.0.1:48123`, and the port is fixed. If another application
-already owns it, the server cannot start and webhook-triggered rules will not fire; the daemon log
-records the bind error. Close the conflicting application.
+already owns it, the bind error is logged and the server retries with a capped backoff (1 s doubling
+to 30 s), so webhook-triggered rules resume once the port is freed. Close the conflicting
+application, or stop the rule source until the port is available.
 
 ### Where do I report a bug or a security issue?
 

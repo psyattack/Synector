@@ -16,11 +16,12 @@
 //! daemon is offline. Every write is atomic (temp file + rename) and stamped with
 //! [`CONFIG_VERSION`], so a crash mid-write cannot truncate user data.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::{Duration, SystemTime};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,16 @@ const SETTINGS_FILE: &str = "settings.json";
 const RULES_FILE: &str = "rules.json";
 const LIBRARY_FILE: &str = "library.json";
 const RUNTIME_FILE: &str = "runtime.json";
+const SECTION_FILES: [&str; 4] = [SETTINGS_FILE, RULES_FILE, LIBRARY_FILE, RUNTIME_FILE];
+
+/// A cached file stamp is trusted only after the filesystem timestamp has settled. Coarse
+/// timestamp volumes (FAT/exFAT, portable mode) can otherwise hide an equal-length rewrite
+/// that happened within the same timestamp tick.
+const STAMP_SETTLE: Duration = Duration::from_secs(2);
+
+/// `<section>.<pid>.tmp` files older than this were left behind by a writer that died between
+/// the temp-file write and the rename; younger files may belong to a live writer.
+const STALE_TEMP_AGE: Duration = Duration::from_secs(5 * 60);
 
 fn default_version() -> u32 {
     CONFIG_VERSION
@@ -60,6 +71,56 @@ fn tmp_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Removes `<section>.<pid>.tmp` files left behind by a writer that died between the temp-file
+/// write and the rename. Only names produced by [`tmp_path`] and older than [`STALE_TEMP_AGE`]
+/// are touched, so a live writer's fresh temporary file survives.
+fn clean_stale_temp_files(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    let mut removed = 0u32;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let is_section_tmp = SECTION_FILES.iter().any(|section| {
+            file_name
+                .strip_prefix(section)
+                .and_then(|rest| rest.strip_prefix('.'))
+                .and_then(|rest| rest.strip_suffix(".tmp"))
+                .is_some_and(|pid| {
+                    !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit())
+                })
+        });
+        if !is_section_tmp {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= STALE_TEMP_AGE);
+        if stale && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    if removed > 0 {
+        crate::logging::debug(
+            "CONFIG",
+            &format!("Removed {removed} stale config temp file(s)"),
+        );
+    }
+}
+
+fn log_section_create_failure(section: &str, result: std::io::Result<()>) {
+    if let Err(err) = result {
+        crate::logging::error("CONFIG", &format!("Failed to create {section}: {err}"));
+    }
+}
+
 /// Reads one JSON section. A missing file is not an error: the caller falls back to
 /// defaults so a partially deleted config directory still starts up. An unparsable file
 /// is moved aside as `<name>.corrupt-<unix time>` before defaults take over, so the next
@@ -73,7 +134,6 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
                     "CONFIG",
                     &format!("Failed to read {}: {err}", path.display()),
                 );
-                eprintln!("Failed to read {}: {err}", path.display());
             }
             return None;
         }
@@ -90,30 +150,139 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
                 "CONFIG",
                 &format!("Failed to parse {}: {err}{detail}", path.display()),
             );
-            eprintln!(
-                "Failed to parse {}: {err}{detail}; using defaults for this section",
-                path.display()
-            );
             None
         }
     }
 }
 
+/// Sections that failed to parse and could not be moved aside. While such a file is still on
+/// disk, saving defaults over it would destroy the only recoverable copy.
+static UNQUARANTINED: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
 /// Moves a file that failed to parse next to itself so it can be recovered by hand.
+///
+/// The target name carries the wall-clock second; the name is reserved with `create_new`
+/// first so an existing `.corrupt-*` copy from an earlier corruption is never replaced
+/// (Windows `rename` overwrites an existing destination). When the move itself fails the
+/// section is registered as unquarantined, and [`write_json_atomic`] refuses to overwrite
+/// it until the user moves or fixes the file.
 fn quarantine_corrupt(path: &Path) -> Option<PathBuf> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())
         .unwrap_or_default();
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".corrupt-{timestamp}"));
-    let target = PathBuf::from(name);
-    fs::rename(path, &target).ok().map(|()| target)
+    let mut base = path.as_os_str().to_os_string();
+    base.push(format!(".corrupt-{timestamp}"));
+
+    for attempt in 0..100u32 {
+        let mut name = base.clone();
+        if attempt > 0 {
+            name.push(format!("-{attempt}"));
+        }
+        let target = PathBuf::from(name);
+        let reservation = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                crate::logging::error(
+                    "CONFIG",
+                    &format!(
+                        "Failed to reserve a quarantine name for {}: {err}",
+                        path.display()
+                    ),
+                );
+                break;
+            }
+        };
+        drop(reservation);
+        match fs::rename(path, &target) {
+            Ok(()) => return Some(target),
+            Err(err) => {
+                let _ = fs::remove_file(&target);
+                crate::logging::error(
+                    "CONFIG",
+                    &format!(
+                        "Failed to quarantine {}: {err}; the file is kept and will not be overwritten",
+                        path.display()
+                    ),
+                );
+                break;
+            }
+        }
+    }
+
+    if let Ok(mut unquarantined) = UNQUARANTINED.lock() {
+        unquarantined.insert(path.to_path_buf());
+    }
+    None
+}
+
+/// Schema version stored in an existing section file, read without materialising the rest of
+/// the section. `None` means the file is missing or its version cannot be determined, in
+/// which case the normal read path decides (quarantine or defaults).
+fn disk_version(path: &Path) -> Option<u32> {
+    let raw = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|version| u32::try_from(version).ok())
+}
+
+/// Refuses a write that would downgrade a section written by a newer build.
+///
+/// [`normalize_version`] deliberately keeps a newer on-disk version instead of re-stamping it:
+/// the unknown fields of that layout are not understood here, so persisting the older shape
+/// would silently drop them. The file stays untouched and the condition is reported through
+/// the returned error (and one log line) so callers can surface it.
+fn refuse_newer_section(path: &Path) -> std::io::Result<()> {
+    let Some(version) = disk_version(path) else {
+        return Ok(());
+    };
+    if version <= CONFIG_VERSION {
+        return Ok(());
+    }
+    crate::logging::error(
+        "CONFIG",
+        &format!(
+            "Refusing to overwrite {} (schema version {version} is newer than {CONFIG_VERSION})",
+            path.display()
+        ),
+    );
+    Err(std::io::Error::other(format!(
+        "{} uses schema version {version}, newer than this build's {CONFIG_VERSION}; refusing to overwrite it",
+        path.display()
+    )))
+}
+
+/// Refuses a write while a corrupt section could not be moved aside.
+fn refuse_unquarantined_section(path: &Path) -> std::io::Result<()> {
+    let blocked = UNQUARANTINED
+        .lock()
+        .is_ok_and(|unquarantined| unquarantined.contains(path));
+    if !blocked {
+        return Ok(());
+    }
+    Err(std::io::Error::other(format!(
+        "{} could not be quarantined; refusing to overwrite the only recoverable copy",
+        path.display()
+    )))
 }
 
 /// Serializes to a sibling temp file, flushes it to disk and renames it over the
 /// target, so readers never observe a half-written section.
+///
+/// Two invariants are enforced here, before anything on disk is touched: a section written by
+/// a newer build is never overwritten, and a corrupt section that could not be quarantined
+/// keeps its only recoverable copy.
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
+    refuse_newer_section(path)?;
+    refuse_unquarantined_section(path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -143,18 +312,23 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()
     }))
 }
 
-/// Keeps a file written by a newer Synector readable and re-stamps it on the next
-/// save. This is the hook where future layout migrations plug in.
+/// Applies the read-time version policy. An older section is upgraded in memory and stamped
+/// with [`CONFIG_VERSION`] on the next save; a section written by a newer build is readable
+/// (unknown fields are not understood, so they stay out of memory) but its version is kept
+/// as-is and [`write_json_atomic`] refuses to overwrite it. This is the one place the
+/// no-downgrade invariant lives.
 fn normalize_version(section: &str, version: &mut u32) {
     if *version > CONFIG_VERSION {
         crate::logging::warn(
             "CONFIG",
             &format!(
-                "{section} has schema version {} (newer than {CONFIG_VERSION}); unknown fields are kept out of memory",
+                "{section} has schema version {} (newer than {CONFIG_VERSION}); it is read-only for this build",
                 *version
             ),
         );
-    } else if *version < CONFIG_VERSION {
+        return;
+    }
+    if *version < CONFIG_VERSION {
         crate::logging::debug(
             "CONFIG",
             &format!("{section} upgraded from schema version {} to {CONFIG_VERSION}", *version),
@@ -182,6 +356,18 @@ fn file_stamp(path: &Path) -> Option<FileStamp> {
     })
 }
 
+impl FileStamp {
+    /// A stamp is trustworthy only once the timestamp behind it is old enough to have been
+    /// recorded in full. A fresh file is re-read on every access until then, so a coarse
+    /// timestamp cannot hide a rewrite and a cached default cannot pin a transient failure.
+    fn is_settled(self, now: SystemTime) -> bool {
+        self.modified.is_some_and(|modified| {
+            now.duration_since(modified)
+                .is_ok_and(|age| age >= STAMP_SETTLE)
+        })
+    }
+}
+
 struct CachedSection<T> {
     path: PathBuf,
     stamp: Option<FileStamp>,
@@ -196,20 +382,29 @@ static SETTINGS_CACHE: LazyLock<RwLock<Option<CachedSection<Settings>>>> =
 static LIBRARY_CACHE: LazyLock<RwLock<Option<CachedSection<Library>>>> =
     LazyLock::new(|| RwLock::new(None));
 
-fn cached_section<T>(
+fn cached_section<T: Default>(
     cache: &RwLock<Option<CachedSection<T>>>,
     path: PathBuf,
-    load: impl FnOnce(&Path) -> T,
+    load: impl FnOnce(&Path) -> Option<T>,
 ) -> Arc<T> {
     let stamp = file_stamp(&path);
+    let now = SystemTime::now();
     if let Ok(guard) = cache.read() {
         if let Some(entry) = guard.as_ref() {
-            if entry.path == path && entry.stamp == stamp {
+            if entry.path == path
+                && entry.stamp == stamp
+                && stamp.is_some_and(|stamp| stamp.is_settled(now))
+            {
                 return Arc::clone(&entry.value);
             }
         }
     }
-    let value = Arc::new(load(&path));
+    let Some(loaded) = load(&path) else {
+        // A failed read is never cached: one transient sharing or permission error would
+        // otherwise pin defaults for the rest of the process lifetime.
+        return Arc::new(T::default());
+    };
+    let value = Arc::new(loaded);
     if let Ok(mut guard) = cache.write() {
         *guard = Some(CachedSection {
             path,
@@ -325,7 +520,7 @@ impl Settings {
     /// Served from the process cache unless the file changed since the last read.
     pub fn read() -> Self {
         let path = Self::path_in(&AppConfig::config_home());
-        (*cached_section(&SETTINGS_CACHE, path, Self::read_file)).clone()
+        (*cached_section(&SETTINGS_CACHE, path, Self::load_file)).clone()
     }
 
     /// Uncached read from an explicit directory; used by tests, `AppConfig::read_from`
@@ -335,16 +530,18 @@ impl Settings {
     }
 
     fn read_file(path: &Path) -> Self {
-        match read_json::<Settings>(path) {
-            Some(mut settings) => {
-                normalize_version(SETTINGS_FILE, &mut settings.version);
-                if let Some(ws) = &mut settings.window {
-                    ws.sanitize();
-                }
-                settings
-            }
-            None => Self::default(),
+        Self::load_file(path).unwrap_or_default()
+    }
+
+    /// Parses one settings section. `None` means the read failed (missing, unreadable or
+    /// unparsable); the cache must not turn that into a pinned default.
+    fn load_file(path: &Path) -> Option<Self> {
+        let mut settings = read_json::<Settings>(path)?;
+        normalize_version(SETTINGS_FILE, &mut settings.version);
+        if let Some(ws) = &mut settings.window {
+            ws.sanitize();
         }
+        Some(settings)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -414,7 +611,7 @@ impl Library {
     /// tray/overlay reads instead of re-reading and re-parsing the file every time.
     pub fn shared() -> Arc<Library> {
         let path = Self::path_in(&AppConfig::config_home());
-        cached_section(&LIBRARY_CACHE, path, Self::read_file)
+        cached_section(&LIBRARY_CACHE, path, Self::load_file)
     }
 
     pub fn read() -> Self {
@@ -427,13 +624,14 @@ impl Library {
     }
 
     fn read_file(path: &Path) -> Self {
-        match read_json::<Library>(path) {
-            Some(mut library) => {
-                normalize_version(LIBRARY_FILE, &mut library.version);
-                library
-            }
-            None => Self::default(),
-        }
+        Self::load_file(path).unwrap_or_default()
+    }
+
+    /// Parses one library section. `None` means the read failed and must not be cached.
+    fn load_file(path: &Path) -> Option<Self> {
+        let mut library = read_json::<Library>(path)?;
+        normalize_version(LIBRARY_FILE, &mut library.version);
+        Some(library)
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -505,12 +703,97 @@ impl RulesFile {
     }
 
     pub fn read_from(dir: &Path) -> Self {
-        match read_json::<RulesFile>(&Self::path_in(dir)) {
-            Some(mut rules) => {
+        let path = Self::path_in(dir);
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    crate::logging::error(
+                        "CONFIG",
+                        &format!("Failed to read {}: {err}", path.display()),
+                    );
+                }
+                return Self::default();
+            }
+        };
+        let mut value: serde_json::Value = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(err) => {
+                let quarantined = quarantine_corrupt(&path);
+                let detail = match &quarantined {
+                    Some(target) => format!("; moved aside to {}", target.display()),
+                    None => String::new(),
+                };
+                crate::logging::error(
+                    "CONFIG",
+                    &format!("Failed to parse {}: {err}{detail}", path.display()),
+                );
+                return Self::default();
+            }
+        };
+        // A typo in a hand-edited rule is not a corrupt section: drop only that rule so the
+        // rest of the file keeps loading, and leave a visible error naming the rule and keys.
+        if let Some(rules) = value.get_mut("rules").and_then(serde_json::Value::as_array_mut) {
+            rules.retain(|rule| match crate::models::validate_rule_keys(rule) {
+                Ok(()) => true,
+                Err(unknown) => {
+                    let id = rule
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("<no id>");
+                    let details = unknown
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    crate::logging::error(
+                        "CONFIG",
+                        &format!("rules.json: rule '{id}': {details}; skipping the rule"),
+                    );
+                    false
+                }
+            });
+        }
+        match serde_json::from_value::<RulesFile>(value) {
+            Ok(mut rules) => {
+                for rule in &mut rules.rules {
+                    rule.normalize();
+                }
+                // Value checks are not a corrupt section either: a hand-edited rule the CLI and
+                // the GUI both reject (an out-of-range custom quota window, an impossible wait,
+                // a malformed schedule) is skipped on its own, named in the error log. The same
+                // per-rule validator the GUI's Save path runs is used, so nothing that path
+                // accepts is dropped here.
+                rules.rules.retain(|rule| {
+                    let errors = crate::cli::validate_rules(std::slice::from_ref(rule));
+                    if errors.is_empty() {
+                        return true;
+                    }
+                    crate::logging::error(
+                        "CONFIG",
+                        &format!(
+                            "rules.json: rule '{}': {}; skipping the rule",
+                            rule.id,
+                            errors.join("; ")
+                        ),
+                    );
+                    false
+                });
                 normalize_version(RULES_FILE, &mut rules.version);
                 rules
             }
-            None => Self::default(),
+            Err(err) => {
+                let quarantined = quarantine_corrupt(&path);
+                let detail = match &quarantined {
+                    Some(target) => format!("; moved aside to {}", target.display()),
+                    None => String::new(),
+                };
+                crate::logging::error(
+                    "CONFIG",
+                    &format!("Failed to parse {}: {err}{detail}", path.display()),
+                );
+                Self::default()
+            }
         }
     }
 
@@ -728,22 +1011,35 @@ impl AppConfig {
     /// Daemon-side load: materialises missing section files and performs the
     /// first-run autostart registration.
     pub fn load() -> Self {
-        let dir = Self::config_dir();
-        let first_run = !Settings::path_in(&dir).exists();
-        let config = Self::read_from(&dir);
+        Self::load_from(&Self::config_dir())
+    }
 
-        if first_run {
-            config.save_sections_silently();
-        } else {
-            if !RulesFile::path_in(&dir).exists() {
-                let _ = config.save_rules();
-            }
-            if !Library::path_in(&dir).exists() {
-                let _ = config.save_library();
-            }
-            if !RuntimeState::path_in(&dir).exists() {
-                let _ = RuntimeState::default().save();
-            }
+    /// Daemon-side load from an explicit directory.
+    ///
+    /// Only section files that are actually missing are created, and each one is written from
+    /// the state loaded out of the other sections. Rewriting an existing `runtime.json` with
+    /// defaults on a `settings.json`-only first run would zero counters that are already
+    /// applied in memory, so a missing or quarantined settings file never touches it.
+    fn load_from(dir: &Path) -> Self {
+        clean_stale_temp_files(dir);
+
+        let settings_path = Settings::path_in(dir);
+        let first_run = !settings_path.exists();
+        let config = Self::read_from(dir);
+
+        // Re-check after the read: a corrupt section was moved aside by then, and the fresh
+        // default file still has to be materialised.
+        if !settings_path.exists() {
+            log_section_create_failure(SETTINGS_FILE, config.settings().save_to(dir));
+        }
+        if !RulesFile::path_in(dir).exists() {
+            log_section_create_failure(RULES_FILE, RulesFile::save_rules_to(dir, &config.rules));
+        }
+        if !Library::path_in(dir).exists() {
+            log_section_create_failure(LIBRARY_FILE, config.library().save_to(dir));
+        }
+        if !RuntimeState::path_in(dir).exists() {
+            log_section_create_failure(RUNTIME_FILE, config.runtime_state().save_to(dir));
         }
 
         #[cfg(windows)]
@@ -761,10 +1057,10 @@ impl AppConfig {
         config
     }
 
-    /// Side-effect-free load used by the CLI and by read-only tools: no files are
-    /// created and no autostart entry is registered.
+    /// Read-only load used by the CLI and by read-only tools: the config directory and the
+    /// section files are not created, and no autostart entry is registered.
     pub fn read() -> Self {
-        Self::read_from(&Self::config_dir())
+        Self::read_from(&Self::config_home())
     }
 
     pub fn read_from(dir: &Path) -> Self {
@@ -839,14 +1135,6 @@ impl AppConfig {
 
     pub fn runtime_state(&self) -> RuntimeState {
         RuntimeState::capture(&self.rules)
-    }
-
-    fn save_sections_silently(&self) {
-        for result in [self.save_settings(), self.save_rules(), self.save_library(), RuntimeState::default().save()] {
-            if let Err(err) = result {
-                crate::logging::error("CONFIG", &format!("Failed to create config files: {err}"));
-            }
-        }
     }
 
     pub fn find_overlay(&self, id_or_name: &str) -> Option<&OverlayDefinition> {
@@ -1015,6 +1303,103 @@ mod tests {
     }
 
     #[test]
+    fn rules_file_skips_rules_with_unknown_keys() {
+        let dir = temp_dir("rules-unknown");
+        let path = RulesFile::path_in(&dir);
+        let raw = r#"{
+            "version": 1,
+            "rules": [
+                {"id": "rule_good", "name": "Good"},
+                {"id": "rule_typo", "name": "Typo", "max_execution": 5}
+            ]
+        }"#;
+        fs::write(&path, raw).expect("write rules");
+
+        let decoded = RulesFile::read_from(&dir);
+        assert_eq!(decoded.rules.len(), 1);
+        assert_eq!(decoded.rules[0].id, "rule_good");
+    }
+
+    /// U12-002 residual: a hand-edited rule with a custom quota window the CLI/GUI reject is
+    /// skipped on its own, like an unknown key, instead of loading and being silently clamped.
+    #[test]
+    fn rules_file_skips_rules_with_invalid_values() {
+        let dir = temp_dir("rules-invalid-values");
+        let path = RulesFile::path_in(&dir);
+        let raw = r#"{
+            "version": 1,
+            "rules": [
+                {"id": "rule_good", "name": "Good"},
+                {
+                    "id": "rule_bad_window",
+                    "name": "Bad Window",
+                    "max_executions": 5,
+                    "quota_period": {"custom": {"value": 100001, "unit": "hours"}}
+                }
+            ]
+        }"#;
+        fs::write(&path, raw).expect("write rules");
+
+        let decoded = RulesFile::read_from(&dir);
+        assert_eq!(decoded.rules.len(), 1);
+        assert_eq!(decoded.rules[0].id, "rule_good");
+    }
+
+    /// The load-time check uses the same per-rule validator as the GUI's Save path, so every
+    /// rule that path accepts survives a write/read round trip unchanged (boundary values
+    /// included).
+    #[test]
+    fn rules_file_keeps_valid_rules_after_load_validation() {
+        let dir = temp_dir("rules-valid-roundtrip");
+        let mut stored = rule("rule_window", "Window Rule");
+        stored.max_executions = Some(2);
+        stored.quota_period = Some(crate::models::QuotaPeriod::Custom {
+            value: crate::models::QuotaPeriod::MAX_CUSTOM_WINDOW_UNITS,
+            unit: crate::models::QuotaUnit::Days,
+        });
+        stored.actions = vec![crate::models::Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 86_400.0,
+            condition: None,
+            timeout_sec: 86_400.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
+        RulesFile::save_rules_to(&dir, std::slice::from_ref(&stored)).expect("save rules");
+
+        let decoded = RulesFile::read_from(&dir);
+        assert_eq!(
+            decoded.rules.len(),
+            1,
+            "a rule the CLI/GUI accept must not be dropped on load"
+        );
+        assert_eq!(decoded.rules[0], stored, "the loaded rule must be unchanged");
+    }
+
+    #[test]
+    fn rules_file_normalizes_overlay_ids_on_load() {
+        let dir = temp_dir("rules-overlay-ids");
+        let path = RulesFile::path_in(&dir);
+        let raw = r#"{"version":1,"rules":[{"id":"r","name":"R","actions":[{"$action_type":"overlay","overlay_id":"outside","custom_overlay":{"id":"inside","name":"HUD"},"operation":"show"}]}]}"#;
+        fs::write(&path, raw).expect("write rules");
+
+        let decoded = RulesFile::read_from(&dir);
+        match &decoded.rules[0].actions[0] {
+            crate::models::Action::Overlay {
+                overlay_id,
+                custom_overlay,
+                ..
+            } => {
+                assert_eq!(overlay_id, "outside");
+                assert_eq!(
+                    custom_overlay.as_ref().map(|definition| definition.id.as_str()),
+                    Some("outside")
+                );
+            }
+            other => panic!("expected an overlay action, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn runtime_state_capture_and_apply() {
         let mut first = rule("rule_a", "A");
         first.execution_count = 7;
@@ -1143,12 +1528,18 @@ mod tests {
         assert_eq!(library.version, CONFIG_VERSION);
     }
 
+    fn backdate_file(path: &Path, age: Duration) {
+        let modified = SystemTime::now() - age;
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open file to backdate")
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .expect("set file modification time");
+    }
+
     #[test]
     fn library_cache_shared_until_saved() {
-        fn load(file: &Path) -> Library {
-            Library::read_from(file.parent().expect("section file has a directory"))
-        }
-
         let dir = temp_dir("library-cache");
         let path = Library::path_in(&dir);
         let cache = RwLock::new(None);
@@ -1158,9 +1549,12 @@ mod tests {
             ..Default::default()
         };
         fs::write(&path, serde_json::to_vec(&empty).expect("encode")).expect("write library");
+        // A fresh timestamp makes the cache re-read on purpose; backdate it so this test
+        // observes the steady-state reuse instead.
+        backdate_file(&path, Duration::from_secs(5));
 
-        let first = cached_section(&cache, path.clone(), load);
-        let second = cached_section(&cache, path.clone(), load);
+        let first = cached_section(&cache, path.clone(), Library::load_file);
+        let second = cached_section(&cache, path.clone(), Library::load_file);
         assert!(Arc::ptr_eq(&first, &second), "unchanged file must reuse the cached value");
         assert!(first.macro_presets.is_empty());
 
@@ -1171,13 +1565,92 @@ mod tests {
         };
         fs::write(&path, serde_json::to_vec(&preset).expect("encode")).expect("rewrite library");
         invalidate_section(&cache);
-        let third = cached_section(&cache, path.clone(), load);
+        let third = cached_section(&cache, path.clone(), Library::load_file);
         assert!(!Arc::ptr_eq(&second, &third));
         assert_eq!(third.macro_presets.len(), 2);
 
         let missing = dir.join("missing.json");
-        let fallback = cached_section(&cache, missing, load);
+        let fallback = cached_section(&cache, missing, Library::load_file);
         assert_eq!(fallback.version, CONFIG_VERSION);
+    }
+
+    #[test]
+    fn cache_does_not_pin_defaults_after_a_read_error() {
+        let dir = temp_dir("cache-read-error");
+        let path = Settings::path_in(&dir);
+        // A directory in place of the file makes the read fail deterministically.
+        fs::create_dir_all(&path).expect("create obstacle directory");
+        let cache = RwLock::new(None);
+
+        let failed = cached_section(&cache, path.clone(), Settings::load_file);
+        assert_eq!(failed.theme, AppTheme::Dark);
+        assert!(
+            cache.read().expect("cache lock").is_none(),
+            "a failed read must not be cached"
+        );
+
+        fs::remove_dir_all(&path).expect("remove obstacle directory");
+        Settings {
+            theme: AppTheme::Light,
+            ..Settings::default()
+        }
+        .save_to(&dir)
+        .expect("save recovered settings");
+
+        let loaded = cached_section(&cache, path, Settings::load_file);
+        assert_eq!(
+            loaded.theme,
+            AppTheme::Light,
+            "the next call must observe the recovered file, not the transient default"
+        );
+    }
+
+    #[test]
+    fn cache_rechecks_a_recent_timestamp() {
+        let dir = temp_dir("cache-recent");
+        let path = Settings::path_in(&dir);
+        let cache = RwLock::new(None);
+        let stamp = SystemTime::now();
+
+        Settings {
+            theme: AppTheme::Light,
+            ..Settings::default()
+        }
+        .save_to(&dir)
+        .expect("save first settings");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open settings")
+            .set_times(fs::FileTimes::new().set_modified(stamp))
+            .expect("stamp settings");
+        let file_len = fs::metadata(&path).expect("metadata").len() as usize;
+        let cached = cached_section(&cache, path.clone(), Settings::load_file);
+        assert_eq!(cached.theme, AppTheme::Light);
+
+        // Same size (pad the shorter `dark` value with JSON whitespace) and exactly the same
+        // timestamp: only the settle rule prevents a stale hit, which is the coarse-timestamp
+        // case the cache has to tolerate.
+        let second = Settings {
+            theme: AppTheme::Dark,
+            ..Settings::default()
+        };
+        let mut same_size = serde_json::to_vec(&second).expect("encode settings");
+        same_size.resize(file_len, b' ');
+        fs::write(&path, &same_size).expect("rewrite settings");
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .expect("open rewritten settings")
+            .set_times(fs::FileTimes::new().set_modified(stamp))
+            .expect("restamp settings");
+
+        let reloaded = cached_section(&cache, path, Settings::load_file);
+        assert_eq!(
+            reloaded.theme,
+            AppTheme::Dark,
+            "a rewrite with an unchanged stamp must still be observed"
+        );
     }
 
     #[test]
@@ -1229,19 +1702,164 @@ mod tests {
     }
 
     #[test]
-    fn newer_schema_version_is_readable_and_restamped() {
+    fn newer_schema_version_is_readable_but_never_saved() {
         let dir = temp_dir("version");
         let stamp = CONFIG_VERSION + 7;
-        let raw = format!(
-            "{{\"{0}\": {1}, \"language\": \"russian\"}}",
-            "version", stamp
-        );
-        fs::write(Settings::path_in(&dir), raw).expect("write settings");
-        let settings = Settings::read_from(&dir);
-        assert_eq!(settings.version, CONFIG_VERSION);
+        let raw = format!("{{\"version\": {stamp}, \"language\": \"russian\"}}");
+        let path = Settings::path_in(&dir);
+        fs::write(&path, &raw).expect("write settings");
+
+        let mut settings = Settings::read_from(&dir);
+        assert_eq!(settings.version, stamp, "a newer version must not be re-stamped");
         assert_eq!(settings.language, crate::i18n::Language::Russian);
-        settings.save_to(&dir).expect("save");
-        assert_eq!(Settings::read_from(&dir).version, CONFIG_VERSION);
+
+        settings.theme = AppTheme::Light;
+        let error = settings
+            .save_to(&dir)
+            .expect_err("a section from a newer build must not be overwritten");
+        assert!(error.to_string().contains("newer"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&path).expect("read settings"),
+            raw,
+            "the newer file must stay byte-for-byte untouched"
+        );
+
+        let runtime_path = RuntimeState::path_in(&dir);
+        let runtime_raw = format!(
+            "{{\"version\": {stamp}, \"rules\": {{\"rule_a\": {{\"execution_count\": 42}}}}}}"
+        );
+        fs::write(&runtime_path, &runtime_raw).expect("write runtime");
+        assert!(
+            RuntimeState::default().save_to(&dir).is_err(),
+            "a newer runtime section must not be overwritten either"
+        );
+        assert_eq!(
+            fs::read_to_string(&runtime_path).expect("read runtime"),
+            runtime_raw
+        );
+    }
+
+    #[test]
+    fn missing_settings_does_not_reset_runtime_counters() {
+        let dir = temp_dir("first-run-counters");
+        RulesFile::save_rules_to(&dir, &[rule("rule_a", "A")]).expect("save rules");
+        let rules_before =
+            fs::read_to_string(RulesFile::path_in(&dir)).expect("read rules before load");
+
+        let mut runtime = RuntimeState::default();
+        runtime.rules.insert(
+            "rule_a".to_string(),
+            RuleRuntime {
+                execution_count: 9,
+                last_executed_at: Some("2026-02-03 04:05:06".to_string()),
+                quota_window_start: Some("2026-02-03 01:00:00".to_string()),
+            },
+        );
+        runtime.save_to(&dir).expect("save runtime");
+
+        let config = AppConfig::load_from(&dir);
+        assert_eq!(config.rules.len(), 1);
+        assert_eq!(config.rules[0].execution_count, 9);
+        assert!(
+            Settings::path_in(&dir).exists(),
+            "the missing settings section must be created"
+        );
+        assert_eq!(
+            fs::read_to_string(RulesFile::path_in(&dir)).expect("read rules after load"),
+            rules_before,
+            "an existing rules section must not be rewritten"
+        );
+
+        let stored = RuntimeState::read_from(&dir);
+        assert_eq!(
+            stored.rules["rule_a"].execution_count, 9,
+            "runtime counters must survive a settings-only first run"
+        );
+        assert_eq!(
+            stored.rules["rule_a"].last_executed_at.as_deref(),
+            Some("2026-02-03 04:05:06")
+        );
+        assert_eq!(
+            stored.rules["rule_a"].quota_window_start.as_deref(),
+            Some("2026-02-03 01:00:00")
+        );
+    }
+
+    #[test]
+    fn stale_temp_files_are_swept_on_load() {
+        let dir = temp_dir("stale-temp");
+        let stale = dir.join(format!("settings.json.{}.tmp", std::process::id()));
+        fs::write(&stale, "half written").expect("write stale temp");
+        backdate_file(&stale, Duration::from_secs(10 * 60));
+        let fresh = dir.join("rules.json.999999.tmp");
+        fs::write(&fresh, "a live writer").expect("write fresh temp");
+        let foreign = dir.join("notes.tmp");
+        fs::write(&foreign, "keep me").expect("write foreign file");
+
+        AppConfig::load_from(&dir);
+
+        assert!(!stale.exists(), "a stale section temp file must be removed");
+        assert!(fresh.exists(), "a fresh temp file may belong to a live writer");
+        assert!(foreign.exists(), "unrelated files must not be touched");
+    }
+
+    #[test]
+    fn quarantine_never_replaces_an_existing_copy() {
+        let dir = temp_dir("quarantine-collision");
+        let path = RulesFile::path_in(&dir);
+        let invalid = "{ this is not json";
+        fs::write(&path, invalid).expect("write corrupt rules");
+
+        let second = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after the epoch")
+            .as_secs();
+        let mut sentinels = Vec::new();
+        for timestamp in [second.saturating_sub(1), second, second + 1] {
+            let sentinel = dir.join(format!("rules.json.corrupt-{timestamp}"));
+            let content = format!("sentinel {timestamp}");
+            fs::write(&sentinel, &content).expect("write existing quarantine copy");
+            sentinels.push((sentinel, content));
+        }
+
+        let rules = RulesFile::read_from(&dir);
+        assert!(rules.rules.is_empty());
+        for (sentinel, content) in &sentinels {
+            assert!(
+                sentinel.exists(),
+                "an existing quarantine copy must never be replaced: {}",
+                sentinel.display()
+            );
+            assert_eq!(
+                &fs::read_to_string(sentinel).expect("read existing quarantine copy"),
+                content
+            );
+        }
+
+        let copies: Vec<PathBuf> = fs::read_dir(&dir)
+            .expect("read dir")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("rules.json.corrupt-"))
+            })
+            .collect();
+        assert_eq!(
+            copies.len(),
+            sentinels.len() + 1,
+            "the corrupt file must be quarantined under a free name"
+        );
+        let new_copy = copies
+            .iter()
+            .find(|copy| !sentinels.iter().any(|(sentinel, _)| sentinel == *copy))
+            .expect("the new quarantine copy");
+        assert_eq!(
+            fs::read_to_string(new_copy).expect("read new quarantine copy"),
+            invalid
+        );
     }
 
     #[test]

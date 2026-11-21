@@ -34,6 +34,81 @@ static OVERLAY_STUDIO_LAST_Z: std::sync::atomic::AtomicBool = std::sync::atomic:
 static OVERLAY_STUDIO_LAST_Y: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 
+/// Crosshair `x`/`y` use `0` — and anything negative — as the sentinel for "centre of the
+/// card": the renderer and the canvas hit-test both branch on `> 0.0`. Every editing path must
+/// therefore stay at 1 px or more, or the crosshair teleports to the card centre (U02-004).
+const CROSSHAIR_MIN_COORD: f32 = 1.0;
+
+/// Bounds an edited crosshair coordinate may take on one axis.
+fn crosshair_coord_range(dimension: f32) -> std::ops::RangeInclusive<f32> {
+    CROSSHAIR_MIN_COORD..=dimension.max(CROSSHAIR_MIN_COORD)
+}
+
+/// Clamps one crosshair coordinate into `crosshair_coord_range`.
+fn clamp_crosshair_coord(value: f32, dimension: f32) -> f32 {
+    let range = crosshair_coord_range(dimension);
+    value.clamp(*range.start(), *range.end())
+}
+
+/// Mirrors `get_element_size` for Text so the clamp and the canvas hit-test agree on the box.
+fn text_size_estimate(text: &str, font_size: f32) -> (f32, f32) {
+    let char_len = (text.chars().count() as f32).max(1.0);
+    let est_w = (char_len * (font_size * 0.6).max(8.0) + 12.0).max(30.0);
+    let est_h = (font_size + 6.0).max(18.0);
+    (est_w, est_h)
+}
+
+/// Fills the positional `{}` placeholders of a catalog value left to right. `str::replace` would
+/// fill every occurrence with the first argument, so multi-placeholder canvas labels need this.
+fn fill(template: &str, args: &[&str]) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    for arg in args {
+        match rest.find("{}") {
+            Some(at) => {
+                out.push_str(&rest[..at]);
+                out.push_str(arg);
+                rest = &rest[at + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Card/element geometry that [`clamp_elements_to_canvas`] actually operates on.
+///
+/// The clamp rewrites element sizes and positions, and the studio persists those, so it must
+/// run only when this geometry changed. Colours, labels and font sizes are deliberately not
+/// part of the signature: the old unconditional per-frame call used to shrink a long Text
+/// label's font permanently (U02-003).
+#[derive(Clone, Debug, PartialEq)]
+struct OverlayGeometry {
+    card_w: f32,
+    card_h: f32,
+    card_x: f32,
+    card_y: f32,
+    elements: Vec<[f32; 4]>,
+}
+
+fn overlay_geometry(overlay: &OverlayDefinition) -> OverlayGeometry {
+    OverlayGeometry {
+        card_w: overlay.rect.width,
+        card_h: overlay.rect.height,
+        card_x: overlay.rect.x,
+        card_y: overlay.rect.y,
+        elements: overlay
+            .elements
+            .iter()
+            .map(|elem| {
+                let (w, h) = get_element_size(elem);
+                [elem.x(), elem.y(), w, h]
+            })
+            .collect(),
+    }
+}
+
 pub fn clamp_elements_to_canvas(overlay: &mut OverlayDefinition) {
     let canvas_w = overlay.rect.width.max(20.0);
     let canvas_h = overlay.rect.height.max(20.0);
@@ -87,22 +162,15 @@ pub fn clamp_elements_to_canvas(overlay: &mut OverlayDefinition) {
                 if (*size + *gap) * 2.0 > max_dim {
                     *size = ((max_dim / 2.0) - *gap).clamp(2.0, 128.0);
                 }
-                *x = x.clamp(0.0, canvas_w);
-                *y = y.clamp(0.0, canvas_h);
+                *x = clamp_crosshair_coord(*x, canvas_w);
+                *y = clamp_crosshair_coord(*y, canvas_h);
             }
             OverlayElement::Text { font_size, text, x, y, .. } => {
-                let char_len = (text.chars().count() as f32).max(1.0);
-                let target_w = (canvas_w - 12.0).max(10.0);
-                let target_h = (canvas_h - 6.0).max(10.0);
-                let max_font_w = target_w / (char_len * 0.6);
-                let max_font = max_font_w.min(target_h);
-                if *font_size > max_font {
-                    *font_size = (*font_size).min(max_font).clamp(6.0, 72.0);
-                } else {
-                    *font_size = font_size.clamp(6.0, 72.0);
-                }
-                let est_w = (char_len * (*font_size * 0.6).max(8.0) + 12.0).max(30.0);
-                let est_h = (*font_size + 6.0).max(18.0);
+                // `font_size` is a user choice and is never rewritten here: the old arm only
+                // lowered it, so a long label shrank permanently, deleting characters never
+                // restored it, and the shrunken value was persisted on close (U02-003).
+                // Overflowing text is clipped by the card painter instead.
+                let (est_w, est_h) = text_size_estimate(text, *font_size);
                 let max_x = (canvas_w - est_w).max(0.0);
                 let max_y = (canvas_h - est_h).max(0.0);
                 *x = x.clamp(0.0, max_x);
@@ -125,6 +193,472 @@ pub fn clamp_elements_to_canvas(overlay: &mut OverlayDefinition) {
     }
 }
 
+/// Studio preview interactivity. The canvas paints the real overlay elements so the preview
+/// matches what the daemon renders, but it must never forward live pointer input to the
+/// renderer: `render_element` executes `on_click` (rules, `taskkill`, media keys) and mutates
+/// element state on click, so a click in the editor would hit the live system while every
+/// renderer-side state change dies with the preview (U02-002). Authoring-time widget testing
+/// is the explicit [`studio_test_click`] path instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StudioPreviewInputs {
+    is_interactive: bool,
+    pointer_clicked: bool,
+    pointer_down: bool,
+}
+
+fn studio_preview_render_inputs() -> StudioPreviewInputs {
+    StudioPreviewInputs {
+        is_interactive: false,
+        pointer_clicked: false,
+        pointer_down: false,
+    }
+}
+
+/// Studio-local simulation of a preview click: flips `ToggleSwitch` state and starts/stops a
+/// stopwatch or countdown. This is the only click path in the studio, and it edits the real
+/// element instead of a throwaway clone.
+fn studio_test_click(elem: &mut OverlayElement) {
+    match elem {
+        OverlayElement::InteractiveControl {
+            control: crate::models::InteractiveControlKind::ToggleSwitch { is_active, .. },
+            ..
+        } => {
+            *is_active = !*is_active;
+        }
+        OverlayElement::ClockTimer {
+            is_running,
+            mode,
+            countdown_remaining_ms,
+            countdown_total_ms,
+            ..
+        } if *mode == crate::models::TimerMode::Stopwatch || *mode == crate::models::TimerMode::Countdown => {
+            if *mode == crate::models::TimerMode::Countdown && *countdown_remaining_ms == 0 {
+                *countdown_remaining_ms = *countdown_total_ms;
+            }
+            *is_running = !*is_running;
+        }
+        _ => {}
+    }
+}
+
+/// Runs [`clamp_elements_to_canvas`] only when the card/element geometry it rewrites actually
+/// changed. The old unconditional per-frame call let a long Text label shrink its own font
+/// permanently (U02-003); the signature is cached per overlay id in egui memory.
+fn clamp_studio_geometry_if_changed(ctx: &egui::Context, overlay: &mut OverlayDefinition) {
+    let geometry_id = egui::Id::unique(("overlay_studio_geometry", overlay.id.as_str()));
+    let cached: Option<OverlayGeometry> = ctx.data(|d| d.get_temp(geometry_id));
+    if cached.as_ref() == Some(&overlay_geometry(overlay)) {
+        return;
+    }
+    clamp_elements_to_canvas(overlay);
+    ctx.data_mut(|d| d.insert_temp(geometry_id, overlay_geometry(overlay)));
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StudioHistoryAction {
+    Undo,
+    Redo,
+}
+
+/// Ctrl+Z / Ctrl+Y history input for the studio. Uses physical Win32 `GetAsyncKeyState` edge
+/// transitions (immune to layout like Russian Cyrillic) with an egui fallback, and consumes
+/// the keys so the rest of the UI never sees them.
+fn read_studio_history_shortcuts(
+    ctx: &egui::Context,
+    is_open: bool,
+    is_typing: bool,
+) -> Option<StudioHistoryAction> {
+    if !is_open {
+        #[cfg(windows)]
+        {
+            use std::sync::atomic::Ordering;
+            OVERLAY_STUDIO_LAST_Z.store(false, Ordering::Relaxed);
+            OVERLAY_STUDIO_LAST_Y.store(false, Ordering::Relaxed);
+        }
+        return None;
+    }
+
+    let mut do_undo = false;
+    let mut do_redo = false;
+
+    #[cfg(windows)]
+    if !is_typing && ctx.input(|i| i.focused) {
+        use std::sync::atomic::Ordering;
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+        let ctrl_down = unsafe { (GetAsyncKeyState(0x11) as u16 & 0x8000) != 0 }; // VK_CONTROL
+        let shift_down = unsafe { (GetAsyncKeyState(0x10) as u16 & 0x8000) != 0 }; // VK_SHIFT
+        let z_down = unsafe { (GetAsyncKeyState(0x5A) as u16 & 0x8000) != 0 }; // 'Z'
+        let y_down = unsafe { (GetAsyncKeyState(0x59) as u16 & 0x8000) != 0 }; // 'Y'
+
+        let was_z = OVERLAY_STUDIO_LAST_Z.swap(z_down, Ordering::SeqCst);
+        let was_y = OVERLAY_STUDIO_LAST_Y.swap(y_down, Ordering::SeqCst);
+
+        if ctrl_down {
+            if z_down && !was_z {
+                if shift_down {
+                    do_redo = true;
+                } else {
+                    do_undo = true;
+                }
+            } else if y_down && !was_y {
+                do_redo = true;
+            }
+        }
+    }
+
+    ctx.input(|i| {
+        let is_ctrl = i.modifiers.command || i.modifiers.ctrl;
+        let is_shift = i.modifiers.shift;
+        for event in &i.events {
+            if let egui::Event::Key { key, physical_key, pressed: true, .. } = event {
+                let is_z = *key == egui::Key::Z || *physical_key == Some(egui::Key::Z);
+                let is_y = *key == egui::Key::Y || *physical_key == Some(egui::Key::Y);
+                if is_ctrl && !is_shift && is_z {
+                    do_undo = true;
+                } else if (is_ctrl && is_y) || (is_ctrl && is_shift && is_z) {
+                    do_redo = true;
+                }
+            }
+        }
+    });
+
+    // Also consume standard keys via consume_key
+    ctx.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::CTRL, egui::Key::Z) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
+            do_undo = true;
+        }
+        if i.consume_key(egui::Modifiers::CTRL, egui::Key::Y) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+            || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+            || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z)
+        {
+            do_redo = true;
+        }
+    });
+
+    if do_undo {
+        Some(StudioHistoryAction::Undo)
+    } else if do_redo {
+        Some(StudioHistoryAction::Redo)
+    } else {
+        None
+    }
+}
+
+/// Tab cycling, Delete, Ctrl+D, arrow nudges, layer reordering and Escape for the selected
+/// element. Consumes its keys so egui widgets never see them.
+fn handle_studio_element_shortcuts(
+    ctx: &egui::Context,
+    studio: &mut OverlayStudioState,
+    is_open: bool,
+    is_typing: bool,
+) {
+    if !(is_open && !is_typing) {
+        if studio.active_color_target.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            studio.active_color_target = None;
+        }
+        return;
+    }
+
+    // Tab / Shift+Tab -> Cycle selected element forward / backward
+    let mut tab_nav: Option<bool> = None;
+    ctx.input(|i| {
+        for event in &i.events {
+            if let egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } = event {
+                tab_nav = Some(!modifiers.shift);
+            }
+        }
+    });
+
+    if let Some(forward) = tab_nav {
+        ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
+        });
+        ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+            m.move_focus(egui::FocusDirection::None);
+        });
+        let total = studio.overlay.elements.len();
+        if total > 0 {
+            studio.selected_element_idx = match studio.selected_element_idx {
+                Some(cur) => {
+                    let cur = cur.min(total - 1);
+                    if forward {
+                        Some((cur + 1) % total)
+                    } else {
+                        Some((cur + total - 1) % total)
+                    }
+                }
+                None => {
+                    if forward {
+                        Some(0)
+                    } else {
+                        Some(total - 1)
+                    }
+                }
+            };
+            ctx.request_repaint();
+        }
+    }
+
+    // Delete or Backspace -> remove selected element
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
+        if let Some(sel) = studio.selected_element_idx {
+            if sel < studio.overlay.elements.len() {
+                studio.push_undo_snapshot();
+                studio.overlay.elements.remove(sel);
+                studio.selected_element_idx = if studio.overlay.elements.is_empty() {
+                    None
+                } else {
+                    Some(sel.min(studio.overlay.elements.len() - 1))
+                };
+                studio.active_color_target = None;
+            }
+        }
+    }
+
+    // Ctrl+D -> duplicate/clone selected element
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::D) || i.consume_key(egui::Modifiers::CTRL, egui::Key::D)) {
+        if let Some(sel) = studio.selected_element_idx {
+            if sel < studio.overlay.elements.len() {
+                studio.push_undo_snapshot();
+                let mut cloned = studio.overlay.elements[sel].clone();
+                let (ew, eh) = get_element_size(&cloned);
+                *cloned.id_mut() = format!("{}_copy", cloned.id());
+                let cand_x = cloned.x() + 16.0;
+                let cand_y = cloned.y() + 16.0;
+                if cand_x + ew > studio.overlay.rect.width || cand_y + eh > studio.overlay.rect.height {
+                    *cloned.x_mut() = 0.0;
+                    *cloned.y_mut() = 0.0;
+                } else {
+                    *cloned.x_mut() = cand_x;
+                    *cloned.y_mut() = cand_y;
+                }
+                studio.overlay.elements.insert(sel + 1, cloned);
+                clamp_elements_to_canvas(&mut studio.overlay);
+                studio.selected_element_idx = Some(sel + 1);
+            }
+        }
+    }
+
+    // Arrow keys -> nudge selected element
+    let step = if studio.snap_to_grid || ctx.input(|i| i.modifiers.shift) { 16.0 } else { 1.0 };
+    let mut nudge_x = 0.0f32;
+    let mut nudge_y = 0.0f32;
+    if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) { nudge_x -= step; }
+    if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) { nudge_x += step; }
+    if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) { nudge_y -= step; }
+    if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) { nudge_y += step; }
+
+    if nudge_x != 0.0 || nudge_y != 0.0 {
+        studio.push_undo_snapshot();
+        ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        if let Some(sel) = studio.selected_element_idx {
+            if sel < studio.overlay.elements.len() {
+                let (ew, eh) = get_element_size(&studio.overlay.elements[sel]);
+                let elem = &mut studio.overlay.elements[sel];
+                let cur_x = elem.x();
+                let cur_y = elem.y();
+                if matches!(elem, OverlayElement::Crosshair { .. }) {
+                    *elem.x_mut() = clamp_crosshair_coord(cur_x + nudge_x, studio.overlay.rect.width);
+                    *elem.y_mut() = clamp_crosshair_coord(cur_y + nudge_y, studio.overlay.rect.height);
+                } else {
+                    *elem.x_mut() = (cur_x + nudge_x).clamp(0.0, (studio.overlay.rect.width - ew).max(0.0));
+                    *elem.y_mut() = (cur_y + nudge_y).clamp(0.0, (studio.overlay.rect.height - eh).max(0.0));
+                }
+            }
+        }
+    }
+
+    // [ / ] -> Layer reordering (move layer down / up)
+    if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
+        if let Some(sel) = studio.selected_element_idx {
+            if sel > 0 && sel < studio.overlay.elements.len() {
+                studio.push_undo_snapshot();
+                let item = studio.overlay.elements.remove(sel);
+                studio.overlay.elements.insert(sel - 1, item);
+                studio.selected_element_idx = Some(sel - 1);
+            }
+        }
+    }
+    if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
+        if let Some(sel) = studio.selected_element_idx {
+            if sel + 1 < studio.overlay.elements.len() {
+                studio.push_undo_snapshot();
+                let item = studio.overlay.elements.remove(sel);
+                studio.overlay.elements.insert(sel + 1, item);
+                studio.selected_element_idx = Some(sel + 1);
+            }
+        }
+    }
+
+    // Escape: deselect element or close color picker
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if studio.active_color_target.is_some() {
+            studio.active_color_target = None;
+        } else if studio.selected_element_idx.is_some() {
+            studio.selected_element_idx = None;
+        }
+    }
+}
+
+/// Synchronizes live on-screen calibration coordinates from the daemon. Polls only while the
+/// pointer is idle so an in-progress drag is never overwritten. Returns `true` when the overlay
+/// position changed.
+fn sync_calibration_position(
+    ctx: &egui::Context,
+    studio: &mut OverlayStudioState,
+    active_mon: &crate::models::MonitorInfo,
+) -> bool {
+    if !studio.is_calibrating || ctx.input(|i| i.pointer.any_down()) {
+        return false;
+    }
+    let Ok(crate::ipc::IpcResponse::OverlayPosition(Some((abs_x, abs_y)))) =
+        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetOverlayPosition(studio.overlay.id.clone()))
+    else {
+        return false;
+    };
+
+    let rel_x = (abs_x - active_mon.x as f32).clamp(0.0, (active_mon.width as f32 - studio.overlay.rect.width).max(0.0));
+    let rel_y = (abs_y - active_mon.y as f32).clamp(0.0, (active_mon.height as f32 - studio.overlay.rect.height).max(0.0));
+    let pos_differs_from_current = (studio.overlay.rect.x - rel_x).abs() > 0.5 || (studio.overlay.rect.y - rel_y).abs() > 0.5;
+    let pos_differs_from_last_synced = studio.last_synced_pos.is_none_or(|(lx, ly)| (lx - abs_x).abs() > 0.5 || (ly - abs_y).abs() > 0.5);
+    if !(pos_differs_from_current && pos_differs_from_last_synced) {
+        return false;
+    }
+
+    studio.overlay.anchor = OverlayAnchor::Custom;
+    studio.overlay.rect.x = rel_x;
+    studio.overlay.rect.y = rel_y;
+    studio.last_synced_pos = Some((abs_x, abs_y));
+    ctx.request_repaint();
+    true
+}
+
+/// Shows or hides the live calibration window that mirrors the studio card on screen.
+fn apply_calibration_toggle(studio: &mut OverlayStudioState, active_mon: &crate::models::MonitorInfo) {
+    studio.is_calibrating = !studio.is_calibrating;
+    if studio.is_calibrating {
+        let (csx, csy) = compute_overlay_screen_pos(&studio.overlay, active_mon.width as f32, active_mon.height as f32);
+        let abs_x = active_mon.x as f32 + csx;
+        let abs_y = active_mon.y as f32 + csy;
+        studio.last_synced_pos = Some((abs_x, abs_y));
+        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
+            overlay: studio.overlay.clone(),
+            calibration_mode: true,
+        });
+    } else {
+        studio.last_synced_pos = None;
+        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::HideOverlayPreview(studio.overlay.id.clone()));
+    }
+}
+
+/// Re-sends the edited overlay to the calibration window after a visible change.
+fn push_calibration_preview(
+    studio: &mut OverlayStudioState,
+    initial_overlay: &OverlayDefinition,
+    active_mon: &crate::models::MonitorInfo,
+) {
+    if !studio.is_calibrating || &studio.overlay == initial_overlay {
+        return;
+    }
+    let (csx, csy) = compute_overlay_screen_pos(&studio.overlay, active_mon.width as f32, active_mon.height as f32);
+    let abs_x = active_mon.x as f32 + csx;
+    let abs_y = active_mon.y as f32 + csy;
+    studio.last_synced_pos = Some((abs_x, abs_y));
+    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
+        overlay: studio.overlay.clone(),
+        calibration_mode: true,
+    });
+}
+
+/// Real-time auto-save of the studio overlay into the rule action being edited.
+fn persist_studio_into_rule(state: &mut GuiState, studio: &OverlayStudioState) {
+    let Some(target_idx) = studio.action_target_idx else { return };
+    let Some(rule) = state.editing_rule.as_mut() else { return };
+    let actions = if studio.is_exit_pipeline {
+        &mut rule.on_exit_actions
+    } else {
+        &mut rule.actions
+    };
+    if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(target_idx) {
+        if custom_overlay.is_some() {
+            *custom_overlay = Some(Box::new(studio.overlay.clone()));
+        }
+        *overlay_id = studio.overlay.id.clone();
+    }
+}
+
+/// True while one inspector edit session (a DragValue drag, a slider or a colour picker) is
+/// still in progress: a changed frame, or a frame with the pointer still held even when the
+/// value did not move.
+fn inspector_edit_session_continues(changed_this_frame: bool, pointer_down: bool) -> bool {
+    changed_this_frame || pointer_down
+}
+
+/// Snapshot to push when this frame started an inspector edit session: the pre-edit state,
+/// once per session, so Ctrl+Z after a colour or size change restores that change instead of
+/// an unrelated older layout snapshot (U02-005).
+fn inspector_undo_snapshot(
+    session_active: bool,
+    before: &OverlayDefinition,
+    after: &OverlayDefinition,
+) -> Option<OverlayDefinition> {
+    if session_active || before == after {
+        None
+    } else {
+        Some(before.clone())
+    }
+}
+
+/// Appends one undo snapshot, bounded to 50 entries, and clears the redo branch. Consecutive
+/// identical snapshots are ignored so a layout operation and the inspector session that saw it
+/// cannot push the same state twice.
+fn push_overlay_undo(
+    undo_stack: &mut Vec<OverlayDefinition>,
+    redo_stack: &mut Vec<OverlayDefinition>,
+    snapshot: &OverlayDefinition,
+) {
+    if undo_stack.last() == Some(snapshot) {
+        return;
+    }
+    if undo_stack.len() >= 50 {
+        undo_stack.remove(0);
+    }
+    undo_stack.push(snapshot.clone());
+    redo_stack.clear();
+}
+
+/// Renders the inspector and records one undo snapshot for the edit session it started
+/// (U02-005). The comparison is scoped to the inspector so canvas drags keep their own
+/// drag-start snapshot instead of adding one per dragged frame.
+fn render_inspector_with_edit_undo(
+    ui: &mut Ui,
+    studio: &mut OverlayStudioState,
+    monitors: &[crate::models::MonitorInfo],
+    rules_list: &[(String, String)],
+    open_element_catalog: &mut bool,
+    t: &Tokens,
+    loc: &crate::i18n::Strings,
+) {
+    let session_id = egui::Id::unique(("overlay_studio_inspector_session", studio.overlay.id.as_str()));
+    let session_active = ui.ctx().data(|d| d.get_temp::<bool>(session_id)).unwrap_or(false);
+    let before = studio.overlay.clone();
+
+    render_overlay_inspector(ui, studio, monitors, rules_list, open_element_catalog, t, loc);
+
+    if let Some(snapshot) = inspector_undo_snapshot(session_active, &before, &studio.overlay) {
+        push_overlay_undo(&mut studio.undo_stack, &mut studio.redo_stack, &snapshot);
+    }
+    let pointer_down = ui.ctx().input(|i| i.pointer.any_down());
+    let changed = studio.overlay != before;
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(session_id, inspector_edit_session_continues(changed, pointer_down)));
+}
+
 pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
     let is_open = state.overlay_studio.is_some();
     let active_studio = state
@@ -136,7 +670,7 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
     let Some(mut studio) = active_studio else { return };
     // Continually request repaint for live telemetry, clock, and graph animations
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
-    clamp_elements_to_canvas(&mut studio.overlay);
+    clamp_studio_geometry_if_changed(ctx, &mut studio.overlay);
     let t = Tokens::get(ctx);
     let loc = state.loc();
     let mut initial_overlay = studio.overlay.clone();
@@ -146,27 +680,8 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
     let monitors = crate::daemon::overlay_manager::get_system_monitors();
     let active_mon = resolve_overlay_monitor(&studio.overlay, &monitors);
 
-    // Synchronize live on-screen calibration coordinates from daemon via IPC
-    // Only poll from daemon if the user is not actively interacting/dragging with egui
-    let is_gui_interacting = ctx.input(|i| i.pointer.any_down());
-    if studio.is_calibrating && !is_gui_interacting {
-        if let Ok(crate::ipc::IpcResponse::OverlayPosition(Some((abs_x, abs_y)))) =
-            crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetOverlayPosition(studio.overlay.id.clone()))
-        {
-            let rel_x = (abs_x - active_mon.x as f32).clamp(0.0, (active_mon.width as f32 - studio.overlay.rect.width).max(0.0));
-            let rel_y = (abs_y - active_mon.y as f32).clamp(0.0, (active_mon.height as f32 - studio.overlay.rect.height).max(0.0));
-            let pos_differs_from_current = (studio.overlay.rect.x - rel_x).abs() > 0.5 || (studio.overlay.rect.y - rel_y).abs() > 0.5;
-            let pos_differs_from_last_synced = studio.last_synced_pos.is_none_or(|(lx, ly)| (lx - abs_x).abs() > 0.5 || (ly - abs_y).abs() > 0.5);
-
-            if pos_differs_from_current && pos_differs_from_last_synced {
-                studio.overlay.anchor = OverlayAnchor::Custom;
-                studio.overlay.rect.x = rel_x;
-                studio.overlay.rect.y = rel_y;
-                studio.last_synced_pos = Some((abs_x, abs_y));
-                initial_overlay = studio.overlay.clone();
-                ctx.request_repaint();
-            }
-        }
+    if sync_calibration_position(ctx, &mut studio, &active_mon) {
+        initial_overlay = studio.overlay.clone();
     }
 
     let rules_list: Vec<(String, String)> = state
@@ -177,234 +692,17 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     let mut open_element_catalog = false;
 
-    // Studio Keyboard Shortcuts (processed before UI rendering for 0-lag and instant consumption)
+    // Studio keyboard shortcuts are processed before UI rendering so a key is consumed in the
+    // frame it is pressed.
     let is_typing = ctx.text_edit_focused();
-
-    if is_open {
-        // 1. Studio History: Ctrl+Z (Undo) and Ctrl+Y / Ctrl+Shift+Z (Redo)
-        // Uses physical Win32 GetAsyncKeyState edge transitions (immune to layout like Russian Cyrillic)
-        // with fallback to egui events.
-        let mut do_undo = false;
-        let mut do_redo = false;
-
-        #[cfg(windows)]
-        if !is_typing && ctx.input(|i| i.focused) {
-            use std::sync::atomic::Ordering;
-            use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
-
-            let ctrl_down = unsafe { (GetAsyncKeyState(0x11) as u16 & 0x8000) != 0 }; // VK_CONTROL
-            let shift_down = unsafe { (GetAsyncKeyState(0x10) as u16 & 0x8000) != 0 }; // VK_SHIFT
-            let z_down = unsafe { (GetAsyncKeyState(0x5A) as u16 & 0x8000) != 0 }; // 'Z'
-            let y_down = unsafe { (GetAsyncKeyState(0x59) as u16 & 0x8000) != 0 }; // 'Y'
-
-            let was_z = OVERLAY_STUDIO_LAST_Z.swap(z_down, Ordering::SeqCst);
-            let was_y = OVERLAY_STUDIO_LAST_Y.swap(y_down, Ordering::SeqCst);
-
-            if ctrl_down {
-                if z_down && !was_z {
-                    if shift_down {
-                        do_redo = true;
-                    } else {
-                        do_undo = true;
-                    }
-                } else if y_down && !was_y {
-                    do_redo = true;
-                }
-            }
+    if let Some(action) = read_studio_history_shortcuts(ctx, is_open, is_typing) {
+        match action {
+            StudioHistoryAction::Undo => studio.undo(),
+            StudioHistoryAction::Redo => studio.redo(),
         }
-
-        ctx.input(|i| {
-            let is_ctrl = i.modifiers.command || i.modifiers.ctrl;
-            let is_shift = i.modifiers.shift;
-            for event in &i.events {
-                if let egui::Event::Key { key, physical_key, pressed: true, .. } = event {
-                    let is_z = *key == egui::Key::Z || *physical_key == Some(egui::Key::Z);
-                    let is_y = *key == egui::Key::Y || *physical_key == Some(egui::Key::Y);
-                    if is_ctrl && !is_shift && is_z {
-                        do_undo = true;
-                    } else if (is_ctrl && is_y) || (is_ctrl && is_shift && is_z) {
-                        do_redo = true;
-                    }
-                }
-            }
-        });
-
-        // Also consume standard keys via consume_key
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::CTRL, egui::Key::Z) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z) {
-                do_undo = true;
-            }
-            if i.consume_key(egui::Modifiers::CTRL, egui::Key::Y) || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-                || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
-                || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z)
-            {
-                do_redo = true;
-            }
-        });
-
-        if do_undo {
-            studio.undo();
-            ctx.request_repaint();
-        } else if do_redo {
-            studio.redo();
-            ctx.request_repaint();
-        }
-    } else {
-        #[cfg(windows)]
-        {
-            use std::sync::atomic::Ordering;
-            OVERLAY_STUDIO_LAST_Z.store(false, Ordering::Relaxed);
-            OVERLAY_STUDIO_LAST_Y.store(false, Ordering::Relaxed);
-        }
+        ctx.request_repaint();
     }
-
-    if is_open && !is_typing {
-        // Tab / Shift+Tab -> Cycle selected element forward / backward
-        let mut tab_nav: Option<bool> = None;
-        ctx.input(|i| {
-            for event in &i.events {
-                if let egui::Event::Key { key: egui::Key::Tab, pressed: true, modifiers, .. } = event {
-                    tab_nav = Some(!modifiers.shift);
-                }
-            }
-        });
-
-        if let Some(forward) = tab_nav {
-            ctx.input_mut(|i| {
-                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab);
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Tab);
-            });
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.surrender_focus(id);
-                }
-                m.move_focus(egui::FocusDirection::None);
-            });
-            let total = studio.overlay.elements.len();
-            if total > 0 {
-                studio.selected_element_idx = match studio.selected_element_idx {
-                    Some(cur) => {
-                        let cur = cur.min(total - 1);
-                        if forward {
-                            Some((cur + 1) % total)
-                        } else {
-                            Some((cur + total - 1) % total)
-                        }
-                    }
-                    None => {
-                        if forward {
-                            Some(0)
-                        } else {
-                            Some(total - 1)
-                        }
-                    }
-                };
-                ctx.request_repaint();
-            }
-        }
-
-        // Delete or Backspace -> remove selected element
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)) {
-            if let Some(sel) = studio.selected_element_idx {
-                if sel < studio.overlay.elements.len() {
-                    studio.push_undo_snapshot();
-                    studio.overlay.elements.remove(sel);
-                    studio.selected_element_idx = if studio.overlay.elements.is_empty() {
-                        None
-                    } else {
-                        Some(sel.min(studio.overlay.elements.len() - 1))
-                    };
-                    studio.active_color_target = None;
-                }
-            }
-        }
-
-        // Ctrl+D -> duplicate/clone selected element
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::D) || i.consume_key(egui::Modifiers::CTRL, egui::Key::D)) {
-            if let Some(sel) = studio.selected_element_idx {
-                if sel < studio.overlay.elements.len() {
-                    studio.push_undo_snapshot();
-                    let mut cloned = studio.overlay.elements[sel].clone();
-                    let (ew, eh) = get_element_size(&cloned);
-                    *cloned.id_mut() = format!("{}_copy", cloned.id());
-                    let cand_x = cloned.x() + 16.0;
-                    let cand_y = cloned.y() + 16.0;
-                    if cand_x + ew > studio.overlay.rect.width || cand_y + eh > studio.overlay.rect.height {
-                        *cloned.x_mut() = 0.0;
-                        *cloned.y_mut() = 0.0;
-                    } else {
-                        *cloned.x_mut() = cand_x;
-                        *cloned.y_mut() = cand_y;
-                    }
-                    studio.overlay.elements.insert(sel + 1, cloned);
-                    clamp_elements_to_canvas(&mut studio.overlay);
-                    studio.selected_element_idx = Some(sel + 1);
-                }
-            }
-        }
-
-        // Arrow keys -> nudge selected element
-        let step = if studio.snap_to_grid || ctx.input(|i| i.modifiers.shift) { 16.0 } else { 1.0 };
-        let mut nudge_x = 0.0f32;
-        let mut nudge_y = 0.0f32;
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) { nudge_x -= step; }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) { nudge_x += step; }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) { nudge_y -= step; }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) { nudge_y += step; }
-
-        if nudge_x != 0.0 || nudge_y != 0.0 {
-            studio.push_undo_snapshot();
-            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
-            if let Some(sel) = studio.selected_element_idx {
-                if sel < studio.overlay.elements.len() {
-                    let (ew, eh) = get_element_size(&studio.overlay.elements[sel]);
-                    let elem = &mut studio.overlay.elements[sel];
-                    let cur_x = elem.x();
-                    let cur_y = elem.y();
-                    if matches!(elem, OverlayElement::Crosshair { .. }) {
-                        *elem.x_mut() = (cur_x + nudge_x).clamp(0.0, studio.overlay.rect.width);
-                        *elem.y_mut() = (cur_y + nudge_y).clamp(0.0, studio.overlay.rect.height);
-                    } else {
-                        *elem.x_mut() = (cur_x + nudge_x).clamp(0.0, (studio.overlay.rect.width - ew).max(0.0));
-                        *elem.y_mut() = (cur_y + nudge_y).clamp(0.0, (studio.overlay.rect.height - eh).max(0.0));
-                    }
-                }
-            }
-        }
-
-        // [ / ] -> Layer reordering (move layer down / up)
-        if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
-            if let Some(sel) = studio.selected_element_idx {
-                if sel > 0 && sel < studio.overlay.elements.len() {
-                    studio.push_undo_snapshot();
-                    let item = studio.overlay.elements.remove(sel);
-                    studio.overlay.elements.insert(sel - 1, item);
-                    studio.selected_element_idx = Some(sel - 1);
-                }
-            }
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
-            if let Some(sel) = studio.selected_element_idx {
-                if sel + 1 < studio.overlay.elements.len() {
-                    studio.push_undo_snapshot();
-                    let item = studio.overlay.elements.remove(sel);
-                    studio.overlay.elements.insert(sel + 1, item);
-                    studio.selected_element_idx = Some(sel + 1);
-                }
-            }
-        }
-
-        // Escape: deselect element or close color picker
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if studio.active_color_target.is_some() {
-                studio.active_color_target = None;
-            } else if studio.selected_element_idx.is_some() {
-                studio.selected_element_idx = None;
-            }
-        }
-    } else if studio.active_color_target.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        studio.active_color_target = None;
-    }
+    handle_studio_element_shortcuts(ctx, &mut studio, is_open, is_typing);
 
     let modal_res = Modal::new("overlay-studio-modal", is_open)
         .width_fraction(0.92)
@@ -489,16 +787,10 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 .auto_shrink([false, false])
                                 .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                                 .show(ui, |ui| {
-                                    render_overlay_inspector(
+                                    render_inspector_with_edit_undo(
                                         ui,
-                                        &mut studio.overlay,
-                                        &mut studio.undo_stack,
-                                        &mut studio.redo_stack,
+                                        &mut studio,
                                         &monitors,
-                                        studio.is_calibrating,
-                                        &mut studio.card_lock_aspect,
-                                        &mut studio.selected_element_idx,
-                                        &mut studio.active_color_target,
                                         &rules_list,
                                         &mut open_element_catalog,
                                         &t,
@@ -533,51 +825,12 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
             state.close_overlay_studio();
         } else if is_open {
             if toggle_calibration {
-                studio.is_calibrating = !studio.is_calibrating;
-                if studio.is_calibrating {
-                    let (csx, csy) = compute_overlay_screen_pos(&studio.overlay, active_mon.width as f32, active_mon.height as f32);
-                    let abs_x = active_mon.x as f32 + csx;
-                    let abs_y = active_mon.y as f32 + csy;
-                    studio.last_synced_pos = Some((abs_x, abs_y));
-                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
-                        overlay: studio.overlay.clone(),
-                        calibration_mode: true,
-                    });
-                } else {
-                    studio.last_synced_pos = None;
-                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::HideOverlayPreview(
-                        studio.overlay.id.clone(),
-                    ));
-                }
+                apply_calibration_toggle(&mut studio, &active_mon);
             }
 
-            if studio.is_calibrating && studio.overlay != initial_overlay {
-                let (csx, csy) = compute_overlay_screen_pos(&studio.overlay, active_mon.width as f32, active_mon.height as f32);
-                let abs_x = active_mon.x as f32 + csx;
-                let abs_y = active_mon.y as f32 + csy;
-                studio.last_synced_pos = Some((abs_x, abs_y));
-                let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
-                    overlay: studio.overlay.clone(),
-                    calibration_mode: true,
-                });
-            }
+            push_calibration_preview(&mut studio, &initial_overlay, &active_mon);
 
-            // Real-time auto-saving directly into editing_rule
-            if let Some(target_idx) = studio.action_target_idx {
-                if let Some(rule) = state.editing_rule.as_mut() {
-                    let actions = if studio.is_exit_pipeline {
-                        &mut rule.on_exit_actions
-                    } else {
-                        &mut rule.actions
-                    };
-                    if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(target_idx) {
-                        if custom_overlay.is_some() {
-                            *custom_overlay = Some(Box::new(studio.overlay.clone()));
-                        }
-                        *overlay_id = studio.overlay.id.clone();
-                    }
-                }
-            }
+            persist_studio_into_rule(state, &studio);
 
             state.overlay_studio = Some(studio);
         }
@@ -587,6 +840,176 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     if open_element_catalog {
         state.open_element_catalog();
+    }
+}
+
+/// Library id for a typed preset name, e.g. `"Gaming Crosshair"` -> `overlay_gaming_crosshair`.
+/// Returns `None` when the name has no alphanumeric characters: saving `"!!!"` used to produce
+/// the id `overlay_`, which is not a preset (U02-006).
+fn preset_slug(name: &str) -> Option<String> {
+    let clean: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let trimmed = clean.trim_matches('_');
+    (!trimmed.is_empty()).then(|| format!("overlay_{trimmed}"))
+}
+
+/// Ids and names already present in the target library.
+fn library_overlay_keys(overlays: &[OverlayDefinition]) -> Vec<(&str, &str)> {
+    overlays.iter().map(|o| (o.id.as_str(), o.name.as_str())).collect()
+}
+
+/// Picks the id a preset is saved under. A derived id that is already taken — or a name that
+/// already exists in the library — gets `_2`, `_3`, … instead of overwriting the existing
+/// preset, so a save can never silently replace another, built-in overlay (U02-006).
+fn unique_preset_id(base: &str, name: &str, existing: &[(&str, &str)]) -> String {
+    let base_taken = existing
+        .iter()
+        .any(|(id, existing_name)| *id == base || existing_name.eq_ignore_ascii_case(name));
+    if !base_taken {
+        return base.to_string();
+    }
+    for n in 2..=9999 {
+        let candidate = format!("{base}_{n}");
+        if !existing.iter().any(|(id, _)| *id == candidate) {
+            return candidate;
+        }
+    }
+    format!("{base}_{}", existing.len() + 2)
+}
+
+/// Result of one overlay-library mutation attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LibraryWriteOutcome {
+    /// The daemon, or a confirmed-offline direct write, persisted the change.
+    Persisted,
+    /// Nothing was persisted. The string is a log-safe reason (identifiers only, no payloads).
+    Failed(String),
+}
+
+/// Whether a failed IPC call may be retried as a direct write of `library.json`. The daemon
+/// owns the section while it is reachable, so only a confirmed-unreachable daemon may be
+/// bypassed: a reachable daemon that rejected the write (or answered unexpectedly) must be
+/// reported instead, or the next daemon persist overwrites our entry (U02-008).
+fn direct_library_write_allowed(daemon_reachable: bool) -> bool {
+    !daemon_reachable
+}
+
+/// Interprets one IPC result and, when the daemon is confirmed gone, applies the change
+/// directly through `apply_directly`.
+fn finish_library_write(
+    result: Result<crate::ipc::IpcResponse, String>,
+    daemon_reachable: bool,
+    apply_directly: impl FnOnce() -> std::io::Result<()>,
+) -> LibraryWriteOutcome {
+    match result {
+        Ok(crate::ipc::IpcResponse::Ok) => LibraryWriteOutcome::Persisted,
+        Ok(crate::ipc::IpcResponse::Error(reason)) => {
+            LibraryWriteOutcome::Failed(format!("the daemon rejected the change: {reason}"))
+        }
+        Ok(_) => LibraryWriteOutcome::Failed("the daemon returned an unexpected response".to_string()),
+        Err(error) => {
+            if !direct_library_write_allowed(daemon_reachable) {
+                return LibraryWriteOutcome::Failed(format!("the daemon is reachable but the change failed: {error}"));
+            }
+            match apply_directly() {
+                Ok(()) => {
+                    crate::logging::info("CONFIG", "Daemon unreachable; overlay library written directly");
+                    LibraryWriteOutcome::Persisted
+                }
+                Err(write_error) => LibraryWriteOutcome::Failed(format!("direct library write failed: {write_error}")),
+            }
+        }
+    }
+}
+
+/// Deletes one preset, keeping the daemon authoritative while it is reachable (U02-008).
+fn delete_overlay_preset(id: &str) -> LibraryWriteOutcome {
+    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(id.to_string()));
+    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
+    let outcome = finish_library_write(result, daemon_reachable, || {
+        let mut library = crate::config::Library::read();
+        library.overlays.retain(|o| o.id != id);
+        library.save()
+    });
+    if let LibraryWriteOutcome::Failed(reason) = &outcome {
+        crate::logging::error("CONFIG", &format!("Overlay preset '{id}' was not deleted: {reason}"));
+    }
+    outcome
+}
+
+/// Saves one preset definition, keeping the daemon authoritative while it is reachable
+/// (U02-008). The daemon persists synchronously before answering `Ok`, so no fallback write is
+/// attempted while it is alive.
+fn persist_overlay_preset(def: &OverlayDefinition) -> LibraryWriteOutcome {
+    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(def.clone()));
+    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
+    let outcome = finish_library_write(result, daemon_reachable, || {
+        let mut library = crate::config::Library::read();
+        if let Some(existing) = library.overlays.iter_mut().find(|o| o.id == def.id) {
+            *existing = def.clone();
+        } else {
+            library.overlays.push(def.clone());
+        }
+        library.save()
+    });
+    if let LibraryWriteOutcome::Failed(reason) = &outcome {
+        crate::logging::error("CONFIG", &format!("Overlay preset '{}' was not saved: {reason}", def.id));
+    }
+    outcome
+}
+
+/// Saves the studio overlay as a new library preset. The id is derived from the typed name, but
+/// an existing id or name gets a numeric suffix instead of being silently replaced, and a name
+/// without alphanumerics is rejected with a toast (U02-006).
+fn save_studio_overlay_preset(state: &mut GuiState, loc: &crate::i18n::Strings) {
+    let Some(studio) = state.overlay_studio.as_ref() else { return };
+    let name = if studio.preset_save_name.trim().is_empty() {
+        if studio.overlay.name.trim().is_empty() {
+            loc.overlay_default_preset_name.to_string()
+        } else {
+            studio.overlay.name.trim().to_string()
+        }
+    } else {
+        studio.preset_save_name.trim().to_string()
+    };
+    let Some(base_id) = preset_slug(&name) else {
+        crate::logging::warn("CONFIG", "Overlay preset save rejected: the name has no usable characters");
+        state.toast = Some((
+            loc.presets_save_invalid_name.to_string(),
+            std::time::Instant::now(),
+        ));
+        return;
+    };
+
+    let library_overlays = state
+        .daemon_state
+        .as_ref()
+        .map(|s| s.config.overlays.clone())
+        .unwrap_or_else(|| crate::config::Library::read().overlays);
+    let keys = library_overlay_keys(&library_overlays);
+    let fresh_id = unique_preset_id(&base_id, &name, &keys);
+
+    let mut saved_def = studio.overlay.clone();
+    saved_def.id = fresh_id;
+    saved_def.name = name.clone();
+
+    match persist_overlay_preset(&saved_def) {
+        LibraryWriteOutcome::Persisted => {
+            if let Some(ds) = &mut state.daemon_state {
+                ds.config.overlays.retain(|o| o.id != saved_def.id);
+                ds.config.overlays.push(saved_def.clone());
+            }
+            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
+        }
+        LibraryWriteOutcome::Failed(_) => {
+            state.toast = Some((
+                loc.presets_save_failed.to_string(),
+                std::time::Instant::now(),
+            ));
+        }
     }
 }
 
@@ -735,21 +1158,18 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    let deleted = matches!(
-                                        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(del_id.clone())),
-                                        Ok(crate::ipc::IpcResponse::Ok)
-                                    );
-                                    // The daemon owns library.json while reachable; write directly
-                                    // only as an offline fallback.
-                                    if !deleted {
-                                        let mut library = crate::config::Library::read();
-                                        library.overlays.retain(|o| o.id != del_id);
-                                        if let Err(err) = library.save() {
-                                            crate::logging::error("CONFIG", &format!("Failed to save overlay presets: {err}"));
+                                    match delete_overlay_preset(&del_id) {
+                                        LibraryWriteOutcome::Persisted => {
+                                            if let Some(ds) = &mut state.daemon_state {
+                                                ds.config.overlays.retain(|o| o.id != del_id);
+                                            }
                                         }
-                                    }
-                                    if let Some(ds) = &mut state.daemon_state {
-                                        ds.config.overlays.retain(|o| o.id != del_id);
+                                        LibraryWriteOutcome::Failed(_) => {
+                                            state.toast = Some((
+                                                loc.presets_delete_failed.to_string(),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
                                     }
                                 }
                             });
@@ -759,49 +1179,7 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
         });
 
     if save_requested {
-        if let Some(studio) = state.overlay_studio.as_mut() {
-            let name = if studio.preset_save_name.trim().is_empty() {
-                if studio.overlay.name.trim().is_empty() {
-                    "Custom Overlay".to_string()
-                } else {
-                    studio.overlay.name.trim().to_string()
-                }
-            } else {
-                studio.preset_save_name.trim().to_string()
-            };
-            let clean_id = name.to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                .collect::<String>();
-            let fresh_id = format!("overlay_{}", clean_id.trim_matches('_'));
-            let mut saved_def = studio.overlay.clone();
-            saved_def.id = fresh_id;
-            saved_def.name = name.clone();
-
-            let saved = matches!(
-                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(saved_def.clone())),
-                Ok(crate::ipc::IpcResponse::Ok)
-            );
-            if !saved {
-                let mut library = crate::config::Library::read();
-                if let Some(existing) = library.overlays.iter_mut().find(|o| o.id == saved_def.id) {
-                    *existing = saved_def.clone();
-                } else {
-                    library.overlays.push(saved_def.clone());
-                }
-                if let Err(err) = library.save() {
-                    crate::logging::error("CONFIG", &format!("Failed to save overlay presets: {err}"));
-                }
-            }
-            if let Some(ds) = &mut state.daemon_state {
-                if let Some(existing) = ds.config.overlays.iter_mut().find(|o| o.id == saved_def.id) {
-                    *existing = saved_def.clone();
-                } else {
-                    ds.config.overlays.push(saved_def.clone());
-                }
-            }
-            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
-        }
+        save_studio_overlay_preset(state, loc);
     }
 
     if modal_res.is_some_and(|r| r.close_requested) {
@@ -809,6 +1187,12 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
             studio.show_presets_popover = false;
         }
     }
+}
+
+/// Normalises an inspector-entered rotation to the same `0..360` range the canvas gestures use,
+/// so one element cannot be stored as -90° or 270° depending on the edit path (U02-015).
+fn normalize_rotation_deg(degrees: f32) -> f32 {
+    degrees.rem_euclid(360.0)
 }
 
 fn render_rotation_control(
@@ -819,12 +1203,15 @@ fn render_rotation_control(
 ) {
     ui.horizontal(|ui| {
         ui.label(RichText::new(loc.overlay_studio_rotation).family(theme::semibold()).size(10.5).color(t.faint));
-        ui.add(
+        let resp = ui.add(
             egui::DragValue::new(rotation)
-                .range(-360.0..=360.0)
+                .range(0.0..=360.0)
                 .speed(1.0)
                 .suffix("°")
         );
+        if resp.changed() {
+            *rotation = normalize_rotation_deg(*rotation);
+        }
     });
 }
 
@@ -883,6 +1270,7 @@ fn render_inline_color_editor(
     color: &mut [u8; 4],
     has_alpha: bool,
     t: &Tokens,
+    loc: &crate::i18n::Strings,
 ) {
     egui::Frame::new()
         .fill(t.sunken)
@@ -909,13 +1297,13 @@ fn render_inline_color_editor(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 let presets: [(&str, [u8; 4]); 7] = [
-                    ("Cyan", [0, 212, 255, 255]),
-                    ("Green", [34, 197, 94, 255]),
-                    ("Red", [239, 68, 68, 255]),
-                    ("Amber", [245, 158, 11, 255]),
-                    ("White", [255, 255, 255, 255]),
-                    ("Dark", [24, 28, 38, 220]),
-                    ("Clear", [0, 0, 0, 0]),
+                    (loc.overlay_studio_palette_cyan, [0, 212, 255, 255]),
+                    (loc.overlay_studio_palette_green, [34, 197, 94, 255]),
+                    (loc.overlay_studio_palette_red, [239, 68, 68, 255]),
+                    (loc.overlay_studio_palette_amber, [245, 158, 11, 255]),
+                    (loc.overlay_studio_palette_white, [255, 255, 255, 255]),
+                    (loc.overlay_studio_palette_dark, [24, 28, 38, 220]),
+                    (loc.overlay_studio_palette_clear, [0, 0, 0, 0]),
                 ];
                 for (name, col) in presets {
                     let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
@@ -1155,32 +1543,223 @@ fn render_elem_drop_slot(
 }
 
 // ----------------- OVERLAY INSPECTOR PANEL -----------------
+
+/// Colour slots one element panel can edit. Card-scoped targets are deliberately absent: an
+/// element colour chip that opened the card editor silently rewrote the overlay style (U02-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ElementColorSlot {
+    Primary,
+    Secondary,
+    Tertiary,
+}
+
+/// Builds the element-scoped picker target for one colour slot.
+fn element_color_target(elem_idx: usize, slot: ElementColorSlot) -> ColorPickerTarget {
+    match slot {
+        ElementColorSlot::Primary => ColorPickerTarget::ElementPrimary(elem_idx),
+        ElementColorSlot::Secondary => ColorPickerTarget::ElementSecondary(elem_idx),
+        ElementColorSlot::Tertiary => ColorPickerTarget::ElementTertiary(elem_idx),
+    }
+}
+
+/// Which colour slot of `elem_idx` the open inline picker belongs to. `None` also covers the
+/// card-scoped targets, which only the card panel renders.
+fn active_element_slot(target: Option<ColorPickerTarget>, elem_idx: usize) -> Option<ElementColorSlot> {
+    match target? {
+        ColorPickerTarget::ElementPrimary(idx) if idx == elem_idx => Some(ElementColorSlot::Primary),
+        ColorPickerTarget::ElementSecondary(idx) if idx == elem_idx => Some(ElementColorSlot::Secondary),
+        ColorPickerTarget::ElementTertiary(idx) if idx == elem_idx => Some(ElementColorSlot::Tertiary),
+        _ => None,
+    }
+}
+
+/// Per-kind minimum element size, shared by the inspector rows and the canvas clamp so the
+/// hand-maintained constant sets cannot drift apart (U02-010).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SizeLimits {
+    min_w: f32,
+    min_h: f32,
+}
+
+const IMAGE_SIZE_LIMITS: SizeLimits = SizeLimits { min_w: 8.0, min_h: 8.0 };
+const SHAPE_SIZE_LIMITS: SizeLimits = SizeLimits { min_w: 4.0, min_h: 4.0 };
+const PANEL_SIZE_LIMITS: SizeLimits = SizeLimits { min_w: 20.0, min_h: 15.0 };
+const MEDIA_SIZE_LIMITS: SizeLimits = SizeLimits { min_w: 40.0, min_h: 20.0 };
+const KEYVISUALIZER_SIZE_LIMITS: SizeLimits = SizeLimits { min_w: 30.0, min_h: 18.0 };
+
+/// Lock-aspect toggle button, shared by the card and the Image/Shape panels (U02-010).
+fn render_lock_aspect_toggle(
+    ui: &mut Ui,
+    locked: bool,
+    glyph_size: f32,
+    tooltip_locked: &str,
+    tooltip_unlocked: &str,
+    t: &Tokens,
+) -> bool {
+    let glyph = if locked {
+        egui_phosphor::regular::LOCK
+    } else {
+        egui_phosphor::regular::LOCK_OPEN
+    };
+    let color = if locked { t.accent_ink } else { t.faint };
+    let tip = if locked { tooltip_locked } else { tooltip_unlocked };
+    let (rect, resp) = ui.allocate_exact_size(vec2(theme::CONTROL_H, theme::CONTROL_H), Sense::click());
+    if locked {
+        ui.painter().rect_filled(rect, CornerRadius::same(3), t.accent_ink.gamma_multiply(0.2));
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(3), t.sunken);
+    }
+    ui.painter().rect_stroke(rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        FontId::new(glyph_size, theme::phosphor()),
+        color,
+    );
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// W/H row. `lock_aspect` adds the aspect-lock toggle for the element kinds that have one; the
+/// rest share the plain two-column row with their own minimum sizes (U02-010).
 #[allow(clippy::too_many_arguments)]
+fn render_size_rows(
+    ui: &mut Ui,
+    width: &mut f32,
+    height: &mut f32,
+    lock_aspect: Option<&mut bool>,
+    canvas_w: f32,
+    canvas_h: f32,
+    limits: SizeLimits,
+    lock_tooltips: (&str, &str),
+    loc: &crate::i18n::Strings,
+    t: &Tokens,
+) {
+    match lock_aspect {
+        Some(lock_aspect) => {
+            ui.horizontal(|ui| {
+                let aspect = if *height > 0.0 { *width / *height } else { 1.0 };
+                let total_w = ui.available_width();
+                let btn_w = theme::CONTROL_H;
+                let spacing = ui.spacing().item_spacing.x;
+                let field_w = ((total_w - btn_w - spacing * 2.0 - 4.0) / 2.0).max(40.0).floor();
+                let w_resp = ui.add_sized(
+                    vec2(field_w, theme::CONTROL_H),
+                    egui::DragValue::new(width)
+                        .range(limits.min_w..=canvas_w.max(limits.min_w))
+                        .prefix(loc.overlay_studio_field_w)
+                        .suffix(loc.overlay_studio_unit_px)
+                        .speed(1.0),
+                );
+                let h_resp = ui.add_sized(
+                    vec2(field_w, theme::CONTROL_H),
+                    egui::DragValue::new(height)
+                        .range(limits.min_h..=canvas_h.max(limits.min_h))
+                        .prefix(loc.overlay_studio_field_h)
+                        .suffix(loc.overlay_studio_unit_px)
+                        .speed(1.0),
+                );
+                if *lock_aspect {
+                    if w_resp.changed() && aspect > 0.0 {
+                        *height = (*width / aspect).round().clamp(limits.min_h, canvas_h);
+                    } else if h_resp.changed() {
+                        *width = (*height * aspect).round().clamp(limits.min_w, canvas_w);
+                    }
+                }
+                if render_lock_aspect_toggle(ui, *lock_aspect, 13.0, lock_tooltips.0, lock_tooltips.1, t) {
+                    *lock_aspect = !*lock_aspect;
+                }
+            });
+        }
+        None => {
+            ui.columns(2, |cols| {
+                cols[0].add(
+                    egui::DragValue::new(width)
+                        .range(limits.min_w..=canvas_w.max(limits.min_w))
+                        .prefix(loc.overlay_studio_field_w)
+                        .suffix(loc.overlay_studio_unit_px),
+                );
+                cols[1].add(
+                    egui::DragValue::new(height)
+                        .range(limits.min_h..=canvas_h.max(limits.min_h))
+                        .prefix(loc.overlay_studio_field_h)
+                        .suffix(loc.overlay_studio_unit_px),
+                );
+            });
+        }
+    }
+}
+
+/// X/Y row, clamped so the element stays inside the card.
+#[allow(clippy::too_many_arguments)]
+fn render_position_rows(ui: &mut Ui, x: &mut f32, y: &mut f32, width: f32, height: f32, canvas_w: f32, canvas_h: f32, loc: &crate::i18n::Strings) {
+    ui.columns(2, |cols| {
+        let max_x = (canvas_w - width).max(0.0);
+        let max_y = (canvas_h - height).max(0.0);
+        cols[0].add(egui::DragValue::new(x).range(0.0..=max_x).prefix(loc.overlay_studio_field_x).suffix(loc.overlay_studio_unit_px));
+        cols[1].add(egui::DragValue::new(y).range(0.0..=max_y).prefix(loc.overlay_studio_field_y).suffix(loc.overlay_studio_unit_px));
+    });
+}
+
+/// Everything one element panel needs besides the element itself.
+struct ElementPanelCtx<'a> {
+    canvas_w: f32,
+    canvas_h: f32,
+    click_through: bool,
+    active_color_target: &'a mut Option<ColorPickerTarget>,
+    rules_list: &'a [(String, String)],
+    t: &'a Tokens,
+    loc: &'a crate::i18n::Strings,
+}
+
 fn render_overlay_inspector(
     ui: &mut Ui,
-    overlay: &mut OverlayDefinition,
-    undo_stack: &mut Vec<OverlayDefinition>,
-    redo_stack: &mut Vec<OverlayDefinition>,
+    studio: &mut OverlayStudioState,
     monitors: &[crate::models::MonitorInfo],
-    is_calibrating: bool,
-    card_lock_aspect: &mut bool,
-    selected_idx: &mut Option<usize>,
-    active_color_target: &mut Option<ColorPickerTarget>,
     rules_list: &[(String, String)],
     open_element_catalog: &mut bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,
 ) {
-    let mut push_undo = |ov: &OverlayDefinition| {
-        if undo_stack.len() >= 50 {
-            undo_stack.remove(0);
-        }
-        undo_stack.push(ov.clone());
-        redo_stack.clear();
-    };
-
     ui.spacing_mut().item_spacing.y = 8.0;
 
+    render_overlay_card_panel(
+        ui,
+        &mut studio.overlay,
+        monitors,
+        studio.is_calibrating,
+        &mut studio.card_lock_aspect,
+        &mut studio.active_color_target,
+        t,
+        loc,
+    );
+
+    render_overlay_element_list(
+        ui,
+        &mut studio.overlay,
+        &mut studio.undo_stack,
+        &mut studio.redo_stack,
+        &mut studio.selected_element_idx,
+        &mut studio.active_color_target,
+        rules_list,
+        open_element_catalog,
+        t,
+        loc,
+    );
+}
+
+/// Card-level settings: anchor, screen position, card geometry, opacity and the card style.
+#[allow(clippy::too_many_arguments)]
+fn render_overlay_card_panel(
+    ui: &mut Ui,
+    overlay: &mut OverlayDefinition,
+    monitors: &[crate::models::MonitorInfo],
+    is_calibrating: bool,
+    card_lock_aspect: &mut bool,
+    active_color_target: &mut Option<ColorPickerTarget>,
+    t: &Tokens,
+    loc: &crate::i18n::Strings,
+) {
     let active_mon = resolve_overlay_monitor(overlay, monitors);
     let screen_w = active_mon.width as f32;
     let screen_h = active_mon.height as f32;
@@ -1248,8 +1827,8 @@ fn render_overlay_inspector(
             if cols[0].add(
                 egui::DragValue::new(&mut cur_x)
                     .range(0.0..=max_x)
-                    .prefix("Screen X: ")
-                    .suffix(" px")
+                    .prefix(loc.overlay_studio_field_screen_x)
+                    .suffix(loc.overlay_studio_unit_px)
                     .speed(1.0),
             ).changed() {
                 overlay.anchor = OverlayAnchor::Custom;
@@ -1259,8 +1838,8 @@ fn render_overlay_inspector(
             if cols[1].add(
                 egui::DragValue::new(&mut cur_y)
                     .range(0.0..=max_y)
-                    .prefix("Screen Y: ")
-                    .suffix(" px")
+                    .prefix(loc.overlay_studio_field_screen_y)
+                    .suffix(loc.overlay_studio_unit_px)
                     .speed(1.0),
             ).changed() {
                 overlay.anchor = OverlayAnchor::Custom;
@@ -1294,16 +1873,16 @@ fn render_overlay_inspector(
             vec2(field_w, theme::CONTROL_H),
             egui::DragValue::new(&mut overlay.rect.width)
                 .range(20.0..=max_w)
-                .prefix("Width: ")
-                .suffix(" px")
+                .prefix(loc.overlay_studio_field_width)
+                .suffix(loc.overlay_studio_unit_px)
                 .speed(1.0),
         );
         let h_resp = ui.add_sized(
             vec2(field_w, theme::CONTROL_H),
             egui::DragValue::new(&mut overlay.rect.height)
                 .range(20.0..=max_h)
-                .prefix("Height: ")
-                .suffix(" px")
+                .prefix(loc.overlay_studio_field_height)
+                .suffix(loc.overlay_studio_unit_px)
                 .speed(1.0),
         );
 
@@ -1330,32 +1909,12 @@ fn render_overlay_inspector(
             }
         }
 
-        let lock_glyph = if *card_lock_aspect {
-            egui_phosphor::regular::LOCK
-        } else {
-            egui_phosphor::regular::LOCK_OPEN
-        };
-        let lock_color = if *card_lock_aspect { t.accent_ink } else { t.faint };
         let lock_tip = if *card_lock_aspect {
             loc.overlay_studio_card_lock_aspect
         } else {
             loc.overlay_studio_card_unlock_aspect
         };
-        let (lock_rect, lock_resp) = ui.allocate_exact_size(vec2(btn_w, theme::CONTROL_H), Sense::click());
-        if *card_lock_aspect {
-            ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.accent_ink.gamma_multiply(0.2));
-        } else if lock_resp.hovered() {
-            ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.sunken);
-        }
-        ui.painter().rect_stroke(lock_rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
-        ui.painter().text(
-            lock_rect.center(),
-            egui::Align2::CENTER_CENTER,
-            lock_glyph,
-            FontId::new(14.0, theme::phosphor()),
-            lock_color,
-        );
-        if lock_resp.on_hover_text(lock_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if render_lock_aspect_toggle(ui, *card_lock_aspect, 14.0, lock_tip, lock_tip, t) {
             *card_lock_aspect = !*card_lock_aspect;
         }
     });
@@ -1376,26 +1935,40 @@ fn render_overlay_inspector(
     ui.add_space(6.0);
     widgets::hud(ui, loc.overlay_studio_card_colors, t.faint);
     ui.columns(2, |cols| {
-        render_color_chip(&mut cols[0], "BG:", &mut overlay.style.bg_color, ColorPickerTarget::CardBg, active_color_target, t);
-        render_color_chip(&mut cols[1], "BORDER:", &mut overlay.style.border_color, ColorPickerTarget::CardBorder, active_color_target, t);
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_bg, &mut overlay.style.bg_color, ColorPickerTarget::CardBg, &mut *active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_border, &mut overlay.style.border_color, ColorPickerTarget::CardBorder, &mut *active_color_target, t);
     });
-    if *active_color_target == Some(ColorPickerTarget::CardBg) {
-        render_inline_color_editor(ui, &mut overlay.style.bg_color, true, t);
-    } else if *active_color_target == Some(ColorPickerTarget::CardBorder) {
-        render_inline_color_editor(ui, &mut overlay.style.border_color, true, t);
+    if let Some(target) = *active_color_target {
+        match target {
+            ColorPickerTarget::CardBg => render_inline_color_editor(ui, &mut overlay.style.bg_color, true, t, loc),
+            ColorPickerTarget::CardBorder => render_inline_color_editor(ui, &mut overlay.style.border_color, true, t, loc),
+            _ => {}
+        }
     }
 
     // Border Width & Corner Radius in 2 columns
     ui.columns(2, |cols| {
-        cols[0].add(egui::DragValue::new(&mut overlay.style.border_width).range(0.0..=12.0).prefix("Border: ").suffix(" px"));
-        cols[1].add(egui::DragValue::new(&mut overlay.style.corner_radius).range(0.0..=32.0).prefix("Radius: ").suffix(" px"));
+        cols[0].add(egui::DragValue::new(&mut overlay.style.border_width).range(0.0..=12.0).prefix(loc.overlay_studio_field_border).suffix(loc.overlay_studio_unit_px));
+        cols[1].add(egui::DragValue::new(&mut overlay.style.corner_radius).range(0.0..=32.0).prefix(loc.overlay_studio_field_radius).suffix(loc.overlay_studio_unit_px));
     });
 
     widgets::hrule(ui);
+}
 
-    // ----------------- SECTION 03: ELEMENTS -----------------
-
-    // Elements Section Header
+/// The element cards: drag-reorder list, per-kind property panel, clone and remove.
+#[allow(clippy::too_many_arguments)]
+fn render_overlay_element_list(
+    ui: &mut Ui,
+    overlay: &mut OverlayDefinition,
+    undo_stack: &mut Vec<OverlayDefinition>,
+    redo_stack: &mut Vec<OverlayDefinition>,
+    selected_idx: &mut Option<usize>,
+    active_color_target: &mut Option<ColorPickerTarget>,
+    rules_list: &[(String, String)],
+    open_element_catalog: &mut bool,
+    t: &Tokens,
+    loc: &crate::i18n::Strings,
+) {
     ui.add_space(6.0);
     widgets::hud(ui, loc.overlay_studio_elements_title, t.ink);
 
@@ -1448,6 +2021,10 @@ fn render_overlay_inspector(
     let active_src = dnd_session.map(|s| s.source_idx);
     let active_dst = dnd_session.map(|s| s.target_idx);
 
+    let canvas_w = overlay.rect.width;
+    let canvas_h = overlay.rect.height;
+    let click_through = overlay.click_through;
+
     let total_elems = overlay.elements.len();
     if total_elems == 0 {
         ui.add_space(8.0);
@@ -1456,7 +2033,7 @@ fn render_overlay_inspector(
         }
         ui.add_space(8.0);
     }
-    for idx in 0..total_elems {
+    for (idx, elem) in overlay.elements.iter_mut().enumerate() {
         // Drop slot indicator before each item
         render_elem_drop_slot(ui, idx, active_dst, active_src, total_elems, t);
 
@@ -1480,8 +2057,6 @@ fn render_overlay_inspector(
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
 
-                let elem = &mut overlay.elements[idx];
-
                 // Header row of the element card: Drag Grip + Clean Badge Label + Clone / Remove
                 ui.horizontal(|ui| {
                     let grip_resp = widgets::drag_handle(ui, loc.inspector_tip_drag_step);
@@ -1489,26 +2064,7 @@ fn render_overlay_inspector(
                         drag_started_idx = Some(idx);
                     }
 
-                    let (badge_text, badge_color) = match elem {
-                        OverlayElement::Crosshair { .. } => ("CROSSHAIR", t.accent_ink),
-                        OverlayElement::Text { .. } => ("TEXT", t.ink),
-                        OverlayElement::Image { .. } => ("IMAGE", t.faint),
-                        OverlayElement::Shape { shape_type, .. } => (
-                            match shape_type {
-                                ShapeKind::Rectangle => "SQUARE",
-                                ShapeKind::Circle => "CIRCLE",
-                                ShapeKind::Arrow => "ARROW",
-                                ShapeKind::Line => "LINE",
-                            },
-                            t.accent_ink,
-                        ),
-                        OverlayElement::Graph { .. } => ("GRAPH", t.good),
-                        OverlayElement::ClockTimer { .. } => ("CLOCK", t.ink),
-                        OverlayElement::InteractiveControl { .. } => ("CONTROL", t.accent_ink),
-                        OverlayElement::SystemTelemetry { .. } => ("STATUS", t.warn),
-                        OverlayElement::MediaWidget { .. } => ("MEDIA", t.good),
-                        OverlayElement::KeyVisualizer { .. } => ("KEYS", t.faint),
-                    };
+                    let (badge_text, badge_color) = element_badge(elem, t, loc);
 
                     // Clean badge label without selectable_label background highlight
                     let badge_resp = ui.add(
@@ -1534,884 +2090,17 @@ fn render_overlay_inspector(
                     });
                 });
 
-                // Body rows of the element card
-                match elem {
-                    OverlayElement::Crosshair { style, size, color, thickness, gap, center_dot, x, y, rotation, .. } => {
-                        let styles = [
-                            (CrosshairStyle::Cross, "Cross"),
-                            (CrosshairStyle::TShaped, "T-Shape"),
-                            (CrosshairStyle::Circle, "Circle"),
-                            (CrosshairStyle::Dot, "Dot"),
-                        ];
-                        ui.horizontal(|ui| {
-                            for (s, lbl) in styles {
-                                let is_s = *style == s;
-                                let kind = if is_s { Kind::Primary } else { Kind::Secondary };
-                                if widgets::button(ui, lbl, kind, 0.0).clicked() {
-                                    *style = s;
-                                }
-                            }
-                        });
-
-                        render_color_chip(ui, "COLOR:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, false, t);
-                        }
-
-                        ui.columns(3, |cols| {
-                            cols[0].add(egui::DragValue::new(size).range(4.0..=128.0).prefix("Size: "));
-                            cols[1].add(egui::DragValue::new(thickness).range(1.0..=8.0).prefix("Thick: "));
-                            cols[2].add(egui::DragValue::new(gap).range(0.0..=32.0).prefix("Gap: "));
-                        });
-                        ui.checkbox(center_dot, loc.overlay_studio_crosshair_center_dot);
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(x).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).prefix("Y: ").suffix(" px"));
-                        });
-                    }
-                    OverlayElement::Text {
-                        text,
-                        font_size,
-                        color,
-                        x,
-                        y,
-                        bold,
-                        font_family,
-                        rotation,
-                        on_click,
-                        ..
-                    } => {
-                        ui.add(
-                            egui::TextEdit::singleline(text)
-                                .desired_width(ui.available_width())
-                                .hint_text(loc.overlay_studio_hint_text)
-                        );
-
-                        // Font Family ComboBox
-                        let font_opts = [
-                            "Inter",
-                            "Archivo",
-                            "Geist Mono",
-                            "Segoe UI",
-                            "Consolas",
-                            "Arial",
-                            "Impact",
-                            "Tahoma",
-                            "Verdana",
-                            "Comic Sans MS",
-                            "Trebuchet MS",
-                            "Georgia",
-                            "Courier New",
-                        ];
-                        egui::ComboBox::from_id_salt(ui.scope_id().with(("font_combo", idx)))
-                            .selected_text(font_family.as_str())
-                            .width(ui.available_width())
-                            .show_ui(ui, |ui| {
-                                for f in font_opts {
-                                    ui.selectable_value(font_family, f.to_string(), f);
-                                }
-                            });
-
-                        render_color_chip(ui, "TEXT COLOR:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(font_size).range(8.0..=72.0).prefix("Size: ").suffix(" pt"));
-                            cols[1].checkbox(bold, loc.overlay_studio_text_bold);
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        let char_len = (text.chars().count() as f32).max(1.0);
-                        let nat_w = (char_len * (*font_size * 0.6).max(8.0) + 12.0).max(30.0);
-                        let nat_h = (*font_size + 6.0).max(18.0);
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - nat_w).max(0.0);
-                            let max_y = (overlay.rect.height - nat_h).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y).prefix("Y: ").suffix(" px"));
-                        });
-
-                        // On-Click Action
-                        if !overlay.click_through {
-                            render_element_click_action_ui(ui, on_click, rules_list, idx, t, loc);
-                        }
-                    }
-                    OverlayElement::Image { path, x, y, width, height, opacity, lock_aspect, rotation, on_click, .. } => {
-                        ui.horizontal(|ui| {
-                            if widgets::button(ui, loc.overlay_studio_btn_browse, Kind::Secondary, 0.0).clicked() {
-                                if let Some(picked) = rfd::FileDialog::new()
-                                    .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "ico", "webp"])
-                                    .pick_file()
-                                {
-                                    *path = picked.to_string_lossy().to_string();
-                                    if let Ok(img) = image::open(&picked) {
-                                        let (nw, nh) = (img.width() as f32, img.height() as f32);
-                                        if nw > 0.0 && nh > 0.0 {
-                                            let max_w = (overlay.rect.width - 16.0).max(8.0);
-                                            let max_h = (overlay.rect.height - 16.0).max(8.0);
-                                            if nw > max_w || nh > max_h {
-                                                let scale_factor = (max_w / nw).min(max_h / nh);
-                                                *width = (nw * scale_factor).round().max(8.0);
-                                                *height = (nh * scale_factor).round().max(8.0);
-                                            } else {
-                                                *width = nw;
-                                                *height = nh;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            let img_path_resp = ui.add(
-                                egui::TextEdit::singleline(path)
-                                    .desired_width(ui.available_width())
-                                    .min_size(vec2(0.0, theme::CONTROL_H))
-                                    .margin(vec2(8.0, 5.0))
-                                    .hint_text(loc.overlay_studio_hint_img_path),
-                            );
-                            if img_path_resp.changed() || img_path_resp.lost_focus() {
-                                let clean = path.trim().trim_matches('"').trim_matches('\'').to_string();
-                                if clean != *path {
-                                    *path = clean;
-                                }
-                            }
-                        });
-
-                        // Width & Height with Aspect Ratio Lock
-                        ui.horizontal(|ui| {
-                            let old_w = *width;
-                            let old_h = *height;
-                            let aspect = if old_h > 0.0 { old_w / old_h } else { 1.0 };
-
-                            let total_w = ui.available_width();
-                            let btn_w = theme::CONTROL_H;
-                            let spacing = ui.spacing().item_spacing.x;
-                            let field_w = ((total_w - btn_w - spacing * 2.0 - 4.0) / 2.0).max(40.0).floor();
-                            let w_resp = ui.add_sized(
-                                vec2(field_w, theme::CONTROL_H),
-                                egui::DragValue::new(width).range(8.0..=overlay.rect.width.max(8.0)).prefix("W: ").suffix(" px").speed(1.0),
-                            );
-                            let h_resp = ui.add_sized(
-                                vec2(field_w, theme::CONTROL_H),
-                                egui::DragValue::new(height).range(8.0..=overlay.rect.height.max(8.0)).prefix("H: ").suffix(" px").speed(1.0),
-                            );
-
-                            if *lock_aspect {
-                                if w_resp.changed() && aspect > 0.0 {
-                                    *height = (*width / aspect).round().clamp(8.0, overlay.rect.height);
-                                } else if h_resp.changed() {
-                                    *width = (*height * aspect).round().clamp(8.0, overlay.rect.width);
-                                }
-                            }
-
-                            let lock_glyph = if *lock_aspect {
-                                egui_phosphor::regular::LOCK
-                            } else {
-                                egui_phosphor::regular::LOCK_OPEN
-                            };
-                            let lock_color = if *lock_aspect { t.accent_ink } else { t.faint };
-                            let lock_tip = if *lock_aspect {
-                                loc.overlay_studio_img_lock_aspect
-                            } else {
-                                loc.overlay_studio_img_unlock_aspect
-                            };
-                            let (lock_rect, lock_resp) = ui.allocate_exact_size(vec2(btn_w, theme::CONTROL_H), Sense::click());
-                            if *lock_aspect {
-                                ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.accent_ink.gamma_multiply(0.2));
-                            } else if lock_resp.hovered() {
-                                ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.sunken);
-                            }
-                            ui.painter().rect_stroke(lock_rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
-                            ui.painter().text(
-                                lock_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                lock_glyph,
-                                FontId::new(13.0, theme::phosphor()),
-                                lock_color,
-                            );
-                            if lock_resp.on_hover_text(lock_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                *lock_aspect = !*lock_aspect;
-                            }
-                        });
-
-                        ui.add(
-                            egui::Slider::new(opacity, 0.0..=1.0)
-                                .text(loc.overlay_studio_elem_img_opacity)
-                                .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
-                        );
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y).prefix("Y: ").suffix(" px"));
-                        });
-
-                        if !overlay.click_through {
-                            render_element_click_action_ui(ui, on_click, rules_list, idx, t, loc);
-                        }
-                    }
-                    OverlayElement::Shape {
-                        shape_type,
-                        x,
-                        y,
-                        width,
-                        height,
-                        thickness,
-                        color,
-                        filled,
-                        fill_color,
-                        corner_radius,
-                        lock_aspect,
-                        rotation,
-                        on_click,
-                        ..
-                    } => {
-                        let shapes = [
-                            (ShapeKind::Rectangle, loc.overlay_studio_shape_rect),
-                            (ShapeKind::Circle, loc.overlay_studio_shape_circle),
-                            (ShapeKind::Arrow, loc.overlay_studio_shape_arrow),
-                            (ShapeKind::Line, loc.overlay_studio_shape_line),
-                        ];
-                        ui.horizontal(|ui| {
-                            for (s, lbl) in shapes {
-                                let is_s = *shape_type == s;
-                                let kind = if is_s { Kind::Primary } else { Kind::Secondary };
-                                if widgets::button(ui, lbl, kind, 0.0).clicked() {
-                                    *shape_type = s;
-                                }
-                            }
-                        });
-
-                        let is_fillable = *shape_type == ShapeKind::Rectangle || *shape_type == ShapeKind::Circle;
-                        if is_fillable {
-                            ui.columns(2, |cols| {
-                                render_color_chip(&mut cols[0], "COLOR:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                                if *filled {
-                                    render_color_chip(&mut cols[1], "FILL:", fill_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                                } else {
-                                    cols[1].checkbox(filled, loc.overlay_studio_shape_fill);
-                                }
-                            });
-                            if *filled {
-                                ui.checkbox(filled, loc.overlay_studio_shape_fill);
-                            }
-                        } else {
-                            render_color_chip(ui, "COLOR:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                        }
-
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) && is_fillable {
-                            render_inline_color_editor(ui, fill_color, true, t);
-                        }
-
-                        let can_round = *shape_type == ShapeKind::Rectangle || *shape_type == ShapeKind::Line;
-                        if can_round {
-                            ui.columns(2, |cols| {
-                                cols[0].add(egui::DragValue::new(thickness).range(1.0..=32.0).prefix("Thick: ").suffix(" px"));
-                                cols[1].add(egui::DragValue::new(corner_radius).range(0.0..=64.0).prefix("Radius: ").suffix(" px"));
-                            });
-                        } else {
-                            ui.add(egui::DragValue::new(thickness).range(1.0..=32.0).prefix("Thick: ").suffix(" px"));
-                        }
-
-                        ui.horizontal(|ui| {
-                            let old_w = *width;
-                            let old_h = *height;
-                            let aspect = if old_h > 0.0 { old_w / old_h } else { 1.0 };
-
-                            let total_w = ui.available_width();
-                            let btn_w = theme::CONTROL_H;
-                            let spacing = ui.spacing().item_spacing.x;
-                            let field_w = ((total_w - btn_w - spacing * 2.0 - 4.0) / 2.0).max(40.0).floor();
-                            let w_resp = ui.add_sized(
-                                vec2(field_w, theme::CONTROL_H),
-                                egui::DragValue::new(width).range(4.0..=overlay.rect.width.max(4.0)).prefix("W: ").suffix(" px").speed(1.0),
-                            );
-                            let h_resp = ui.add_sized(
-                                vec2(field_w, theme::CONTROL_H),
-                                egui::DragValue::new(height).range(4.0..=overlay.rect.height.max(4.0)).prefix("H: ").suffix(" px").speed(1.0),
-                            );
-
-                            if *lock_aspect {
-                                if w_resp.changed() && aspect > 0.0 {
-                                    *height = (*width / aspect).round().clamp(4.0, overlay.rect.height);
-                                } else if h_resp.changed() {
-                                    *width = (*height * aspect).round().clamp(4.0, overlay.rect.width);
-                                }
-                            }
-
-                            let lock_glyph = if *lock_aspect {
-                                egui_phosphor::regular::LOCK
-                            } else {
-                                egui_phosphor::regular::LOCK_OPEN
-                            };
-                            let lock_color = if *lock_aspect { t.accent_ink } else { t.faint };
-                            let lock_tip = if *lock_aspect {
-                                loc.overlay_studio_img_lock_aspect
-                            } else {
-                                loc.overlay_studio_img_unlock_aspect
-                            };
-                            let (lock_rect, lock_resp) = ui.allocate_exact_size(vec2(btn_w, theme::CONTROL_H), Sense::click());
-                            if *lock_aspect {
-                                ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.accent_ink.gamma_multiply(0.2));
-                            } else if lock_resp.hovered() {
-                                ui.painter().rect_filled(lock_rect, CornerRadius::same(3), t.sunken);
-                            }
-                            ui.painter().rect_stroke(lock_rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
-                            ui.painter().text(
-                                lock_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                lock_glyph,
-                                FontId::new(13.0, theme::phosphor()),
-                                lock_color,
-                            );
-                            if lock_resp.on_hover_text(lock_tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                *lock_aspect = !*lock_aspect;
-                            }
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y).prefix("Y: ").suffix(" px"));
-                        });
-
-                        if !overlay.click_through {
-                            render_element_click_action_ui(ui, on_click, rules_list, idx, t, loc);
-                        }
-                    }
-
-                    OverlayElement::Graph {
-                        metric,
-                        style,
-                        sample_count,
-                        color,
-                        fill_color,
-                        bg_color,
-                        show_current_val,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        ..
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_graph_metric).size(10.0).family(theme::semibold()).color(t.faint));
-                            let metric_lbl = match metric {
-                                crate::models::GraphMetric::SystemCpu => loc.overlay_studio_graph_metric_cpu,
-                                crate::models::GraphMetric::ProcessCpu => loc.overlay_studio_graph_metric_proc_cpu,
-                                crate::models::GraphMetric::SystemRam => loc.overlay_studio_graph_metric_ram,
-                                crate::models::GraphMetric::ProcessRam => loc.overlay_studio_graph_metric_proc_ram,
-                                crate::models::GraphMetric::Fps => loc.overlay_studio_graph_metric_fps,
-                                crate::models::GraphMetric::Battery => loc.overlay_studio_graph_metric_battery,
-                                crate::models::GraphMetric::Network => loc.overlay_studio_graph_metric_network,
-                            };
-                            egui::ComboBox::from_id_salt(ui.scope_id().with(("graph_metric", idx)))
-                                .selected_text(metric_lbl)
-                                .width(ui.available_width() - 8.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(metric, crate::models::GraphMetric::SystemCpu, loc.overlay_studio_graph_metric_cpu);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::ProcessCpu, loc.overlay_studio_graph_metric_proc_cpu);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::SystemRam, loc.overlay_studio_graph_metric_ram);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::ProcessRam, loc.overlay_studio_graph_metric_proc_ram);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::Fps, loc.overlay_studio_graph_metric_fps);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::Battery, loc.overlay_studio_graph_metric_battery);
-                                    ui.selectable_value(metric, crate::models::GraphMetric::Network, loc.overlay_studio_graph_metric_network);
-                                });
-                        });
-
-                        ui.horizontal(|ui| {
-                            let styles = [
-                                (crate::models::GraphStyle::AreaFilled, loc.overlay_studio_graph_style_area),
-                                (crate::models::GraphStyle::Line, loc.overlay_studio_graph_style_line),
-                                (crate::models::GraphStyle::Histogram, loc.overlay_studio_graph_style_histogram),
-                            ];
-                            for (s, lbl) in styles {
-                                let is_s = *style == s;
-                                let kind = if is_s { Kind::Primary } else { Kind::Secondary };
-                                if widgets::button(ui, lbl, kind, 0.0).clicked() {
-                                    *style = s;
-                                }
-                            }
-                        });
-
-                        ui.add(egui::Slider::new(sample_count, 10..=120).text(loc.overlay_studio_graph_samples));
-                        ui.checkbox(show_current_val, loc.overlay_studio_graph_show_val);
-
-                        ui.columns(3, |cols| {
-                            render_color_chip(&mut cols[0], "LINE:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[1], "FILL:", fill_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[2], "BG:", bg_color, ColorPickerTarget::CardBg, active_color_target, t);
-                        });
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, fill_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(20.0..=overlay.rect.width.max(20.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(15.0..=overlay.rect.height.max(15.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-                    }
-
-                    OverlayElement::ClockTimer {
-                        mode,
-                        format_str,
-                        font_size,
-                        color,
-                        bg_color,
-                        countdown_total_ms,
-                        bold,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        on_finish,
-                        ..
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_timer_mode).size(10.0).family(theme::semibold()).color(t.faint));
-                            let mode_lbl = match mode {
-                                crate::models::TimerMode::Clock => loc.overlay_studio_timer_mode_clock,
-                                crate::models::TimerMode::Stopwatch => loc.overlay_studio_timer_mode_stopwatch,
-                                crate::models::TimerMode::Countdown => loc.overlay_studio_timer_mode_countdown,
-                                crate::models::TimerMode::Uptime => loc.overlay_studio_timer_mode_uptime,
-                            };
-                            egui::ComboBox::from_id_salt(ui.scope_id().with(("clock_mode", idx)))
-                                .selected_text(mode_lbl)
-                                .width(ui.available_width() - 8.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(mode, crate::models::TimerMode::Clock, loc.overlay_studio_timer_mode_clock);
-                                    ui.selectable_value(mode, crate::models::TimerMode::Stopwatch, loc.overlay_studio_timer_mode_stopwatch);
-                                    ui.selectable_value(mode, crate::models::TimerMode::Countdown, loc.overlay_studio_timer_mode_countdown);
-                                    ui.selectable_value(mode, crate::models::TimerMode::Uptime, loc.overlay_studio_timer_mode_uptime);
-                                });
-                        });
-
-                        match mode {
-                            crate::models::TimerMode::Clock => {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_timer_format).size(10.0).family(theme::semibold()).color(t.faint));
-                                    ui.text_edit_singleline(format_str);
-                                });
-                            }
-                            crate::models::TimerMode::Countdown => {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_timer_countdown).size(10.0).family(theme::semibold()).color(t.faint));
-                                    let mut total_ms = *countdown_total_ms;
-                                    if widgets::duration_millis_u64(ui, loc, ("timer_countdown", idx), &mut total_ms, 1000.0..=86_400_000.0).changed() {
-                                        *countdown_total_ms = total_ms;
-                                    }
-                                });
-                            }
-                            _ => {}
-                        }
-
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Slider::new(font_size, 8.0..=48.0).text("Font Size"));
-                            ui.checkbox(bold, "Bold");
-                        });
-
-                        ui.columns(2, |cols| {
-                            render_color_chip(&mut cols[0], "TEXT:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                        });
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, bg_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(20.0..=overlay.rect.width.max(20.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(15.0..=overlay.rect.height.max(15.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-
-                        if !overlay.click_through && matches!(mode, crate::models::TimerMode::Countdown) {
-                            render_element_click_action_ui(ui, on_finish, rules_list, idx, t, loc);
-                        }
-                    }
-
-                    OverlayElement::InteractiveControl {
-                        control,
-                        color,
-                        bg_color,
-                        active_color,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        ..
-                    } => {
-                        let cur_kind_name = match control {
-                            crate::models::InteractiveControlKind::Button { .. } => "Button",
-                            crate::models::InteractiveControlKind::ToggleSwitch { .. } => "Toggle",
-                            crate::models::InteractiveControlKind::Slider { .. } => "Slider",
-                        };
-
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_control_kind).size(10.0).family(theme::semibold()).color(t.faint));
-                            let kinds = [
-                                (loc.overlay_studio_control_btn, "Button"),
-                                (loc.overlay_studio_control_toggle, "Toggle"),
-                                (loc.overlay_studio_control_slider, "Slider"),
-                            ];
-                            for (lbl, kind_id) in kinds {
-                                let is_sel = cur_kind_name == kind_id;
-                                let kind = if is_sel { Kind::Primary } else { Kind::Secondary };
-                                if widgets::button(ui, lbl, kind, 0.0).clicked() && !is_sel {
-                                    *control = match kind_id {
-                                        "Button" => crate::models::InteractiveControlKind::Button {
-                                            label: "Action".to_string(),
-                                            icon: None,
-                                            action: None,
-                                        },
-                                        "Toggle" => crate::models::InteractiveControlKind::ToggleSwitch {
-                                            label: "Toggle".to_string(),
-                                            is_active: false,
-                                            bind_rule_id: None,
-                                            on_enable: None,
-                                            on_disable: None,
-                                        },
-                                        _ => crate::models::InteractiveControlKind::Slider {
-                                            label: "Volume".to_string(),
-                                            value: 50.0,
-                                            min: 0.0,
-                                            max: 100.0,
-                                            bind_target: crate::models::SliderBindTarget::MasterVolume,
-                                        },
-                                    };
-                                }
-                            }
-                        });
-
-                        match control {
-                            crate::models::InteractiveControlKind::Button { label, action, .. } => {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
-                                    ui.text_edit_singleline(label);
-                                });
-                                render_element_click_action_ui(ui, action, rules_list, idx, t, loc);
-                            }
-                            crate::models::InteractiveControlKind::ToggleSwitch { label, is_active, on_enable, on_disable, .. } => {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
-                                    ui.text_edit_singleline(label);
-                                });
-                                ui.checkbox(is_active, loc.overlay_studio_control_initial_state);
-                                render_element_click_action_ui(ui, on_enable, rules_list, idx + 100, t, loc);
-                                render_element_click_action_ui(ui, on_disable, rules_list, idx + 200, t, loc);
-                            }
-                            crate::models::InteractiveControlKind::Slider { label, value, min, max, bind_target } => {
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
-                                    ui.text_edit_singleline(label);
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.label(RichText::new(loc.overlay_studio_control_slider_target).size(10.0).family(theme::semibold()).color(t.faint));
-                                    let target_lbl = match bind_target {
-                                        crate::models::SliderBindTarget::MasterVolume => loc.overlay_studio_slider_master_volume,
-                                        crate::models::SliderBindTarget::CustomVariable => loc.overlay_studio_slider_custom_variable,
-                                        crate::models::SliderBindTarget::OverlayOpacity => loc.overlay_studio_slider_overlay_opacity,
-                                        crate::models::SliderBindTarget::ProcessVolume => loc.overlay_studio_slider_process_volume,
-                                    };
-                                    egui::ComboBox::from_id_salt(ui.scope_id().with(("slider_target", idx)))
-                                        .selected_text(target_lbl)
-                                        .width(ui.available_width() - 8.0)
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(bind_target, crate::models::SliderBindTarget::MasterVolume, loc.overlay_studio_slider_master_volume);
-                                            ui.selectable_value(bind_target, crate::models::SliderBindTarget::CustomVariable, loc.overlay_studio_slider_custom_variable);
-                                            ui.selectable_value(bind_target, crate::models::SliderBindTarget::OverlayOpacity, loc.overlay_studio_slider_overlay_opacity);
-                                            ui.selectable_value(bind_target, crate::models::SliderBindTarget::ProcessVolume, loc.overlay_studio_slider_process_volume);
-                                        });
-                                });
-                                ui.columns(2, |cols| {
-                                    cols[0].add(egui::DragValue::new(min).prefix("Min: "));
-                                    cols[1].add(egui::DragValue::new(max).prefix("Max: "));
-                                });
-                                ui.add(egui::Slider::new(value, *min..=*max).text(loc.overlay_studio_control_label));
-                            }
-                        }
-
-                        ui.columns(3, |cols| {
-                            render_color_chip(&mut cols[0], "TEXT:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[2], "ACTIVE:", active_color, ColorPickerTarget::CardBorder, active_color_target, t);
-                        });
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, bg_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(20.0..=overlay.rect.width.max(20.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(15.0..=overlay.rect.height.max(15.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-                    }
-
-                    OverlayElement::SystemTelemetry {
-                        kind,
-                        style,
-                        color,
-                        bg_color,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        on_click,
-                        ..
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_telemetry_kind).size(10.0).family(theme::semibold()).color(t.faint));
-                            let kind_lbl = match kind {
-                                crate::models::TelemetryKind::Battery => loc.overlay_studio_telemetry_kind_battery,
-                                crate::models::TelemetryKind::AudioMicStatus => loc.overlay_studio_telemetry_kind_audio,
-                                crate::models::TelemetryKind::EngineStatus => loc.overlay_studio_telemetry_kind_engine,
-                            };
-                            egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_kind", idx)))
-                                .selected_text(kind_lbl)
-                                .width(ui.available_width() - 8.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(kind, crate::models::TelemetryKind::Battery, loc.overlay_studio_telemetry_kind_battery);
-                                    ui.selectable_value(kind, crate::models::TelemetryKind::AudioMicStatus, loc.overlay_studio_telemetry_kind_audio);
-                                    ui.selectable_value(kind, crate::models::TelemetryKind::EngineStatus, loc.overlay_studio_telemetry_kind_engine);
-                                });
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_telemetry_style).size(10.0).family(theme::semibold()).color(t.faint));
-                            let style_lbl = match style {
-                                crate::models::TelemetryStyle::Badge => loc.overlay_studio_telemetry_style_badge,
-                                crate::models::TelemetryStyle::Compact => loc.overlay_studio_telemetry_style_compact,
-                                crate::models::TelemetryStyle::Detailed => loc.overlay_studio_telemetry_style_detailed,
-                            };
-                            egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_style", idx)))
-                                .selected_text(style_lbl)
-                                .width(ui.available_width() - 8.0)
-                                .show_ui(ui, |ui| {
-                                    ui.selectable_value(style, crate::models::TelemetryStyle::Badge, loc.overlay_studio_telemetry_style_badge);
-                                    ui.selectable_value(style, crate::models::TelemetryStyle::Compact, loc.overlay_studio_telemetry_style_compact);
-                                    ui.selectable_value(style, crate::models::TelemetryStyle::Detailed, loc.overlay_studio_telemetry_style_detailed);
-                                });
-                        });
-
-                        ui.columns(2, |cols| {
-                            render_color_chip(&mut cols[0], "COLOR:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                        });
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, bg_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(20.0..=overlay.rect.width.max(20.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(15.0..=overlay.rect.height.max(15.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-
-                        if !overlay.click_through {
-                            render_element_click_action_ui(ui, on_click, rules_list, idx, t, loc);
-                        }
-                    }
-
-                    OverlayElement::MediaWidget {
-                        show_controls,
-                        compact,
-                        color,
-                        bg_color,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        ..
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.checkbox(show_controls, loc.overlay_studio_media_controls);
-                            ui.checkbox(compact, loc.overlay_studio_compact_mode);
-                        });
-
-                        ui.columns(2, |cols| {
-                            render_color_chip(&mut cols[0], "TEXT:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                            render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                        });
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, bg_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(40.0..=overlay.rect.width.max(40.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(20.0..=overlay.rect.height.max(20.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-                    }
-
-                    OverlayElement::KeyVisualizer {
-                        layout,
-                        max_keys,
-                        decay_seconds,
-                        show_modifiers_only,
-                        color,
-                        bg_color,
-                        active_color,
-                        x,
-                        y,
-                        width,
-                        height,
-                        rotation,
-                        ..
-                    } => {
-                        let mut changed_layout = false;
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(loc.overlay_studio_keyvis_layout).size(10.0).family(theme::semibold()).color(t.faint));
-                            let selected_text = match layout {
-                                crate::models::KeyVisualizerLayout::WasdMouse => loc.overlay_studio_keyvis_wasd_mouse,
-                                crate::models::KeyVisualizerLayout::WasdOnly => loc.overlay_studio_keyvis_wasd_only,
-                                crate::models::KeyVisualizerLayout::ActionRpg => loc.overlay_studio_keyvis_action_rpg,
-                                crate::models::KeyVisualizerLayout::MouseOnly => loc.overlay_studio_keyvis_mouse_only,
-                                crate::models::KeyVisualizerLayout::TextStream => loc.overlay_studio_keyvis_text_stream,
-                            };
-                            egui::ComboBox::from_id_salt(format!("kv_layout_{idx}"))
-                                .selected_text(selected_text)
-                                .show_ui(ui, |ui| {
-                                    if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::WasdMouse, loc.overlay_studio_keyvis_wasd_mouse).clicked() {
-                                        changed_layout = true;
-                                    }
-                                    if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::WasdOnly, loc.overlay_studio_keyvis_wasd_only).clicked() {
-                                        changed_layout = true;
-                                    }
-                                    if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::ActionRpg, loc.overlay_studio_keyvis_action_rpg).clicked() {
-                                        changed_layout = true;
-                                    }
-                                    if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::MouseOnly, loc.overlay_studio_keyvis_mouse_only).clicked() {
-                                        changed_layout = true;
-                                    }
-                                    if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::TextStream, loc.overlay_studio_keyvis_text_stream).clicked() {
-                                        changed_layout = true;
-                                    }
-                                });
-                        });
-                        if changed_layout {
-                            match layout {
-                                crate::models::KeyVisualizerLayout::WasdMouse => { *width = 170.0; *height = 105.0; }
-                                crate::models::KeyVisualizerLayout::WasdOnly => { *width = 120.0; *height = 100.0; }
-                                crate::models::KeyVisualizerLayout::ActionRpg => { *width = 160.0; *height = 110.0; }
-                                crate::models::KeyVisualizerLayout::MouseOnly => { *width = 90.0; *height = 70.0; }
-                                crate::models::KeyVisualizerLayout::TextStream => { *width = 160.0; *height = 32.0; }
-                            }
-                        }
-
-                        if *layout == crate::models::KeyVisualizerLayout::TextStream {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(loc.overlay_studio_key_max).size(10.0).family(theme::semibold()).color(t.faint));
-                                ui.add(egui::DragValue::new(max_keys).range(1..=8));
-                                ui.label(RichText::new(loc.overlay_studio_key_decay).size(10.0).family(theme::semibold()).color(t.faint));
-                                widgets::duration_secs_f32(ui, loc, ("key_decay", idx), decay_seconds, 0.2..=5.0);
-                            });
-                            ui.checkbox(show_modifiers_only, loc.overlay_studio_key_modifiers_only);
-                        }
-
-                        if *layout == crate::models::KeyVisualizerLayout::TextStream {
-                            ui.columns(2, |cols| {
-                                render_color_chip(&mut cols[0], "TEXT:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                                render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                            });
-                        } else {
-                            ui.columns(3, |cols| {
-                                render_color_chip(&mut cols[0], "TEXT:", color, ColorPickerTarget::ElementPrimary(idx), active_color_target, t);
-                                render_color_chip(&mut cols[1], "BG:", bg_color, ColorPickerTarget::ElementSecondary(idx), active_color_target, t);
-                                render_color_chip(&mut cols[2], "GLOW:", active_color, ColorPickerTarget::ElementTertiary(idx), active_color_target, t);
-                            });
-                        }
-
-                        if *active_color_target == Some(ColorPickerTarget::ElementPrimary(idx)) {
-                            render_inline_color_editor(ui, color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementSecondary(idx)) {
-                            render_inline_color_editor(ui, bg_color, true, t);
-                        } else if *active_color_target == Some(ColorPickerTarget::ElementTertiary(idx)) {
-                            render_inline_color_editor(ui, active_color, true, t);
-                        }
-
-                        ui.columns(2, |cols| {
-                            cols[0].add(egui::DragValue::new(width).range(30.0..=overlay.rect.width.max(30.0)).prefix("W: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(height).range(18.0..=overlay.rect.height.max(18.0)).prefix("H: ").suffix(" px"));
-                        });
-
-                        render_rotation_control(ui, rotation, t, loc);
-
-                        ui.columns(2, |cols| {
-                            let max_x = (overlay.rect.width - *width).max(0.0);
-                            let max_y = (overlay.rect.height - *height).max(0.0);
-                            cols[0].add(egui::DragValue::new(x).range(0.0..=max_x.max(0.0)).prefix("X: ").suffix(" px"));
-                            cols[1].add(egui::DragValue::new(y).range(0.0..=max_y.max(0.0)).prefix("Y: ").suffix(" px"));
-                        });
-                    }
-                }
+                // Body rows of the element card, one panel per element kind (U02-011)
+                let mut panel_ctx = ElementPanelCtx {
+                    canvas_w,
+                    canvas_h,
+                    click_through,
+                    active_color_target: &mut *active_color_target,
+                    rules_list,
+                    t,
+                    loc,
+                };
+                render_element_panel(ui, idx, elem, &mut panel_ctx);
             });
 
         card_centers.push(card_resp.response.rect.center().y);
@@ -2456,12 +2145,14 @@ fn render_overlay_inspector(
             let dst = session.target_idx;
             if src < overlay.elements.len() && dst <= overlay.elements.len() {
                 if dst < src {
-                    push_undo(overlay);
+                    let snapshot = overlay.clone();
+                    push_overlay_undo(undo_stack, redo_stack, &snapshot);
                     let item = overlay.elements.remove(src);
                     overlay.elements.insert(dst, item);
                     *selected_idx = Some(dst);
                 } else if dst > src + 1 {
-                    push_undo(overlay);
+                    let snapshot = overlay.clone();
+                    push_overlay_undo(undo_stack, redo_stack, &snapshot);
                     let item = overlay.elements.remove(src);
                     overlay.elements.insert(dst - 1, item);
                     *selected_idx = Some(dst - 1);
@@ -2488,26 +2179,7 @@ fn render_overlay_inspector(
         if let Some(pointer) = pointer_pos {
             if session.source_idx < overlay.elements.len() {
                 let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("elem_drag_float")));
-                let (badge_text, _) = match &overlay.elements[session.source_idx] {
-                    OverlayElement::Crosshair { .. } => ("CROSSHAIR", t.accent_ink),
-                    OverlayElement::Text { .. } => ("TEXT", t.ink),
-                    OverlayElement::Image { .. } => ("IMAGE", t.faint),
-                    OverlayElement::Shape { shape_type, .. } => (
-                        match shape_type {
-                            ShapeKind::Rectangle => "SQUARE",
-                            ShapeKind::Circle => "CIRCLE",
-                            ShapeKind::Arrow => "ARROW",
-                            ShapeKind::Line => "LINE",
-                        },
-                        t.accent_ink,
-                    ),
-                    OverlayElement::Graph { .. } => ("GRAPH", t.good),
-                    OverlayElement::ClockTimer { .. } => ("CLOCK", t.ink),
-                    OverlayElement::InteractiveControl { .. } => ("CONTROL", t.accent_ink),
-                    OverlayElement::SystemTelemetry { .. } => ("STATUS", t.warn),
-                    OverlayElement::MediaWidget { .. } => ("MEDIA", t.good),
-                    OverlayElement::KeyVisualizer { .. } => ("KEYS", t.faint),
-                };
+                let (badge_text, _) = element_badge(&overlay.elements[session.source_idx], t, loc);
                 let float_rect = Rect::from_min_size(pointer + vec2(12.0, 10.0), vec2(110.0, 26.0));
                 p.rect_filled(float_rect, CornerRadius::same(4), t.bg);
                 p.rect_stroke(float_rect, CornerRadius::same(4), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
@@ -2525,7 +2197,8 @@ fn render_overlay_inspector(
     // Handle cloning
     if let Some(idx) = clone_idx {
         if idx < overlay.elements.len() {
-            push_undo(overlay);
+            let snapshot = overlay.clone();
+            push_overlay_undo(undo_stack, redo_stack, &snapshot);
             let mut cloned = overlay.elements[idx].clone();
             let (ew, eh) = get_element_size(&cloned);
             *cloned.id_mut() = format!("{}_copy", cloned.id());
@@ -2547,7 +2220,8 @@ fn render_overlay_inspector(
     // Handle removal
     if let Some(r_idx) = remove_idx {
         if r_idx < overlay.elements.len() {
-            push_undo(overlay);
+            let snapshot = overlay.clone();
+            push_overlay_undo(undo_stack, redo_stack, &snapshot);
             overlay.elements.remove(r_idx);
             if *selected_idx == Some(r_idx) {
                 *selected_idx = None;
@@ -2562,7 +2236,800 @@ fn render_overlay_inspector(
     ui.add_space(4.0);
 }
 
+/// Dispatches one element card body to its per-kind panel.
+fn render_element_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    match elem {
+        OverlayElement::Crosshair { .. } => render_crosshair_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::Text { .. } => render_text_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::Image { .. } => render_image_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::Shape { .. } => render_shape_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::Graph { .. } => render_graph_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::ClockTimer { .. } => render_clock_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::InteractiveControl { .. } => render_control_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::SystemTelemetry { .. } => render_telemetry_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::MediaWidget { .. } => render_media_panel(ui, elem_idx, elem, ctx),
+        OverlayElement::KeyVisualizer { .. } => render_key_visualizer_panel(ui, elem_idx, elem, ctx),
+    }
+}
+
+fn render_crosshair_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::Crosshair { style, size, color, thickness, gap, center_dot, x, y, rotation, .. } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    let styles = [
+        (CrosshairStyle::Cross, loc.overlay_studio_crosshair_cross),
+        (CrosshairStyle::TShaped, loc.overlay_studio_crosshair_t),
+        (CrosshairStyle::Circle, loc.overlay_studio_crosshair_circle),
+        (CrosshairStyle::Dot, loc.overlay_studio_crosshair_dot),
+    ];
+    ui.horizontal(|ui| {
+        for (s, lbl) in styles {
+            let is_s = *style == s;
+            let kind = if is_s { Kind::Primary } else { Kind::Secondary };
+            if widgets::button(ui, lbl, kind, 0.0).clicked() {
+                *style = s;
+            }
+        }
+    });
+
+    render_color_chip(ui, loc.overlay_studio_chip_color, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+    if active_element_slot(*ctx.active_color_target, elem_idx) == Some(ElementColorSlot::Primary) {
+        render_inline_color_editor(ui, color, false, t, loc);
+    }
+
+    ui.columns(3, |cols| {
+        cols[0].add(egui::DragValue::new(size).range(4.0..=128.0).prefix(loc.overlay_studio_field_size));
+        cols[1].add(egui::DragValue::new(thickness).range(1.0..=8.0).prefix(loc.overlay_studio_field_thick));
+        cols[2].add(egui::DragValue::new(gap).range(0.0..=32.0).prefix(loc.overlay_studio_field_gap));
+    });
+    ui.checkbox(center_dot, loc.overlay_studio_crosshair_center_dot);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    ui.columns(2, |cols| {
+        cols[0].add(egui::DragValue::new(x).range(crosshair_coord_range(ctx.canvas_w)).prefix(loc.overlay_studio_field_x).suffix(loc.overlay_studio_unit_px));
+        cols[1].add(egui::DragValue::new(y).range(crosshair_coord_range(ctx.canvas_h)).prefix(loc.overlay_studio_field_y).suffix(loc.overlay_studio_unit_px));
+    });
+}
+
+fn render_text_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::Text {
+        text,
+        font_size,
+        color,
+        x,
+        y,
+        bold,
+        font_family,
+        rotation,
+        on_click,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.add(
+        egui::TextEdit::singleline(text)
+            .desired_width(ui.available_width())
+            .hint_text(loc.overlay_studio_hint_text)
+    );
+
+    // Font Family ComboBox
+    let font_opts = [
+        "Inter",
+        "Archivo",
+        "Geist Mono",
+        "Segoe UI",
+        "Consolas",
+        "Arial",
+        "Impact",
+        "Tahoma",
+        "Verdana",
+        "Comic Sans MS",
+        "Trebuchet MS",
+        "Georgia",
+        "Courier New",
+    ];
+    egui::ComboBox::from_id_salt(ui.scope_id().with(("font_combo", elem_idx)))
+        .selected_text(font_family.as_str())
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for f in font_opts {
+                ui.selectable_value(font_family, f.to_string(), f);
+            }
+        });
+
+    render_color_chip(ui, loc.overlay_studio_chip_text_color, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+    if active_element_slot(*ctx.active_color_target, elem_idx) == Some(ElementColorSlot::Primary) {
+        render_inline_color_editor(ui, color, true, t, loc);
+    }
+
+    ui.columns(2, |cols| {
+        cols[0].add(egui::DragValue::new(font_size).range(8.0..=72.0).prefix(loc.overlay_studio_field_size).suffix(loc.overlay_studio_unit_pt));
+        cols[1].checkbox(bold, loc.overlay_studio_text_bold);
+    });
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    let (nat_w, nat_h) = text_size_estimate(text, *font_size);
+    render_position_rows(ui, x, y, nat_w, nat_h, ctx.canvas_w, ctx.canvas_h, loc);
+
+    // On-Click Action
+    if !ctx.click_through {
+        render_element_click_action_ui(ui, on_click, ctx.rules_list, elem_idx, t, loc);
+    }
+}
+
+fn render_image_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::Image { path, x, y, width, height, opacity, lock_aspect, rotation, on_click, .. } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.horizontal(|ui| {
+        if widgets::button(ui, loc.overlay_studio_btn_browse, Kind::Secondary, 0.0).clicked() {
+            if let Some(picked) = rfd::FileDialog::new()
+                .add_filter(loc.overlay_studio_file_filter_image, &["png", "jpg", "jpeg", "bmp", "ico", "webp"])
+                .pick_file()
+            {
+                *path = picked.to_string_lossy().to_string();
+                if let Ok(img) = image::open(&picked) {
+                    let (nw, nh) = (img.width() as f32, img.height() as f32);
+                    if nw > 0.0 && nh > 0.0 {
+                        let max_w = (ctx.canvas_w - 16.0).max(8.0);
+                        let max_h = (ctx.canvas_h - 16.0).max(8.0);
+                        if nw > max_w || nh > max_h {
+                            let scale_factor = (max_w / nw).min(max_h / nh);
+                            *width = (nw * scale_factor).round().max(8.0);
+                            *height = (nh * scale_factor).round().max(8.0);
+                        } else {
+                            *width = nw;
+                            *height = nh;
+                        }
+                    }
+                }
+            }
+        }
+        let img_path_resp = ui.add(
+            egui::TextEdit::singleline(path)
+                .desired_width(ui.available_width())
+                .min_size(vec2(0.0, theme::CONTROL_H))
+                .margin(vec2(8.0, 5.0))
+                .hint_text(loc.overlay_studio_hint_img_path),
+        );
+        if img_path_resp.changed() || img_path_resp.lost_focus() {
+            let clean = path.trim().trim_matches('"').trim_matches('\'').to_string();
+            if clean != *path {
+                *path = clean;
+            }
+        }
+    });
+
+    // Width & Height with Aspect Ratio Lock
+    render_size_rows(
+        ui,
+        width,
+        height,
+        Some(lock_aspect),
+        ctx.canvas_w,
+        ctx.canvas_h,
+        IMAGE_SIZE_LIMITS,
+        (loc.overlay_studio_img_lock_aspect, loc.overlay_studio_img_unlock_aspect),
+        loc,
+        t,
+    );
+
+    ui.add(
+        egui::Slider::new(opacity, 0.0..=1.0)
+            .text(loc.overlay_studio_elem_img_opacity)
+            .custom_formatter(|v, _| format!("{:.0}%", v * 100.0)),
+    );
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+
+    if !ctx.click_through {
+        render_element_click_action_ui(ui, on_click, ctx.rules_list, elem_idx, t, loc);
+    }
+}
+
+fn render_shape_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::Shape {
+        shape_type,
+        x,
+        y,
+        width,
+        height,
+        thickness,
+        color,
+        filled,
+        fill_color,
+        corner_radius,
+        lock_aspect,
+        rotation,
+        on_click,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    let shapes = [
+        (ShapeKind::Rectangle, loc.overlay_studio_shape_rect),
+        (ShapeKind::Circle, loc.overlay_studio_shape_circle),
+        (ShapeKind::Arrow, loc.overlay_studio_shape_arrow),
+        (ShapeKind::Line, loc.overlay_studio_shape_line),
+    ];
+    ui.horizontal(|ui| {
+        for (s, lbl) in shapes {
+            let is_s = *shape_type == s;
+            let kind = if is_s { Kind::Primary } else { Kind::Secondary };
+            if widgets::button(ui, lbl, kind, 0.0).clicked() {
+                *shape_type = s;
+            }
+        }
+    });
+
+    let is_fillable = *shape_type == ShapeKind::Rectangle || *shape_type == ShapeKind::Circle;
+    if is_fillable {
+        ui.columns(2, |cols| {
+            render_color_chip(&mut cols[0], loc.overlay_studio_chip_color, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+            if *filled {
+                render_color_chip(&mut cols[1], loc.overlay_studio_chip_fill, fill_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+            } else {
+                cols[1].checkbox(filled, loc.overlay_studio_shape_fill);
+            }
+        });
+        if *filled {
+            ui.checkbox(filled, loc.overlay_studio_shape_fill);
+        }
+    } else {
+        render_color_chip(ui, loc.overlay_studio_chip_color, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+    }
+
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) if is_fillable => render_inline_color_editor(ui, fill_color, true, t, loc),
+        _ => {}
+    }
+
+    let can_round = *shape_type == ShapeKind::Rectangle || *shape_type == ShapeKind::Line;
+    if can_round {
+        ui.columns(2, |cols| {
+            cols[0].add(egui::DragValue::new(thickness).range(1.0..=32.0).prefix(loc.overlay_studio_field_thick).suffix(loc.overlay_studio_unit_px));
+            cols[1].add(egui::DragValue::new(corner_radius).range(0.0..=64.0).prefix(loc.overlay_studio_field_radius).suffix(loc.overlay_studio_unit_px));
+        });
+    } else {
+        ui.add(egui::DragValue::new(thickness).range(1.0..=32.0).prefix(loc.overlay_studio_field_thick).suffix(loc.overlay_studio_unit_px));
+    }
+
+    render_size_rows(
+        ui,
+        width,
+        height,
+        Some(lock_aspect),
+        ctx.canvas_w,
+        ctx.canvas_h,
+        SHAPE_SIZE_LIMITS,
+        (loc.overlay_studio_img_lock_aspect, loc.overlay_studio_img_unlock_aspect),
+        loc,
+        t,
+    );
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+
+    if !ctx.click_through {
+        render_element_click_action_ui(ui, on_click, ctx.rules_list, elem_idx, t, loc);
+    }
+}
+
+fn render_graph_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::Graph {
+        metric,
+        style,
+        sample_count,
+        color,
+        fill_color,
+        bg_color,
+        show_current_val,
+        x,
+        y,
+        width,
+        height,
+        rotation,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_graph_metric).size(10.0).family(theme::semibold()).color(t.faint));
+        let metric_lbl = match metric {
+            crate::models::GraphMetric::SystemCpu => loc.overlay_studio_graph_metric_cpu,
+            crate::models::GraphMetric::ProcessCpu => loc.overlay_studio_graph_metric_proc_cpu,
+            crate::models::GraphMetric::SystemRam => loc.overlay_studio_graph_metric_ram,
+            crate::models::GraphMetric::ProcessRam => loc.overlay_studio_graph_metric_proc_ram,
+            crate::models::GraphMetric::Fps => loc.overlay_studio_graph_metric_fps,
+            crate::models::GraphMetric::Battery => loc.overlay_studio_graph_metric_battery,
+            crate::models::GraphMetric::Network => loc.overlay_studio_graph_metric_network,
+        };
+        egui::ComboBox::from_id_salt(ui.scope_id().with(("graph_metric", elem_idx)))
+            .selected_text(metric_lbl)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(metric, crate::models::GraphMetric::SystemCpu, loc.overlay_studio_graph_metric_cpu);
+                ui.selectable_value(metric, crate::models::GraphMetric::ProcessCpu, loc.overlay_studio_graph_metric_proc_cpu);
+                ui.selectable_value(metric, crate::models::GraphMetric::SystemRam, loc.overlay_studio_graph_metric_ram);
+                ui.selectable_value(metric, crate::models::GraphMetric::ProcessRam, loc.overlay_studio_graph_metric_proc_ram);
+                ui.selectable_value(metric, crate::models::GraphMetric::Fps, loc.overlay_studio_graph_metric_fps);
+                ui.selectable_value(metric, crate::models::GraphMetric::Battery, loc.overlay_studio_graph_metric_battery);
+                ui.selectable_value(metric, crate::models::GraphMetric::Network, loc.overlay_studio_graph_metric_network);
+            });
+    });
+
+    ui.horizontal(|ui| {
+        let styles = [
+            (crate::models::GraphStyle::AreaFilled, loc.overlay_studio_graph_style_area),
+            (crate::models::GraphStyle::Line, loc.overlay_studio_graph_style_line),
+            (crate::models::GraphStyle::Histogram, loc.overlay_studio_graph_style_histogram),
+        ];
+        for (s, lbl) in styles {
+            let is_s = *style == s;
+            let kind = if is_s { Kind::Primary } else { Kind::Secondary };
+            if widgets::button(ui, lbl, kind, 0.0).clicked() {
+                *style = s;
+            }
+        }
+    });
+
+    ui.add(egui::Slider::new(sample_count, 10..=120).text(loc.overlay_studio_graph_samples));
+    ui.checkbox(show_current_val, loc.overlay_studio_graph_show_val);
+
+    ui.columns(3, |cols| {
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_line, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_fill, fill_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[2], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Tertiary), ctx.active_color_target, t);
+    });
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, fill_color, true, t, loc),
+        Some(ElementColorSlot::Tertiary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        None => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+}
+
+fn render_clock_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::ClockTimer {
+        mode,
+        format_str,
+        font_size,
+        color,
+        bg_color,
+        countdown_total_ms,
+        bold,
+        x,
+        y,
+        width,
+        height,
+        rotation,
+        on_finish,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_timer_mode).size(10.0).family(theme::semibold()).color(t.faint));
+        let mode_lbl = match mode {
+            crate::models::TimerMode::Clock => loc.overlay_studio_timer_mode_clock,
+            crate::models::TimerMode::Stopwatch => loc.overlay_studio_timer_mode_stopwatch,
+            crate::models::TimerMode::Countdown => loc.overlay_studio_timer_mode_countdown,
+            crate::models::TimerMode::Uptime => loc.overlay_studio_timer_mode_uptime,
+        };
+        egui::ComboBox::from_id_salt(ui.scope_id().with(("clock_mode", elem_idx)))
+            .selected_text(mode_lbl)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(mode, crate::models::TimerMode::Clock, loc.overlay_studio_timer_mode_clock);
+                ui.selectable_value(mode, crate::models::TimerMode::Stopwatch, loc.overlay_studio_timer_mode_stopwatch);
+                ui.selectable_value(mode, crate::models::TimerMode::Countdown, loc.overlay_studio_timer_mode_countdown);
+                ui.selectable_value(mode, crate::models::TimerMode::Uptime, loc.overlay_studio_timer_mode_uptime);
+            });
+    });
+
+    match mode {
+        crate::models::TimerMode::Clock => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_timer_format).size(10.0).family(theme::semibold()).color(t.faint));
+                ui.text_edit_singleline(format_str);
+            });
+        }
+        crate::models::TimerMode::Countdown => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_timer_countdown).size(10.0).family(theme::semibold()).color(t.faint));
+                let mut total_ms = *countdown_total_ms;
+                if widgets::duration_millis_u64(ui, loc, ("timer_countdown", elem_idx), &mut total_ms, 1000.0..=86_400_000.0).changed() {
+                    *countdown_total_ms = total_ms;
+                }
+            });
+        }
+        _ => {}
+    }
+
+    ui.horizontal(|ui| {
+        ui.add(egui::Slider::new(font_size, 8.0..=48.0).text(loc.overlay_studio_font_size));
+        ui.checkbox(bold, loc.overlay_studio_text_bold);
+    });
+
+    ui.columns(2, |cols| {
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_text, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+    });
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        _ => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+
+    if !ctx.click_through && matches!(mode, crate::models::TimerMode::Countdown) {
+        render_element_click_action_ui(ui, on_finish, ctx.rules_list, elem_idx, t, loc);
+    }
+}
+
+/// Interactive-control kinds offered by the inspector's kind buttons. Kept separate from the
+/// user-visible labels so switching language cannot change which kind a button selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlKindChoice {
+    Button,
+    Toggle,
+    Slider,
+}
+
+fn render_control_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::InteractiveControl { control, color, bg_color, active_color, x, y, width, height, rotation, .. } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    let cur_kind = match control {
+        crate::models::InteractiveControlKind::Button { .. } => ControlKindChoice::Button,
+        crate::models::InteractiveControlKind::ToggleSwitch { .. } => ControlKindChoice::Toggle,
+        crate::models::InteractiveControlKind::Slider { .. } => ControlKindChoice::Slider,
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_control_kind).size(10.0).family(theme::semibold()).color(t.faint));
+        let kinds = [
+            (loc.overlay_studio_control_btn, ControlKindChoice::Button),
+            (loc.overlay_studio_control_toggle, ControlKindChoice::Toggle),
+            (loc.overlay_studio_control_slider, ControlKindChoice::Slider),
+        ];
+        for (lbl, kind_choice) in kinds {
+            let is_sel = cur_kind == kind_choice;
+            let kind = if is_sel { Kind::Primary } else { Kind::Secondary };
+            if widgets::button(ui, lbl, kind, 0.0).clicked() && !is_sel {
+                *control = match kind_choice {
+                    ControlKindChoice::Button => crate::models::InteractiveControlKind::Button {
+                        label: loc.overlay_studio_control_default_action.to_string(),
+                        icon: None,
+                        action: None,
+                    },
+                    ControlKindChoice::Toggle => crate::models::InteractiveControlKind::ToggleSwitch {
+                        label: loc.overlay_studio_control_toggle.to_string(),
+                        is_active: false,
+                        bind_rule_id: None,
+                        on_enable: None,
+                        on_disable: None,
+                    },
+                    ControlKindChoice::Slider => crate::models::InteractiveControlKind::Slider {
+                        label: loc.overlay_studio_control_default_volume.to_string(),
+                        value: 50.0,
+                        min: 0.0,
+                        max: 100.0,
+                        bind_target: crate::models::SliderBindTarget::MasterVolume,
+                    },
+                };
+            }
+        }
+    });
+
+    match control {
+        crate::models::InteractiveControlKind::Button { label, action, .. } => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
+                ui.text_edit_singleline(label);
+            });
+            render_element_click_action_ui(ui, action, ctx.rules_list, elem_idx, t, loc);
+        }
+        crate::models::InteractiveControlKind::ToggleSwitch { label, is_active, on_enable, on_disable, .. } => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
+                ui.text_edit_singleline(label);
+            });
+            ui.checkbox(is_active, loc.overlay_studio_control_initial_state);
+            render_element_click_action_ui(ui, on_enable, ctx.rules_list, elem_idx + 100, t, loc);
+            render_element_click_action_ui(ui, on_disable, ctx.rules_list, elem_idx + 200, t, loc);
+        }
+        crate::models::InteractiveControlKind::Slider { label, value, min, max, bind_target } => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_control_label).size(10.0).family(theme::semibold()).color(t.faint));
+                ui.text_edit_singleline(label);
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(loc.overlay_studio_control_slider_target).size(10.0).family(theme::semibold()).color(t.faint));
+                let target_lbl = match bind_target {
+                    crate::models::SliderBindTarget::MasterVolume => loc.overlay_studio_slider_master_volume,
+                    crate::models::SliderBindTarget::CustomVariable => loc.overlay_studio_slider_custom_variable,
+                    crate::models::SliderBindTarget::OverlayOpacity => loc.overlay_studio_slider_overlay_opacity,
+                    crate::models::SliderBindTarget::ProcessVolume => loc.overlay_studio_slider_process_volume,
+                };
+                egui::ComboBox::from_id_salt(ui.scope_id().with(("slider_target", elem_idx)))
+                    .selected_text(target_lbl)
+                    .width(ui.available_width() - 8.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(bind_target, crate::models::SliderBindTarget::MasterVolume, loc.overlay_studio_slider_master_volume);
+                        ui.selectable_value(bind_target, crate::models::SliderBindTarget::CustomVariable, loc.overlay_studio_slider_custom_variable);
+                        ui.selectable_value(bind_target, crate::models::SliderBindTarget::OverlayOpacity, loc.overlay_studio_slider_overlay_opacity);
+                        ui.selectable_value(bind_target, crate::models::SliderBindTarget::ProcessVolume, loc.overlay_studio_slider_process_volume);
+                    });
+            });
+            ui.columns(2, |cols| {
+                cols[0].add(egui::DragValue::new(min).prefix(loc.overlay_studio_field_min));
+                cols[1].add(egui::DragValue::new(max).prefix(loc.overlay_studio_field_max));
+            });
+            ui.add(egui::Slider::new(value, *min..=*max).text(loc.overlay_studio_control_label));
+        }
+    }
+
+    ui.columns(3, |cols| {
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_text, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[2], loc.overlay_studio_chip_active, active_color, element_color_target(elem_idx, ElementColorSlot::Tertiary), ctx.active_color_target, t);
+    });
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        Some(ElementColorSlot::Tertiary) => render_inline_color_editor(ui, active_color, true, t, loc),
+        None => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+}
+
+fn render_telemetry_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::SystemTelemetry {
+        kind,
+        style,
+        color,
+        bg_color,
+        x,
+        y,
+        width,
+        height,
+        rotation,
+        on_click,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_telemetry_kind).size(10.0).family(theme::semibold()).color(t.faint));
+        let kind_lbl = match kind {
+            crate::models::TelemetryKind::Battery => loc.overlay_studio_telemetry_kind_battery,
+            crate::models::TelemetryKind::AudioMicStatus => loc.overlay_studio_telemetry_kind_audio,
+            crate::models::TelemetryKind::EngineStatus => loc.overlay_studio_telemetry_kind_engine,
+        };
+        egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_kind", elem_idx)))
+            .selected_text(kind_lbl)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(kind, crate::models::TelemetryKind::Battery, loc.overlay_studio_telemetry_kind_battery);
+                ui.selectable_value(kind, crate::models::TelemetryKind::AudioMicStatus, loc.overlay_studio_telemetry_kind_audio);
+                ui.selectable_value(kind, crate::models::TelemetryKind::EngineStatus, loc.overlay_studio_telemetry_kind_engine);
+            });
+    });
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_telemetry_style).size(10.0).family(theme::semibold()).color(t.faint));
+        let style_lbl = match style {
+            crate::models::TelemetryStyle::Badge => loc.overlay_studio_telemetry_style_badge,
+            crate::models::TelemetryStyle::Compact => loc.overlay_studio_telemetry_style_compact,
+            crate::models::TelemetryStyle::Detailed => loc.overlay_studio_telemetry_style_detailed,
+        };
+        egui::ComboBox::from_id_salt(ui.scope_id().with(("telem_style", elem_idx)))
+            .selected_text(style_lbl)
+            .width(ui.available_width() - 8.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(style, crate::models::TelemetryStyle::Badge, loc.overlay_studio_telemetry_style_badge);
+                ui.selectable_value(style, crate::models::TelemetryStyle::Compact, loc.overlay_studio_telemetry_style_compact);
+                ui.selectable_value(style, crate::models::TelemetryStyle::Detailed, loc.overlay_studio_telemetry_style_detailed);
+            });
+    });
+
+    ui.columns(2, |cols| {
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_color, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+    });
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        _ => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+
+    if !ctx.click_through {
+        render_element_click_action_ui(ui, on_click, ctx.rules_list, elem_idx, t, loc);
+    }
+}
+
+fn render_media_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::MediaWidget { show_controls, compact, color, bg_color, x, y, width, height, rotation, .. } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    ui.horizontal(|ui| {
+        ui.checkbox(show_controls, loc.overlay_studio_media_controls);
+        ui.checkbox(compact, loc.overlay_studio_compact_mode);
+    });
+
+    ui.columns(2, |cols| {
+        render_color_chip(&mut cols[0], loc.overlay_studio_chip_text, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+        render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+    });
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        _ => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, MEDIA_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+}
+
+fn render_key_visualizer_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, ctx: &mut ElementPanelCtx<'_>) {
+    let OverlayElement::KeyVisualizer {
+        layout,
+        max_keys,
+        decay_seconds,
+        show_modifiers_only,
+        color,
+        bg_color,
+        active_color,
+        x,
+        y,
+        width,
+        height,
+        rotation,
+        ..
+    } = elem else {
+        return;
+    };
+    let t = ctx.t;
+    let loc = ctx.loc;
+    let mut changed_layout = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(loc.overlay_studio_keyvis_layout).size(10.0).family(theme::semibold()).color(t.faint));
+        let selected_text = match layout {
+            crate::models::KeyVisualizerLayout::WasdMouse => loc.overlay_studio_keyvis_wasd_mouse,
+            crate::models::KeyVisualizerLayout::WasdOnly => loc.overlay_studio_keyvis_wasd_only,
+            crate::models::KeyVisualizerLayout::ActionRpg => loc.overlay_studio_keyvis_action_rpg,
+            crate::models::KeyVisualizerLayout::MouseOnly => loc.overlay_studio_keyvis_mouse_only,
+            crate::models::KeyVisualizerLayout::TextStream => loc.overlay_studio_keyvis_text_stream,
+        };
+        egui::ComboBox::from_id_salt(format!("kv_layout_{elem_idx}"))
+            .selected_text(selected_text)
+            .show_ui(ui, |ui| {
+                if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::WasdMouse, loc.overlay_studio_keyvis_wasd_mouse).clicked() {
+                    changed_layout = true;
+                }
+                if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::WasdOnly, loc.overlay_studio_keyvis_wasd_only).clicked() {
+                    changed_layout = true;
+                }
+                if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::ActionRpg, loc.overlay_studio_keyvis_action_rpg).clicked() {
+                    changed_layout = true;
+                }
+                if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::MouseOnly, loc.overlay_studio_keyvis_mouse_only).clicked() {
+                    changed_layout = true;
+                }
+                if ui.selectable_value(layout, crate::models::KeyVisualizerLayout::TextStream, loc.overlay_studio_keyvis_text_stream).clicked() {
+                    changed_layout = true;
+                }
+            });
+    });
+    if changed_layout {
+        match layout {
+            crate::models::KeyVisualizerLayout::WasdMouse => { *width = 170.0; *height = 105.0; }
+            crate::models::KeyVisualizerLayout::WasdOnly => { *width = 120.0; *height = 100.0; }
+            crate::models::KeyVisualizerLayout::ActionRpg => { *width = 160.0; *height = 110.0; }
+            crate::models::KeyVisualizerLayout::MouseOnly => { *width = 90.0; *height = 70.0; }
+            crate::models::KeyVisualizerLayout::TextStream => { *width = 160.0; *height = 32.0; }
+        }
+    }
+
+    if *layout == crate::models::KeyVisualizerLayout::TextStream {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(loc.overlay_studio_key_max).size(10.0).family(theme::semibold()).color(t.faint));
+            ui.add(egui::DragValue::new(max_keys).range(1..=8));
+            ui.label(RichText::new(loc.overlay_studio_key_decay).size(10.0).family(theme::semibold()).color(t.faint));
+            widgets::duration_secs_f32(ui, loc, ("key_decay", elem_idx), decay_seconds, 0.2..=5.0);
+        });
+        ui.checkbox(show_modifiers_only, loc.overlay_studio_key_modifiers_only);
+    }
+
+    if *layout == crate::models::KeyVisualizerLayout::TextStream {
+        ui.columns(2, |cols| {
+            render_color_chip(&mut cols[0], loc.overlay_studio_chip_text, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+            render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+        });
+    } else {
+        ui.columns(3, |cols| {
+            render_color_chip(&mut cols[0], loc.overlay_studio_chip_text, color, element_color_target(elem_idx, ElementColorSlot::Primary), ctx.active_color_target, t);
+            render_color_chip(&mut cols[1], loc.overlay_studio_chip_bg, bg_color, element_color_target(elem_idx, ElementColorSlot::Secondary), ctx.active_color_target, t);
+            render_color_chip(&mut cols[2], loc.overlay_studio_chip_glow, active_color, element_color_target(elem_idx, ElementColorSlot::Tertiary), ctx.active_color_target, t);
+        });
+    }
+
+    match active_element_slot(*ctx.active_color_target, elem_idx) {
+        Some(ElementColorSlot::Primary) => render_inline_color_editor(ui, color, true, t, loc),
+        Some(ElementColorSlot::Secondary) => render_inline_color_editor(ui, bg_color, true, t, loc),
+        Some(ElementColorSlot::Tertiary) => render_inline_color_editor(ui, active_color, true, t, loc),
+        None => {}
+    }
+
+    render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, KEYVISUALIZER_SIZE_LIMITS, ("", ""), loc, t);
+
+    render_rotation_control(ui, rotation, t, loc);
+
+    render_position_rows(ui, x, y, *width, *height, ctx.canvas_w, ctx.canvas_h, loc);
+}
+
 // ----------------- ELEMENT ON-CLICK ACTION UI (POINT 7) -----------------
+/// Entry written when a rule is picked from the on-click list: the "Trigger" row starts the
+/// rule, the "Toggle" row switches it. Both variants are executed by the renderer, so both must
+/// stay authorable (U02-007). The toggle label comes from the catalog (`overlay_studio_on_click_toggle`).
+fn rule_click_action(rule_id: &str, toggle: bool) -> OverlayClickAction {
+    if toggle {
+        OverlayClickAction::ToggleRule { rule_id: rule_id.to_string() }
+    } else {
+        OverlayClickAction::TriggerRule { rule_id: rule_id.to_string() }
+    }
+}
+
 fn render_element_click_action_ui(
     ui: &mut Ui,
     on_click: &mut Option<OverlayClickAction>,
@@ -2577,9 +3044,13 @@ fn render_element_click_action_ui(
         let current_lbl: String = match on_click {
             None => loc.overlay_studio_on_click_none.to_string(),
             Some(OverlayClickAction::CloseOverlay) => loc.overlay_studio_on_click_close.to_string(),
-            Some(OverlayClickAction::TriggerRule { rule_id } | OverlayClickAction::ToggleRule { rule_id }) => {
+            Some(OverlayClickAction::TriggerRule { rule_id }) => {
                 let name = rules_list.iter().find(|(id, _)| id == rule_id).map(|(_, n)| n.as_str()).unwrap_or(rule_id);
                 format!("{}: {name}", loc.overlay_studio_on_click_trigger)
+            }
+            Some(OverlayClickAction::ToggleRule { rule_id }) => {
+                let name = rules_list.iter().find(|(id, _)| id == rule_id).map(|(_, n)| n.as_str()).unwrap_or(rule_id);
+                format!("{}: {name}", loc.overlay_studio_on_click_toggle)
             }
             Some(OverlayClickAction::KillProcess { process_name }) => {
                 format!("{}: {process_name}", loc.overlay_studio_on_click_kill_prefix)
@@ -2626,9 +3097,16 @@ fn render_element_click_action_ui(
                 if !rules_list.is_empty() {
                     ui.separator();
                     for (r_id, r_name) in rules_list {
-                        let is_run = matches!(on_click, Some(OverlayClickAction::TriggerRule { rule_id } | OverlayClickAction::ToggleRule { rule_id }) if rule_id == r_id);
-                        if ui.selectable_label(is_run, format!("{}: {r_name}", loc.overlay_studio_on_click_trigger)).clicked() {
-                            *on_click = Some(OverlayClickAction::TriggerRule { rule_id: r_id.clone() });
+                        let is_trigger = matches!(on_click, Some(OverlayClickAction::TriggerRule { rule_id }) if rule_id == r_id);
+                        if ui.selectable_label(is_trigger, format!("{}: {r_name}", loc.overlay_studio_on_click_trigger)).clicked() {
+                            *on_click = Some(rule_click_action(r_id, false));
+                        }
+                        // ToggleRule is executed by the renderer but used to be unauthorable
+                        // here: both variants shared one entry that always wrote TriggerRule, so
+                        // a loaded ToggleRule was silently downgraded on reselect (U02-007).
+                        let is_toggle = matches!(on_click, Some(OverlayClickAction::ToggleRule { rule_id }) if rule_id == r_id);
+                        if ui.selectable_label(is_toggle, format!("{}: {r_name}", loc.overlay_studio_on_click_toggle)).clicked() {
+                            *on_click = Some(rule_click_action(r_id, true));
                         }
                     }
                 }
@@ -2760,6 +3238,186 @@ pub fn clamp_card_to_monitor(overlay: &mut OverlayDefinition, screen_w: f32, scr
     if overlay.anchor == OverlayAnchor::Custom {
         overlay.rect.x = overlay.rect.x.clamp(0.0, (screen_w - overlay.rect.width).max(0.0));
         overlay.rect.y = overlay.rect.y.clamp(0.0, (screen_h - overlay.rect.height).max(0.0));
+    }
+}
+
+/// Badge label and colour for one element kind, shared by the inspector card header and the
+/// floating drag preview (U02-014).
+fn element_badge(elem: &OverlayElement, t: &Tokens, loc: &crate::i18n::Strings) -> (&'static str, Color32) {
+    match elem {
+        OverlayElement::Crosshair { .. } => (loc.overlay_studio_badge_crosshair, t.accent_ink),
+        OverlayElement::Text { .. } => (loc.overlay_studio_badge_text, t.ink),
+        OverlayElement::Image { .. } => (loc.overlay_studio_badge_image, t.faint),
+        OverlayElement::Shape { shape_type, .. } => (
+            match shape_type {
+                ShapeKind::Rectangle => loc.overlay_studio_badge_square,
+                ShapeKind::Circle => loc.overlay_studio_badge_circle,
+                ShapeKind::Arrow => loc.overlay_studio_badge_arrow,
+                ShapeKind::Line => loc.overlay_studio_badge_line,
+            },
+            t.accent_ink,
+        ),
+        OverlayElement::Graph { .. } => (loc.overlay_studio_badge_graph, t.good),
+        OverlayElement::ClockTimer { .. } => (loc.overlay_studio_badge_clock, t.ink),
+        OverlayElement::InteractiveControl { .. } => (loc.overlay_studio_badge_control, t.accent_ink),
+        OverlayElement::SystemTelemetry { .. } => (loc.overlay_studio_badge_status, t.warn),
+        OverlayElement::MediaWidget { .. } => (loc.overlay_studio_badge_media, t.good),
+        OverlayElement::KeyVisualizer { .. } => (loc.overlay_studio_badge_keys, t.faint),
+    }
+}
+
+/// Canvas-space centre of one element. Crosshair `x`/`y` are absolute offsets from the card
+/// corner and treat 0 as the "centre of the card" sentinel; every other kind is laid out from
+/// its top-left corner. Shared by the hit-test, the selection handles and the selection
+/// highlight so the copies cannot drift apart (U02-013).
+fn element_center_on_canvas(card_canvas_rect: Rect, elem: &OverlayElement, zoom: f32) -> Pos2 {
+    match elem {
+        OverlayElement::Crosshair { x, y, .. } => {
+            if *x > 0.0 && *y > 0.0 {
+                card_canvas_rect.min + vec2(*x * zoom, *y * zoom)
+            } else {
+                card_canvas_rect.center()
+            }
+        }
+        _ => {
+            let (raw_w, raw_h) = get_element_size(elem);
+            card_canvas_rect.min + vec2((elem.x() + raw_w * 0.5) * zoom, (elem.y() + raw_h * 0.5) * zoom)
+        }
+    }
+}
+
+/// Selection handles of the currently selected element, in canvas coordinates.
+#[derive(Debug, Clone, Copy)]
+struct SelectionHandles {
+    idx: usize,
+    rot_rect: Rect,
+    resize_rect: Rect,
+    center: Pos2,
+    half_w: f32,
+    half_h: f32,
+}
+
+/// What the pointer is over when a canvas drag starts. Resolved once so the selected and the
+/// no-selection paths share one hit order instead of two copies (U02-013).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CanvasHit {
+    Rotate {
+        idx: usize,
+        center: Pos2,
+        base_angle_rad: f32,
+    },
+    Resize {
+        idx: usize,
+    },
+    Element {
+        idx: usize,
+    },
+    CardResize,
+    CardBody,
+    Empty,
+}
+
+/// Hit order: rotation and resize handles of the selected element, then elements (topmost
+/// first), then the card resize handle, then the card body/pill, then empty canvas.
+fn canvas_hit_test(
+    pos: Pos2,
+    selected_handles: Option<SelectionHandles>,
+    elem_rects: &[(usize, Rect)],
+    card_resize_handle: Rect,
+    pill_rect: Rect,
+    card_canvas_rect: Rect,
+) -> CanvasHit {
+    if let Some(handles) = selected_handles {
+        if handles.rot_rect.expand(4.0).contains(pos) {
+            let unrot_vec = vec2(-handles.half_w - 3.0, -handles.half_h - 3.0);
+            return CanvasHit::Rotate {
+                idx: handles.idx,
+                center: handles.center,
+                base_angle_rad: unrot_vec.y.atan2(unrot_vec.x),
+            };
+        }
+        if handles.resize_rect.expand(4.0).contains(pos) {
+            return CanvasHit::Resize { idx: handles.idx };
+        }
+    }
+    if let Some((hit_idx, _)) = elem_rects.iter().rev().find(|(_, r)| r.expand(3.0).contains(pos)) {
+        return CanvasHit::Element { idx: *hit_idx };
+    }
+    if card_resize_handle.expand(4.0).contains(pos) {
+        return CanvasHit::CardResize;
+    }
+    if pill_rect.expand(2.0).contains(pos) || card_canvas_rect.contains(pos) {
+        return CanvasHit::CardBody;
+    }
+    CanvasHit::Empty
+}
+
+/// Applies the side effects of starting a canvas drag (undo snapshot before the first mutation,
+/// selection change) and returns the drag mode to track. One implementation for every hit path
+/// (U02-013).
+fn begin_canvas_drag(
+    studio: &mut OverlayStudioState,
+    hit: CanvasHit,
+    pos: Pos2,
+    card_sx: f32,
+    card_sy: f32,
+) -> CanvasDragMode {
+    match hit {
+        CanvasHit::Rotate { idx, center, base_angle_rad } => {
+            studio.push_undo_snapshot();
+            CanvasDragMode::Rotate { idx, center, base_angle_rad }
+        }
+        CanvasHit::Resize { idx } => {
+            studio.push_undo_snapshot();
+            let (raw_w, raw_h) = match studio.overlay.elements.get(idx) {
+                Some(OverlayElement::Crosshair { size, .. }) => (*size, *size),
+                Some(OverlayElement::Text { font_size, .. }) => (*font_size, *font_size),
+                Some(elem) => get_element_size(elem),
+                None => (0.0, 0.0),
+            };
+            CanvasDragMode::Resize {
+                idx,
+                start_w: raw_w,
+                start_h: raw_h,
+                start_pointer: pos,
+            }
+        }
+        CanvasHit::Element { idx } => {
+            studio.push_undo_snapshot();
+            studio.selected_element_idx = Some(idx);
+            let (elem_x, elem_y) = match studio.overlay.elements.get(idx) {
+                Some(elem) => (elem.x(), elem.y()),
+                None => (0.0, 0.0),
+            };
+            CanvasDragMode::Move {
+                idx,
+                start_x: elem_x,
+                start_y: elem_y,
+                start_pointer: pos,
+            }
+        }
+        CanvasHit::CardResize => {
+            studio.push_undo_snapshot();
+            studio.selected_element_idx = None;
+            CanvasDragMode::ResizeCard {
+                start_pointer: pos,
+                start_w: studio.overlay.rect.width,
+                start_h: studio.overlay.rect.height,
+            }
+        }
+        CanvasHit::CardBody => {
+            studio.push_undo_snapshot();
+            studio.selected_element_idx = None;
+            CanvasDragMode::MoveCard {
+                start_pointer: pos,
+                start_card_sx: card_sx,
+                start_card_sy: card_sy,
+            }
+        }
+        CanvasHit::Empty => {
+            studio.selected_element_idx = None;
+            CanvasDragMode::Pan { start_pointer: pos, start_pan: studio.canvas_pan }
+        }
     }
 }
 
@@ -3018,7 +3676,9 @@ fn render_overlay_canvas(
         let is_active = m.index == active_mon.index;
         let m_rect = monitor_rects.iter().find(|(idx, _)| *idx == m.index).map(|(_, r)| *r).unwrap_or(Rect::ZERO);
 
-        let mon_label = format!("DISPLAY {}×{}", m.width, m.height);
+        let mon_w = m.width.to_string();
+        let mon_h = m.height.to_string();
+        let mon_label = fill(loc.overlay_studio_canvas_display, &[&mon_w, &mon_h]);
 
         if is_active {
             // Active Monitor Artboard (illuminated border + subtle surface)
@@ -3110,15 +3770,7 @@ fn render_overlay_canvas(
         let ew = (raw_w * zoom).max(4.0);
         let eh = (raw_h * zoom).max(4.0);
         let angle_rad = elem.rotation().to_radians();
-        let center = if matches!(elem, OverlayElement::Crosshair { .. }) {
-            if elem.x() > 0.0 && elem.y() > 0.0 {
-                card_canvas_rect.min + vec2(elem.x() * zoom, elem.y() * zoom)
-            } else {
-                card_canvas_rect.center()
-            }
-        } else {
-            card_canvas_rect.min + vec2((elem.x() + raw_w * 0.5) * zoom, (elem.y() + raw_h * 0.5) * zoom)
-        };
+        let center = element_center_on_canvas(card_canvas_rect, elem, zoom);
         (i, get_rotated_aabb(center, ew * 0.5, eh * 0.5, angle_rad))
     }).collect();
 
@@ -3132,22 +3784,21 @@ fn render_overlay_canvas(
             let ew = (raw_w * zoom).max(4.0);
             let eh = (raw_h * zoom).max(4.0);
             let angle_rad = elem.rotation().to_radians();
-            let center = if matches!(elem, OverlayElement::Crosshair { .. }) {
-                if elem.x() > 0.0 && elem.y() > 0.0 {
-                    card_canvas_rect.min + vec2(elem.x() * zoom, elem.y() * zoom)
-                } else {
-                    card_canvas_rect.center()
-                }
-            } else {
-                card_canvas_rect.min + vec2((elem.x() + raw_w * 0.5) * zoom, (elem.y() + raw_h * 0.5) * zoom)
-            };
+            let center = element_center_on_canvas(card_canvas_rect, elem, zoom);
             let half_w = ew * 0.5;
             let half_h = eh * 0.5;
             let p0 = rotate_point(center + vec2(-half_w - 3.0, -half_h - 3.0), center, angle_rad);
             let p2 = rotate_point(center + vec2(half_w + 3.0, half_h + 3.0), center, angle_rad);
             let rot_rect = Rect::from_center_size(p0, vec2(16.0, 16.0));
             let resize_rect = Rect::from_center_size(p2, vec2(16.0, 16.0));
-            Some((rot_rect, resize_rect, center, half_w, half_h))
+            Some(SelectionHandles {
+                idx: sel,
+                rot_rect,
+                resize_rect,
+                center,
+                half_w,
+                half_h,
+            })
         } else {
             None
         }
@@ -3165,89 +3816,16 @@ fn render_overlay_canvas(
         if let Some(pos) = pointer_pos {
             if is_space_down || is_middle_down || is_secondary_down {
                 drag_mode = CanvasDragMode::Pan { start_pointer: pos, start_pan: studio.canvas_pan };
-            } else if let (Some(sel), Some((rot_rect, resize_rect, center, half_w, half_h))) = (studio.selected_element_idx, selected_handles) {
-                if rot_rect.expand(4.0).contains(pos) {
-                    studio.push_undo_snapshot();
-                    let unrot_vec = vec2(-half_w - 3.0, -half_h - 3.0);
-                    let base_angle_rad = unrot_vec.y.atan2(unrot_vec.x);
-                    drag_mode = CanvasDragMode::Rotate {
-                        idx: sel,
-                        center,
-                        base_angle_rad,
-                    };
-                } else if resize_rect.expand(4.0).contains(pos) {
-                    studio.push_undo_snapshot();
-                    let elem = &studio.overlay.elements[sel];
-                    let (raw_w, raw_h) = match elem {
-                        OverlayElement::Crosshair { size, .. } => (*size, *size),
-                        OverlayElement::Text { font_size, .. } => (*font_size, *font_size),
-                        _ => get_element_size(elem),
-                    };
-                    drag_mode = CanvasDragMode::Resize {
-                        idx: sel,
-                        start_w: raw_w,
-                        start_h: raw_h,
-                        start_pointer: pos,
-                    };
-                } else if let Some((hit_idx, _)) = elem_rects.iter().rev().find(|(_, r)| r.expand(3.0).contains(pos)) {
-                    studio.push_undo_snapshot();
-                    studio.selected_element_idx = Some(*hit_idx);
-                    let (elem_x, elem_y) = (studio.overlay.elements[*hit_idx].x(), studio.overlay.elements[*hit_idx].y());
-                    drag_mode = CanvasDragMode::Move {
-                        idx: *hit_idx,
-                        start_x: elem_x,
-                        start_y: elem_y,
-                        start_pointer: pos,
-                    };
-                } else if card_resize_handle.expand(4.0).contains(pos) {
-                    studio.push_undo_snapshot();
-                    studio.selected_element_idx = None;
-                    drag_mode = CanvasDragMode::ResizeCard {
-                        start_pointer: pos,
-                        start_w: studio.overlay.rect.width,
-                        start_h: studio.overlay.rect.height,
-                    };
-                } else if pill_rect.expand(2.0).contains(pos) || card_canvas_rect.contains(pos) {
-                    studio.push_undo_snapshot();
-                    studio.selected_element_idx = None;
-                    drag_mode = CanvasDragMode::MoveCard {
-                        start_pointer: pos,
-                        start_card_sx: card_sx,
-                        start_card_sy: card_sy,
-                    };
-                } else {
-                    studio.selected_element_idx = None;
-                    drag_mode = CanvasDragMode::Pan { start_pointer: pos, start_pan: studio.canvas_pan };
-                }
-            } else if let Some((hit_idx, _)) = elem_rects.iter().rev().find(|(_, r)| r.expand(3.0).contains(pos)) {
-                studio.push_undo_snapshot();
-                studio.selected_element_idx = Some(*hit_idx);
-                let (elem_x, elem_y) = (studio.overlay.elements[*hit_idx].x(), studio.overlay.elements[*hit_idx].y());
-                drag_mode = CanvasDragMode::Move {
-                    idx: *hit_idx,
-                    start_x: elem_x,
-                    start_y: elem_y,
-                    start_pointer: pos,
-                };
-            } else if card_resize_handle.expand(4.0).contains(pos) {
-                studio.push_undo_snapshot();
-                studio.selected_element_idx = None;
-                drag_mode = CanvasDragMode::ResizeCard {
-                    start_pointer: pos,
-                    start_w: studio.overlay.rect.width,
-                    start_h: studio.overlay.rect.height,
-                };
-            } else if pill_rect.expand(2.0).contains(pos) || card_canvas_rect.contains(pos) {
-                studio.push_undo_snapshot();
-                studio.selected_element_idx = None;
-                drag_mode = CanvasDragMode::MoveCard {
-                    start_pointer: pos,
-                    start_card_sx: card_sx,
-                    start_card_sy: card_sy,
-                };
             } else {
-                studio.selected_element_idx = None;
-                drag_mode = CanvasDragMode::Pan { start_pointer: pos, start_pan: studio.canvas_pan };
+                let hit = canvas_hit_test(
+                    pos,
+                    selected_handles,
+                    &elem_rects,
+                    card_resize_handle,
+                    pill_rect,
+                    card_canvas_rect,
+                );
+                drag_mode = begin_canvas_drag(studio, hit, pos, card_sx, card_sy);
             }
         }
     } else if canvas_sense_resp.clicked() {
@@ -3256,25 +3834,10 @@ fn render_overlay_canvas(
             if let Some((i, _)) = hit {
                 let hit_idx = *i;
                 studio.selected_element_idx = Some(hit_idx);
-                // Interactive canvas testing on click!
-                match &mut studio.overlay.elements[hit_idx] {
-                    OverlayElement::InteractiveControl {
-                        control: crate::models::InteractiveControlKind::ToggleSwitch { is_active, .. },
-                        ..
-                    } => {
-                        *is_active = !*is_active;
-                    }
-                    OverlayElement::ClockTimer { is_running, mode, countdown_remaining_ms, countdown_total_ms, .. } => {
-                        if *mode == crate::models::TimerMode::Stopwatch || *mode == crate::models::TimerMode::Countdown {
-                            if *mode == crate::models::TimerMode::Countdown && *countdown_remaining_ms == 0 {
-                                *countdown_remaining_ms = *countdown_total_ms;
-                            }
-                            *is_running = !*is_running;
-                        }
-                    }
-                    OverlayElement::MediaWidget { .. } => {}
-                    _ => {}
-                }
+                // Explicit studio-local testing: the preview does not forward pointer input to
+                // the renderer (see `studio_preview_render_inputs`), so stateful widgets are
+                // exercised on the real element here (U02-002).
+                studio_test_click(&mut studio.overlay.elements[hit_idx]);
             } else if !card_canvas_rect.contains(pos) && !pill_rect.contains(pos) {
                 studio.selected_element_idx = None;
                 for m in &monitors {
@@ -3435,8 +3998,8 @@ fn render_overlay_canvas(
                                 *y = snap(*start_y + total_delta.y).clamp(0.0, (studio.overlay.rect.height - eh).max(0.0));
                             }
                             OverlayElement::Crosshair { x, y, .. } => {
-                                *x = snap(*start_x + total_delta.x).clamp(0.0, studio.overlay.rect.width);
-                                *y = snap(*start_y + total_delta.y).clamp(0.0, studio.overlay.rect.height);
+                                *x = clamp_crosshair_coord(snap(*start_x + total_delta.x), studio.overlay.rect.width);
+                                *y = clamp_crosshair_coord(snap(*start_y + total_delta.y), studio.overlay.rect.height);
                             }
                         }
                         clamp_elements_to_canvas(&mut studio.overlay);
@@ -3535,10 +4098,10 @@ fn render_overlay_canvas(
         if let Some(pos) = pointer_pos {
             if is_space_down {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-            } else if let Some((rot_rect, resize_rect, _, _, _)) = selected_handles {
-                if rot_rect.expand(3.0).contains(pos) {
+            } else if let Some(handles) = selected_handles {
+                if handles.rot_rect.expand(3.0).contains(pos) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                } else if resize_rect.expand(3.0).contains(pos) {
+                } else if handles.resize_rect.expand(3.0).contains(pos) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
                 } else if elem_rects.iter().any(|(_, r)| r.expand(3.0).contains(pos)) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
@@ -3614,7 +4177,9 @@ fn render_overlay_canvas(
     // Card Header Pill
     painter.rect_filled(pill_rect, CornerRadius::same(3), Color32::from_rgba_unmultiplied(20, 26, 38, 220));
     painter.rect_stroke(pill_rect, CornerRadius::same(3), Stroke::new(1.0, t.accent_ink.gamma_multiply(0.4)), egui::StrokeKind::Inside);
-    let pill_text = format!("OVERLAY {}×{}", studio.overlay.rect.width as i32, studio.overlay.rect.height as i32);
+    let pill_w = (studio.overlay.rect.width as i32).to_string();
+    let pill_h = (studio.overlay.rect.height as i32).to_string();
+    let pill_text = fill(loc.overlay_studio_canvas_overlay, &[&pill_w, &pill_h]);
     painter.text(pill_rect.center(), egui::Align2::CENTER_CENTER, pill_text, FontId::new(9.5, theme::mono_bold()), t.accent_ink);
 
     // Card Resize Handle at bottom-right corner
@@ -3624,49 +4189,38 @@ fn render_overlay_canvas(
 
     // 6. Render Overlay Elements inside Card boundaries using Card Clipping
     let card_painter = painter.with_clip_rect(card_canvas_rect.intersect(canvas_rect));
+    // The preview deliberately renders the real elements with interaction disabled: a clone
+    // would silently discard every renderer-side state change, and live interaction would run
+    // the element's real `on_click` from inside the editor (U02-002).
+    let preview_inputs = studio_preview_render_inputs();
+    let preview_target_process = studio.overlay.target_process.clone();
 
-    for (elem_idx, elem) in studio.overlay.elements.iter().enumerate() {
+    for elem_idx in 0..studio.overlay.elements.len() {
         let mut render_ctx = crate::gui::components::overlay_renderer::RenderContext {
             painter: &card_painter,
             card_canvas_rect,
             zoom,
             global_opacity: studio.overlay.opacity,
-            is_interactive: true,
+            is_interactive: preview_inputs.is_interactive,
             pointer_pos,
-            pointer_clicked: canvas_sense_resp.clicked(),
-            pointer_down: canvas_sense_resp.is_pointer_button_down_on(),
+            pointer_clicked: preview_inputs.pointer_clicked,
+            pointer_down: preview_inputs.pointer_down,
             override_text: None,
-            target_process: studio.overlay.target_process.as_deref(),
+            target_process: preview_target_process.as_deref(),
         };
-        let mut elem_clone = elem.clone();
-        crate::gui::components::overlay_renderer::render_element(&mut render_ctx, &mut elem_clone);
+        crate::gui::components::overlay_renderer::render_element(
+            &mut render_ctx,
+            &mut studio.overlay.elements[elem_idx],
+        );
 
         // Draw selection highlight box & interactive resize handle (rotated OBB)
         if studio.selected_element_idx == Some(elem_idx) {
+            let elem = &studio.overlay.elements[elem_idx];
             let (raw_w, raw_h) = get_element_size(elem);
             let ew = (raw_w * zoom).max(4.0);
             let eh = (raw_h * zoom).max(4.0);
             let angle_rad = elem.rotation().to_radians();
-            let center = match elem {
-                OverlayElement::Crosshair { x, y, .. } => {
-                    if *x > 0.0 && *y > 0.0 {
-                        card_canvas_rect.min + vec2(*x * zoom, *y * zoom)
-                    } else {
-                        card_canvas_rect.center()
-                    }
-                }
-                OverlayElement::Text { x, y, .. }
-                | OverlayElement::Image { x, y, .. }
-                | OverlayElement::Shape { x, y, .. }
-                | OverlayElement::Graph { x, y, .. }
-                | OverlayElement::ClockTimer { x, y, .. }
-                | OverlayElement::InteractiveControl { x, y, .. }
-                | OverlayElement::SystemTelemetry { x, y, .. }
-                | OverlayElement::MediaWidget { x, y, .. }
-                | OverlayElement::KeyVisualizer { x, y, .. } => {
-                    card_canvas_rect.min + vec2((*x + raw_w * 0.5) * zoom, (*y + raw_h * 0.5) * zoom)
-                }
-            };
+            let center = element_center_on_canvas(card_canvas_rect, elem, zoom);
 
             let half_w = ew * 0.5;
             let half_h = eh * 0.5;
@@ -3693,7 +4247,15 @@ fn render_overlay_canvas(
             painter.line_segment([pos2(h_rect.left() + 3.0, h_rect.bottom() - 3.0), pos2(h_rect.right() - 3.0, h_rect.top() + 3.0)], Stroke::new(1.0, Color32::WHITE));
 
             // 3. Live coordinate tag with element size and rotation, rotating in lockstep with container
-            let coord_str = format!("X: {:.0} Y: {:.0} | {:.0}×{:.0} px | {:.0}°", elem.x(), elem.y(), raw_w, raw_h, elem.rotation());
+            let coord_x = format!("{:.0}", elem.x());
+            let coord_y = format!("{:.0}", elem.y());
+            let coord_w = format!("{:.0}", raw_w);
+            let coord_h = format!("{:.0}", raw_h);
+            let coord_rot = format!("{:.0}", elem.rotation());
+            let coord_str = fill(
+                loc.overlay_studio_canvas_coords,
+                &[&coord_x, &coord_y, &coord_w, &coord_h, &coord_rot],
+            );
             let font = FontId::new(9.5, theme::mono());
             let galley = painter.layout_no_wrap(coord_str, font, t.accent_ink);
             let tag_local = vec2(-half_w, half_h + 8.0);
@@ -4034,25 +4596,12 @@ mod tests {
             panic!("Expected InteractiveControl element");
         }
 
-        // Verify Text: font_size scaled down so text fits within 100x100
-        if let OverlayElement::Text { font_size, x, y, text, .. } = &overlay.elements[4] {
-            assert!(*font_size < 40.0);
-            let (ew, eh) = get_element_size(&OverlayElement::Text {
-                id: "".to_string(),
-                text: text.clone(),
-                font_size: *font_size,
-                color: [0; 4],
-                x: 0.0,
-                y: 0.0,
-                width: None,
-                height: None,
-                lock_aspect: false,
-                bold: false,
-                font_family: "".to_string(),
-                rotation: 0.0,
-                on_click: None,
-            });
-            assert!(*x >= 0.0 && *x + ew <= 100.0);
+        // Verify Text: the clamp never rewrites font_size (U02-003). An oversized label is moved
+        // to the card origin and clipped by the card painter at render time instead.
+        if let OverlayElement::Text { font_size, x, y, .. } = &overlay.elements[4] {
+            assert_eq!(*font_size, 40.0, "the clamp must not shrink the user's font");
+            assert_eq!(*x, 0.0);
+            let (_, eh) = text_size_estimate("FPS: 144", *font_size);
             assert!(*y >= 0.0 && *y + eh <= 100.0);
         } else {
             panic!("Expected Text element");
@@ -4326,14 +4875,27 @@ mod tests {
         assert!(clamped_rel_y + overlay.rect.height <= mon1.height as f32);
         assert!(clamped_neg_x >= 0.0);
 
-        // 5. Verify Canvas Display Header badge label formatting
-        let mon0_label = format!("DISPLAY {}×{}", monitors[0].width, monitors[0].height);
+        // 5. Verify Canvas Display Header badge label formatting (catalog value + fill helper)
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+        let mon0_label = fill(
+            loc.overlay_studio_canvas_display,
+            &[&monitors[0].width.to_string(), &monitors[0].height.to_string()],
+        );
         assert_eq!(mon0_label, "DISPLAY 2560×1440");
-        let mon1_label = format!("DISPLAY {}×{}", monitors[1].width, monitors[1].height);
+        let mon1_label = fill(
+            loc.overlay_studio_canvas_display,
+            &[&monitors[1].width.to_string(), &monitors[1].height.to_string()],
+        );
         assert_eq!(mon1_label, "DISPLAY 1080×1920");
 
         // 6. Verify Overlay Header Pill text formatting (no glyph, no brackets)
-        let pill_text = format!("OVERLAY {}×{}", overlay.rect.width as i32, overlay.rect.height as i32);
+        let pill_text = fill(
+            loc.overlay_studio_canvas_overlay,
+            &[
+                &(overlay.rect.width as i32).to_string(),
+                &(overlay.rect.height as i32).to_string(),
+            ],
+        );
         assert_eq!(pill_text, "OVERLAY 400×300");
 
         // 7. Verify Image & Card boundary clipping prevents bleeding into left settings panel
@@ -4345,5 +4907,847 @@ mod tests {
         assert_eq!(effective_clip.min.x, 400.0, "Clip rect must never extend left of canvas boundary");
         assert!(!effective_clip.intersects(left_panel_rect.shrink(0.1)), "Clip rect must not intersect left settings panel");
         assert!(effective_clip.is_positive());
+    }
+
+    // ---------------- U02-006: preset ids ----------------
+
+    #[test]
+    fn test_preset_slug_rejects_punctuation_only_name() {
+        assert_eq!(preset_slug("Crosshair").as_deref(), Some("overlay_crosshair"));
+        assert_eq!(preset_slug("  Gaming Crosshair  ").as_deref(), Some("overlay_gaming_crosshair"));
+        assert_eq!(preset_slug("!!!"), None);
+        assert_eq!(preset_slug("   "), None);
+        assert_eq!(preset_slug("__"), None);
+    }
+
+    #[test]
+    fn test_preset_id_collision_gets_unique_suffix() {
+        let existing = [("overlay_crosshair", "Gaming Crosshair"), ("overlay_telemetry", "System Telemetry")];
+
+        // A free id is used verbatim.
+        assert_eq!(unique_preset_id("overlay_hud", "HUD", &existing), "overlay_hud");
+
+        // A built-in id is never silently replaced: the new preset gets a suffix.
+        assert_eq!(unique_preset_id("overlay_crosshair", "Crosshair", &existing), "overlay_crosshair_2");
+
+        // Already-suffixed ids keep counting up.
+        let with_suffix = [("overlay_crosshair", "x"), ("overlay_crosshair_2", "y")];
+        assert_eq!(unique_preset_id("overlay_crosshair", "Crosshair", &with_suffix), "overlay_crosshair_3");
+
+        // A name collision is handled the same way, and re-running the same name always returns
+        // instead of looping forever on the taken name.
+        for _ in 0..5 {
+            assert_eq!(unique_preset_id("overlay_telemetry", "System Telemetry", &existing), "overlay_telemetry_2");
+        }
+    }
+
+    // ---------------- U02-001: element colour targets ----------------
+
+    #[test]
+    fn test_element_colour_targets_are_element_scoped() {
+        for elem_idx in [0usize, 4] {
+            for slot in [ElementColorSlot::Primary, ElementColorSlot::Secondary, ElementColorSlot::Tertiary] {
+                let target = element_color_target(elem_idx, slot);
+                assert!(
+                    !matches!(target, ColorPickerTarget::CardBg | ColorPickerTarget::CardBorder),
+                    "an element colour chip must never target the card style"
+                );
+                assert_eq!(active_element_slot(Some(target), elem_idx), Some(slot));
+                assert_eq!(active_element_slot(Some(target), elem_idx + 1), None);
+            }
+        }
+        assert_eq!(active_element_slot(Some(ColorPickerTarget::CardBg), 0), None);
+        assert_eq!(active_element_slot(Some(ColorPickerTarget::CardBorder), 0), None);
+        assert_eq!(active_element_slot(None, 0), None);
+    }
+
+    // ---------------- U02-004: crosshair sentinel ----------------
+
+    #[test]
+    fn test_crosshair_coordinates_never_hit_the_centre_sentinel() {
+        let range = crosshair_coord_range(100.0);
+        assert_eq!(*range.start(), 1.0);
+        assert_eq!(*range.end(), 100.0);
+        assert_eq!(clamp_crosshair_coord(0.0, 100.0), 1.0);
+        assert_eq!(clamp_crosshair_coord(-25.0, 100.0), 1.0);
+        assert_eq!(clamp_crosshair_coord(42.0, 100.0), 42.0);
+        assert_eq!(clamp_crosshair_coord(500.0, 100.0), 100.0);
+
+        // A legacy overlay saved with the sentinel / a negative value is clamped out of it.
+        let mut overlay = OverlayDefinition::default_crosshair();
+        overlay.rect.width = 120.0;
+        overlay.rect.height = 90.0;
+        if let OverlayElement::Crosshair { x, y, .. } = &mut overlay.elements[0] {
+            *x = 0.0;
+            *y = -12.0;
+        }
+        clamp_elements_to_canvas(&mut overlay);
+        if let OverlayElement::Crosshair { x, y, .. } = &overlay.elements[0] {
+            assert!(*x >= 1.0);
+            assert!(*y >= 1.0);
+        }
+    }
+
+    // ---------------- U02-002: preview interactivity ----------------
+
+    #[test]
+    fn test_studio_preview_is_not_interactive() {
+        use crate::models::InteractiveControlKind;
+
+        let inputs = studio_preview_render_inputs();
+        assert!(!inputs.is_interactive, "the studio must not execute element on_click actions");
+        assert!(!inputs.pointer_clicked);
+        assert!(!inputs.pointer_down);
+
+        // The explicit studio test path still toggles the widget, on the real element.
+        let mut elem = OverlayElement::InteractiveControl {
+            id: "switch".to_string(),
+            control: InteractiveControlKind::ToggleSwitch {
+                label: "Toggle".to_string(),
+                is_active: false,
+                bind_rule_id: None,
+                on_enable: None,
+                on_disable: None,
+            },
+            color: [255, 255, 255, 255],
+            bg_color: [0, 0, 0, 255],
+            active_color: [0, 255, 0, 255],
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+            rotation: 0.0,
+        };
+        studio_test_click(&mut elem);
+        if let OverlayElement::InteractiveControl {
+            control: InteractiveControlKind::ToggleSwitch { is_active, .. },
+            ..
+        } = &elem
+        {
+            assert!(*is_active);
+        } else {
+            panic!("expected the toggle switch to stay a toggle switch");
+        }
+
+        // The countdown starts from its full duration on the first studio click.
+        let mut timer = OverlayElement::ClockTimer {
+            id: "timer".to_string(),
+            mode: crate::models::TimerMode::Countdown,
+            format_str: "%H:%M".to_string(),
+            countdown_total_ms: 60_000,
+            countdown_remaining_ms: 0,
+            stopwatch_elapsed_ms: 0,
+            is_running: false,
+            font_size: 13.0,
+            color: [255, 255, 255, 255],
+            bg_color: [0, 0, 0, 0],
+            bold: false,
+            font_family: "Segoe UI".to_string(),
+            x: 0.0,
+            y: 0.0,
+            width: 80.0,
+            height: 24.0,
+            rotation: 0.0,
+            on_finish: None,
+        };
+        studio_test_click(&mut timer);
+        if let OverlayElement::ClockTimer { is_running, countdown_remaining_ms, .. } = &timer {
+            assert!(*is_running);
+            assert_eq!(*countdown_remaining_ms, 60_000);
+        }
+    }
+
+    // ---------------- U02-003: no per-frame clamping ----------------
+
+    #[test]
+    fn test_text_font_size_is_not_clamped_by_preview() {
+        let mut overlay = OverlayDefinition::default_crosshair();
+        overlay.rect.width = 80.0;
+        overlay.rect.height = 40.0;
+        overlay.elements = vec![OverlayElement::Text {
+            id: "label".to_string(),
+            text: "A very long label that cannot possibly fit".to_string(),
+            font_size: 48.0,
+            color: [255, 255, 255, 255],
+            x: 0.0,
+            y: 0.0,
+            width: None,
+            height: None,
+            lock_aspect: true,
+            bold: false,
+            font_family: "Segoe UI".to_string(),
+            rotation: 0.0,
+            on_click: None,
+        }];
+        clamp_elements_to_canvas(&mut overlay);
+        if let OverlayElement::Text { font_size, .. } = &overlay.elements[0] {
+            assert_eq!(*font_size, 48.0, "clamping must never rewrite the user's font size");
+        } else {
+            panic!("expected a Text element");
+        }
+
+        // The clamp is idempotent once the geometry was applied.
+        let mut once = overlay.clone();
+        clamp_elements_to_canvas(&mut once);
+        assert_eq!(overlay, once);
+    }
+
+    #[test]
+    fn test_overlay_geometry_ignores_presentation_only_edits() {
+        let overlay = OverlayDefinition::default_crosshair();
+        let geometry = overlay_geometry(&overlay);
+
+        let mut recoloured = overlay.clone();
+        recoloured.style.bg_color = [1, 2, 3, 4];
+        recoloured.opacity = 0.4;
+        assert_eq!(
+            overlay_geometry(&recoloured),
+            geometry,
+            "colour/opacity edits must not trigger the geometry clamp"
+        );
+
+        let mut moved = overlay.clone();
+        *moved.elements[0].x_mut() = 32.0;
+        assert_ne!(overlay_geometry(&moved), geometry, "a geometry edit must trigger the clamp");
+    }
+
+    #[test]
+    fn test_clamp_runs_only_when_geometry_changes() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ctx| {
+            let mut overlay = OverlayDefinition::default_crosshair();
+            overlay.rect.width = 200.0;
+            overlay.rect.height = 200.0;
+            overlay.elements.push(OverlayElement::Text {
+                id: "label".to_string(),
+                text: "Label".to_string(),
+                font_size: 24.0,
+                color: [255, 255, 255, 255],
+                x: 50.0,
+                y: 150.0,
+                width: None,
+                height: None,
+                lock_aspect: true,
+                bold: false,
+                font_family: "Segoe UI".to_string(),
+                rotation: 0.0,
+                on_click: None,
+            });
+            clamp_studio_geometry_if_changed(ctx, &mut overlay);
+            assert_eq!(overlay.elements[1].x(), 50.0, "the element already fits");
+
+            // Shrinking the card is a real geometry change and must clamp.
+            overlay.rect.width = 80.0;
+            clamp_studio_geometry_if_changed(ctx, &mut overlay);
+            assert!(overlay.elements[1].x() <= 80.0);
+
+            // Typing more text is presentation-only: the font size survives the next frames.
+            if let OverlayElement::Text { text, .. } = &mut overlay.elements[1] {
+                text.push_str(" with a much longer caption");
+            }
+            clamp_studio_geometry_if_changed(ctx, &mut overlay);
+            clamp_studio_geometry_if_changed(ctx, &mut overlay);
+            if let OverlayElement::Text { font_size, .. } = &overlay.elements[1] {
+                assert_eq!(*font_size, 24.0);
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    // ---------------- U02-005: one undo snapshot per inspector edit session ----------------
+
+    #[test]
+    fn test_property_edit_session_pushes_one_snapshot() {
+        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, false, String::new());
+        let before = studio.overlay.clone();
+
+        // First changed frame of a session: one snapshot of the pre-edit state.
+        studio.overlay.opacity = 0.5;
+        let snapshot = inspector_undo_snapshot(false, &before, &studio.overlay).expect("first frame must snapshot");
+        push_overlay_undo(&mut studio.undo_stack, &mut studio.redo_stack, &snapshot);
+        assert_eq!(studio.undo_stack.len(), 1);
+
+        // Later frames of the same drag must not pile up snapshots.
+        studio.overlay.opacity = 0.4;
+        assert!(inspector_undo_snapshot(true, &before, &studio.overlay).is_none());
+        assert!(inspector_edit_session_continues(true, false));
+        assert!(inspector_edit_session_continues(false, true));
+        assert!(!inspector_edit_session_continues(false, false));
+
+        // An unchanged frame never snapshots, and a duplicate snapshot is ignored.
+        assert!(inspector_undo_snapshot(false, &before, &before).is_none());
+        push_overlay_undo(&mut studio.undo_stack, &mut studio.redo_stack, &snapshot);
+        assert_eq!(studio.undo_stack.len(), 1);
+
+        // Ctrl+Z now restores the state from before the colour/size edit.
+        studio.undo();
+        assert_eq!(studio.overlay, before);
+    }
+
+    // ---------------- U02-007: toggle-rule authoring ----------------
+
+    #[test]
+    fn test_rule_click_entry_writes_the_chosen_variant() {
+        assert!(matches!(
+            rule_click_action("rule-1", false),
+            OverlayClickAction::TriggerRule { ref rule_id } if rule_id == "rule-1"
+        ));
+        assert!(matches!(
+            rule_click_action("rule-1", true),
+            OverlayClickAction::ToggleRule { ref rule_id } if rule_id == "rule-1"
+        ));
+    }
+
+    // ---------------- U02-008: library write failure path ----------------
+
+    #[test]
+    fn test_library_write_outcome_keeps_a_reachable_daemon_authoritative() {
+        use std::cell::Cell;
+
+        let applied = Cell::new(0usize);
+
+        // Daemon applied the change: no direct write.
+        assert_eq!(
+            finish_library_write(Ok(crate::ipc::IpcResponse::Ok), true, || {
+                applied.set(applied.get() + 1);
+                Ok(())
+            }),
+            LibraryWriteOutcome::Persisted
+        );
+        assert_eq!(applied.get(), 0);
+
+        // Daemon rejected the change: reported, never written behind its back.
+        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Error("denied".to_string())), true, || {
+            applied.set(applied.get() + 1);
+            Ok(())
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(applied.get(), 0);
+
+        // Unexpected response: same treatment.
+        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Pong), true, || {
+            applied.set(applied.get() + 1);
+            Ok(())
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(applied.get(), 0);
+
+        // Transport error but the daemon is still alive: reported, no second writer.
+        let outcome = finish_library_write(Err("pipe closed".to_string()), true, || {
+            applied.set(applied.get() + 1);
+            Ok(())
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(applied.get(), 0);
+
+        // Confirmed-offline daemon: the direct write is allowed and counted.
+        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
+            applied.set(applied.get() + 1);
+            Ok(())
+        });
+        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
+        assert_eq!(applied.get(), 1);
+
+        // A failing direct write is surfaced instead of a success toast.
+        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
+            Err(std::io::Error::other("disk full"))
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+    }
+
+    // ---------------- U02-010: shared size limits ----------------
+
+    #[test]
+    fn test_size_and_position_limits_stay_in_sync() {
+        assert_eq!(IMAGE_SIZE_LIMITS, SizeLimits { min_w: 8.0, min_h: 8.0 });
+        assert_eq!(SHAPE_SIZE_LIMITS, SizeLimits { min_w: 4.0, min_h: 4.0 });
+        assert_eq!(PANEL_SIZE_LIMITS, SizeLimits { min_w: 20.0, min_h: 15.0 });
+        assert_eq!(MEDIA_SIZE_LIMITS, SizeLimits { min_w: 40.0, min_h: 20.0 });
+        assert_eq!(KEYVISUALIZER_SIZE_LIMITS, SizeLimits { min_w: 30.0, min_h: 18.0 });
+
+        // The canvas clamp keeps at least the minimum size the inspector rows allow.
+        let mut overlay = OverlayDefinition::default_crosshair();
+        overlay.rect.width = 200.0;
+        overlay.rect.height = 200.0;
+        overlay.elements = vec![
+            OverlayElement::Image {
+                id: "img".to_string(),
+                path: String::new(),
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                opacity: 1.0,
+                lock_aspect: false,
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::Shape {
+                id: "shape".to_string(),
+                shape_type: ShapeKind::Rectangle,
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                thickness: 2.0,
+                color: [255, 255, 255, 255],
+                filled: false,
+                fill_color: [0, 0, 0, 0],
+                corner_radius: 0.0,
+                lock_aspect: false,
+                rotation: 0.0,
+                on_click: None,
+            },
+        ];
+        clamp_elements_to_canvas(&mut overlay);
+        if let OverlayElement::Image { width, height, .. } = &overlay.elements[0] {
+            assert!(*width >= IMAGE_SIZE_LIMITS.min_w);
+            assert!(*height >= IMAGE_SIZE_LIMITS.min_h);
+        } else {
+            panic!("expected an Image element");
+        }
+        if let OverlayElement::Shape { width, height, .. } = &overlay.elements[1] {
+            assert!(*width >= SHAPE_SIZE_LIMITS.min_w);
+            assert!(*height >= SHAPE_SIZE_LIMITS.min_h);
+        } else {
+            panic!("expected a Shape element");
+        }
+    }
+
+    // ---------------- U02-013: one hit order ----------------
+
+    #[test]
+    fn test_canvas_hit_test_order() {
+        let card = Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 200.0));
+        let pill = Rect::from_min_size(pos2(0.0, -20.0), vec2(114.0, 16.0));
+        let card_resize_handle = Rect::from_center_size(pos2(200.0, 200.0), vec2(14.0, 14.0));
+        let elem_rects = vec![
+            (0usize, Rect::from_min_max(pos2(0.0, 0.0), pos2(100.0, 100.0))),
+            (1usize, Rect::from_min_max(pos2(40.0, 40.0), pos2(60.0, 60.0))),
+        ];
+        let handles = Some(SelectionHandles {
+            idx: 1,
+            rot_rect: Rect::from_center_size(pos2(10.0, 10.0), vec2(16.0, 16.0)),
+            resize_rect: Rect::from_center_size(pos2(80.0, 80.0), vec2(16.0, 16.0)),
+            center: pos2(50.0, 50.0),
+            half_w: 20.0,
+            half_h: 20.0,
+        });
+
+        // The selected element's rotate/resize handles win over elements underneath them.
+        assert!(matches!(
+            canvas_hit_test(pos2(10.0, 10.0), handles, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::Rotate { idx: 1, .. }
+        ));
+        assert!(matches!(
+            canvas_hit_test(pos2(80.0, 80.0), handles, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::Resize { idx: 1 }
+        ));
+        // Topmost element wins when their rects overlap.
+        assert!(matches!(
+            canvas_hit_test(pos2(50.0, 50.0), handles, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::Element { idx: 1 }
+        ));
+        // Without a selection the handles do not exist: the element under them is hit.
+        assert!(matches!(
+            canvas_hit_test(pos2(55.0, 55.0), None, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::Element { idx: 1 }
+        ));
+        // Card resize handle, then card body, then empty canvas.
+        assert!(matches!(
+            canvas_hit_test(pos2(198.0, 198.0), None, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::CardResize
+        ));
+        assert!(matches!(
+            canvas_hit_test(pos2(150.0, 150.0), None, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::CardBody
+        ));
+        assert!(matches!(
+            canvas_hit_test(pos2(500.0, 500.0), None, &elem_rects, card_resize_handle, pill, card),
+            CanvasHit::Empty
+        ));
+
+        // Starting a drag applies the selection and exactly one undo snapshot; panning pushes none.
+        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, false, String::new());
+        let mode = begin_canvas_drag(&mut studio, CanvasHit::Element { idx: 0 }, pos2(5.0, 5.0), 0.0, 0.0);
+        assert!(matches!(mode, CanvasDragMode::Move { idx: 0, .. }));
+        assert_eq!(studio.selected_element_idx, Some(0));
+        assert_eq!(studio.undo_stack.len(), 1);
+        let mode = begin_canvas_drag(&mut studio, CanvasHit::Empty, pos2(5.0, 5.0), 0.0, 0.0);
+        assert!(matches!(mode, CanvasDragMode::Pan { .. }));
+        assert_eq!(studio.selected_element_idx, None);
+        assert_eq!(studio.undo_stack.len(), 1);
+    }
+
+    // ---------------- U02-014: one badge table ----------------
+
+    #[test]
+    fn test_element_badge_covers_every_kind() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let t = Tokens::get(&ctx);
+        let color = [255u8; 4];
+        let elements = vec![
+            OverlayElement::Crosshair {
+                id: "c".to_string(),
+                style: CrosshairStyle::Cross,
+                size: 14.0,
+                color,
+                thickness: 2.0,
+                gap: 4.0,
+                center_dot: true,
+                x: 10.0,
+                y: 10.0,
+                rotation: 0.0,
+            },
+            OverlayElement::Text {
+                id: "t".to_string(),
+                text: "T".to_string(),
+                font_size: 12.0,
+                color,
+                x: 0.0,
+                y: 0.0,
+                width: None,
+                height: None,
+                lock_aspect: true,
+                bold: false,
+                font_family: "Segoe UI".to_string(),
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::Image {
+                id: "i".to_string(),
+                path: String::new(),
+                x: 0.0,
+                y: 0.0,
+                width: 32.0,
+                height: 32.0,
+                opacity: 1.0,
+                lock_aspect: true,
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::Shape {
+                id: "s".to_string(),
+                shape_type: ShapeKind::Circle,
+                x: 0.0,
+                y: 0.0,
+                width: 32.0,
+                height: 32.0,
+                thickness: 2.0,
+                color,
+                filled: false,
+                fill_color: color,
+                corner_radius: 0.0,
+                lock_aspect: true,
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::Graph {
+                id: "g".to_string(),
+                metric: crate::models::GraphMetric::SystemCpu,
+                style: crate::models::GraphStyle::Line,
+                sample_count: 60,
+                color,
+                fill_color: color,
+                bg_color: color,
+                show_current_val: true,
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 40.0,
+                rotation: 0.0,
+            },
+            OverlayElement::ClockTimer {
+                id: "clk".to_string(),
+                mode: crate::models::TimerMode::Clock,
+                format_str: "%H:%M".to_string(),
+                countdown_total_ms: 60_000,
+                countdown_remaining_ms: 60_000,
+                stopwatch_elapsed_ms: 0,
+                is_running: false,
+                font_size: 13.0,
+                color,
+                bg_color: color,
+                bold: false,
+                font_family: "Segoe UI".to_string(),
+                x: 0.0,
+                y: 0.0,
+                width: 80.0,
+                height: 24.0,
+                rotation: 0.0,
+                on_finish: None,
+            },
+            OverlayElement::InteractiveControl {
+                id: "ctl".to_string(),
+                control: crate::models::InteractiveControlKind::Button {
+                    label: "Go".to_string(),
+                    icon: None,
+                    action: None,
+                },
+                color,
+                bg_color: color,
+                active_color: color,
+                x: 0.0,
+                y: 0.0,
+                width: 40.0,
+                height: 20.0,
+                rotation: 0.0,
+            },
+            OverlayElement::SystemTelemetry {
+                id: "tel".to_string(),
+                kind: crate::models::TelemetryKind::Battery,
+                style: crate::models::TelemetryStyle::Badge,
+                color,
+                bg_color: color,
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 28.0,
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::MediaWidget {
+                id: "media".to_string(),
+                show_controls: true,
+                compact: false,
+                color,
+                bg_color: color,
+                x: 0.0,
+                y: 0.0,
+                width: 220.0,
+                height: 54.0,
+                rotation: 0.0,
+            },
+            OverlayElement::KeyVisualizer {
+                id: "keys".to_string(),
+                layout: crate::models::KeyVisualizerLayout::WasdMouse,
+                max_keys: 4,
+                decay_seconds: 2.5,
+                show_modifiers_only: false,
+                color,
+                bg_color: color,
+                active_color: color,
+                x: 0.0,
+                y: 0.0,
+                width: 170.0,
+                height: 105.0,
+                rotation: 0.0,
+            },
+        ];
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+        let expected = [
+            loc.overlay_studio_badge_crosshair,
+            loc.overlay_studio_badge_text,
+            loc.overlay_studio_badge_image,
+            loc.overlay_studio_badge_circle,
+            loc.overlay_studio_badge_graph,
+            loc.overlay_studio_badge_clock,
+            loc.overlay_studio_badge_control,
+            loc.overlay_studio_badge_status,
+            loc.overlay_studio_badge_media,
+            loc.overlay_studio_badge_keys,
+        ];
+        for (elem, label) in elements.iter().zip(expected) {
+            let (badge, _) = element_badge(elem, &t, loc);
+            assert_eq!(badge, label);
+        }
+        // Shape variants share the label table with the card header.
+        let mut arrow = elements[3].clone();
+        if let OverlayElement::Shape { shape_type, .. } = &mut arrow {
+            *shape_type = ShapeKind::Arrow;
+        }
+        assert_eq!(element_badge(&arrow, &t, loc).0, loc.overlay_studio_badge_arrow);
+
+        // The badge table follows the active language, so a Russian studio does not show the
+        // English badge.
+        let ru = crate::i18n::get(crate::i18n::Language::Russian);
+        assert_eq!(
+            element_badge(&elements[0], &t, ru).0,
+            ru.overlay_studio_badge_crosshair
+        );
+    }
+
+    // ---------------- U02-012: studio strings come from the catalog ----------------
+
+    #[test]
+    fn test_fill_replaces_each_placeholder_once() {
+        assert_eq!(fill("{} {} {}", &["a", "b", "c"]), "a b c");
+        assert_eq!(fill("{} {}", &["left", "right"]), "left right");
+        assert_eq!(fill("{}", &[]), "{}");
+        assert_eq!(fill("no placeholders", &["ignored"]), "no placeholders");
+        // Positional, not all-occurrences: two placeholders get two different values.
+        assert_eq!(fill("{}{}", &["b", "a"]), "ba");
+    }
+
+    #[test]
+    fn test_studio_catalog_values_drive_the_rendered_labels() {
+        let en = crate::i18n::get(crate::i18n::Language::English);
+        let ru = crate::i18n::get(crate::i18n::Language::Russian);
+
+        // Field prefixes and units carry their own separator/space in the catalog.
+        assert_eq!(en.overlay_studio_field_screen_x, "Screen X: ");
+        assert_eq!(ru.overlay_studio_field_screen_x, "Экран X: ");
+        assert_eq!(en.overlay_studio_field_w, "W: ");
+        assert_eq!(ru.overlay_studio_field_w, "Ш: ");
+        assert_eq!(en.overlay_studio_unit_px, " px");
+        assert_eq!(en.overlay_studio_unit_pt, " pt");
+
+        // Colour chips and palette swatches are localised.
+        assert_eq!(en.overlay_studio_chip_bg, "BG:");
+        assert_eq!(ru.overlay_studio_chip_bg, "ФОН:");
+        assert_eq!(en.overlay_studio_chip_text, "TEXT:");
+        assert_eq!(ru.overlay_studio_chip_text, "ТЕКСТ:");
+        assert_ne!(en.overlay_studio_palette_cyan, ru.overlay_studio_palette_cyan);
+        assert_ne!(en.overlay_studio_crosshair_cross, ru.overlay_studio_crosshair_cross);
+
+        // Badges, control defaults and the preset fallback are catalog values, not literals.
+        assert_ne!(en.overlay_studio_badge_crosshair, ru.overlay_studio_badge_crosshair);
+        assert_eq!(en.overlay_studio_control_default_action, "Action");
+        assert_eq!(ru.overlay_studio_control_default_action, "Действие");
+        assert_eq!(en.overlay_default_preset_name, "Custom Overlay");
+        assert_eq!(ru.overlay_default_preset_name, "Свой оверлей");
+        assert_eq!(en.overlay_studio_on_click_toggle, "Toggle");
+        assert_eq!(ru.overlay_studio_on_click_toggle, "Переключить");
+        assert_eq!(en.overlay_studio_file_filter_image, "Image");
+        assert_eq!(ru.overlay_studio_file_filter_image, "Изображение");
+
+        // Preset save/delete failure toasts.
+        assert_eq!(
+            en.presets_save_invalid_name,
+            "Preset name needs at least one letter or digit"
+        );
+        assert_eq!(en.presets_save_failed, "Could not save the preset; see the log");
+        assert_eq!(
+            en.presets_delete_failed,
+            "Could not delete the preset; see the log"
+        );
+        assert_ne!(en.presets_save_failed, ru.presets_save_failed);
+        assert_ne!(en.presets_delete_failed, ru.presets_delete_failed);
+        assert_ne!(en.presets_save_invalid_name, ru.presets_save_invalid_name);
+
+        // Multi-placeholder canvas labels are filled positionally.
+        assert_eq!(
+            fill(en.overlay_studio_canvas_display, &["1920", "1080"]),
+            "DISPLAY 1920×1080"
+        );
+        assert_eq!(
+            fill(ru.overlay_studio_canvas_display, &["1920", "1080"]),
+            "МОНИТОР 1920×1080"
+        );
+        assert_eq!(fill(en.overlay_studio_canvas_overlay, &["400", "300"]), "OVERLAY 400×300");
+        assert_eq!(
+            fill(en.overlay_studio_canvas_coords, &["12", "34", "56", "78", "90"]),
+            "X: 12 Y: 34 | 56×78 px | 90°"
+        );
+    }
+
+    /// Guards the conversion: the English studio literals replaced by `Strings` fields must not
+    /// come back into production code. The test module itself contains these strings, so the
+    /// scan stops at `#[cfg(test)]` and ignores comment lines.
+    #[test]
+    fn test_no_hardcoded_studio_english_literals_remain() {
+        let source = include_str!("overlay_modal.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(source);
+        let production = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let denied = [
+            // field prefixes / units
+            r#""W: ""#,
+            r#""H: ""#,
+            r#""X: ""#,
+            r#""Y: ""#,
+            r#""Screen X: ""#,
+            r#""Screen Y: ""#,
+            r#""Width: ""#,
+            r#""Height: ""#,
+            r#""Border: ""#,
+            r#""Radius: ""#,
+            r#""Size: ""#,
+            r#""Thick: ""#,
+            r#""Gap: ""#,
+            r#""Min: ""#,
+            r#""Max: ""#,
+            r#"" px""#,
+            r#"" pt""#,
+            // colour chip labels
+            r#""BG:""#,
+            r#""BORDER:""#,
+            r#""COLOR:""#,
+            r#""TEXT COLOR:""#,
+            r#""TEXT:""#,
+            r#""FILL:""#,
+            r#""LINE:""#,
+            r#""ACTIVE:""#,
+            r#""GLOW:""#,
+            // palette swatch names
+            r#""Cyan""#,
+            r#""Green""#,
+            r#""Red""#,
+            r#""Amber""#,
+            r#""White""#,
+            r#""Dark""#,
+            r#""Clear""#,
+            // crosshair styles and clock panel
+            r#""Cross""#,
+            r#""T-Shape""#,
+            r#""Circle""#,
+            r#""Dot""#,
+            r#""Font Size""#,
+            r#""Bold""#,
+            // control kind defaults
+            r#""Action""#,
+            r#""Volume""#,
+            r#""Button""#,
+            r#""Toggle""#,
+            r#""Slider""#,
+            // element badges
+            r#""CROSSHAIR""#,
+            r#""TEXT""#,
+            r#""IMAGE""#,
+            r#""SQUARE""#,
+            r#""CIRCLE""#,
+            r#""ARROW""#,
+            r#""LINE""#,
+            r#""GRAPH""#,
+            r#""CLOCK""#,
+            r#""CONTROL""#,
+            r#""STATUS""#,
+            r#""MEDIA""#,
+            r#""KEYS""#,
+            // presets, filter, on-click and canvas labels
+            r#""Custom Overlay""#,
+            r#""Preset name needs at least one letter or digit""#,
+            r#""Could not save the preset; see the log""#,
+            r#""Could not delete the preset; see the log""#,
+            r#""Image""#,
+            r#""DISPLAY {}×{}""#,
+            r#""OVERLAY {}×{}""#,
+            r#""RULE_CLICK_TOGGLE_LABEL""#,
+        ];
+        for literal in denied {
+            assert!(
+                !production.contains(literal),
+                "hardcoded overlay-studio string {literal} must come from Strings"
+            );
+        }
+    }
+
+    // ---------------- U02-015: rotation normalisation ----------------
+
+    #[test]
+    fn test_rotation_normalisation_matches_canvas() {
+        assert_eq!(normalize_rotation_deg(-90.0), 270.0);
+        assert_eq!(normalize_rotation_deg(270.0), 270.0);
+        assert_eq!(normalize_rotation_deg(360.0), 0.0);
+        assert_eq!(normalize_rotation_deg(-720.0), 0.0);
+        assert!((normalize_rotation_deg(45.5) - 45.5).abs() < f32::EPSILON);
     }
 }

@@ -99,9 +99,42 @@ fn push_notification(event_type: SystemEventType, device_id: Option<String>) {
     notification_wake().notify_one();
 }
 
-pub struct SystemEventsWatcher {
+/// Idle threshold for the `UserIdle`/`UserActive` transition events. The system-event trigger
+/// itself is a fixed idle notification; rule conditions that need a custom duration compare
+/// `get_user_idle_seconds` with their own threshold in the engine.
+const DEFAULT_IDLE_THRESHOLD_MS: u32 = 300_000;
+
+/// Edge detector for the configured user-idle threshold.
+struct IdleTransition {
     last_idle_state: bool,
-    idle_threshold_ms: u32,
+    threshold_ms: u32,
+}
+
+impl IdleTransition {
+    fn new(threshold_ms: u32) -> Self {
+        Self {
+            last_idle_state: false,
+            threshold_ms,
+        }
+    }
+
+    /// Returns the crossing event when the idle state flips for this threshold.
+    fn update(&mut self, idle_ms: u32) -> Option<SystemEventType> {
+        let is_idle_now = idle_ms >= self.threshold_ms;
+        if is_idle_now == self.last_idle_state {
+            return None;
+        }
+        self.last_idle_state = is_idle_now;
+        Some(if is_idle_now {
+            SystemEventType::UserIdle
+        } else {
+            SystemEventType::UserActive
+        })
+    }
+}
+
+pub struct SystemEventsWatcher {
+    idle: IdleTransition,
     last_power_is_ac: Option<bool>,
     last_network_is_connected: Option<bool>,
     last_session_locked: Option<bool>,
@@ -111,8 +144,7 @@ impl SystemEventsWatcher {
     pub fn new() -> Self {
         ensure_notifications_started();
         Self {
-            last_idle_state: false,
-            idle_threshold_ms: 300_000, // default 5 minutes
+            idle: IdleTransition::new(DEFAULT_IDLE_THRESHOLD_MS),
             last_power_is_ac: None,
             last_network_is_connected: None,
             last_session_locked: None,
@@ -147,14 +179,8 @@ impl SystemEventsWatcher {
                 let current_tick = GetTickCount();
                 let idle_ms = current_tick.saturating_sub(lii.dwTime);
 
-                let is_idle_now = idle_ms >= self.idle_threshold_ms;
-                if is_idle_now != self.last_idle_state {
-                    self.last_idle_state = is_idle_now;
-                    if is_idle_now {
-                        events.push(SystemEventNotification::new(SystemEventType::UserIdle));
-                    } else {
-                        events.push(SystemEventNotification::new(SystemEventType::UserActive));
-                    }
+                if let Some(event_type) = self.idle.update(idle_ms) {
+                    events.push(SystemEventNotification::new(event_type));
                 }
             }
 
@@ -587,5 +613,29 @@ pub fn is_session_locked() -> bool {
     #[cfg(not(windows))]
     {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_idle_threshold_transitions() {
+        let mut idle = IdleTransition::new(DEFAULT_IDLE_THRESHOLD_MS);
+        assert_eq!(idle.update(299_999), None);
+        assert_eq!(idle.update(300_000), Some(SystemEventType::UserIdle));
+        assert_eq!(idle.update(300_500), None);
+        assert_eq!(idle.update(0), Some(SystemEventType::UserActive));
+        assert_eq!(idle.update(0), None);
+    }
+
+    #[test]
+    fn test_configured_idle_threshold_is_honoured() {
+        let mut idle = IdleTransition::new(60_000);
+        assert_eq!(idle.update(59_000), None);
+        assert_eq!(idle.update(60_000), Some(SystemEventType::UserIdle));
+        assert_eq!(idle.update(60_500), None);
+        assert_eq!(idle.update(0), Some(SystemEventType::UserActive));
     }
 }

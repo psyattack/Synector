@@ -325,6 +325,42 @@ fn same_path(a: &Path, b: &Path) -> bool {
     !a.as_os_str().is_empty() && !b.as_os_str().is_empty() && normalized_path(a) == normalized_path(b)
 }
 
+/// True when the running executable is the masked daemon copy rather than the user's binary.
+fn is_masked_daemon_exe(exe: &Path, masked_dir: &Path) -> bool {
+    exe.parent().is_some_and(|parent| same_path(parent, masked_dir))
+}
+
+/// Absolute path of a Windows system tool, resolved under `%SystemRoot%\System32`.
+///
+/// Update helpers must never be spawned by bare name: CreateProcess searches the executable's
+/// directory and the inherited working directory before System32, so a planted binary could run
+/// with the (possibly elevated) daemon's rights. A missing tool is an error, not a silent fallback
+/// to the search order.
+#[cfg(windows)]
+fn system32_tool(name: &str) -> Result<PathBuf, String> {
+    let system_root = std::env::var_os("SystemRoot")
+        .or_else(|| std::env::var_os("WINDIR"))
+        .map(PathBuf::from)
+        .ok_or_else(|| "Cannot locate the Windows directory (SystemRoot is not set)".to_string())?;
+    let tool = system_root.join("System32").join(name);
+    if !tool.is_file() {
+        return Err(format!(
+            "Required Windows tool {} is missing; the update cannot continue",
+            tool.display()
+        ));
+    }
+    Ok(tool)
+}
+
+/// Escapes a value for a PowerShell single-quoted literal by doubling every apostrophe.
+///
+/// Every path interpolated into the extraction and restart scripts goes through this helper: an
+/// apostrophe inside a single-quoted PowerShell string would otherwise end the literal, breaking
+/// the script or injecting commands into an elevated process.
+fn escape_ps_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
 /// Classifies an executable as a portable copy or as part of an installed application.
 fn resolve_install_mode(exe: &Path, install_location: Option<&Path>, masked_dir: &Path) -> InstallMode {
     let (Some(exe_dir), Some(location)) = (exe.parent(), install_location) else {
@@ -360,6 +396,108 @@ pub fn current_install_mode() -> InstallMode {
     resolve_install_mode(&exe, install_location.as_deref(), &masked_daemon_dir())
 }
 
+/// Executable of the running Synector GUI process, if one exists.
+#[cfg(windows)]
+fn gui_process_exe_path() -> Option<PathBuf> {
+    use windows::core::{w, PWSTR};
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = FindWindowW(None, w!("Synector")).ok()?;
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = [0u16; 1024];
+        let mut size = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        );
+        let _ = CloseHandle(process);
+        result.ok()?;
+        let path = PathBuf::from(String::from_utf16_lossy(&buffer[..size as usize]));
+        (!path.as_os_str().is_empty()).then_some(path)
+    }
+}
+
+#[cfg(not(windows))]
+fn gui_process_exe_path() -> Option<PathBuf> {
+    None
+}
+
+/// The executable a portable update has to replace.
+///
+/// With process masking enabled the portable daemon runs from `...\Synector\bin\WindowsServiceHost.exe`.
+/// Staging the update there would leave the user's real executable untouched, and
+/// `prepare_masked_daemon` would copy the old executable back over it on the next start. The real
+/// target is therefore the executable that launched the GUI: the daemon records it from the
+/// `--gui-exe` argument, which stays valid after the GUI window closes (tray-only updates); a
+/// running GUI window is only the fallback for a daemon started outside that handshake. Without
+/// either the target cannot be established, so the update fails instead of being silently
+/// reverted later.
+fn resolve_portable_update_target() -> Result<PathBuf, String> {
+    let current = std::env::current_exe()
+        .map_err(|e| format!("Failed to resolve current exe path: {e}"))?;
+    if !is_masked_daemon_exe(&current, &masked_daemon_dir()) {
+        return Ok(current);
+    }
+    match resolve_portable_target_from(crate::daemon::launching_gui_exe(), gui_process_exe_path) {
+        Some(path) => Ok(path),
+        None => Err(
+            "The running daemon is a masked copy and the Synector GUI executable could not be \
+             located; start Synector normally and retry the update"
+                .to_string(),
+        ),
+    }
+}
+
+/// Chooses the real executable from the two available sources: the path the GUI handed to the
+/// daemon at spawn time (preferred, it survives the window closing) and the executable of a
+/// currently open GUI window. A recorded path that no longer exists falls back to the window
+/// lookup instead of staging the update onto a stale file.
+fn resolve_portable_target_from(
+    recorded: Option<PathBuf>,
+    running_gui: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = recorded.filter(|path| path.is_file()) {
+        return Some(path);
+    }
+    running_gui()
+}
+
+/// Recursively locates the exact `Synector.exe` entry in an extracted archive. Any other
+/// executable is ignored: the archive is downloaded content, and picking an arbitrary .exe would
+/// install and start it as Synector.
+fn find_synector_exe(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.eq_ignore_ascii_case("Synector.exe") {
+                return Some(path);
+            }
+        } else if path.is_dir() {
+            if let Some(found) = find_synector_exe(&path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 /// Unpacks a zip archive into a temporary folder and extracts the main executable into `target_exe_path`.
 pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(), String> {
     let extract_dir = zip_path.with_extension("extracted");
@@ -371,18 +509,25 @@ pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(
 
     let mut extracted_successfully = false;
 
-    // 1. Try Windows built-in bsdtar (`tar.exe`)
+    // 1. Try Windows built-in bsdtar (`tar.exe`). System tools are launched by absolute path:
+    // bare names resolve through the executable's directory and the inherited working directory
+    // before System32, which would let a planted binary run with the daemon's rights.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let mut cmd = std::process::Command::new("tar");
-        cmd.args(["-xf", &zip_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        if let Ok(status) = cmd.status() {
-            if status.success() {
-                extracted_successfully = true;
+        match system32_tool("tar.exe") {
+            Ok(tar) => {
+                let mut cmd = std::process::Command::new(tar);
+                cmd.args(["-xf", &zip_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()]);
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                if let Ok(status) = cmd.status() {
+                    if status.success() {
+                        extracted_successfully = true;
+                    }
+                }
             }
+            Err(err) => crate::logging::warn("UPDATER", &err),
         }
     }
 
@@ -402,53 +547,40 @@ pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(
     if !extracted_successfully {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let zip_esc = zip_path.to_string_lossy().replace('\'', "''");
-        let dir_esc = extract_dir.to_string_lossy().replace('\'', "''");
-        let ps_script = format!(
-            "Expand-Archive -LiteralPath '{zip_esc}' -DestinationPath '{dir_esc}' -Force"
-        );
-        let mut cmd = std::process::Command::new("powershell");
-        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        if let Ok(status) = cmd.status() {
-            if status.success() {
-                extracted_successfully = true;
+        match system32_tool("powershell.exe") {
+            Ok(powershell) => {
+                let zip_esc = escape_ps_literal(&zip_path.to_string_lossy());
+                let dir_esc = escape_ps_literal(&extract_dir.to_string_lossy());
+                let ps_script = format!(
+                    "Expand-Archive -LiteralPath '{zip_esc}' -DestinationPath '{dir_esc}' -Force"
+                );
+                let mut cmd = std::process::Command::new(powershell);
+                cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
+                cmd.creation_flags(CREATE_NO_WINDOW);
+                if let Ok(status) = cmd.status() {
+                    if status.success() {
+                        extracted_successfully = true;
+                    }
+                }
             }
+            Err(err) => crate::logging::warn("UPDATER", &err),
         }
     }
 
     if !extracted_successfully {
         let _ = std::fs::remove_dir_all(&extract_dir);
-        return Err(format!("Failed to unpack zip archive {:?}", zip_path));
+        return Err(format!(
+            "Failed to unpack zip archive {:?} (tar.exe and powershell.exe extraction both failed)",
+            zip_path
+        ));
     }
 
-    // Recursively locate Synector.exe or any .exe inside extract_dir
-    fn find_exe(dir: &Path) -> Option<std::path::PathBuf> {
-        let entries = std::fs::read_dir(dir).ok()?;
-        let mut fallback_exe = None;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if name.eq_ignore_ascii_case("Synector.exe") {
-                    return Some(path);
-                } else if name.to_lowercase().ends_with(".exe") && fallback_exe.is_none() {
-                    fallback_exe = Some(path);
-                }
-            } else if path.is_dir() {
-                if let Some(found) = find_exe(&path) {
-                    return Some(found);
-                }
-            }
-        }
-        fallback_exe
-    }
-
-    let found_exe = match find_exe(&extract_dir) {
+    // Recursively locate the exact `Synector.exe` entry inside extract_dir.
+    let found_exe = match find_synector_exe(&extract_dir) {
         Some(p) => p,
         None => {
             let _ = std::fs::remove_dir_all(&extract_dir);
-            return Err("No executable found inside downloaded zip archive".to_string());
+            return Err("The downloaded zip archive does not contain Synector.exe".to_string());
         }
     };
 
@@ -527,21 +659,31 @@ where
     }
 
     let digest = hex_encode(&hasher.finalize());
-    match &asset.sha256 {
-        Some(expected) if !expected.eq_ignore_ascii_case(&digest) => {
-            let _ = std::fs::remove_file(&download_path);
-            return Err(format!(
-                "Update package checksum mismatch: expected {expected}, received {digest}"
-            ));
-        }
-        Some(_) => crate::logging::debug("UPDATER", "Update package checksum verified (SHA-256)"),
-        None => crate::logging::warn(
-            "UPDATER",
-            "Update asset has no published SHA-256 digest; the download cannot be verified",
-        ),
+    if let Err(err) = verify_asset_digest(&asset.name, asset.sha256.as_deref(), &digest) {
+        let _ = std::fs::remove_file(&download_path);
+        return Err(err);
     }
 
     Ok(download_path)
+}
+
+/// Checks a finished download against the SHA-256 digest the GitHub API publishes for the asset.
+///
+/// A missing digest is a verification failure, not a warning: the package is extracted and its
+/// executable is started, so an unverifiable download must never reach the apply stage.
+fn verify_asset_digest(asset_name: &str, expected: Option<&str>, actual: &str) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Err(format!(
+            "Update asset {asset_name} has no published SHA-256 digest; refusing to apply an unverified download"
+        ));
+    };
+    if !expected.eq_ignore_ascii_case(actual) {
+        return Err(format!(
+            "Update package checksum mismatch: expected {expected}, received {actual}"
+        ));
+    }
+    crate::logging::debug("UPDATER", "Update package checksum verified (SHA-256)");
+    Ok(())
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -694,8 +836,7 @@ where
             result
         }
         InstallMode::Portable => {
-            let exe_path =
-                std::env::current_exe().map_err(|e| format!("Failed to resolve current exe path: {e}"))?;
+            let exe_path = resolve_portable_update_target()?;
             let pending_path = exe_path.with_extension("pending");
 
             if !is_zip_archive(&downloaded) {
@@ -746,6 +887,35 @@ where
     download_and_install_internal(info, progress_cb).await
 }
 
+/// How long a leftover update entry may stay in `%TEMP%` before the cleanup removes it. Update
+/// directories are named after the owning process id, so a young entry can belong to another
+/// Synector instance whose download is still in progress.
+const STALE_UPDATE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+/// True when an update temp entry is old enough to be cleaned up by an unrelated process.
+fn update_temp_entry_is_stale(path: &Path, now: std::time::SystemTime) -> bool {
+    let Ok(modified) = std::fs::metadata(path).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    now.duration_since(modified)
+        .is_ok_and(|age| age > STALE_UPDATE_TEMP_AGE)
+}
+
+/// True when an update temp entry belongs to this process (`Synector-update-<pid>` or its log).
+fn update_temp_entry_is_ours(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(suffix) = name.strip_prefix(UPDATE_TEMP_PREFIX) else {
+        return false;
+    };
+    suffix
+        .split('.')
+        .next()
+        .and_then(|pid| pid.parse::<u32>().ok())
+        .is_some_and(|pid| pid == std::process::id())
+}
+
 /// Cleans up leftover update files: staged packages next to the executable and the temporary
 /// update directories a previous, interrupted download may have left behind.
 pub fn clean_temp_update_files() {
@@ -766,16 +936,11 @@ pub fn clean_temp_update_files() {
                 &format!("Removed leftover update file {}", pending.display()),
             );
         }
-        let extracted = exe_path.with_extension("extracted");
-        if extracted.exists() {
-            let _ = std::fs::remove_dir_all(&extracted);
-            crate::logging::debug(
-                "UPDATER",
-                &format!("Removed leftover update directory {}", extracted.display()),
-            );
-        }
+        // Extraction always happens under the update temp directory (`<zip>.extracted`), never
+        // next to the executable, so there is no exe-adjacent extraction directory to remove.
     }
 
+    let now = std::time::SystemTime::now();
     if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -783,6 +948,12 @@ pub fn clean_temp_update_files() {
                 continue;
             }
             let path = entry.path();
+            // Another portable instance may be staging its own package or installer log here:
+            // only this process's entries and entries old enough that no live process can own
+            // them are removed.
+            if !update_temp_entry_is_ours(&path) && !update_temp_entry_is_stale(&path, now) {
+                continue;
+            }
             if path.is_dir() {
                 let _ = std::fs::remove_dir_all(&path);
             } else {
@@ -806,7 +977,43 @@ pub fn is_gui_closed_during_update() -> bool {
     GUI_CLOSED_DURING_UPDATE.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Moves the staged executable into place and keeps the previous one at `old_path`.
+///
+/// Returns `Ok(true)` when the swap happened in place and `Ok(false)` when the running executable
+/// could not be renamed aside (the detached restart script retries after the process exits).
+/// Returns `Err` after rolling back: when the swap fails halfway, the previous executable is put
+/// back so the installation keeps a runnable binary.
+fn swap_pending_executable(exe_path: &Path, pending_path: &Path, old_path: &Path) -> Result<bool, String> {
+    // Windows NTFS allows renaming a running executable file to .old and placing the new file at
+    // the original path. The two renames are separate steps: if moving the staged file into place
+    // fails, the old executable goes back instead of leaving the original path empty.
+    match std::fs::rename(exe_path, old_path) {
+        Ok(()) => match std::fs::rename(pending_path, exe_path) {
+            Ok(()) => Ok(true),
+            Err(err) => Err(match std::fs::rename(old_path, exe_path) {
+                Ok(()) => format!(
+                    "Failed to move the downloaded executable into place: {err}; the previous executable was restored"
+                ),
+                Err(restore_err) => format!(
+                    "Failed to move the downloaded executable into place: {err}; the previous executable is kept at {} but could not be restored: {restore_err}",
+                    old_path.display()
+                ),
+            }),
+        },
+        Err(err) => {
+            crate::logging::debug(
+                "UPDATER",
+                &format!("In-place executable swap failed ({err}); using the detached restart script"),
+            );
+            Ok(false)
+        }
+    }
+}
+
 /// Performs executable swap and restarts both daemon and GUI.
+///
+/// The in-place path renames the running executable aside and moves the staged one into its place,
+/// then starts the new process from a detached PowerShell script and exits.
 pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<(), String> {
     crate::logging::info("UPDATER", "Applying update and restarting Synector");
     let mut old_path = exe_path.with_extension("old");
@@ -815,9 +1022,9 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
     }
 
     let gui_pid = std::process::id();
-    let old_str = old_path.to_string_lossy().to_string();
-    let exe_str = exe_path.to_string_lossy().to_string();
-    let pending_str = pending_path.to_string_lossy().to_string();
+    let old_esc = escape_ps_literal(&old_path.to_string_lossy());
+    let exe_esc = escape_ps_literal(&exe_path.to_string_lossy());
+    let pending_esc = escape_ps_literal(&pending_path.to_string_lossy());
 
     let restart_args = if is_gui_closed_during_update() {
         " -ArgumentList '--daemon'"
@@ -831,45 +1038,43 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
         "; Start-Sleep -Milliseconds 700; (New-Object -ComObject WScript.Shell).AppActivate('Synector')".to_string()
     };
 
-    // Windows NTFS allows renaming a running executable file to .old and placing the new file at the original path.
-    let in_place_renamed = std::fs::rename(exe_path, &old_path).is_ok()
-        && std::fs::rename(pending_path, exe_path).is_ok();
+    let in_place_renamed = swap_pending_executable(exe_path, pending_path, &old_path)?;
 
     let ps_command = if in_place_renamed {
+        // Start the new executable before deleting the old one so a startup failure still leaves
+        // the previous binary on disk.
         format!(
             "Wait-Process -Id {gui_pid} -Timeout 10 -ErrorAction SilentlyContinue; \
              Start-Sleep -Milliseconds 600; \
-             Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
-             Start-Process -FilePath '{exe_str}'{restart_args}{focus_post_start}",
-            gui_pid = gui_pid,
-            old_str = old_str,
-            exe_str = exe_str,
-            restart_args = restart_args,
-            focus_post_start = focus_post_start,
+             $started = Start-Process -FilePath '{exe_esc}'{restart_args} -PassThru -ErrorAction SilentlyContinue; \
+             if ($started) {{ Remove-Item -LiteralPath '{old_esc}' -Force -ErrorAction SilentlyContinue{focus_post_start} }} \
+             else {{ Move-Item -LiteralPath '{old_esc}' -Destination '{exe_esc}' -Force -ErrorAction SilentlyContinue; Start-Process -FilePath '{exe_esc}'{restart_args} }}",
         )
     } else {
+        // The executable could not be renamed while running: retry from the detached script once
+        // this process has exited. The previous binary is kept until the new one is in place and
+        // started, and a failed move restores it instead of deleting the only copy.
         format!(
             "Wait-Process -Id {gui_pid} -Timeout 10 -ErrorAction SilentlyContinue; \
              Get-Process -Name 'Synector' -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne $PID }} | Stop-Process -Force -ErrorAction SilentlyContinue; \
              Start-Sleep -Milliseconds 400; \
              $sw = [System.Diagnostics.Stopwatch]::StartNew(); \
              while ($sw.ElapsedMilliseconds -lt 6000) {{ \
-                 if (Test-Path -LiteralPath '{pending_str}') {{ \
-                     Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
-                     Move-Item -LiteralPath '{exe_str}' -Destination '{old_str}' -Force -ErrorAction SilentlyContinue; \
-                     Move-Item -LiteralPath '{pending_str}' -Destination '{exe_str}' -Force -ErrorAction SilentlyContinue; \
+                 if (Test-Path -LiteralPath '{pending_esc}') {{ \
+                     if (Test-Path -LiteralPath '{exe_esc}') {{ \
+                         Remove-Item -LiteralPath '{old_esc}' -Force -ErrorAction SilentlyContinue; \
+                         Move-Item -LiteralPath '{exe_esc}' -Destination '{old_esc}' -Force -ErrorAction SilentlyContinue; \
+                     }} \
+                     Move-Item -LiteralPath '{pending_esc}' -Destination '{exe_esc}' -Force -ErrorAction SilentlyContinue; \
                  }} \
-                 if (Test-Path -LiteralPath '{exe_str}') {{ break; }} \
+                 if (Test-Path -LiteralPath '{exe_esc}') {{ break; }} \
+                 if ((Test-Path -LiteralPath '{old_esc}') -and -not (Test-Path -LiteralPath '{exe_esc}')) {{ \
+                     Move-Item -LiteralPath '{old_esc}' -Destination '{exe_esc}' -Force -ErrorAction SilentlyContinue; \
+                 }} \
                  Start-Sleep -Milliseconds 250; \
              }} \
-             Remove-Item -LiteralPath '{old_str}' -Force -ErrorAction SilentlyContinue; \
-             Start-Process -FilePath '{exe_str}'{restart_args}{focus_post_start}",
-            gui_pid = gui_pid,
-            old_str = old_str,
-            exe_str = exe_str,
-            pending_str = pending_str,
-            restart_args = restart_args,
-            focus_post_start = focus_post_start,
+             $started = Start-Process -FilePath '{exe_esc}'{restart_args} -PassThru -ErrorAction SilentlyContinue; \
+             if ($started) {{ Remove-Item -LiteralPath '{old_esc}' -Force -ErrorAction SilentlyContinue{focus_post_start} }}",
         )
     };
 
@@ -883,7 +1088,8 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let mut cmd = std::process::Command::new("powershell");
+        let powershell = system32_tool("powershell.exe")?;
+        let mut cmd = std::process::Command::new(powershell);
         cmd.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps_command]);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd.spawn().map_err(|e| format!("Failed to spawn restart script: {e}"))?;
@@ -1112,42 +1318,215 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp);
     }
 
+    /// Writes a zip archive with the given `(file name, contents)` entries.
+    fn write_zip(zip_path: &Path, files: &[(&str, &[u8])]) {
+        use std::io::Write as _;
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(zip_path).unwrap());
+        for (name, contents) in files {
+            writer
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
     #[test]
     fn test_extract_exe_from_zip() {
         let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp_dir);
         std::fs::create_dir_all(&temp_dir).unwrap();
 
-        let source_exe = temp_dir.join("Synector.exe");
-        std::fs::write(&source_exe, b"MZ_MOCK_EXECUTABLE_BINARY_DATA").unwrap();
-
         let zip_path = temp_dir.join("test_archive.zip");
+        write_zip(&zip_path, &[("Synector.exe", b"MZ_MOCK_EXECUTABLE_BINARY_DATA")]);
 
-        let mut zip_created = false;
-        #[cfg(windows)]
-        {
-            let ps_script = format!(
-                "Compress-Archive -Path '{}' -DestinationPath '{}' -Force",
-                source_exe.to_string_lossy().replace('\'', "''"),
-                zip_path.to_string_lossy().replace('\'', "''")
-            );
-            let status = std::process::Command::new("powershell")
-                .args(["-NoProfile", "-NonInteractive", "-Command", &ps_script])
-                .status();
-            if let Ok(s) = status {
-                zip_created = s.success();
-            }
-        }
-
-        if zip_created && zip_path.exists() {
-            let extracted_target = temp_dir.join("Extracted_Synector.exe");
-            let result = extract_exe_from_zip(&zip_path, &extracted_target);
-            assert!(result.is_ok(), "Extraction failed: {:?}", result.err());
-            assert!(extracted_target.exists());
-            let extracted_data = std::fs::read(&extracted_target).unwrap();
-            assert_eq!(extracted_data, b"MZ_MOCK_EXECUTABLE_BINARY_DATA");
-        }
+        let extracted_target = temp_dir.join("Extracted_Synector.exe");
+        let result = extract_exe_from_zip(&zip_path, &extracted_target);
+        assert!(result.is_ok(), "Extraction failed: {:?}", result.err());
+        assert!(extracted_target.exists());
+        let extracted_data = std::fs::read(&extracted_target).unwrap();
+        assert_eq!(extracted_data, b"MZ_MOCK_EXECUTABLE_BINARY_DATA");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_rejects_archive_without_synector_exe() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_no_exe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("no_synector.zip");
+        write_zip(&zip_path, &[("helper.exe", b"MZ_NOT_SYNECTOR"), ("readme.txt", b"notes")]);
+
+        let extracted_target = temp_dir.join("Extracted.exe");
+        let err = extract_exe_from_zip(&zip_path, &extracted_target)
+            .expect_err("an archive without Synector.exe must be rejected");
+        assert!(err.contains("Synector.exe"), "unexpected error: {err}");
+        assert!(!extracted_target.exists(), "an arbitrary .exe must never be staged");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_missing_asset_digest_is_rejected() {
+        let err = verify_asset_digest("Synector-v2.9.0-Windows-x64.zip", None, ZIP_SHA)
+            .expect_err("an asset without a digest must not be applied");
+        assert!(
+            err.contains("no published SHA-256 digest"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_asset_digest_is_verified_case_insensitively() {
+        assert!(verify_asset_digest("asset", Some(ZIP_SHA), &ZIP_SHA.to_ascii_uppercase()).is_ok());
+        assert!(verify_asset_digest("asset", Some(ZIP_SHA), SETUP_SHA).is_err());
+    }
+
+    #[test]
+    fn test_escape_ps_literal() {
+        assert_eq!(
+            escape_ps_literal(r"C:\Users\O'Brien\Synector.exe"),
+            r"C:\Users\O''Brien\Synector.exe"
+        );
+        assert_eq!(
+            escape_ps_literal(r"C:\Synector\Synector.exe"),
+            r"C:\Synector\Synector.exe"
+        );
+        assert_eq!(escape_ps_literal("'"), "''");
+        assert_eq!(escape_ps_literal("it's 'quoted'"), "it''s ''quoted''");
+    }
+
+    #[test]
+    fn test_is_masked_daemon_exe() {
+        let masked_dir = Path::new("C:\\Users\\u\\AppData\\Local\\Synector\\bin");
+        assert!(is_masked_daemon_exe(
+            &masked_dir.join("WindowsServiceHost.exe"),
+            masked_dir
+        ));
+        assert!(is_masked_daemon_exe(
+            Path::new("C:\\Users\\u\\AppData\\Local\\Synector\\Bin\\WindowsServiceHost.exe"),
+            masked_dir
+        ));
+        assert!(!is_masked_daemon_exe(
+            Path::new("D:\\Tools\\Portable\\Synector.exe"),
+            masked_dir
+        ));
+    }
+
+    #[test]
+    fn test_portable_update_target_prefers_the_recorded_gui_executable() {
+        let dir = std::env::temp_dir().join(format!("synector_update_target_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let recorded = dir.join("Synector.exe");
+        let running_gui = dir.join("RunningSynector.exe");
+        std::fs::write(&recorded, b"MZ").unwrap();
+
+        // The path the GUI handed to the daemon wins, and the window lookup is not even consulted:
+        // it is the only source that still works after the GUI window has closed.
+        assert_eq!(
+            resolve_portable_target_from(Some(recorded.clone()), || {
+                panic!("a valid recorded executable must not need the GUI-window lookup")
+            }),
+            Some(recorded.clone())
+        );
+
+        // A recorded path that no longer exists must fall back instead of staging onto a stale file.
+        let stale = dir.join("gone.exe");
+        assert_eq!(
+            resolve_portable_target_from(Some(stale), || Some(running_gui.clone())),
+            Some(running_gui.clone())
+        );
+        assert_eq!(
+            resolve_portable_target_from(None, || Some(running_gui.clone())),
+            Some(running_gui.clone())
+        );
+        assert_eq!(resolve_portable_target_from(None, || None), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_update_temp_entry_staleness() {
+        let temp = std::env::temp_dir().join(format!("synector_stale_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let entry = temp.join("entry.zip");
+        std::fs::write(&entry, b"x").unwrap();
+
+        let now = std::time::SystemTime::now();
+        assert!(
+            !update_temp_entry_is_stale(&entry, now),
+            "a fresh entry may belong to a live instance"
+        );
+
+        let file = std::fs::OpenOptions::new().write(true).open(&entry).unwrap();
+        file.set_modified(now - STALE_UPDATE_TEMP_AGE - std::time::Duration::from_secs(60))
+            .unwrap();
+        drop(file);
+        assert!(
+            update_temp_entry_is_stale(&entry, now),
+            "an old entry is a leftover"
+        );
+        assert!(!update_temp_entry_is_stale(&temp.join("missing"), now));
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn test_update_temp_entry_ownership() {
+        let temp = std::env::temp_dir();
+        let own_dir = temp.join(format!("{UPDATE_TEMP_PREFIX}{}", std::process::id()));
+        let own_log = temp.join(format!("{UPDATE_TEMP_PREFIX}{}.log", std::process::id()));
+        let other_pid = std::process::id().wrapping_add(1);
+        let other_dir = temp.join(format!("{UPDATE_TEMP_PREFIX}{other_pid}"));
+
+        assert!(update_temp_entry_is_ours(&own_dir));
+        assert!(update_temp_entry_is_ours(&own_log));
+        assert!(!update_temp_entry_is_ours(&other_dir));
+        assert!(!update_temp_entry_is_ours(&temp.join("unrelated.txt")));
+    }
+
+    #[test]
+    fn test_swap_failure_restores_previous_executable() {
+        let temp = std::env::temp_dir().join(format!("synector_swap_test_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(&temp).unwrap();
+        let exe = temp.join("Synector.exe");
+        let pending = temp.join("Synector.pending");
+        let old = temp.join("Synector.old");
+        std::fs::write(&exe, b"OLD_BINARY").unwrap();
+
+        // No staged file: the second rename fails after the running executable was moved aside.
+        // The previous executable must be restored and the failure reported.
+        let err = swap_pending_executable(&exe, &pending, &old)
+            .expect_err("a half-completed swap must fail");
+        assert!(err.contains("restored"), "unexpected error: {err}");
+        assert_eq!(
+            std::fs::read(&exe).unwrap(),
+            b"OLD_BINARY",
+            "the previous executable must be back at its original path"
+        );
+        assert!(!old.exists());
+
+        // With a staged file the swap succeeds and the previous executable is kept as .old.
+        std::fs::write(&pending, b"NEW_BINARY").unwrap();
+        assert!(swap_pending_executable(&exe, &pending, &old).unwrap());
+        assert_eq!(std::fs::read(&exe).unwrap(), b"NEW_BINARY");
+        assert_eq!(std::fs::read(&old).unwrap(), b"OLD_BINARY");
+        assert!(!pending.exists());
+
+        // When the running executable cannot be renamed aside, the caller falls back to the
+        // detached restart script instead of reporting success.
+        std::fs::remove_file(&old).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("keep.txt"), b"keep").unwrap();
+        std::fs::write(&pending, b"NEW_BINARY").unwrap();
+        assert!(!swap_pending_executable(&exe, &pending, &old).unwrap());
+        assert_eq!(std::fs::read(&exe).unwrap(), b"NEW_BINARY");
+
+        let _ = std::fs::remove_dir_all(&temp);
     }
 }

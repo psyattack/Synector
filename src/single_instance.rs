@@ -1,24 +1,21 @@
-#[cfg(windows)]
-use windows::core::w;
-#[cfg(windows)]
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE};
-#[cfg(windows)]
-use windows::Win32::System::Threading::CreateMutexW;
-#[cfg(windows)]
+use windows::Win32::System::Threading::{CreateMutexW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
 
+const GUI_MUTEX_NAME: &str = "Local\\Synector_GUI_SingleInstance";
+const DAEMON_MUTEX_NAME: &str = "Local\\Synector_Daemon_SingleInstance";
+const DAEMON_SPAWN_MUTEX_NAME: &str = "Local\\Synector_DaemonSpawn";
+
 pub struct SingleInstanceGuard {
-    #[cfg(windows)]
     handle: HANDLE,
 }
 
 impl SingleInstanceGuard {
-    #[cfg(windows)]
-    pub fn acquire_named(name: &str) -> Option<Self> {
-        use windows::core::HSTRING;
+    fn acquire_named(name: &str) -> Option<Self> {
         unsafe {
             let hstring = HSTRING::from(name);
-            let handle = CreateMutexW(None, true, windows::core::PCWSTR(hstring.as_ptr())).ok()?;
+            let handle = CreateMutexW(None, true, PCWSTR(hstring.as_ptr())).ok()?;
             if GetLastError() == ERROR_ALREADY_EXISTS {
                 let _ = CloseHandle(handle);
                 return None;
@@ -27,24 +24,39 @@ impl SingleInstanceGuard {
         }
     }
 
+    /// Mutex probing stays private to the guard: a held single-instance mutex is not a reliable
+    /// daemon-liveness signal (it exists before the pipe is served and lingers during shutdown).
+    /// External callers ask the daemon over IPC instead.
+    fn named_mutex_exists(name: &str) -> bool {
+        unsafe {
+            let hstring = HSTRING::from(name);
+            match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(hstring.as_ptr())) {
+                Ok(handle) => {
+                    let _ = CloseHandle(handle);
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    }
+
     pub fn acquire_gui() -> Option<Self> {
-        #[cfg(windows)]
-        return Self::acquire_named("Local\\Synector_GUI_SingleInstance");
-        #[cfg(not(windows))]
-        Some(Self {})
+        Self::acquire_named(GUI_MUTEX_NAME)
     }
 
     pub fn acquire_daemon() -> Option<Self> {
-        #[cfg(windows)]
-        return Self::acquire_named("Local\\Synector_Daemon_SingleInstance");
-        #[cfg(not(windows))]
-        Some(Self {})
+        Self::acquire_named(DAEMON_MUTEX_NAME)
+    }
+
+    /// Short-lived guard that serializes daemon start-up (check + prepare + spawn) across
+    /// processes, so concurrent launches cannot both start a daemon.
+    pub fn acquire_daemon_spawn() -> Option<Self> {
+        Self::acquire_named(DAEMON_SPAWN_MUTEX_NAME)
     }
 }
 
 impl Drop for SingleInstanceGuard {
     fn drop(&mut self) {
-        #[cfg(windows)]
         unsafe {
             let _ = CloseHandle(self.handle);
         }
@@ -53,45 +65,20 @@ impl Drop for SingleInstanceGuard {
 
 /// Checks whether the Synector GUI process is currently running.
 pub fn is_gui_running() -> bool {
-    #[cfg(windows)]
+    if SingleInstanceGuard::named_mutex_exists(GUI_MUTEX_NAME) {
+        return true;
+    }
     unsafe {
-        use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
-        use windows::core::HSTRING;
-        let hstring = HSTRING::from("Local\\Synector_GUI_SingleInstance");
-        if let Ok(handle) = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, windows::core::PCWSTR(hstring.as_ptr())) {
-            let _ = CloseHandle(handle);
-            return true;
-        }
         if let Ok(hwnd) = FindWindowW(None, w!("Synector")) {
             if !hwnd.0.is_null() {
                 return true;
             }
         }
-        false
     }
-    #[cfg(not(windows))]
-    false
-}
-
-/// Checks whether the Synector Daemon process is currently running.
-pub fn is_daemon_running() -> bool {
-    #[cfg(windows)]
-    unsafe {
-        use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
-        use windows::core::HSTRING;
-        let hstring = HSTRING::from("Local\\Synector_Daemon_SingleInstance");
-        if let Ok(handle) = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, windows::core::PCWSTR(hstring.as_ptr())) {
-            let _ = CloseHandle(handle);
-            return true;
-        }
-        false
-    }
-    #[cfg(not(windows))]
     false
 }
 
 /// Unconditionally forces the given window to the foreground, bypassing Windows focus-stealing restrictions.
-#[cfg(windows)]
 pub fn force_foreground_window(hwnd: windows::Win32::Foundation::HWND) {
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -128,29 +115,23 @@ pub fn force_foreground_window(hwnd: windows::Win32::Foundation::HWND) {
 /// Finds the existing Synector GUI window and restores / brings it to the foreground.
 /// Returns `true` if the window was found and focused, `false` otherwise.
 pub fn focus_existing_gui_window() -> bool {
-    #[cfg(windows)]
-    {
-        for _ in 0..5 {
-            unsafe {
-                if let Ok(hwnd) = FindWindowW(None, w!("Synector")) {
-                    if !hwnd.0.is_null() {
-                        force_foreground_window(hwnd);
-                        return true;
-                    }
+    for _ in 0..5 {
+        unsafe {
+            if let Ok(hwnd) = FindWindowW(None, w!("Synector")) {
+                if !hwnd.0.is_null() {
+                    force_foreground_window(hwnd);
+                    return true;
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        false
+        std::thread::sleep(std::time::Duration::from_millis(40));
     }
-    #[cfg(not(windows))]
     false
 }
 
 /// Closes the existing Synector GUI window by posting WM_CLOSE.
 /// Returns `true` if the window was found and signal posted, `false` otherwise.
 pub fn close_existing_gui_window() -> bool {
-    #[cfg(windows)]
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
         if let Ok(hwnd) = FindWindowW(None, w!("Synector")) {
@@ -159,9 +140,7 @@ pub fn close_existing_gui_window() -> bool {
                 return true;
             }
         }
-        false
     }
-    #[cfg(not(windows))]
     false
 }
 
@@ -170,7 +149,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(windows)]
     fn test_single_instance_named_mutex() {
         let test_name = format!("Local\\Synector_Test_{}", std::process::id());
         let guard1 = SingleInstanceGuard::acquire_named(&test_name);
@@ -186,19 +164,9 @@ mod tests {
     }
 
     #[test]
-    #[cfg(windows)]
     fn test_is_gui_running_with_guard() {
         if let Some(guard) = SingleInstanceGuard::acquire_gui() {
             assert!(is_gui_running(), "is_gui_running must be true while GUI single instance guard is held");
-            drop(guard);
-        }
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn test_is_daemon_running_with_guard() {
-        if let Some(guard) = SingleInstanceGuard::acquire_daemon() {
-            assert!(is_daemon_running(), "is_daemon_running must be true while Daemon single instance guard is held");
             drop(guard);
         }
     }

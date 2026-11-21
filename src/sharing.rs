@@ -9,7 +9,7 @@
 //!
 //! The 8-byte SHA-256 prefix catches truncated or altered codes (brotli itself has no
 //! checksum), the decompressor is bounded so a malicious code cannot exhaust memory, and
-//! imports never carry runtime counters or sender-local icons.
+//! imports never carry runtime counters or sender-local icon and image paths.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -22,7 +22,10 @@ use brotli::enc::BrotliEncoderParams;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::models::{Action, MacroPreset, OverlayDefinition, Rule};
+use crate::models::{
+    Action, InteractiveControlKind, MacroPreset, OverlayClickAction, OverlayDefinition,
+    OverlayElement, Rule,
+};
 
 /// Prefix of a shareable automation code: `SYN1:` marks Synector share format version 1.
 pub const SHARE_PREFIX: &str = "SYN1:";
@@ -83,6 +86,15 @@ pub const MAX_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 /// Largest number of rules in one shared payload or one import.
 pub const MAX_SHARE_RULES: usize = 500;
 
+/// Largest number of bundled overlays in one shared payload or one import.
+///
+/// Overlays and presets are persisted to `library.json` and rendered by the GUI, so they need
+/// their own bound: the payload size limit alone would still allow thousands of tiny entries.
+pub const MAX_SHARE_OVERLAYS: usize = 500;
+
+/// Largest number of bundled macro presets in one shared payload or one import.
+pub const MAX_SHARE_PRESETS: usize = 500;
+
 // ---------------------------------------------------------------------------
 // Payload
 // ---------------------------------------------------------------------------
@@ -142,6 +154,11 @@ pub enum ShareWarning {
     SensitiveWebhook,
     /// A sender-local custom icon path is not carried by the code.
     CustomIconDropped,
+    /// Absolute image or button icon paths inside an overlay are sender-local and were dropped.
+    OverlayAssetDropped,
+    /// An overlay click action or toggle binding points at a rule that is neither part of the
+    /// code nor installed locally.
+    MissingRule(String),
 }
 
 /// A code that could not be decoded into rules.
@@ -162,6 +179,8 @@ pub enum ShareError {
     PayloadTooLarge,
     /// Too many rules for one code/import.
     TooManyRules,
+    /// Too many bundled overlays or macro presets for one code/import.
+    TooManyLibraryItems,
     /// No rules, overlays or presets inside.
     EmptyPayload,
     /// JSON shape is not a share payload.
@@ -190,6 +209,7 @@ pub fn error_text(error: &ShareError) -> &'static str {
         ShareError::ChecksumMismatch => "share code failed its integrity check",
         ShareError::PayloadTooLarge => "share code expands to too much data",
         ShareError::TooManyRules => "share code contains too many automations",
+        ShareError::TooManyLibraryItems => "share code contains too many library items",
         ShareError::EmptyPayload => "share code contains no automations",
         ShareError::InvalidPayload => "share code does not contain valid automation data",
         ShareError::UnsupportedVersion(_) => "share code was created by a newer Synector version",
@@ -224,12 +244,10 @@ pub struct PreparedShareImport {
 
 /// Compresses and encodes a payload as a `SYN1:` share code.
 pub fn compress_and_encode(payload: &SharePayload) -> Result<String, ShareError> {
+    validate_payload_limits(payload)?;
     let json_bytes = payload_json(payload)?;
     if json_bytes.len() > MAX_PAYLOAD_BYTES {
         return Err(ShareError::PayloadTooLarge);
-    }
-    if payload.rules.len() > MAX_SHARE_RULES {
-        return Err(ShareError::TooManyRules);
     }
     if payload.rules.is_empty() && payload.overlays.is_empty() && payload.macro_presets.is_empty() {
         return Err(ShareError::EmptyPayload);
@@ -311,7 +329,7 @@ fn is_default_share_field(key: &str, value: &serde_json::Value) -> bool {
         "timeout_sec" => is_number(30.0),
         "duration_sec" => is_number(5.0),
         // Trigger zeros.
-        "interval_sec" | "delay_sec" | "idle_duration_sec" => is_number(0.0),
+        "interval_sec" => is_number(0.0),
         // Enum defaults.
         "method" => is_text("POST"),
         "timeout_policy" => is_text("abort"),
@@ -375,8 +393,9 @@ fn brotli_decompress_with_dictionary(compressed: &[u8]) -> Result<Vec<u8>, Share
 
 /// Builds the payload for the given rules and returns notices about dependencies and risks.
 ///
-/// Sender-local data is stripped here: runtime counters never leave the machine and custom
-/// icon paths (which point at the sender's disk) are dropped with a warning.
+/// Sender-local data is stripped here: runtime counters never leave the machine, and custom
+/// icon, overlay image and button icon paths (which point at the sender's disk) are dropped
+/// with a warning.
 pub fn build_payload(
     mut rules: Vec<Rule>,
     library_overlays: &[OverlayDefinition],
@@ -388,6 +407,9 @@ pub fn build_payload(
         rule.clear_quota_runtime();
         if rule.custom_icon_path.take().is_some() {
             push_warning(&mut warnings, ShareWarning::CustomIconDropped);
+        }
+        if strip_rule_overlay_assets(rule) {
+            push_warning(&mut warnings, ShareWarning::OverlayAssetDropped);
         }
     }
 
@@ -427,7 +449,11 @@ pub fn build_payload(
                         if let Some(overlay) =
                             library_overlays.iter().find(|o| &o.id == overlay_id)
                         {
-                            overlays.push(overlay.clone());
+                            let mut bundled = overlay.clone();
+                            if strip_overlay_asset_paths(&mut bundled) {
+                                push_warning(&mut warnings, ShareWarning::OverlayAssetDropped);
+                            }
+                            overlays.push(bundled);
                         }
                     }
                 } else {
@@ -474,6 +500,78 @@ fn collect_sensitive_warnings(rule: &Rule, warnings: &mut Vec<ShareWarning>) {
 }
 
 // ---------------------------------------------------------------------------
+// Sender-local asset paths
+// ---------------------------------------------------------------------------
+
+/// Drops every sender-local image and button icon path from one overlay definition.
+///
+/// Overlay images and button icons are picked from the sender's disk, so shipping the absolute
+/// paths would leak their filesystem layout and install broken images on the receiving machine.
+/// Returns true when at least one path was dropped.
+fn strip_overlay_asset_paths(overlay: &mut OverlayDefinition) -> bool {
+    let mut dropped = false;
+    for element in &mut overlay.elements {
+        match element {
+            OverlayElement::Image { path, .. } => {
+                if !path.trim().is_empty() {
+                    path.clear();
+                    dropped = true;
+                }
+            }
+            OverlayElement::InteractiveControl {
+                control: InteractiveControlKind::Button { icon, .. },
+                ..
+            } => {
+                if icon.take().is_some_and(|path| !path.trim().is_empty()) {
+                    dropped = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    dropped
+}
+
+/// Drops sender-local asset paths from overlays embedded directly in a rule's actions.
+fn strip_rule_overlay_assets(rule: &mut Rule) -> bool {
+    let mut dropped = false;
+    for action in rule.actions.iter_mut().chain(rule.on_exit_actions.iter_mut()) {
+        dropped |= strip_action_overlay_assets(action);
+    }
+    dropped
+}
+
+fn strip_action_overlay_assets(action: &mut Action) -> bool {
+    match action {
+        Action::Overlay { custom_overlay, .. } => custom_overlay
+            .as_deref_mut()
+            .map(strip_overlay_asset_paths)
+            .unwrap_or(false),
+        Action::IfElse {
+            then_actions,
+            else_if_branches,
+            else_actions,
+            ..
+        } => {
+            let mut dropped = false;
+            for action in then_actions {
+                dropped |= strip_action_overlay_assets(action);
+            }
+            for branch in else_if_branches {
+                for action in &mut branch.actions {
+                    dropped |= strip_action_overlay_assets(action);
+                }
+            }
+            for action in else_actions {
+                dropped |= strip_action_overlay_assets(action);
+            }
+            dropped
+        }
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Decoding
 // ---------------------------------------------------------------------------
 
@@ -514,13 +612,32 @@ fn decode_code(encoded: &str) -> Result<SharePayload, ShareError> {
     let json_bytes = brotli_decompress_with_dictionary(compressed_body)?;
 
     let digest = Sha256::digest(&json_bytes);
-    if &digest[..CHECKSUM_LEN] != checksum {
+    if !checksums_match(checksum, &digest) {
         return Err(ShareError::ChecksumMismatch);
     }
 
-    let payload: SharePayload =
+    let value: serde_json::Value =
         serde_json::from_slice(&json_bytes).map_err(|_| ShareError::InvalidPayload)?;
+    validate_share_payload_value(&value)?;
+    let payload: SharePayload =
+        serde_json::from_value(value).map_err(|_| ShareError::InvalidPayload)?;
     validate_payload(payload)
+}
+
+/// Compares the truncated digest with an XOR accumulator instead of slice equality.
+///
+/// Slice equality stops at the first differing byte; the only integrity check in the format
+/// must not reveal where a mismatch happened. The length check comes first because the digest
+/// length is public.
+fn checksums_match(checksum: &[u8], digest: &[u8]) -> bool {
+    if checksum.len() != CHECKSUM_LEN || digest.len() < CHECKSUM_LEN {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (expected, actual) in checksum.iter().zip(digest.iter()) {
+        difference |= expected ^ actual;
+    }
+    difference == 0
 }
 
 fn decode_base64(encoded: &str) -> Result<Vec<u8>, ShareError> {
@@ -551,29 +668,127 @@ fn decode_raw_json(raw: &str) -> Result<SharePayload, ShareError> {
     if raw.len() > MAX_PAYLOAD_BYTES {
         return Err(ShareError::PayloadTooLarge);
     }
-    if let Ok(payload) = serde_json::from_str::<SharePayload>(raw) {
-        return validate_payload(payload);
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|_| ShareError::InvalidPayload)?;
+    let payload = match value {
+        serde_json::Value::Object(object) if object.contains_key("rules") => {
+            let value = serde_json::Value::Object(object);
+            validate_share_payload_value(&value)?;
+            serde_json::from_value::<SharePayload>(value).map_err(|_| ShareError::InvalidPayload)?
+        }
+        serde_json::Value::Object(_) => {
+            validate_rule_value(&value)?;
+            let rule: Rule = serde_json::from_value(value).map_err(|_| ShareError::InvalidPayload)?;
+            SharePayload::rules_only(vec![rule])
+        }
+        serde_json::Value::Array(_) => {
+            validate_rule_array(&value)?;
+            let rules: Vec<Rule> =
+                serde_json::from_value(value).map_err(|_| ShareError::InvalidPayload)?;
+            SharePayload::rules_only(rules)
+        }
+        _ => return Err(ShareError::InvalidPayload),
+    };
+    validate_payload(payload)
+}
+
+/// Rejects unknown keys in a raw share payload before serde can drop them silently.
+fn validate_share_payload_value(value: &serde_json::Value) -> Result<(), ShareError> {
+    let Some(object) = value.as_object() else {
+        return Err(ShareError::InvalidPayload);
+    };
+    const PAYLOAD_KEYS: &[&str] = &[
+        "version",
+        "app_version",
+        "created_at",
+        "rules",
+        "overlays",
+        "macro_presets",
+    ];
+    if object
+        .keys()
+        .any(|key| !PAYLOAD_KEYS.contains(&key.as_str()))
+    {
+        return Err(ShareError::InvalidPayload);
     }
-    if let Ok(rule) = serde_json::from_str::<Rule>(raw) {
-        return validate_payload(SharePayload::rules_only(vec![rule]));
+    if let Some(rules) = object.get("rules") {
+        validate_rule_array(rules)?;
     }
-    if let Ok(rules) = serde_json::from_str::<Vec<Rule>>(raw) {
-        return validate_payload(SharePayload::rules_only(rules));
+    Ok(())
+}
+
+fn validate_rule_array(value: &serde_json::Value) -> Result<(), ShareError> {
+    let Some(rules) = value.as_array() else {
+        return Ok(());
+    };
+    for rule in rules {
+        validate_rule_value(rule)?;
     }
-    Err(ShareError::InvalidPayload)
+    Ok(())
+}
+
+fn validate_rule_value(value: &serde_json::Value) -> Result<(), ShareError> {
+    if crate::models::validate_rule_keys(value).is_err() {
+        return Err(ShareError::InvalidPayload);
+    }
+    // Parse once here so the expensive typed checks run before the caller parses the
+    // payload; unknown keys are already gone, so the typed value is exact.
+    let rule: Rule = serde_json::from_value(value.clone()).map_err(|_| ShareError::InvalidPayload)?;
+    validate_rule_definition(&rule)
+}
+
+/// Value checks applied to every imported rule: tag colours, quota window bounds, schedule
+/// fields, condition keys and wait durations.
+fn validate_rule_definition(rule: &Rule) -> Result<(), ShareError> {
+    let invalid = rule.tag_color_error().is_some()
+        || rule
+            .quota_period
+            .and_then(crate::models::QuotaPeriod::validation_error)
+            .is_some()
+        || rule
+            .trigger
+            .as_ref()
+            .is_some_and(|trigger| !trigger.schedule_errors().is_empty())
+        || rule
+            .conditions
+            .iter()
+            .any(|item| !item.condition.validation_errors().is_empty())
+        || {
+            let mut invalid = false;
+            visit_rule_actions(rule, &mut |action| {
+                invalid |= !action.validation_errors().is_empty();
+            });
+            invalid
+        };
+    if invalid {
+        Err(ShareError::InvalidPayload)
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_payload(payload: SharePayload) -> Result<SharePayload, ShareError> {
     if payload.version > SHARE_VERSION {
         return Err(ShareError::UnsupportedVersion(payload.version));
     }
-    if payload.rules.len() > MAX_SHARE_RULES {
-        return Err(ShareError::TooManyRules);
-    }
+    validate_payload_limits(&payload)?;
     if payload.rules.is_empty() && payload.overlays.is_empty() && payload.macro_presets.is_empty() {
         return Err(ShareError::EmptyPayload);
     }
     Ok(payload)
+}
+
+/// Count bounds shared by encoding and importing.
+fn validate_payload_limits(payload: &SharePayload) -> Result<(), ShareError> {
+    if payload.rules.len() > MAX_SHARE_RULES {
+        return Err(ShareError::TooManyRules);
+    }
+    if payload.overlays.len() > MAX_SHARE_OVERLAYS
+        || payload.macro_presets.len() > MAX_SHARE_PRESETS
+    {
+        return Err(ShareError::TooManyLibraryItems);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -583,9 +798,12 @@ fn validate_payload(payload: SharePayload) -> Result<SharePayload, ShareError> {
 /// Resolves a payload against the local library and rule set.
 ///
 /// New library entries keep their ids when there is no clash; a clashing id with different
-/// content gets a fresh id and every rule reference is rewritten to match. Runtime counters
-/// are reset, sender-local icons are dropped, rules are disabled unless `enable` is set, and
-/// already installed rules are skipped as duplicates.
+/// content gets a fresh id and every rule reference is rewritten to match. An entry whose
+/// content already exists locally under another id (a previous import of the same code) is
+/// reused instead of duplicated. Runtime counters are reset, sender-local icon and overlay
+/// image paths are dropped, rules are disabled unless `enable` is set, bundled overlays have
+/// their rule click targets rewritten through the import id map, and already installed rules
+/// are skipped as duplicates.
 pub fn prepare_import(
     payload: SharePayload,
     existing_rules: &[Rule],
@@ -593,9 +811,84 @@ pub fn prepare_import(
     existing_presets: &[MacroPreset],
     enable: bool,
 ) -> Result<PreparedShareImport, ShareError> {
-    let payload = validate_payload(payload)?;
+    let mut payload = validate_payload(payload)?;
 
     let mut warnings = Vec::new();
+
+    for rule in &mut payload.rules {
+        rule.clear_quota_runtime();
+        rule.is_enabled = enable;
+        rule.normalize();
+        if rule.custom_icon_path.take().is_some() {
+            push_warning(&mut warnings, ShareWarning::CustomIconDropped);
+        }
+        if strip_rule_overlay_assets(rule) {
+            push_warning(&mut warnings, ShareWarning::OverlayAssetDropped);
+        }
+    }
+    for overlay in &mut payload.overlays {
+        if strip_overlay_asset_paths(overlay) {
+            push_warning(&mut warnings, ShareWarning::OverlayAssetDropped);
+        }
+    }
+
+    // Library references are fingerprinted by content, not only by id: an id clash rewrites
+    // the stored copy to a fresh id, so a re-import of the same code must still match it.
+    let payload_overlay_hashes = overlay_content_index(&payload.overlays);
+    let payload_preset_hashes = preset_content_index(&payload.macro_presets);
+    let mut incoming_overlay_hashes = overlay_content_index(existing_overlays);
+    incoming_overlay_hashes.extend(payload_overlay_hashes.clone());
+    let mut incoming_preset_hashes = preset_content_index(existing_presets);
+    incoming_preset_hashes.extend(payload_preset_hashes.clone());
+    let mut local_overlay_hashes = payload_overlay_hashes;
+    local_overlay_hashes.extend(overlay_content_index(existing_overlays));
+    let mut local_preset_hashes = payload_preset_hashes;
+    local_preset_hashes.extend(preset_content_index(existing_presets));
+
+    // Rules come first: bundled overlays may point at these rules from their click actions,
+    // so the final rule ids must be known before an overlay enters the library.
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut skipped_duplicates = 0usize;
+    let mut known_rule_ids: HashSet<String> = existing_rules.iter().map(|r| r.id.clone()).collect();
+    let mut fingerprints: HashSet<String> = HashSet::new();
+    let mut fingerprint_rule_ids: HashMap<String, String> = HashMap::new();
+    for rule in existing_rules {
+        let fingerprint = rule_fingerprint(rule, &local_overlay_hashes, &local_preset_hashes);
+        fingerprints.insert(fingerprint.clone());
+        fingerprint_rule_ids
+            .entry(fingerprint)
+            .or_insert_with(|| rule.id.clone());
+    }
+    let mut rule_id_map: HashMap<String, String> = HashMap::new();
+
+    for mut rule in payload.rules {
+        let original_id = rule.id.clone();
+        let fingerprint =
+            rule_fingerprint(&rule, &incoming_overlay_hashes, &incoming_preset_hashes);
+        if fingerprints.contains(&fingerprint) {
+            skipped_duplicates += 1;
+            if !original_id.trim().is_empty() {
+                if let Some(existing_id) = fingerprint_rule_ids.get(&fingerprint) {
+                    rule_id_map.insert(original_id, existing_id.clone());
+                }
+            }
+            continue;
+        }
+        if rule.id.trim().is_empty() || known_rule_ids.contains(&rule.id) {
+            rule.id = fresh_id("rule");
+            if !rule.name.ends_with("(Imported)") {
+                rule.name = format!("{} (Imported)", rule.name);
+            }
+        }
+        known_rule_ids.insert(rule.id.clone());
+        fingerprints.insert(fingerprint.clone());
+        fingerprint_rule_ids.insert(fingerprint, rule.id.clone());
+        if !original_id.trim().is_empty() {
+            rule_id_map.insert(original_id, rule.id.clone());
+        }
+        rules.push(rule);
+    }
+
     let mut overlay_map: HashMap<String, String> = HashMap::new();
     let mut new_overlays: Vec<OverlayDefinition> = Vec::new();
     let mut known_overlay_ids: HashSet<String> = HashSet::new();
@@ -603,18 +896,24 @@ pub fn prepare_import(
         if !known_overlay_ids.insert(overlay.id.clone()) {
             continue;
         }
+        remap_overlay_rule_targets(&mut overlay, &rule_id_map, &known_rule_ids, &mut warnings);
         let original_id = overlay.id.clone();
         if let Some(existing) = existing_overlays.iter().find(|o| o.id == original_id) {
             if existing == &overlay {
+                overlay_map.insert(original_id, existing.id.clone());
+                continue;
+            }
+            if let Some(matching) = existing_overlays
+                .iter()
+                .find(|o| overlay_content_hash(o) == overlay_content_hash(&overlay))
+            {
+                overlay_map.insert(original_id, matching.id.clone());
                 continue;
             }
             overlay.id = fresh_id("overlay");
-            overlay_map.insert(original_id, overlay.id.clone());
-            new_overlays.push(overlay);
-        } else {
-            overlay_map.insert(original_id, overlay.id.clone());
-            new_overlays.push(overlay);
         }
+        overlay_map.insert(original_id, overlay.id.clone());
+        new_overlays.push(overlay);
     }
 
     let mut preset_map: HashMap<String, String> = HashMap::new();
@@ -627,44 +926,24 @@ pub fn prepare_import(
         let original_id = preset.id.clone();
         if let Some(existing) = existing_presets.iter().find(|p| p.id == original_id) {
             if existing == &preset {
+                preset_map.insert(original_id, existing.id.clone());
+                continue;
+            }
+            if let Some(matching) = existing_presets
+                .iter()
+                .find(|p| preset_content_hash(p) == preset_content_hash(&preset))
+            {
+                preset_map.insert(original_id, matching.id.clone());
                 continue;
             }
             preset.id = fresh_id("preset");
-            preset_map.insert(original_id, preset.id.clone());
-            new_presets.push(preset);
-        } else {
-            preset_map.insert(original_id, preset.id.clone());
-            new_presets.push(preset);
         }
+        preset_map.insert(original_id, preset.id.clone());
+        new_presets.push(preset);
     }
 
-    let mut rules: Vec<Rule> = Vec::new();
-    let mut skipped_duplicates = 0usize;
-    let mut known_rule_ids: HashSet<String> = existing_rules.iter().map(|r| r.id.clone()).collect();
-    let mut fingerprints: HashSet<String> = existing_rules.iter().map(rule_fingerprint).collect();
-
-    for mut rule in payload.rules {
-        rule.clear_quota_runtime();
-        rule.is_enabled = enable;
-        remap_library_refs(&mut rule, &overlay_map, &preset_map);
-        if rule.custom_icon_path.take().is_some() {
-            push_warning(&mut warnings, ShareWarning::CustomIconDropped);
-        }
-
-        let fingerprint = rule_fingerprint(&rule);
-        if fingerprints.contains(&fingerprint) {
-            skipped_duplicates += 1;
-            continue;
-        }
-        if rule.id.trim().is_empty() || known_rule_ids.contains(&rule.id) {
-            rule.id = fresh_id("rule");
-            if !rule.name.ends_with("(Imported)") {
-                rule.name = format!("{} (Imported)", rule.name);
-            }
-        }
-        known_rule_ids.insert(rule.id.clone());
-        fingerprints.insert(fingerprint);
-        rules.push(rule);
+    for rule in &mut rules {
+        remap_library_refs(rule, &overlay_map, &preset_map);
     }
 
     let all_overlay_ids: HashSet<&str> = existing_overlays
@@ -774,14 +1053,215 @@ fn fresh_id(prefix: &str) -> String {
 }
 
 /// Content identity of a rule, ignoring ids, enable state and runtime counters.
-fn rule_fingerprint(rule: &Rule) -> String {
+///
+/// Library references are replaced with the content identity of the referenced overlay or
+/// preset: import rewrites clashing library ids to fresh ones, so a re-import must compare
+/// what the references point at, not the ids themselves.
+fn rule_fingerprint(
+    rule: &Rule,
+    overlay_hashes: &HashMap<String, String>,
+    preset_hashes: &HashMap<String, String>,
+) -> String {
     let mut clone = rule.clone();
     clone.id.clear();
     clone.clear_quota_runtime();
     clone.is_enabled = false;
     // Icon paths are sender-local and never shared, so they must not affect identity.
     clone.custom_icon_path = None;
+    // A clashing rule id makes import append this marker; it is not part of the rule content.
+    if let Some(name) = clone.name.strip_suffix(" (Imported)") {
+        clone.name = name.to_string();
+    }
+    canonicalize_library_refs(&mut clone, overlay_hashes, preset_hashes);
     serde_json::to_string(&clone).unwrap_or_default()
+}
+
+/// Replaces macro-preset and overlay ids with the content hash of the referenced library item.
+fn canonicalize_library_refs(
+    rule: &mut Rule,
+    overlay_hashes: &HashMap<String, String>,
+    preset_hashes: &HashMap<String, String>,
+) {
+    fn canonicalize_actions(
+        actions: &mut [Action],
+        overlay_hashes: &HashMap<String, String>,
+        preset_hashes: &HashMap<String, String>,
+    ) {
+        for action in actions {
+            match action {
+                Action::Macro {
+                    preset_id: Some(preset_id),
+                    ..
+                } => {
+                    if let Some(hash) = preset_hashes.get(preset_id) {
+                        *preset_id = hash.clone();
+                    }
+                }
+                Action::Overlay {
+                    overlay_id,
+                    custom_overlay: None,
+                    ..
+                } => {
+                    if let Some(hash) = overlay_hashes.get(overlay_id) {
+                        *overlay_id = hash.clone();
+                    }
+                }
+                Action::IfElse {
+                    then_actions,
+                    else_if_branches,
+                    else_actions,
+                    ..
+                } => {
+                    canonicalize_actions(then_actions, overlay_hashes, preset_hashes);
+                    for branch in else_if_branches {
+                        canonicalize_actions(&mut branch.actions, overlay_hashes, preset_hashes);
+                    }
+                    canonicalize_actions(else_actions, overlay_hashes, preset_hashes);
+                }
+                _ => {}
+            }
+        }
+    }
+    canonicalize_actions(&mut rule.actions, overlay_hashes, preset_hashes);
+    canonicalize_actions(&mut rule.on_exit_actions, overlay_hashes, preset_hashes);
+}
+
+fn overlay_content_index(overlays: &[OverlayDefinition]) -> HashMap<String, String> {
+    overlays
+        .iter()
+        .map(|overlay| (overlay.id.clone(), overlay_content_hash(overlay)))
+        .collect()
+}
+
+fn preset_content_index(presets: &[MacroPreset]) -> HashMap<String, String> {
+    presets
+        .iter()
+        .map(|preset| (preset.id.clone(), preset_content_hash(preset)))
+        .collect()
+}
+
+/// Content identity of an overlay, ignoring its library id.
+fn overlay_content_hash(overlay: &OverlayDefinition) -> String {
+    let mut canonical = overlay.clone();
+    canonical.id.clear();
+    content_hash(&canonical)
+}
+
+/// Content identity of a macro preset, ignoring its library id.
+fn preset_content_hash(preset: &MacroPreset) -> String {
+    let mut canonical = preset.clone();
+    canonical.id.clear();
+    content_hash(&canonical)
+}
+
+fn content_hash<T: Serialize>(value: &T) -> String {
+    match serde_json::to_vec(value) {
+        Ok(bytes) => {
+            use std::fmt::Write as _;
+            let digest = Sha256::digest(&bytes);
+            let mut out = String::with_capacity(digest.len() * 2);
+            for byte in digest {
+                let _ = write!(out, "{byte:02x}");
+            }
+            out
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Rewrites the rule ids a bundled overlay's interactive elements point at.
+///
+/// Import may rename a rule (`fresh_id`) or deduplicate it onto an existing local rule, so a
+/// button that still carries the sender's id would do nothing or trigger an unrelated local
+/// rule. Targets that remain unresolved are reported through a typed warning.
+fn remap_overlay_rule_targets(
+    overlay: &mut OverlayDefinition,
+    rule_id_map: &HashMap<String, String>,
+    known_rule_ids: &HashSet<String>,
+    warnings: &mut Vec<ShareWarning>,
+) {
+    fn remap_target(
+        rule_id: &mut String,
+        rule_id_map: &HashMap<String, String>,
+        known_rule_ids: &HashSet<String>,
+        warnings: &mut Vec<ShareWarning>,
+    ) {
+        if rule_id.trim().is_empty() {
+            return;
+        }
+        if let Some(mapped) = rule_id_map.get(rule_id) {
+            *rule_id = mapped.clone();
+        } else if !known_rule_ids.contains(rule_id.as_str()) {
+            push_warning(warnings, ShareWarning::MissingRule(rule_id.clone()));
+        }
+    }
+
+    fn remap_click_action(
+        action: &mut OverlayClickAction,
+        rule_id_map: &HashMap<String, String>,
+        known_rule_ids: &HashSet<String>,
+        warnings: &mut Vec<ShareWarning>,
+    ) {
+        let rule_id = match action {
+            OverlayClickAction::TriggerRule { rule_id }
+            | OverlayClickAction::ToggleRule { rule_id } => rule_id,
+            _ => return,
+        };
+        remap_target(rule_id, rule_id_map, known_rule_ids, warnings);
+    }
+
+    fn remap_optional_action(
+        action: &mut Option<OverlayClickAction>,
+        rule_id_map: &HashMap<String, String>,
+        known_rule_ids: &HashSet<String>,
+        warnings: &mut Vec<ShareWarning>,
+    ) {
+        if let Some(action) = action {
+            remap_click_action(action, rule_id_map, known_rule_ids, warnings);
+        }
+    }
+
+    fn remap_optional_target(
+        rule_id: &mut Option<String>,
+        rule_id_map: &HashMap<String, String>,
+        known_rule_ids: &HashSet<String>,
+        warnings: &mut Vec<ShareWarning>,
+    ) {
+        if let Some(rule_id) = rule_id {
+            remap_target(rule_id, rule_id_map, known_rule_ids, warnings);
+        }
+    }
+
+    for element in &mut overlay.elements {
+        match element {
+            OverlayElement::Text { on_click, .. }
+            | OverlayElement::Image { on_click, .. }
+            | OverlayElement::Shape { on_click, .. }
+            | OverlayElement::SystemTelemetry { on_click, .. } => {
+                remap_optional_action(on_click, rule_id_map, known_rule_ids, warnings);
+            }
+            OverlayElement::ClockTimer { on_finish, .. } => {
+                remap_optional_action(on_finish, rule_id_map, known_rule_ids, warnings);
+            }
+            OverlayElement::InteractiveControl { control, .. } => match control {
+                InteractiveControlKind::Button { action, .. } => {
+                    remap_optional_action(action, rule_id_map, known_rule_ids, warnings);
+                }
+                InteractiveControlKind::ToggleSwitch {
+                    bind_rule_id,
+                    on_enable,
+                    on_disable,
+                    ..
+                } => {
+                    remap_optional_target(bind_rule_id, rule_id_map, known_rule_ids, warnings);
+                    remap_optional_action(on_enable, rule_id_map, known_rule_ids, warnings);
+                    remap_optional_action(on_disable, rule_id_map, known_rule_ids, warnings);
+                }
+                InteractiveControlKind::Slider { .. } => {}
+            },
+            _ => {}
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -882,6 +1362,104 @@ mod tests {
         let mut overlay = OverlayDefinition::default_new_overlay();
         overlay.id = id.into();
         overlay.name = format!("Overlay {id}");
+        overlay
+    }
+
+    /// Bundled overlay with sender-local image and button icon paths.
+    fn asset_overlay(id: &str) -> OverlayDefinition {
+        let mut overlay = overlay(id);
+        overlay.elements = vec![
+            OverlayElement::Image {
+                id: "img_1".into(),
+                path: "C:\\Users\\Sender\\Pictures\\hud.png".into(),
+                x: 0.0,
+                y: 0.0,
+                width: 64.0,
+                height: 64.0,
+                opacity: 1.0,
+                lock_aspect: true,
+                rotation: 0.0,
+                on_click: None,
+            },
+            OverlayElement::InteractiveControl {
+                id: "btn_1".into(),
+                control: InteractiveControlKind::Button {
+                    label: "Start".into(),
+                    icon: Some("C:\\Users\\Sender\\Pictures\\start.ico".into()),
+                    action: None,
+                },
+                color: [255, 255, 255, 255],
+                bg_color: [0, 0, 0, 0],
+                active_color: [70, 160, 255, 255],
+                x: 0.0,
+                y: 0.0,
+                width: 120.0,
+                height: 32.0,
+                rotation: 0.0,
+            },
+        ];
+        overlay
+    }
+
+    /// Bundled overlay whose button and toggle point at `rule_id`, plus a button that points
+    /// at a rule missing from both the code and the local rule set.
+    fn click_overlay(id: &str, rule_id: &str) -> OverlayDefinition {
+        let control = |id: &str, kind| OverlayElement::InteractiveControl {
+            id: id.into(),
+            control: kind,
+            color: [255, 255, 255, 255],
+            bg_color: [0, 0, 0, 0],
+            active_color: [70, 160, 255, 255],
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 32.0,
+            rotation: 0.0,
+        };
+        let mut overlay = overlay(id);
+        overlay.elements = vec![
+            control(
+                "btn",
+                InteractiveControlKind::Button {
+                    label: "Run".into(),
+                    icon: None,
+                    action: Some(OverlayClickAction::TriggerRule {
+                        rule_id: rule_id.into(),
+                    }),
+                },
+            ),
+            control(
+                "toggle",
+                InteractiveControlKind::ToggleSwitch {
+                    label: "Toggle".into(),
+                    is_active: false,
+                    bind_rule_id: Some(rule_id.into()),
+                    on_enable: Some(OverlayClickAction::ToggleRule {
+                        rule_id: rule_id.into(),
+                    }),
+                    on_disable: Some(OverlayClickAction::TriggerRule {
+                        rule_id: rule_id.into(),
+                    }),
+                },
+            ),
+            OverlayElement::Text {
+                id: "ghost".into(),
+                text: "Ghost".into(),
+                font_size: 12.0,
+                color: [255, 255, 255, 255],
+                x: 0.0,
+                y: 0.0,
+                width: None,
+                height: None,
+                lock_aspect: false,
+                bold: false,
+                font_family: "Segoe UI".into(),
+                rotation: 0.0,
+                on_click: Some(OverlayClickAction::TriggerRule {
+                    rule_id: "ghost_rule".into(),
+                }),
+            },
+        ];
         overlay
     }
 
@@ -1165,6 +1743,60 @@ mod tests {
         let batch_json = serde_json::to_string(&vec![sample_rule("a"), sample_rule("b")]).unwrap();
         let decoded = decode_and_decompress(&batch_json).expect("raw batch json");
         assert_eq!(decoded.rules.len(), 2);
+    }
+
+    #[test]
+    fn test_import_rejects_unknown_keys_and_invalid_values() {
+        let typo = r#"{"id":"r","name":"R","max_execution":5,"actions":[]}"#;
+        assert_eq!(decode_and_decompress(typo), Err(ShareError::InvalidPayload));
+
+        let nested = r#"{"id":"r","name":"R","actions":[{"$action_type":"notification","title":"T","message":"M","mesage":"typo"}]}"#;
+        assert_eq!(decode_and_decompress(nested), Err(ShareError::InvalidPayload));
+
+        // A tag colour that is not ASCII hex must not reach the renderer.
+        let bad_tag = r#"{"id":"r","name":"R","tags":[{"name":"T","color":"aé€"}],"actions":[]}"#;
+        assert_eq!(decode_and_decompress(bad_tag), Err(ShareError::InvalidPayload));
+
+        // A Daily schedule without its time used to import and then never fire.
+        let bad_schedule = r#"{"id":"r","name":"R","trigger":{"$trigger_type":"schedule","schedule_type":"daily","interval_sec":0},"actions":[]}"#;
+        assert_eq!(
+            decode_and_decompress(bad_schedule),
+            Err(ShareError::InvalidPayload)
+        );
+    }
+
+    #[test]
+    fn test_prepare_import_normalizes_overlay_ids() {
+        let mut rule = sample_rule("overlay_rule");
+        rule.actions = vec![Action::Overlay {
+            overlay_id: "outside".into(),
+            custom_overlay: Some(Box::new(crate::models::OverlayDefinition {
+                id: "inside".into(),
+                name: "HUD".into(),
+                ..Default::default()
+            })),
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        }];
+
+        let prepared = prepare_import(SharePayload::rules_only(vec![rule]), &[], &[], &[], true)
+            .expect("prepare");
+        match &prepared.rules[0].actions[0] {
+            Action::Overlay {
+                overlay_id,
+                custom_overlay,
+                ..
+            } => {
+                assert_eq!(overlay_id, "outside");
+                assert_eq!(
+                    custom_overlay.as_ref().map(|definition| definition.id.as_str()),
+                    Some("outside")
+                );
+            }
+            other => panic!("expected an overlay action, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1513,5 +2145,358 @@ mod tests {
         assert!(SHARE_DICTIONARY.len() > 512);
         assert!(SHARE_DICTIONARY.len() < 8 * 1024);
         assert!(SHARE_DICTIONARY.windows(7).any(|window| window == b"actions"));
+    }
+
+    #[test]
+    fn test_event_condition_idle_zero_roundtrip() {
+        use crate::models::{RuleCondition, RuleConditionItem, SystemEventType};
+
+        let mut rule = sample_rule("idle_zero_rule");
+        rule.trigger = None;
+        rule.conditions = vec![RuleConditionItem::new(RuleCondition::Event {
+            event_type: SystemEventType::UserIdle,
+            idle_duration_sec: 0,
+        })];
+
+        let (payload, _) = build_payload(vec![rule], &[], &[]);
+        let json = String::from_utf8(payload_json(&payload).expect("json")).unwrap();
+        assert!(
+            json.contains("\"idle_duration_sec\":0"),
+            "an intentional zero must stay in the payload: {json}"
+        );
+
+        let decoded = decode_and_decompress(&encode(&payload)).expect("decode");
+        assert_eq!(decoded, payload, "idle_duration_sec 0 must round-trip");
+        match &decoded.rules[0].conditions[0].condition {
+            RuleCondition::Event {
+                idle_duration_sec, ..
+            } => assert_eq!(*idle_duration_sec, 0),
+            other => panic!("expected an event condition, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_prepare_import_deduplicates_same_code_twice() {
+        // The local library already holds the code's overlay id with different content, so the
+        // first import renames the bundled overlay to a fresh id.
+        let mut local_variant = overlay("overlay_shared");
+        local_variant.name = "Local variant".into();
+        let mut shared_overlay = overlay("overlay_shared");
+        shared_overlay.name = "Shared variant".into();
+
+        let mut rule = sample_rule("deps_rule");
+        rule.custom_icon_path = None;
+        rule.actions = vec![Action::Overlay {
+            overlay_id: "overlay_shared".into(),
+            custom_overlay: None,
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        }];
+        let (payload, _) =
+            build_payload(vec![rule], std::slice::from_ref(&shared_overlay), &[]);
+        assert_eq!(payload.overlays.len(), 1);
+
+        let first = prepare_import(
+            payload.clone(),
+            &[],
+            std::slice::from_ref(&local_variant),
+            &[],
+            false,
+        )
+        .expect("first import");
+        assert_eq!(first.rules.len(), 1);
+        assert_eq!(first.overlays.len(), 1);
+        assert_ne!(first.overlays[0].id, "overlay_shared");
+
+        let mut local_overlays = vec![local_variant];
+        local_overlays.extend(first.overlays.iter().cloned());
+        let second =
+            prepare_import(payload, &first.rules, &local_overlays, &[], false).expect("second import");
+        assert!(
+            second.rules.is_empty(),
+            "the same rule must not be imported twice"
+        );
+        assert_eq!(second.skipped_duplicates, 1);
+        assert!(
+            second.overlays.is_empty(),
+            "the same overlay must not be appended twice"
+        );
+        assert!(!second.has_new_content);
+    }
+
+    #[test]
+    fn test_prepare_import_deduplicates_renamed_rule_ids() {
+        let existing = Rule {
+            id: "same_id".into(),
+            name: "Existing".into(),
+            ..Default::default()
+        };
+        let incoming = Rule {
+            id: "same_id".into(),
+            name: "Incoming".into(),
+            ..Default::default()
+        };
+        let payload = SharePayload::rules_only(vec![incoming]);
+        let first = prepare_import(
+            payload.clone(),
+            std::slice::from_ref(&existing),
+            &[],
+            &[],
+            false,
+        )
+        .expect("first import");
+        assert_eq!(first.rules.len(), 1);
+        assert!(first.rules[0].name.ends_with("(Imported)"));
+
+        let second = prepare_import(
+            payload,
+            &[existing, first.rules[0].clone()],
+            &[],
+            &[],
+            false,
+        )
+        .expect("second import");
+        assert!(
+            second.rules.is_empty(),
+            "the import marker must not defeat deduplication"
+        );
+        assert_eq!(second.skipped_duplicates, 1);
+    }
+
+    #[test]
+    fn test_prepare_import_remaps_overlay_click_targets() {
+        let existing = Rule {
+            id: "shared_target".into(),
+            name: "Local rule".into(),
+            ..Default::default()
+        };
+        let incoming = Rule {
+            id: "shared_target".into(),
+            name: "Shared rule".into(),
+            ..Default::default()
+        };
+        let mut payload = SharePayload::rules_only(vec![incoming]);
+        payload.overlays = vec![click_overlay("overlay_buttons", "shared_target")];
+
+        let prepared = prepare_import(
+            payload,
+            std::slice::from_ref(&existing),
+            &[],
+            &[],
+            false,
+        )
+        .expect("prepare");
+        assert_eq!(prepared.rules.len(), 1);
+        let renamed = prepared.rules[0].id.clone();
+        assert_ne!(renamed, "shared_target");
+
+        let overlay = &prepared.overlays[0];
+        match &overlay.elements[0] {
+            OverlayElement::InteractiveControl {
+                control:
+                    InteractiveControlKind::Button {
+                        action: Some(OverlayClickAction::TriggerRule { rule_id }),
+                        ..
+                    },
+                ..
+            } => assert_eq!(rule_id, &renamed),
+            other => panic!("unexpected element: {other:?}"),
+        }
+        match &overlay.elements[1] {
+            OverlayElement::InteractiveControl {
+                control:
+                    InteractiveControlKind::ToggleSwitch {
+                        bind_rule_id,
+                        on_enable,
+                        on_disable,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(bind_rule_id.as_deref(), Some(renamed.as_str()));
+                assert!(matches!(
+                    on_enable,
+                    Some(OverlayClickAction::ToggleRule { rule_id }) if rule_id == &renamed
+                ));
+                assert!(matches!(
+                    on_disable,
+                    Some(OverlayClickAction::TriggerRule { rule_id }) if rule_id == &renamed
+                ));
+            }
+            other => panic!("unexpected element: {other:?}"),
+        }
+        assert!(
+            prepared
+                .warnings
+                .contains(&ShareWarning::MissingRule("ghost_rule".into())),
+            "unresolved click targets must warn: {:?}",
+            prepared.warnings
+        );
+    }
+
+    #[test]
+    fn test_build_payload_strips_overlay_asset_paths() {
+        let library_overlay = asset_overlay("overlay_assets");
+        let mut rule = sample_rule("asset_rule");
+        rule.custom_icon_path = None;
+        rule.actions = vec![Action::Overlay {
+            overlay_id: "overlay_assets".into(),
+            custom_overlay: None,
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        }];
+        let (payload, warnings) = build_payload(
+            vec![rule],
+            std::slice::from_ref(&library_overlay),
+            &[],
+        );
+        assert!(
+            warnings.contains(&ShareWarning::OverlayAssetDropped),
+            "{warnings:?}"
+        );
+        match &payload.overlays[0].elements[0] {
+            OverlayElement::Image { path, .. } => {
+                assert!(path.is_empty(), "absolute image path must be dropped")
+            }
+            other => panic!("unexpected element: {other:?}"),
+        }
+        match &payload.overlays[0].elements[1] {
+            OverlayElement::InteractiveControl {
+                control: InteractiveControlKind::Button { icon, .. },
+                ..
+            } => assert!(icon.is_none(), "absolute button icon must be dropped"),
+            other => panic!("unexpected element: {other:?}"),
+        }
+        // The sender's library entry must stay untouched.
+        match &library_overlay.elements[0] {
+            OverlayElement::Image { path, .. } => assert!(!path.is_empty()),
+            other => panic!("unexpected element: {other:?}"),
+        }
+
+        // An overlay embedded directly in the rule is stripped too.
+        let mut embedded_rule = sample_rule("embedded_asset_rule");
+        embedded_rule.custom_icon_path = None;
+        embedded_rule.actions = vec![Action::Overlay {
+            overlay_id: "embedded_overlay".into(),
+            custom_overlay: Some(Box::new(asset_overlay("embedded_overlay"))),
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        }];
+        let (payload, warnings) = build_payload(vec![embedded_rule], &[], &[]);
+        assert!(warnings.contains(&ShareWarning::OverlayAssetDropped));
+        match &payload.rules[0].actions[0] {
+            Action::Overlay {
+                custom_overlay: Some(definition),
+                ..
+            } => match &definition.elements[0] {
+                OverlayElement::Image { path, .. } => assert!(path.is_empty()),
+                other => panic!("unexpected element: {other:?}"),
+            },
+            other => panic!("unexpected action: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_prepare_import_strips_overlay_asset_paths() {
+        let mut rule = sample_rule("incoming_asset_rule");
+        rule.custom_icon_path = None;
+        rule.actions = vec![Action::Overlay {
+            overlay_id: "incoming_assets".into(),
+            custom_overlay: None,
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            close_on_exit: false,
+        }];
+        let mut payload = SharePayload::rules_only(vec![rule]);
+        payload.overlays = vec![asset_overlay("incoming_assets")];
+
+        let prepared = prepare_import(payload, &[], &[], &[], false).expect("prepare");
+        assert!(
+            prepared.warnings.contains(&ShareWarning::OverlayAssetDropped),
+            "{:?}",
+            prepared.warnings
+        );
+        match &prepared.overlays[0].elements[0] {
+            OverlayElement::Image { path, .. } => assert!(path.is_empty()),
+            other => panic!("unexpected element: {other:?}"),
+        }
+        match &prepared.overlays[0].elements[1] {
+            OverlayElement::InteractiveControl {
+                control: InteractiveControlKind::Button { icon, .. },
+                ..
+            } => assert!(icon.is_none()),
+            other => panic!("unexpected element: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_share_payload_bounds_library_items() {
+        let rule = Rule {
+            id: "bounded_rule".into(),
+            name: "Bounded".into(),
+            ..Default::default()
+        };
+        let mut overlays = SharePayload::rules_only(vec![rule.clone()]);
+        overlays.overlays = (0..=MAX_SHARE_OVERLAYS)
+            .map(|index| {
+                let mut item = OverlayDefinition::default_new_overlay();
+                item.id = format!("overlay_{index}");
+                item
+            })
+            .collect();
+        assert_eq!(
+            compress_and_encode(&overlays).unwrap_err(),
+            ShareError::TooManyLibraryItems
+        );
+        let raw = serde_json::to_string(&overlays).expect("serialize");
+        assert!(raw.len() < MAX_PAYLOAD_BYTES);
+        assert_eq!(
+            decode_and_decompress(&raw).unwrap_err(),
+            ShareError::TooManyLibraryItems
+        );
+        assert_eq!(
+            prepare_import(overlays, &[], &[], &[], false).unwrap_err(),
+            ShareError::TooManyLibraryItems
+        );
+
+        let mut presets = SharePayload::rules_only(vec![rule]);
+        presets.macro_presets = (0..=MAX_SHARE_PRESETS)
+            .map(|index| preset(&format!("preset_{index}")))
+            .collect();
+        assert_eq!(
+            compress_and_encode(&presets).unwrap_err(),
+            ShareError::TooManyLibraryItems
+        );
+        assert_eq!(
+            prepare_import(presets, &[], &[], &[], false).unwrap_err(),
+            ShareError::TooManyLibraryItems
+        );
+    }
+
+    #[test]
+    fn test_checksum_rejects_one_bit_difference() {
+        let (payload, _) = build_payload(vec![sample_rule("checksum_bit_rule")], &[], &[]);
+        let encoded = encode(&payload);
+        let body = encoded.strip_prefix(SHARE_PREFIX).unwrap();
+        let framed = BASE64_URL_SAFE_NO_PAD.decode(body).unwrap();
+        assert!(framed.len() > CHECKSUM_LEN);
+
+        for bit in 0..CHECKSUM_LEN * 8 {
+            let mut altered = framed.clone();
+            altered[bit / 8] ^= 1 << (bit % 8);
+            let code = format!("{SHARE_PREFIX}{}", BASE64_URL_SAFE_NO_PAD.encode(&altered));
+            assert_eq!(
+                decode_and_decompress(&code),
+                Err(ShareError::ChecksumMismatch),
+                "flipping checksum bit {bit} must be detected"
+            );
+        }
     }
 }

@@ -251,7 +251,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                     );
                     ui.add_space(8.0);
                     ui.label(
-                        RichText::new("MACRO STUDIO")
+                        RichText::new(loc.macro_studio_title)
                             .font(egui::FontId::new(14.0, theme::semibold()))
                             .color(t.ink_strong),
                     );
@@ -1152,6 +1152,13 @@ fn render_compact_cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options
     changed
 }
 
+/// Duration shown in the Macro Studio editor for a `MouseMove` step. The engine uses 250 ms for
+/// smooth moves and 16 ms for instant moves when the step stores no duration, so the editor
+/// shows that effective default instead of a value the replay would ignore.
+fn effective_move_duration_ms(smooth: bool, duration_ms: Option<u32>) -> u32 {
+    duration_ms.unwrap_or(if smooth { 250 } else { 16 })
+}
+
 fn render_timeline_row_inline(
     ui: &mut Ui,
     event: &mut MacroEvent,
@@ -1266,14 +1273,15 @@ fn render_timeline_row_inline(
 
             ui.checkbox(smooth, loc.macro_studio_checkbox_smooth);
 
-            if *smooth {
-                let mut dur = duration_ms.unwrap_or(200);
-                let duration_field = widgets::DurationField::millis(ui, loc, ("macro_move_duration", idx), 10.0..=5000.0)
-                    .default_unit(widgets::TimeUnit::Milliseconds)
-                    .prefix("⏱ ");
-                if duration_field.show_millis_u32(ui, &mut dur).changed() {
-                    *duration_ms = Some(dur);
-                }
+            // The duration is applied in both modes — glide time for a smooth move, a pause
+            // after an instant jump — so it stays editable instead of leaving an invisible
+            // multi-second pause behind an unchecked Smooth box.
+            let mut dur = effective_move_duration_ms(*smooth, *duration_ms);
+            let duration_field = widgets::DurationField::millis(ui, loc, ("macro_move_duration", idx), 10.0..=5000.0)
+                .default_unit(widgets::TimeUnit::Milliseconds)
+                .prefix("⏱ ");
+            if duration_field.show_millis_u32(ui, &mut dur).changed() {
+                *duration_ms = Some(dur);
             }
         }
 
@@ -1467,6 +1475,137 @@ fn render_compact_coord_picker(
     }
 }
 
+/// Identity of a macro preset is independent of its display name. Editing an existing preset
+/// reuses its id (which is what makes a rename possible); saving under an already used display
+/// name updates that preset; otherwise a slug-based id is made unique against the existing
+/// presets, because `SaveMacroPreset` replaces by id and two different names that normalize
+/// identically would otherwise silently overwrite each other.
+fn allocate_macro_preset_id(
+    name: &str,
+    edited_id: Option<&str>,
+    existing: &[crate::models::MacroPreset],
+) -> String {
+    if let Some(id) = edited_id.filter(|id| !id.trim().is_empty()) {
+        return id.to_string();
+    }
+    if let Some(preset) = existing.iter().find(|preset| preset.name.eq_ignore_ascii_case(name)) {
+        return preset.id.clone();
+    }
+    let slug = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+    let base = format!("macro_{}", slug.trim_matches('_'));
+    let base = if base == "macro_" { "macro_preset".to_string() } else { base };
+    let taken = |candidate: &str| existing.iter().any(|preset| preset.id == candidate);
+    if !taken(&base) {
+        return base;
+    }
+    let mut suffix = 2u32;
+    loop {
+        let candidate = format!("{base}_{suffix}");
+        if !taken(&candidate) {
+            return candidate;
+        }
+        suffix = suffix.saturating_add(1);
+    }
+}
+
+/// Result of one macro-library mutation attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LibraryWriteOutcome {
+    /// The daemon, or a confirmed-offline direct write, persisted the change.
+    Persisted,
+    /// Nothing was persisted. The string is a log-safe reason (identifiers only, no payloads).
+    Failed(String),
+}
+
+/// Whether a failed IPC call may be retried as a direct write of `library.json`. The daemon owns
+/// the section while it is reachable, so only a confirmed-unreachable daemon may be bypassed: a
+/// reachable daemon that rejected the write (or answered unexpectedly) must be reported instead,
+/// or its next persist overwrites the entry. Same rule as the overlay library (U02-008).
+fn direct_library_write_allowed(daemon_reachable: bool) -> bool {
+    !daemon_reachable
+}
+
+/// Interprets one IPC result and, when the daemon is confirmed gone, applies the change directly
+/// through `apply_directly`. Mirrors the overlay studio's `finish_library_write`.
+fn finish_library_write(
+    result: Result<crate::ipc::IpcResponse, String>,
+    daemon_reachable: bool,
+    apply_directly: impl FnOnce() -> std::io::Result<()>,
+) -> LibraryWriteOutcome {
+    match result {
+        Ok(crate::ipc::IpcResponse::Ok) => LibraryWriteOutcome::Persisted,
+        Ok(crate::ipc::IpcResponse::Error(reason)) => {
+            LibraryWriteOutcome::Failed(format!("the daemon rejected the change: {reason}"))
+        }
+        Ok(_) => LibraryWriteOutcome::Failed("the daemon returned an unexpected response".to_string()),
+        Err(error) => {
+            if !direct_library_write_allowed(daemon_reachable) {
+                return LibraryWriteOutcome::Failed(format!(
+                    "the daemon is reachable but the change failed: {error}"
+                ));
+            }
+            match apply_directly() {
+                Ok(()) => {
+                    crate::logging::info(
+                        "CONFIG",
+                        "Daemon unreachable; macro library written directly",
+                    );
+                    LibraryWriteOutcome::Persisted
+                }
+                Err(write_error) => {
+                    LibraryWriteOutcome::Failed(format!("direct library write failed: {write_error}"))
+                }
+            }
+        }
+    }
+}
+
+/// Deletes one macro preset, keeping the daemon authoritative while it is reachable.
+fn delete_macro_preset(id: &str) -> LibraryWriteOutcome {
+    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(id.to_string()));
+    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
+    let outcome = finish_library_write(result, daemon_reachable, || {
+        let mut library = crate::config::Library::read();
+        library.macro_presets.retain(|preset| preset.id != id);
+        library.save()
+    });
+    if let LibraryWriteOutcome::Failed(reason) = &outcome {
+        crate::logging::error(
+            "CONFIG",
+            &format!("Macro preset '{id}' was not deleted: {reason}"),
+        );
+    }
+    outcome
+}
+
+/// Saves one macro preset, keeping the daemon authoritative while it is reachable. The daemon
+/// persists synchronously before answering `Ok`, so no fallback write is attempted while it lives.
+fn persist_macro_preset(preset: &crate::models::MacroPreset) -> LibraryWriteOutcome {
+    let result =
+        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(preset.clone()));
+    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
+    let outcome = finish_library_write(result, daemon_reachable, || {
+        let mut library = crate::config::Library::read();
+        if let Some(existing) = library.macro_presets.iter_mut().find(|p| p.id == preset.id) {
+            *existing = preset.clone();
+        } else {
+            library.macro_presets.push(preset.clone());
+        }
+        library.save()
+    });
+    if let LibraryWriteOutcome::Failed(reason) = &outcome {
+        crate::logging::error(
+            "CONFIG",
+            &format!("Macro preset '{}' was not saved: {reason}", preset.id),
+        );
+    }
+    outcome
+}
+
 pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
     let is_open = state.show_macro_presets_modal;
@@ -1625,21 +1764,18 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    let deleted = matches!(
-                                        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(del_id.clone())),
-                                        Ok(crate::ipc::IpcResponse::Ok)
-                                    );
-                                    // The daemon owns library.json while reachable; write directly
-                                    // only as an offline fallback.
-                                    if !deleted {
-                                        let mut library = crate::config::Library::read();
-                                        library.macro_presets.retain(|p| p.id != del_id);
-                                        if let Err(err) = library.save() {
-                                            crate::logging::error("CONFIG", &format!("Failed to save macro presets: {err}"));
+                                    match delete_macro_preset(&del_id) {
+                                        LibraryWriteOutcome::Persisted => {
+                                            if let Some(ds) = &mut state.daemon_state {
+                                                ds.config.macro_presets.retain(|p| p.id != del_id);
+                                            }
                                         }
-                                    }
-                                    if let Some(ds) = &mut state.daemon_state {
-                                        ds.config.macro_presets.retain(|p| p.id != del_id);
+                                        LibraryWriteOutcome::Failed(_) => {
+                                            state.toast = Some((
+                                                loc.presets_delete_failed.to_string(),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
                                     }
                                 }
                             });
@@ -1652,26 +1788,29 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
         let current_macro = state.editing_rule.as_ref().and_then(|r| {
             let edit_info = state.macro_editor.as_ref()?;
             let actions = if edit_info.is_exit_pipeline { &r.on_exit_actions } else { &r.actions };
-            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, .. }) = actions.get(edit_info.step_idx) {
+            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = actions.get(edit_info.step_idx) {
                 let name = if state.macro_preset_save_name.trim().is_empty() {
-                    if r.name.trim().is_empty() { "Custom Macro".to_string() } else { r.name.trim().to_string() }
+                    if r.name.trim().is_empty() { loc.macro_studio_custom_preset_name.to_string() } else { r.name.trim().to_string() }
                 } else {
                     state.macro_preset_save_name.trim().to_string()
                 };
-                Some((name, events.clone(), *repeat, *speed, *infinite))
+                Some((name, preset_id.clone(), events.clone(), *repeat, *speed, *infinite))
             } else {
                 None
             }
         });
 
-        if let Some((name, events, repeat, speed, infinite)) = current_macro {
-            let clean_id = name.to_lowercase()
-                .chars()
-                .map(|c| if c.is_alphanumeric() { c } else { '_' })
-                .collect::<String>();
-            let fresh_id = format!("macro_{}", clean_id.trim_matches('_'));
+        if let Some((name, edited_preset_id, events, repeat, speed, infinite)) = current_macro {
+            // The daemon replaces presets by id, so allocate against the list this modal renders
+            // (or the library fallback when the daemon is offline) instead of assuming the name
+            // is unique.
+            let existing: Vec<crate::models::MacroPreset> = state
+                .daemon_state
+                .as_ref()
+                .map(|ds| ds.config.macro_presets.clone())
+                .unwrap_or_else(|| crate::config::Library::read().macro_presets.clone());
             let saved_preset = crate::models::MacroPreset {
-                id: fresh_id,
+                id: allocate_macro_preset_id(&name, edited_preset_id.as_deref(), &existing),
                 name: name.clone(),
                 events,
                 repeat,
@@ -1679,29 +1818,24 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                 infinite,
             };
 
-            let saved = matches!(
-                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(saved_preset.clone())),
-                Ok(crate::ipc::IpcResponse::Ok)
-            );
-            if !saved {
-                let mut library = crate::config::Library::read();
-                if let Some(existing) = library.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
-                    *existing = saved_preset.clone();
-                } else {
-                    library.macro_presets.push(saved_preset.clone());
+            match persist_macro_preset(&saved_preset) {
+                LibraryWriteOutcome::Persisted => {
+                    if let Some(ds) = &mut state.daemon_state {
+                        if let Some(existing) = ds.config.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
+                            *existing = saved_preset.clone();
+                        } else {
+                            ds.config.macro_presets.push(saved_preset.clone());
+                        }
+                    }
+                    state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
                 }
-                if let Err(err) = library.save() {
-                    crate::logging::error("CONFIG", &format!("Failed to save macro presets: {err}"));
-                }
-            }
-            if let Some(ds) = &mut state.daemon_state {
-                if let Some(existing) = ds.config.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
-                    *existing = saved_preset.clone();
-                } else {
-                    ds.config.macro_presets.push(saved_preset.clone());
+                LibraryWriteOutcome::Failed(_) => {
+                    state.toast = Some((
+                        loc.presets_save_failed.to_string(),
+                        std::time::Instant::now(),
+                    ));
                 }
             }
-            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
         }
     }
 
@@ -1780,5 +1914,113 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(matches!(events[0], MacroEvent::KeyDown { .. }));
         assert!(matches!(events[1], MacroEvent::KeyUp { .. }));
+    }
+
+    /// U03-010: a duration stored for a smooth move stays visible and editable after Smooth is
+    /// unchecked, because the engine still applies it as the pause after an instant move.
+    #[test]
+    fn test_move_duration_is_editable_in_both_move_modes() {
+        assert_eq!(effective_move_duration_ms(true, None), 250);
+        assert_eq!(effective_move_duration_ms(false, None), 16);
+        assert_eq!(effective_move_duration_ms(false, Some(5000)), 5000);
+        assert_eq!(effective_move_duration_ms(true, Some(5000)), 5000);
+    }
+
+    /// U03-011: preset identity no longer follows the display name. Editing keeps the id (so a
+    /// rename updates the preset), a repeated name updates the same preset, and two different
+    /// names that normalize identically get distinct ids instead of overwriting each other.
+    #[test]
+    fn test_allocate_macro_preset_id_keeps_identity_and_avoids_collisions() {
+        let mut existing = vec![
+            crate::models::MacroPreset::new("macro_a_b", "A/B", Vec::new()),
+            crate::models::MacroPreset::new("macro_a_b_2", "A_B", Vec::new()),
+        ];
+
+        // Editing an existing preset reuses its id even when the name changed.
+        assert_eq!(allocate_macro_preset_id("Renamed", Some("macro_a_b_2"), &existing), "macro_a_b_2");
+        // The same display name updates the existing preset instead of creating a duplicate.
+        assert_eq!(allocate_macro_preset_id("A_B", None, &existing), "macro_a_b_2");
+        // A different name that normalizes identically gets a fresh, non-colliding id.
+        assert_eq!(allocate_macro_preset_id("A B", None, &existing), "macro_a_b_3");
+
+        let first = allocate_macro_preset_id("C/D", None, &existing);
+        existing.push(crate::models::MacroPreset::new(first.clone(), "C/D", Vec::new()));
+        let second = allocate_macro_preset_id("C D", None, &existing);
+        assert_ne!(first, second, "different display names must not share an id");
+
+        assert_eq!(allocate_macro_preset_id("!!!", None, &[]), "macro_preset");
+        assert_eq!(allocate_macro_preset_id("Fresh", None, &existing), "macro_fresh");
+    }
+
+    #[test]
+    fn test_direct_macro_library_write_is_allowed_only_when_the_daemon_is_unreachable() {
+        assert!(
+            !direct_library_write_allowed(true),
+            "a reachable daemon owns library.json"
+        );
+        assert!(direct_library_write_allowed(false));
+    }
+
+    /// The Macro Studio delete/save paths must keep the daemon authoritative: an `Ok` is final, a
+    /// rejection or unexpected answer is reported instead of writing `library.json` behind it, and
+    /// only a confirmed-offline daemon falls back to a direct write (U02-008, same rule as the
+    /// overlay studio).
+    #[test]
+    fn test_macro_library_write_keeps_a_reachable_daemon_authoritative() {
+        let mut direct_writes = 0;
+
+        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Ok), true, || {
+            direct_writes += 1;
+            Ok(())
+        });
+        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
+        assert_eq!(direct_writes, 0, "a daemon Ok is final");
+
+        let outcome = finish_library_write(
+            Ok(crate::ipc::IpcResponse::Error("denied".to_string())),
+            true,
+            || {
+                direct_writes += 1;
+                Ok(())
+            },
+        );
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(direct_writes, 0, "a rejection must not be overwritten directly");
+
+        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Pong), true, || {
+            direct_writes += 1;
+            Ok(())
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(direct_writes, 0, "an unexpected answer is not a success");
+
+        let outcome = finish_library_write(Err("pipe busy".to_string()), true, || {
+            direct_writes += 1;
+            Ok(())
+        });
+        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
+        assert_eq!(direct_writes, 0, "a reachable daemon that failed is reported");
+
+        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
+            direct_writes += 1;
+            Ok(())
+        });
+        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
+        assert_eq!(direct_writes, 1, "a confirmed-offline daemon allows the fallback");
+
+        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "locked",
+            ))
+        });
+        match outcome {
+            LibraryWriteOutcome::Failed(reason) => {
+                assert!(reason.contains("direct library write failed"));
+            }
+            LibraryWriteOutcome::Persisted => {
+                panic!("a failed direct write must not be reported as success")
+            }
+        }
     }
 }

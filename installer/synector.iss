@@ -140,8 +140,11 @@ var
   ResultCode: Integer;
 begin
   // Autostart lives in Task Scheduler tasks named after the application (or the masked daemon).
-  // Synector re-registers it on the next start when the user has autostart enabled.
+  // Synector re-registers it on the next start when the user has autostart enabled. The
+  // WindowsServiceHost name is deleted too so an upgrade from 2.9.2 leaves nothing behind.
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Synector" /f', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Synector_DaemonMasked" /f', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "WindowsServiceHost" /f', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);

@@ -22,7 +22,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::ProcessStatus::EmptyWorkingSet;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
-    SendMessageW, PostMessageW, EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, ShowWindow, SetWindowPos,
+    SendMessageTimeoutW, SMTO_ABORTIFHUNG, PostMessageW, EnumWindows, GetForegroundWindow, GetWindowThreadProcessId, ShowWindow, SetWindowPos,
     GetWindowLongW, SetWindowLongW, SetLayeredWindowAttributes, SetCursorPos, GetCursorPos,
     GetWindow, GW_OWNER, IsWindowVisible, GetWindowTextLengthW, GetWindowTextW,
     HWND_BROADCAST, HWND_TOPMOST, HWND_NOTOPMOST,
@@ -50,6 +50,347 @@ use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_FILENAME};
 pub enum ActionOutcome {
     Continue(Option<String>),
     AbortPipeline { reason: String },
+}
+
+/// Captured bytes per stream of one helper subprocess. The reader keeps draining the
+/// pipe after the cap so the child never blocks on a full buffer, but the excess is
+/// dropped instead of being buffered in the daemon.
+const MAX_CAPTURED_OUTPUT: usize = 64 * 1024;
+
+/// Wall-clock ceilings for helper subprocesses. User scripts may legitimately run for
+/// minutes; system utilities must answer quickly; elevation waits for a UAC prompt.
+const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const UTILITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const ARCHIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+const ELEVATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const AUDIO_HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Result of a bounded helper subprocess: exit status plus capped trimmed streams.
+struct CommandOutcome {
+    status: Option<std::process::ExitStatus>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+impl CommandOutcome {
+    fn succeeded(&self) -> bool {
+        !self.timed_out && self.status.is_some_and(|status| status.success())
+    }
+
+    fn exit_code(&self) -> Option<i32> {
+        self.status.and_then(|status| status.code())
+    }
+}
+
+fn read_capped(mut reader: impl std::io::Read, limit: usize) -> Vec<u8> {
+    let mut collected = Vec::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                if collected.len() < limit {
+                    let remaining = limit - collected.len();
+                    collected.extend_from_slice(&buffer[..n.min(remaining)]);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    collected
+}
+
+/// Runs one helper subprocess with a wall-clock deadline and bounded capture.
+///
+/// This is deliberately synchronous: callers in async action handlers use
+/// [`run_command_bounded_async`], which moves the wait onto a blocking thread. Output
+/// is capped so a runaway script cannot grow the daemon's heap without bound, and the
+/// child is killed when the deadline expires instead of pinning a runtime worker.
+fn run_command_bounded(
+    mut cmd: Command,
+    timeout: std::time::Duration,
+) -> Result<CommandOutcome, String> {
+    use std::process::Stdio;
+
+    let program = cmd.get_program().to_string_lossy().to_string();
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start '{program}': {e}"))?;
+
+    let (stdout_tx, stdout_rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    if let Some(pipe) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let _ = stdout_tx.send(read_capped(pipe, MAX_CAPTURED_OUTPUT));
+        });
+    }
+    if let Some(pipe) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let _ = stderr_tx.send(read_capped(pipe, MAX_CAPTURED_OUTPUT));
+        });
+    }
+
+    let deadline = std::time::Instant::now() + timeout;
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    timed_out = true;
+                    let _ = child.kill();
+                    break child.wait().ok();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("Failed to wait for '{program}': {e}")),
+        }
+    };
+
+    // Readers normally finish as soon as the child's handles close; the timeout keeps a
+    // grandchild that inherited a pipe from wedging the daemon action instead.
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap_or_default()
+    };
+    let stdout = String::from_utf8_lossy(&collect(stdout_rx)).trim().to_string();
+    let stderr = String::from_utf8_lossy(&collect(stderr_rx)).trim().to_string();
+
+    Ok(CommandOutcome {
+        status,
+        stdout,
+        stderr,
+        timed_out,
+    })
+}
+
+async fn run_command_bounded_async(
+    cmd: Command,
+    timeout: std::time::Duration,
+) -> Result<CommandOutcome, String> {
+    tokio::task::spawn_blocking(move || run_command_bounded(cmd, timeout))
+        .await
+        .map_err(|e| format!("Command task failed: {e}"))?
+}
+
+/// Runs a short system utility and maps a non-zero exit or timeout to an action error.
+async fn run_system_tool(program: &str, args: &[&str]) -> Result<(), String> {
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    apply_no_window(&mut cmd);
+    let out = run_command_bounded_async(cmd, UTILITY_TIMEOUT).await?;
+    if out.timed_out {
+        return Err(format!("{program} timed out after {}s", UTILITY_TIMEOUT.as_secs()));
+    }
+    if !out.succeeded() {
+        return Err(format!(
+            "{program} failed with exit code {:?}",
+            out.exit_code()
+        ));
+    }
+    Ok(())
+}
+
+fn apply_no_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let _ = cmd;
+}
+
+fn powershell_command(script: &str) -> Command {
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    apply_no_window(&mut cmd);
+    cmd
+}
+
+fn powershell_helper_command(script: &str) -> Command {
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        script,
+    ]);
+    apply_no_window(&mut cmd);
+    cmd
+}
+
+/// Escapes a value for a PowerShell single-quoted literal: doubling the only special
+/// character keeps arbitrary user content as data instead of code.
+fn ps_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+/// Splits a `start_process` argument string with the Windows command-line rules
+/// (`CommandLineToArgvW`): whitespace separates arguments, double quotes group and
+/// escape, and backslashes before a quote follow the documented pairing rules.
+fn split_windows_arguments(input: &str) -> Vec<String> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes = false;
+    let mut started = false;
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            ' ' | '\t' => {
+                if in_quotes {
+                    current.push(chars[i]);
+                } else if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+                i += 1;
+            }
+            '"' => {
+                started = true;
+                if in_quotes && chars.get(i + 1) == Some(&'"') {
+                    // A pair of quotes inside a quoted argument is one literal quote.
+                    current.push('"');
+                    i += 2;
+                } else {
+                    in_quotes = !in_quotes;
+                    i += 1;
+                }
+            }
+            '\\' => {
+                let start = i;
+                while i < chars.len() && chars[i] == '\\' {
+                    i += 1;
+                }
+                let count = i - start;
+                if chars.get(i) == Some(&'"') {
+                    current.push_str(&"\\".repeat(count / 2));
+                    started = true;
+                    if count % 2 == 1 {
+                        // The odd backslash escapes the quote into the argument.
+                        current.push('"');
+                        i += 1;
+                    }
+                    // An even count leaves the quote for the delimiter branch above.
+                } else {
+                    current.push_str(&"\\".repeat(count));
+                    started = true;
+                }
+            }
+            ch => {
+                current.push(ch);
+                started = true;
+                i += 1;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
+}
+
+/// Quotes one argument for a Windows command line (the inverse of
+/// [`split_windows_arguments`]), used where a tool takes a single command-line string.
+fn quote_windows_argument(arg: &str) -> String {
+    if !arg.is_empty() && !arg.chars().any(|ch| ch == ' ' || ch == '\t' || ch == '"') {
+        return arg.to_string();
+    }
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            other => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                quoted.push(other);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
+}
+
+fn join_windows_arguments(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| quote_windows_argument(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+static WEBHOOK_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+fn webhook_client() -> Result<&'static reqwest::Client, String> {
+    WEBHOOK_CLIENT
+        .get_or_init(|| {
+            crate::updater::init_tls();
+            reqwest::Client::builder()
+                .user_agent(concat!("Synector/", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| format!("Failed to create HTTP client: {e}"))
+        })
+        .as_ref()
+        .map_err(|err| err.clone())
+}
+
+/// Builds (but does not send) an HTTP webhook request. Kept separate from the send so
+/// tests can prove that header values and payloads stay data — there is no shell and
+/// therefore nothing to inject into.
+fn build_webhook_request(
+    client: &reqwest::Client,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&str>,
+) -> Result<reqwest::Request, String> {
+    use reqwest::header::{HeaderName, HeaderValue, CONTENT_TYPE};
+
+    let method_name = method.trim().to_ascii_uppercase();
+    let method = reqwest::Method::from_bytes(method_name.as_bytes())
+        .map_err(|_| format!("Invalid webhook HTTP method '{method_name}'"))?;
+    let mut request = client.request(method, url);
+    let mut has_content_type = false;
+    for (name, value) in headers {
+        let name_trimmed = name.trim();
+        let header_name = HeaderName::from_bytes(name_trimmed.as_bytes())
+            .map_err(|_| format!("Invalid webhook header name '{name_trimmed}'"))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|_| format!("Invalid value for webhook header '{name_trimmed}'"))?;
+        if header_name == CONTENT_TYPE {
+            has_content_type = true;
+        }
+        request = request.header(header_name, header_value);
+    }
+    if let Some(body) = body {
+        if !has_content_type {
+            request = request.header(CONTENT_TYPE, "application/json");
+        }
+        request = request.body(body.to_string());
+    }
+    request
+        .build()
+        .map_err(|e| format!("Invalid webhook request: {e}"))
 }
 
 /// Physical input emitters (SendInput, SetCursorPos, media keys) are disabled while the
@@ -136,7 +477,7 @@ impl ActionRunner {
     ) -> Result<ActionOutcome, String> {
         match action {
             Action::ExecuteScript { interpreter, script, run_in_window } => {
-                let res = Self::run_script_internal(interpreter, script, *run_in_window, context)?;
+                let res = Self::run_script_internal(interpreter, script, *run_in_window, context).await?;
                 Ok(ActionOutcome::Continue(res))
             }
             other => {
@@ -151,7 +492,7 @@ impl ActionRunner {
         context.iter().filter(|(key, _)| !key.starts_with("__"))
     }
 
-    pub fn run_script_internal(
+    pub async fn run_script_internal(
         interpreter: &crate::models::ScriptType,
         script: &str,
         run_in_window: bool,
@@ -164,54 +505,66 @@ impl ActionRunner {
                 let lua_ctx: HashMap<String, String> = Self::script_env(context)
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect();
-                let res = crate::daemon::lua_runner::LuaRunner::execute(&script_code, &lua_ctx, outputs)?;
+                // The VM has its own instruction/time budgets; running it on a blocking
+                // thread keeps a long script from occupying a Tokio worker.
+                let res = tokio::task::spawn_blocking(move || {
+                    crate::daemon::lua_runner::LuaRunner::execute(&script_code, &lua_ctx, outputs)
+                })
+                .await
+                .map_err(|e| format!("Lua task failed: {e}"))??;
                 Ok(if res.is_empty() { None } else { Some(res) })
             }
             crate::models::ScriptType::PowerShell => {
                 let script_code = Self::interpolate_tokens(script, context);
-                let mut cmd = Command::new("powershell");
-                cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script_code]);
-                for (k, v) in Self::script_env(context) {
-                    cmd.env(format!("PH_{}", k.to_uppercase()), v);
-                }
-                if !run_in_window {
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x08000000);
+                if run_in_window {
+                    let mut cmd = powershell_command(&script_code);
+                    for (k, v) in Self::script_env(context) {
+                        cmd.env(format!("PH_{}", k.to_uppercase()), v);
                     }
-                    let out = cmd.output().map_err(|e| format!("PowerShell error: {e}"))?;
-                    let stdout_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !out.status.success() {
-                        let stderr_str = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        return Err(format!("PowerShell failed: {}", if stderr_str.is_empty() { stdout_str } else { stderr_str }));
-                    }
-                    Ok(if stdout_str.is_empty() { None } else { Some(stdout_str) })
-                } else {
                     let _ = cmd.spawn().map_err(|e| format!("PowerShell spawn error: {e}"))?;
                     Ok(None)
+                } else {
+                    let mut cmd = powershell_command(&script_code);
+                    for (k, v) in Self::script_env(context) {
+                        cmd.env(format!("PH_{}", k.to_uppercase()), v);
+                    }
+                    let out = run_command_bounded_async(cmd, SCRIPT_TIMEOUT).await?;
+                    if out.timed_out {
+                        return Err(format!(
+                            "PowerShell script timed out after {}s",
+                            SCRIPT_TIMEOUT.as_secs()
+                        ));
+                    }
+                    if !out.succeeded() {
+                        let message = if out.stderr.is_empty() { &out.stdout } else { &out.stderr };
+                        return Err(format!("PowerShell failed: {message}"));
+                    }
+                    Ok(if out.stdout.is_empty() { None } else { Some(out.stdout) })
                 }
             }
             crate::models::ScriptType::Batch => {
                 let cmd_text = Self::interpolate_tokens(script, context);
-                let mut cmd = Command::new("cmd");
-                cmd.args(["/C", &cmd_text]);
-                if !run_in_window {
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x08000000);
-                    }
-                    let out = cmd.output().map_err(|e| format!("Cmd error: {e}"))?;
-                    let stdout_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !out.status.success() {
-                        let stderr_str = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                        return Err(format!("Cmd failed: {}", if stderr_str.is_empty() { stdout_str } else { stderr_str }));
-                    }
-                    Ok(if stdout_str.is_empty() { None } else { Some(stdout_str) })
-                } else {
+                if run_in_window {
+                    let mut cmd = Command::new("cmd");
+                    cmd.args(["/C", &cmd_text]);
                     let _ = cmd.spawn().map_err(|e| format!("Cmd spawn error: {e}"))?;
                     Ok(None)
+                } else {
+                    let mut cmd = Command::new("cmd");
+                    cmd.args(["/C", &cmd_text]);
+                    apply_no_window(&mut cmd);
+                    let out = run_command_bounded_async(cmd, SCRIPT_TIMEOUT).await?;
+                    if out.timed_out {
+                        return Err(format!(
+                            "Cmd script timed out after {}s",
+                            SCRIPT_TIMEOUT.as_secs()
+                        ));
+                    }
+                    if !out.succeeded() {
+                        let message = if out.stderr.is_empty() { &out.stdout } else { &out.stderr };
+                        return Err(format!("Cmd failed: {message}"));
+                    }
+                    Ok(if out.stdout.is_empty() { None } else { Some(out.stdout) })
                 }
             }
         }
@@ -222,29 +575,39 @@ impl ActionRunner {
             Action::Wait { mode, seconds, condition, timeout_sec, timeout_policy } => {
                 match mode {
                     crate::models::WaitMode::Timer => {
-                        tokio::time::sleep(std::time::Duration::from_secs_f64(seconds.max(0.001))).await;
+                        let delay = crate::models::duration_from_secs(*seconds)
+                            .map_err(|err| format!("wait: {err}"))?;
+                        tokio::time::sleep(delay).await;
                         Ok(ActionOutcome::Continue(None))
                     }
                     crate::models::WaitMode::UntilCondition => {
-                        let timeout = std::time::Duration::from_secs_f64(*timeout_sec);
+                        // A missing condition cannot become true; refusing it here beats
+                        // silently succeeding on the first poll (and burning the timeout).
+                        let Some(condition) = condition else {
+                            return Err(
+                                "wait: until_condition mode needs a condition".to_string()
+                            );
+                        };
+                        let timeout = crate::models::duration_from_secs(*timeout_sec)
+                            .map_err(|err| format!("wait timeout: {err}"))?;
                         let has_timeout = *timeout_sec > 0.0;
                         let start = std::time::Instant::now();
 
                         // "Rule started" is a state check, but a short pipeline can start and
                         // finish between two polls; remembering the rule's start counter lets the
                         // wait notice that start even after the pipeline is gone.
-                        let rule_start_baseline = match condition {
-                            Some(crate::models::WaitCondition::RuleStarted { rule_id }) => {
+                        let rule_start_baseline =
+                            if let crate::models::WaitCondition::RuleStarted { rule_id } = condition {
                                 let target = Self::interpolate_tokens(rule_id, context);
                                 let target = target.trim().to_string();
                                 let starts = crate::daemon::rule_activity::snapshot(&target).starts;
                                 Some((target, starts))
-                            }
-                            _ => None,
-                        };
+                            } else {
+                                None
+                            };
 
                         loop {
-                            let satisfied = match condition {
+                            let satisfied = match Some(condition) {
                                 Some(crate::models::WaitCondition::ProcessStarted { process_name, match_mode }) => {
                                     let proc = Self::interpolate_tokens(process_name, context);
                                     let map = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
@@ -297,7 +660,7 @@ impl ActionRunner {
                                     !target.is_empty()
                                         && !crate::daemon::rule_activity::is_running(target)
                                 }
-                                None => true,
+                                None => false,
                             };
 
                             if satisfied {
@@ -336,7 +699,7 @@ impl ActionRunner {
 
             Action::Firewall { process_name, action } => {
                 let proc_name = Self::interpolate_tokens(process_name, context);
-                set_firewall_rule(&proc_name, *action)?;
+                set_firewall_rule(&proc_name, *action).await?;
                 Ok(ActionOutcome::Continue(None))
             }
 
@@ -346,10 +709,15 @@ impl ActionRunner {
                 } else {
                     true
                 };
+                let mut last_output: Option<String> = None;
                 if is_true {
                     for sub_action in then_actions {
                         match Box::pin(Self::execute_with_output(sub_action, context)).await? {
-                            ActionOutcome::Continue(_) => {},
+                            ActionOutcome::Continue(output) => {
+                                if output.is_some() {
+                                    last_output = output;
+                                }
+                            }
                             ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
                         }
                     }
@@ -359,7 +727,11 @@ impl ActionRunner {
                         if !branch.conditions.is_empty() && crate::daemon::engine::DaemonEngine::evaluate_rule_conditions(&branch.conditions) {
                             for sub_action in &branch.actions {
                                 match Box::pin(Self::execute_with_output(sub_action, context)).await? {
-                                    ActionOutcome::Continue(_) => {},
+                                    ActionOutcome::Continue(output) => {
+                                        if output.is_some() {
+                                            last_output = output;
+                                        }
+                                    }
                                     ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
                                 }
                             }
@@ -370,13 +742,19 @@ impl ActionRunner {
                     if !matched {
                         for sub_action in else_actions {
                             match Box::pin(Self::execute_with_output(sub_action, context)).await? {
-                                ActionOutcome::Continue(_) => {},
+                                ActionOutcome::Continue(output) => {
+                                    if output.is_some() {
+                                        last_output = output;
+                                    }
+                                }
                                 ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
                             }
                         }
                     }
                 }
-                Ok(ActionOutcome::Continue(None))
+                // The branch output feeds `{PrevOutput}` / `{StepN.Output}` in the parent
+                // pipeline; discarding it made a nested ExecuteScript unusable.
+                Ok(ActionOutcome::Continue(last_output))
             }
 
             Action::RuleControl { rule_id, operation, wait } => {
@@ -413,6 +791,7 @@ impl ActionRunner {
             } => {
                 let path = Self::interpolate_tokens(file_path, context);
                 let args = Self::interpolate_tokens(arguments, context);
+                let argv = split_windows_arguments(&args);
 
                 if *only_if_not_running {
                     let exe_name = std::path::Path::new(&path)
@@ -430,22 +809,43 @@ impl ActionRunner {
                 if *run_as_admin {
                     #[cfg(windows)]
                     {
-                        // Run as admin via powershell Start-Process -Verb RunAs
-                        let mut cmd = Command::new("powershell");
+                        // Run as admin via powershell Start-Process -Verb RunAs. The argv is
+                        // rebuilt into a quoted command line and passed as a PowerShell
+                        // literal, so quoted arguments survive the two parsers intact.
+                        let arg_list = join_windows_arguments(&argv);
                         let ps_args = format!(
                             "Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs",
-                            path.replace('\'', "''"),
-                            args.replace('\'', "''")
+                            ps_single_quoted(&path),
+                            ps_single_quoted(&arg_list)
                         );
-                        cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_args]);
-                        let _ = cmd.spawn();
+                        let out = run_command_bounded_async(
+                            powershell_helper_command(&ps_args),
+                            ELEVATION_TIMEOUT,
+                        )
+                        .await?;
+                        if out.timed_out {
+                            return Err(
+                                "Elevated process launch timed out while waiting for the UAC prompt"
+                                    .to_string(),
+                            );
+                        }
+                        if !out.succeeded() {
+                            return Err(format!(
+                                "Elevated process launch failed (exit code {:?})",
+                                out.exit_code()
+                            ));
+                        }
                         return Ok(());
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        let _ = (&path, &argv);
                     }
                 }
 
                 let mut cmd = Command::new(&path);
-                if !args.trim().is_empty() {
-                    cmd.args(args.split_whitespace());
+                if !argv.is_empty() {
+                    cmd.args(&argv);
                 }
                 if let Some(wd) = working_directory {
                     cmd.current_dir(wd);
@@ -484,14 +884,21 @@ impl ActionRunner {
                     cmd.arg("/T");
                 }
                 cmd.args(["/IM", &name]);
+                apply_no_window(&mut cmd);
 
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+                let out = run_command_bounded_async(cmd, UTILITY_TIMEOUT).await?;
+                if out.timed_out {
+                    return Err(format!(
+                        "taskkill timed out after {}s",
+                        UTILITY_TIMEOUT.as_secs()
+                    ));
                 }
-
-                let _ = cmd.spawn();
+                if !out.succeeded() {
+                    return Err(format!(
+                        "taskkill failed with exit code {:?}",
+                        out.exit_code()
+                    ));
+                }
                 Ok(())
             }
 
@@ -550,7 +957,7 @@ impl ActionRunner {
             }
 
             Action::PowerPlan { plan } => {
-                set_power_plan(*plan)?;
+                set_power_plan(*plan).await?;
                 Ok(())
             }
 
@@ -581,8 +988,8 @@ impl ActionRunner {
 
                 #[cfg(windows)]
                 {
-                    let escaped_title = t.replace('\'', "''");
-                    let escaped_msg = m.replace('\'', "''");
+                    let escaped_title = ps_single_quoted(&t);
+                    let escaped_msg = ps_single_quoted(&m);
                     let ps_script = format!(
                         "Add-Type -AssemblyName System.Windows.Forms; \
                          $notify = New-Object System.Windows.Forms.NotifyIcon; \
@@ -593,11 +1000,23 @@ impl ActionRunner {
                          $notify.Dispose()"
                     );
 
-                    let mut cmd = Command::new("powershell");
-                    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script]);
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x08000000);
-                    let _ = cmd.spawn();
+                    let out = run_command_bounded_async(
+                        powershell_helper_command(&ps_script),
+                        UTILITY_TIMEOUT,
+                    )
+                    .await?;
+                    if out.timed_out {
+                        return Err(format!(
+                            "Notification helper timed out after {}s",
+                            UTILITY_TIMEOUT.as_secs()
+                        ));
+                    }
+                    if !out.succeeded() {
+                        return Err(format!(
+                            "Notification failed (exit code {:?})",
+                            out.exit_code()
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -605,27 +1024,40 @@ impl ActionRunner {
             Action::HttpWebhook {
                 url,
                 method,
+                headers,
                 payload,
-                ..
             } => {
                 let target_url = Self::interpolate_tokens(url, context);
                 let body = payload.as_ref().map(|p| Self::interpolate_tokens(p, context));
-                let meth = method.clone();
+                let header_pairs: Vec<(String, String)> = headers
+                    .iter()
+                    .flatten()
+                    .map(|(name, value)| {
+                        (
+                            Self::interpolate_tokens(name, context),
+                            Self::interpolate_tokens(value, context),
+                        )
+                    })
+                    .collect();
 
-                tokio::spawn(async move {
-                    let mut cmd = Command::new("powershell");
-                    let mut ps_cmd = format!("Invoke-RestMethod -Uri '{}' -Method '{}'", target_url, meth);
-                    if let Some(b) = body {
-                        ps_cmd.push_str(&format!(" -ContentType 'application/json' -Body '{}'", b.replace('\'', "''")));
-                    }
-                    cmd.args(["-NoProfile", "-Command", &ps_cmd]);
-                    #[cfg(windows)]
-                    {
-                        use std::os::windows::process::CommandExt;
-                        cmd.creation_flags(0x08000000);
-                    }
-                    let _ = cmd.spawn();
-                });
+                let client = webhook_client()?;
+                let request = build_webhook_request(
+                    client,
+                    &target_url,
+                    method,
+                    &header_pairs,
+                    body.as_deref(),
+                )?;
+                let response = client
+                    .execute(request)
+                    .await
+                    .map_err(|e| format!("Webhook request failed: {e}"))?;
+                if !response.status().is_success() {
+                    return Err(format!(
+                        "Webhook returned HTTP {}",
+                        response.status().as_u16()
+                    ));
+                }
                 Ok(())
             }
 
@@ -641,29 +1073,28 @@ impl ActionRunner {
                         #[cfg(windows)]
                         unsafe {
                             const SC_MONITORPOWER: usize = 0xF170;
-                            // 2 = turn monitor off
-                            let _ = SendMessageW(
+                            // 2 = turn monitor off. SendMessageTimeoutW + ABORTIFHUNG keeps
+                            // one hung top-level window from stalling the rule pipeline.
+                            let mut result = 0usize;
+                            let _ = SendMessageTimeoutW(
                                 HWND_BROADCAST,
                                 WM_SYSCOMMAND,
-                                Some(windows::Win32::Foundation::WPARAM(SC_MONITORPOWER)),
-                                Some(windows::Win32::Foundation::LPARAM(2)),
+                                WPARAM(SC_MONITORPOWER),
+                                LPARAM(2),
+                                SMTO_ABORTIFHUNG,
+                                1000,
+                                Some(&mut result),
                             );
                         }
                     }
                     SystemPowerType::Sleep => {
-                        let mut cmd = Command::new("rundll32.exe");
-                        cmd.args(["powrprof.dll,SetSuspendState", "0,1,0"]);
-                        let _ = cmd.spawn();
+                        run_system_tool("rundll32.exe", &["powrprof.dll,SetSuspendState", "0,1,0"]).await?;
                     }
                     SystemPowerType::Restart => {
-                        let mut cmd = Command::new("shutdown");
-                        cmd.args(["/r", "/t", "0"]);
-                        let _ = cmd.spawn();
+                        run_system_tool("shutdown", &["/r", "/t", "0"]).await?;
                     }
                     SystemPowerType::Shutdown => {
-                        let mut cmd = Command::new("shutdown");
-                        cmd.args(["/s", "/t", "0"]);
-                        let _ = cmd.spawn();
+                        run_system_tool("shutdown", &["/s", "/t", "0"]).await?;
                     }
                 }
                 Ok(())
@@ -689,17 +1120,13 @@ impl ActionRunner {
                     crate::models::AudioTarget::Playback => {
                         #[cfg(windows)]
                         {
-                            if let Err(e) = set_audio_volume_or_mute(*action_type, *volume_level, *left_volume, *right_volume) {
-                                eprintln!("Audio action error: {e}");
-                            }
+                            set_audio_volume_or_mute(*action_type, *volume_level, *left_volume, *right_volume)?;
                         }
                     }
                     crate::models::AudioTarget::Microphone => {
                         #[cfg(windows)]
                         {
-                            if let Err(e) = set_microphone_volume_or_mute(*action_type, *volume_level) {
-                                eprintln!("Microphone action error: {e}");
-                            }
+                            set_microphone_volume_or_mute(*action_type, *volume_level)?;
                         }
                     }
                     crate::models::AudioTarget::Process => {
@@ -743,7 +1170,7 @@ impl ActionRunner {
                 let dev_name = device_name.as_ref().map(|d| Self::interpolate_tokens(d, context));
                 #[cfg(windows)]
                 {
-                    set_audio_device_format(*target, *sample_rate, *bit_depth, *channels, dev_name.as_deref())?;
+                    set_audio_device_format(*target, *sample_rate, *bit_depth, *channels, dev_name.as_deref()).await?;
                 }
                 #[cfg(not(windows))]
                 {
@@ -758,10 +1185,10 @@ impl ActionRunner {
                 {
                     match target {
                         crate::models::AudioTarget::Playback => {
-                            set_default_audio_device(&name)?;
+                            set_default_audio_device(&name).await?;
                         }
                         crate::models::AudioTarget::Microphone => {
-                            set_default_microphone_device(&name)?;
+                            set_default_microphone_device(&name).await?;
                         }
                         crate::models::AudioTarget::Process => {}
                     }
@@ -770,7 +1197,7 @@ impl ActionRunner {
             }
 
             Action::ExecuteScript { interpreter, script, run_in_window } => {
-                Self::run_script_internal(interpreter, script, *run_in_window, context)?;
+                Self::run_script_internal(interpreter, script, *run_in_window, context).await?;
                 Ok(())
             }
 
@@ -784,6 +1211,7 @@ impl ActionRunner {
             } => {
                 let config = crate::config::Library::shared();
                 let interp_preset_id = preset_id.as_ref().map(|p| Self::interpolate_tokens(p, context));
+                let found_preset = interp_preset_id.as_deref().and_then(|pid| config.find_macro(pid));
 
                 match operation {
                     crate::models::MacroOperation::Stop => {
@@ -809,85 +1237,37 @@ impl ActionRunner {
                             }
                             Ok(())
                         } else {
-                            let found_preset = interp_preset_id.as_deref().and_then(|pid| config.find_macro(pid));
-                            let (macro_events, macro_repeat, macro_speed, macro_infinite) = if let Some(preset) = found_preset {
-                                let evs = if events.is_empty() { preset.events.clone() } else { events.clone() };
-                                let rep = if *repeat == 1 && preset.repeat > 1 { preset.repeat } else { *repeat };
-                                let spd = if (*speed - 1.0).abs() < f32::EPSILON && (preset.speed - 1.0).abs() > f32::EPSILON { preset.speed } else { *speed };
-                                let inf = *infinite || preset.infinite;
-                                (evs, rep, spd, inf)
-                            } else {
-                                (events.clone(), *repeat, *speed, *infinite)
-                            };
-
-                            let cancel_flag = Arc::new(AtomicBool::new(false));
-                            let key_to_register = interp_preset_id.clone().or_else(|| found_preset.map(|p| p.id.clone()));
-                            if let Some(ref key) = key_to_register {
-                                let mut lock = macro_cancellations().lock().unwrap();
-                                lock.entry(key.clone()).or_default().push(Arc::clone(&cancel_flag));
-                            }
-
-                            let rep = macro_repeat.max(1);
-                            let mut count = 0;
-                            while (macro_infinite || count < rep) && !cancel_flag.load(Ordering::Relaxed) {
-                                for ev in &macro_events {
-                                    if cancel_flag.load(Ordering::Relaxed) {
-                                        break;
-                                    }
-                                    execute_macro_event(ev, macro_speed, context).await?;
-                                }
-                                count += 1;
-                            }
-
-                            if let Some(ref key) = key_to_register {
-                                let mut lock = macro_cancellations().lock().unwrap();
-                                if let Some(vec) = lock.get_mut(key) {
-                                    vec.retain(|f| !Arc::ptr_eq(f, &cancel_flag));
-                                }
-                            }
-
-                            Ok(())
+                            let (macro_events, macro_repeat, macro_speed, macro_infinite) =
+                                resolve_macro_plan(events, *repeat, *speed, *infinite, found_preset);
+                            let key_to_register = interp_preset_id
+                                .clone()
+                                .or_else(|| found_preset.map(|p| p.id.clone()));
+                            run_macro(
+                                macro_events,
+                                macro_repeat,
+                                macro_speed,
+                                macro_infinite,
+                                key_to_register,
+                                context,
+                            )
+                            .await
                         }
                     }
                     crate::models::MacroOperation::Run => {
-                        let found_preset = interp_preset_id.as_deref().and_then(|pid| config.find_macro(pid));
-                        let (macro_events, macro_repeat, macro_speed, macro_infinite) = if let Some(preset) = found_preset {
-                            let evs = if events.is_empty() { preset.events.clone() } else { events.clone() };
-                            let rep = if *repeat == 1 && preset.repeat > 1 { preset.repeat } else { *repeat };
-                            let spd = if (*speed - 1.0).abs() < f32::EPSILON && (preset.speed - 1.0).abs() > f32::EPSILON { preset.speed } else { *speed };
-                            let inf = *infinite || preset.infinite;
-                            (evs, rep, spd, inf)
-                        } else {
-                            (events.clone(), *repeat, *speed, *infinite)
-                        };
-
-                        let cancel_flag = Arc::new(AtomicBool::new(false));
-                        let key_to_register = interp_preset_id.clone().or_else(|| found_preset.map(|p| p.id.clone()));
-                        if let Some(ref key) = key_to_register {
-                            let mut lock = macro_cancellations().lock().unwrap();
-                            lock.entry(key.clone()).or_default().push(Arc::clone(&cancel_flag));
-                        }
-
-                        let rep = macro_repeat.max(1);
-                        let mut count = 0;
-                        while (macro_infinite || count < rep) && !cancel_flag.load(Ordering::Relaxed) {
-                            for ev in &macro_events {
-                                if cancel_flag.load(Ordering::Relaxed) {
-                                    break;
-                                }
-                                execute_macro_event(ev, macro_speed, context).await?;
-                            }
-                            count += 1;
-                        }
-
-                        if let Some(ref key) = key_to_register {
-                            let mut lock = macro_cancellations().lock().unwrap();
-                            if let Some(vec) = lock.get_mut(key) {
-                                vec.retain(|f| !Arc::ptr_eq(f, &cancel_flag));
-                            }
-                        }
-
-                        Ok(())
+                        let (macro_events, macro_repeat, macro_speed, macro_infinite) =
+                            resolve_macro_plan(events, *repeat, *speed, *infinite, found_preset);
+                        let key_to_register = interp_preset_id
+                            .clone()
+                            .or_else(|| found_preset.map(|p| p.id.clone()));
+                        run_macro(
+                            macro_events,
+                            macro_repeat,
+                            macro_speed,
+                            macro_infinite,
+                            key_to_register,
+                            context,
+                        )
+                        .await
                     }
                 }
             }
@@ -961,7 +1341,7 @@ impl ActionRunner {
             } => {
                 let src = Self::interpolate_tokens(source_path, context);
                 let dst = Self::interpolate_tokens(destination_path, context);
-                execute_archive(*operation, *format, &src, &dst, *compression_level, *overwrite)?;
+                execute_archive(*operation, *format, &src, &dst, *compression_level, *overwrite).await?;
                 Ok(())
             }
 
@@ -1161,42 +1541,63 @@ fn change_display_settings(
     }
 }
 
+/// Maps the helper script's exit codes to an action error. A stock Windows system does not
+/// have the third-party AudioDeviceCmdlets module, and pretending the change happened is
+/// worse than reporting it.
 #[cfg(windows)]
-fn set_default_audio_device(name: &str) -> Result<(), String> {
-    let ps_cmd = format!(
-        r#"$n = '{}';
-        if (Get-Command Set-AudioDevice -ErrorAction SilentlyContinue) {{
-            Get-AudioDevice -List | Where-Object {{ $_.Name -like "*$n*" }} | Set-AudioDevice
-        }} else {{
-            Write-Host "Set default audio: $n"
-        }}"#,
-        name.replace('\'', "''")
-    );
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd]);
-    use std::os::windows::process::CommandExt;
-    cmd.creation_flags(0x08000000);
-    let _ = cmd.spawn().map_err(|e| format!("Failed to set audio device: {e}"))?;
-    Ok(())
+fn default_device_helper_result(
+    out: CommandOutcome,
+    what: &str,
+    name: &str,
+) -> Result<(), String> {
+    if out.timed_out {
+        return Err(format!(
+            "Setting the {what} timed out after {}s",
+            AUDIO_HELPER_TIMEOUT.as_secs()
+        ));
+    }
+    match out.exit_code() {
+        Some(0) => Ok(()),
+        Some(3) => Err(format!(
+            "The AudioDeviceCmdlets PowerShell module is not installed; the {what} cannot be changed"
+        )),
+        Some(4) => Err(format!("No audio device matches '{name}'")),
+        code => Err(format!("Setting the {what} failed (exit code {code:?})")),
+    }
 }
 
 #[cfg(windows)]
-fn set_default_microphone_device(name: &str) -> Result<(), String> {
+async fn set_default_audio_device(name: &str) -> Result<(), String> {
     let ps_cmd = format!(
-        r#"$n = '{}';
-        if (Get-Command Set-AudioDevice -ErrorAction SilentlyContinue) {{
-            Get-AudioDevice -List | Where-Object {{ ($_.Type -eq 'Recording' -or $_.Type -like '*Capture*' -or $_.Name -like "*$n*") -and $_.Name -like "*$n*" }} | Set-AudioDevice
-        }} else {{
-            Write-Host "Set default microphone: $n"
-        }}"#,
-        name.replace('\'', "''")
+        r#"$ErrorActionPreference = 'Stop'
+$n = '{0}'
+if (-not (Get-Command Set-AudioDevice -ErrorAction SilentlyContinue)) {{ exit 3 }}
+$dev = Get-AudioDevice -List | Where-Object {{ $_.Name -like "*$n*" }} | Select-Object -First 1
+if (-not $dev) {{ exit 4 }}
+$dev | Set-AudioDevice
+"#,
+        ps_single_quoted(name)
     );
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_cmd]);
-    use std::os::windows::process::CommandExt;
-    cmd.creation_flags(0x08000000);
-    let _ = cmd.spawn().map_err(|e| format!("Failed to set microphone device: {e}"))?;
-    Ok(())
+    let out = run_command_bounded_async(powershell_helper_command(&ps_cmd), AUDIO_HELPER_TIMEOUT)
+        .await?;
+    default_device_helper_result(out, "default audio device", name)
+}
+
+#[cfg(windows)]
+async fn set_default_microphone_device(name: &str) -> Result<(), String> {
+    let ps_cmd = format!(
+        r#"$ErrorActionPreference = 'Stop'
+$n = '{0}'
+if (-not (Get-Command Set-AudioDevice -ErrorAction SilentlyContinue)) {{ exit 3 }}
+$dev = Get-AudioDevice -List | Where-Object {{ (($_.Type -eq 'Recording') -or ($_.Type -like '*Capture*') -or ($_.Name -like "*$n*")) -and ($_.Name -like "*$n*") }} | Select-Object -First 1
+if (-not $dev) {{ exit 4 }}
+$dev | Set-AudioDevice
+"#,
+        ps_single_quoted(name)
+    );
+    let out = run_command_bounded_async(powershell_helper_command(&ps_cmd), AUDIO_HELPER_TIMEOUT)
+        .await?;
+    default_device_helper_result(out, "default microphone", name)
 }
 
 #[cfg(windows)]
@@ -1458,6 +1859,8 @@ fn tune_process(
         return Err(format!("Process '{}' not found for tuning", target_process));
     }
 
+    let mut attempted = 0u32;
+    let mut failed = 0u32;
     for pid in pids {
         unsafe {
             let h_proc = OpenProcess(
@@ -1465,27 +1868,64 @@ fn tune_process(
                 false,
                 pid,
             );
-            if let Ok(handle) = h_proc {
-                if let Some(prio) = priority {
-                    let class = match prio {
-                        ProcessPriorityLevel::Realtime => REALTIME_PRIORITY_CLASS,
-                        ProcessPriorityLevel::High => HIGH_PRIORITY_CLASS,
-                        ProcessPriorityLevel::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
-                        ProcessPriorityLevel::Normal => NORMAL_PRIORITY_CLASS,
-                        ProcessPriorityLevel::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
-                        ProcessPriorityLevel::Idle => IDLE_PRIORITY_CLASS,
-                    };
-                    let _ = SetPriorityClass(handle, class);
+            let handle = match h_proc {
+                Ok(handle) => handle,
+                Err(e) => {
+                    attempted += 1;
+                    failed += 1;
+                    crate::logging::warn(
+                        "ACTION",
+                        &format!("Process tuning: OpenProcess failed for PID {pid}: {e}"),
+                    );
+                    continue;
                 }
-                if let Some(mask) = affinity_mask {
-                    let _ = SetProcessAffinityMask(handle, mask as usize);
+            };
+            if let Some(prio) = priority {
+                attempted += 1;
+                let class = match prio {
+                    ProcessPriorityLevel::Realtime => REALTIME_PRIORITY_CLASS,
+                    ProcessPriorityLevel::High => HIGH_PRIORITY_CLASS,
+                    ProcessPriorityLevel::AboveNormal => ABOVE_NORMAL_PRIORITY_CLASS,
+                    ProcessPriorityLevel::Normal => NORMAL_PRIORITY_CLASS,
+                    ProcessPriorityLevel::BelowNormal => BELOW_NORMAL_PRIORITY_CLASS,
+                    ProcessPriorityLevel::Idle => IDLE_PRIORITY_CLASS,
+                };
+                if let Err(e) = SetPriorityClass(handle, class) {
+                    failed += 1;
+                    crate::logging::warn(
+                        "ACTION",
+                        &format!("Process tuning: SetPriorityClass failed for PID {pid}: {e}"),
+                    );
                 }
-                if trim_memory {
-                    let _ = EmptyWorkingSet(handle);
-                }
-                let _ = CloseHandle(handle);
             }
+            if let Some(mask) = affinity_mask {
+                attempted += 1;
+                if let Err(e) = SetProcessAffinityMask(handle, mask as usize) {
+                    failed += 1;
+                    crate::logging::warn(
+                        "ACTION",
+                        &format!("Process tuning: SetProcessAffinityMask failed for PID {pid}: {e}"),
+                    );
+                }
+            }
+            if trim_memory {
+                attempted += 1;
+                if let Err(e) = EmptyWorkingSet(handle) {
+                    failed += 1;
+                    crate::logging::warn(
+                        "ACTION",
+                        &format!("Process tuning: EmptyWorkingSet failed for PID {pid}: {e}"),
+                    );
+                }
+            }
+            let _ = CloseHandle(handle);
         }
+    }
+    if attempted > 0 && failed >= attempted {
+        return Err(format!(
+            "Process tuning failed for every target of '{}'",
+            target_process
+        ));
     }
     Ok(())
 }
@@ -1560,6 +2000,8 @@ pub fn trim_working_set(
             }
         }
 
+        let mut attempted = 0u32;
+        let mut failed = 0u32;
         for pid in pids {
             if skip_if_focused {
                 if let Some(fg_pid) = get_foreground_window_pid() {
@@ -1570,22 +2012,52 @@ pub fn trim_working_set(
             }
 
             unsafe {
-                if let Ok(handle) = OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-                    if let Some(mb) = soft_limit_mb {
-                        let max_bytes = (mb as usize).saturating_mul(1024 * 1024).max(2 * 1024 * 1024);
-                        let min_bytes = 1024 * 1024;
-                        let _ = SetProcessWorkingSetSizeEx(
-                            handle,
-                            min_bytes,
-                            max_bytes,
-                            SETPROCESSWORKINGSETSIZEEX_FLAGS(0),
-                        );
-                    } else {
-                        let _ = EmptyWorkingSet(handle);
+                match OpenProcess(PROCESS_SET_QUOTA | PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                    Ok(handle) => {
+                        if let Some(mb) = soft_limit_mb {
+                            attempted += 1;
+                            let max_bytes = (mb as usize).saturating_mul(1024 * 1024).max(2 * 1024 * 1024);
+                            let min_bytes = 1024 * 1024;
+                            if let Err(e) = SetProcessWorkingSetSizeEx(
+                                handle,
+                                min_bytes,
+                                max_bytes,
+                                SETPROCESSWORKINGSETSIZEEX_FLAGS(0),
+                            ) {
+                                failed += 1;
+                                crate::logging::warn(
+                                    "ACTION",
+                                    &format!("Trim working set: SetProcessWorkingSetSizeEx failed for PID {pid}: {e}"),
+                                );
+                            }
+                        } else {
+                            attempted += 1;
+                            if let Err(e) = EmptyWorkingSet(handle) {
+                                failed += 1;
+                                crate::logging::warn(
+                                    "ACTION",
+                                    &format!("Trim working set: EmptyWorkingSet failed for PID {pid}: {e}"),
+                                );
+                            }
+                        }
+                        let _ = CloseHandle(handle);
                     }
-                    let _ = CloseHandle(handle);
+                    Err(e) => {
+                        attempted += 1;
+                        failed += 1;
+                        crate::logging::warn(
+                            "ACTION",
+                            &format!("Trim working set: OpenProcess failed for PID {pid}: {e}"),
+                        );
+                    }
                 }
             }
+        }
+        if attempted > 0 && failed >= attempted {
+            return Err(format!(
+                "Trimming the working set failed for every target of '{}'",
+                target_process
+            ));
         }
     }
     #[cfg(not(windows))]
@@ -1595,7 +2067,7 @@ pub fn trim_working_set(
     Ok(())
 }
 
-pub fn execute_archive(
+pub async fn execute_archive(
     operation: crate::models::ArchiveOperation,
     format: crate::models::ArchiveFormat,
     source: &str,
@@ -1668,9 +2140,15 @@ pub fn execute_archive(
                         use std::os::windows::process::CommandExt;
                         cmd.creation_flags(CREATE_NO_WINDOW.0);
                     }
-                    let status = cmd.status().map_err(|e| format!("Failed to run tar.exe: {e}"))?;
-                    if !status.success() {
-                        return Err(format!("tar.exe archive creation returned exit code {:?}", status.code()));
+                    let status = run_command_bounded_async(cmd, ARCHIVE_TIMEOUT).await?;
+                    if status.timed_out {
+                        return Err(format!(
+                            "tar.exe archive creation timed out after {}s",
+                            ARCHIVE_TIMEOUT.as_secs()
+                        ));
+                    }
+                    if !status.succeeded() {
+                        return Err(format!("tar.exe archive creation returned exit code {:?}", status.exit_code()));
                     }
                     Ok(())
                 }
@@ -1682,23 +2160,31 @@ pub fn execute_archive(
                     ];
                     let mut found_cmd = None;
                     for p in rar_paths {
-                        if std::process::Command::new(p).arg("-?").output().is_ok() {
-                            found_cmd = Some(p);
-                            break;
+                        let mut probe = std::process::Command::new(p);
+                        probe.arg("-?");
+                        apply_no_window(&mut probe);
+                        if let Ok(out) =
+                            run_command_bounded_async(probe, std::time::Duration::from_secs(5)).await
+                        {
+                            if out.status.is_some() {
+                                found_cmd = Some(p);
+                                break;
+                            }
                         }
                     }
                     if let Some(cmd_path) = found_cmd {
                         let mut cmd = std::process::Command::new(cmd_path);
                         cmd.args(["a", "-ep1", "-r", destination, source]);
-                        #[cfg(windows)]
-                        {
-                            use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-                            use std::os::windows::process::CommandExt;
-                            cmd.creation_flags(CREATE_NO_WINDOW.0);
+                        apply_no_window(&mut cmd);
+                        let status = run_command_bounded_async(cmd, ARCHIVE_TIMEOUT).await?;
+                        if status.timed_out {
+                            return Err(format!(
+                                "rar.exe timed out after {}s",
+                                ARCHIVE_TIMEOUT.as_secs()
+                            ));
                         }
-                        let status = cmd.status().map_err(|e| format!("Failed to run rar.exe: {e}"))?;
-                        if !status.success() {
-                            return Err(format!("rar.exe returned exit code {:?}", status.code()));
+                        if !status.succeeded() {
+                            return Err(format!("rar.exe returned exit code {:?}", status.exit_code()));
                         }
                         Ok(())
                     } else {
@@ -1749,26 +2235,29 @@ pub fn execute_archive(
                         use std::os::windows::process::CommandExt;
                         cmd.creation_flags(CREATE_NO_WINDOW.0);
                     }
-                    match cmd.status() {
-                        Ok(status) if status.success() => Ok(()),
-                        _ => {
+                    match run_command_bounded_async(cmd, ARCHIVE_TIMEOUT).await {
+                        Ok(status) if status.succeeded() => Ok(()),
+                        Ok(status) => {
                             if format == ArchiveFormat::Rar {
                                 let mut unrar = std::process::Command::new("unrar.exe");
                                 unrar.args(["x", "-o+", source, destination]);
-                                #[cfg(windows)]
+                                apply_no_window(&mut unrar);
+                                if let Ok(s) =
+                                    run_command_bounded_async(unrar, ARCHIVE_TIMEOUT).await
                                 {
-                                    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
-                                    use std::os::windows::process::CommandExt;
-                                    unrar.creation_flags(CREATE_NO_WINDOW.0);
-                                }
-                                if let Ok(s) = unrar.status() {
-                                    if s.success() {
+                                    if s.succeeded() {
                                         return Ok(());
                                     }
                                 }
                             }
-                            Err(format!("Failed to unpack {:?} archive using tar.exe or system extractors", format))
+                            let detail = if status.timed_out {
+                                " (timed out)".to_string()
+                            } else {
+                                format!(" (exit code {:?})", status.exit_code())
+                            };
+                            Err(format!("Failed to unpack {:?} archive using tar.exe or system extractors{detail}", format))
                         }
+                        Err(e) => Err(format!("Failed to run tar.exe: {e}")),
                     }
                 }
             }
@@ -1961,7 +2450,7 @@ fn send_mouse_input(flags: MOUSE_EVENT_FLAGS, mouse_data: u32) {
 }
 
 #[cfg(windows)]
-fn smooth_mouse_move(
+async fn smooth_mouse_move(
     target_x: i32,
     target_y: i32,
     duration_ms: u32,
@@ -2049,7 +2538,7 @@ fn smooth_mouse_move(
         unsafe {
             let _ = SetCursorPos(cur_x.round() as i32, cur_y.round() as i32);
         }
-        std::thread::sleep(std::time::Duration::from_millis(step_interval_ms as u64));
+        tokio::time::sleep(std::time::Duration::from_millis(step_interval_ms as u64)).await;
     }
 
     unsafe {
@@ -2081,7 +2570,7 @@ fn send_mouse_relative_step(dx: i32, dy: i32) {
 }
 
 #[cfg(windows)]
-fn smooth_relative_mouse_move(
+async fn smooth_relative_mouse_move(
     total_dx: i32,
     total_dy: i32,
     duration_ms: u32,
@@ -2141,7 +2630,7 @@ fn smooth_relative_mouse_move(
 
         let remaining_ms = (total_secs - elapsed) * 1000.0;
         if remaining_ms > 5.0 {
-            std::thread::sleep(std::time::Duration::from_millis(3));
+            tokio::time::sleep(std::time::Duration::from_millis(3)).await;
         } else {
             std::thread::yield_now();
         }
@@ -2157,7 +2646,7 @@ fn smooth_relative_mouse_move(
 
 #[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
-fn mouse_control(
+async fn mouse_control(
     action_type: crate::models::MouseActionType,
     button: crate::models::MouseButton,
     coord_mode: crate::models::MouseCoordMode,
@@ -2171,123 +2660,123 @@ fn mouse_control(
     click_delay_ms: Option<u32>,
     organic_click_delay: bool,
 ) -> Result<(), String> {
-    unsafe {
-        match coord_mode {
-            crate::models::MouseCoordMode::Absolute => {
-                let target_x = x.unwrap_or(0);
-                let target_y = y.unwrap_or(0);
-                if smooth_move {
-                    smooth_mouse_move(target_x, target_y, move_duration_ms.unwrap_or(250), organic_move);
-                } else {
-                    if INPUT_INJECTION_ENABLED {
+    match coord_mode {
+        crate::models::MouseCoordMode::Absolute => {
+            let target_x = x.unwrap_or(0);
+            let target_y = y.unwrap_or(0);
+            if smooth_move {
+                smooth_mouse_move(target_x, target_y, move_duration_ms.unwrap_or(250), organic_move).await;
+            } else {
+                if INPUT_INJECTION_ENABLED {
+                    unsafe {
                         let _ = SetCursorPos(target_x, target_y);
                     }
-                    let sleep_d = move_duration_ms.unwrap_or(16);
-                    if sleep_d > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(sleep_d as u64));
-                    }
+                }
+                let sleep_d = move_duration_ms.unwrap_or(16);
+                if sleep_d > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_d as u64)).await;
                 }
             }
-            crate::models::MouseCoordMode::Relative => {
-                let dx = x.unwrap_or(0);
-                let dy = y.unwrap_or(0);
-                if smooth_move {
-                    smooth_relative_mouse_move(dx, dy, move_duration_ms.unwrap_or(200), organic_move);
-                } else {
-                    send_mouse_relative_step(dx, dy);
-                    let sleep_d = move_duration_ms.unwrap_or(16);
-                    if sleep_d > 0 {
-                        std::thread::sleep(std::time::Duration::from_millis(sleep_d as u64));
-                    }
-                }
-            }
-            crate::models::MouseCoordMode::Current => {}
         }
-
-        let (down_flag, up_flag, mouse_data) = match button {
-            crate::models::MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
-            crate::models::MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0),
-            crate::models::MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
-            crate::models::MouseButton::XButton1 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 1),
-            crate::models::MouseButton::XButton2 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 2),
-        };
-
-        let base_delay = click_delay_ms.unwrap_or(35);
-
-        match action_type {
-            crate::models::MouseActionType::Move => {
-                // Movement handled above
-            }
-            crate::models::MouseActionType::Click => {
-                let count = clicks.unwrap_or(1).clamp(1, 100);
-                for i in 0..count {
-                    if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                        lock.insert(button);
-                    }
-                    send_mouse_input(down_flag, mouse_data);
-                    let hold_ms = calculate_sleep_ms(base_delay.clamp(10, 500), organic_click_delay, 30, None);
-                    std::thread::sleep(std::time::Duration::from_millis(hold_ms));
-                    send_mouse_input(up_flag, mouse_data);
-                    if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                        lock.remove(&button);
-                    }
-
-                    if i + 1 < count {
-                        let interval_ms = calculate_sleep_ms((base_delay * 2).clamp(20, 2000), organic_click_delay, 35, None);
-                        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
-                    }
+        crate::models::MouseCoordMode::Relative => {
+            let dx = x.unwrap_or(0);
+            let dy = y.unwrap_or(0);
+            if smooth_move {
+                smooth_relative_mouse_move(dx, dy, move_duration_ms.unwrap_or(200), organic_move).await;
+            } else {
+                send_mouse_relative_step(dx, dy);
+                let sleep_d = move_duration_ms.unwrap_or(16);
+                if sleep_d > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(sleep_d as u64)).await;
                 }
             }
-            crate::models::MouseActionType::DoubleClick => {
+        }
+        crate::models::MouseCoordMode::Current => {}
+    }
+
+    let (down_flag, up_flag, mouse_data) = match button {
+        crate::models::MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0),
+        crate::models::MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0),
+        crate::models::MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0),
+        crate::models::MouseButton::XButton1 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 1),
+        crate::models::MouseButton::XButton2 => (MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, 2),
+    };
+
+    let base_delay = click_delay_ms.unwrap_or(35);
+
+    match action_type {
+        crate::models::MouseActionType::Move => {
+            // Movement handled above
+        }
+        crate::models::MouseActionType::Click => {
+            let count = clicks.unwrap_or(1).clamp(1, 100);
+            for i in 0..count {
                 if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
                     lock.insert(button);
                 }
                 send_mouse_input(down_flag, mouse_data);
-                let hold1 = calculate_sleep_ms(base_delay.clamp(10, 300), organic_click_delay, 30, None);
-                std::thread::sleep(std::time::Duration::from_millis(hold1));
+                let hold_ms = calculate_sleep_ms(base_delay.clamp(10, 500), organic_click_delay, 30, None);
+                tokio::time::sleep(std::time::Duration::from_millis(hold_ms)).await;
                 send_mouse_input(up_flag, mouse_data);
                 if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
                     lock.remove(&button);
                 }
 
-                let pause = calculate_sleep_ms((base_delay * 2).clamp(30, 400), organic_click_delay, 30, None);
-                std::thread::sleep(std::time::Duration::from_millis(pause));
+                if i + 1 < count {
+                    let interval_ms = calculate_sleep_ms((base_delay * 2).clamp(20, 2000), organic_click_delay, 35, None);
+                    tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
+                }
+            }
+        }
+        crate::models::MouseActionType::DoubleClick => {
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.insert(button);
+            }
+            send_mouse_input(down_flag, mouse_data);
+            let hold1 = calculate_sleep_ms(base_delay.clamp(10, 300), organic_click_delay, 30, None);
+            tokio::time::sleep(std::time::Duration::from_millis(hold1)).await;
+            send_mouse_input(up_flag, mouse_data);
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.remove(&button);
+            }
 
-                if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                    lock.insert(button);
-                }
-                send_mouse_input(down_flag, mouse_data);
-                let hold2 = calculate_sleep_ms(base_delay.clamp(10, 300), organic_click_delay, 30, None);
-                std::thread::sleep(std::time::Duration::from_millis(hold2));
-                send_mouse_input(up_flag, mouse_data);
-                if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                    lock.remove(&button);
-                }
+            let pause = calculate_sleep_ms((base_delay * 2).clamp(30, 400), organic_click_delay, 30, None);
+            tokio::time::sleep(std::time::Duration::from_millis(pause)).await;
+
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.insert(button);
             }
-            crate::models::MouseActionType::Down => {
-                if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                    lock.insert(button);
-                }
-                send_mouse_input(down_flag, mouse_data);
+            send_mouse_input(down_flag, mouse_data);
+            let hold2 = calculate_sleep_ms(base_delay.clamp(10, 300), organic_click_delay, 30, None);
+            tokio::time::sleep(std::time::Duration::from_millis(hold2)).await;
+            send_mouse_input(up_flag, mouse_data);
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.remove(&button);
             }
-            crate::models::MouseActionType::Up => {
-                if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
-                    lock.remove(&button);
-                }
-                send_mouse_input(up_flag, mouse_data);
+        }
+        crate::models::MouseActionType::Down => {
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.insert(button);
             }
-            crate::models::MouseActionType::Scroll => {
-                let delta = scroll_delta.unwrap_or(120);
-                send_mouse_input(MOUSEEVENTF_WHEEL, delta as u32);
+            send_mouse_input(down_flag, mouse_data);
+        }
+        crate::models::MouseActionType::Up => {
+            if let Ok(mut lock) = ACTIVE_HELD_MOUSE_BUTTONS.lock() {
+                lock.remove(&button);
             }
+            send_mouse_input(up_flag, mouse_data);
+        }
+        crate::models::MouseActionType::Scroll => {
+            let delta = scroll_delta.unwrap_or(120);
+            send_mouse_input(MOUSEEVENTF_WHEEL, delta as u32);
         }
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn simulate_text_typing(text: &str, delay_ms: u32, organic: bool, jitter_percent: u32) -> Result<(), String> {
-    std::thread::sleep(std::time::Duration::from_millis(80));
+async fn simulate_text_typing(text: &str, delay_ms: u32, organic: bool, jitter_percent: u32) -> Result<(), String> {
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     let mut remaining = text;
     while !remaining.is_empty() {
         if remaining.starts_with('{') {
@@ -2296,7 +2785,7 @@ fn simulate_text_typing(text: &str, delay_ms: u32, organic: bool, jitter_percent
                 let lower = token.to_lowercase();
                 if let Some(stripped) = lower.strip_prefix("delay ") {
                     if let Ok(ms) = stripped.trim().parse::<u64>() {
-                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
                     }
                     remaining = &remaining[end_brace + 1..];
                     continue;
@@ -2313,14 +2802,14 @@ fn simulate_text_typing(text: &str, delay_ms: u32, organic: bool, jitter_percent
         }
         if ch == '\n' {
             send_key_event(VK_RETURN, false);
-            std::thread::sleep(std::time::Duration::from_millis(35));
+            tokio::time::sleep(std::time::Duration::from_millis(35)).await;
             send_key_event(VK_RETURN, true);
         } else {
             send_char_event(ch);
         }
         let sleep = calculate_sleep_ms(delay_ms, organic, jitter_percent, Some(ch));
         if sleep > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(sleep));
+            tokio::time::sleep(std::time::Duration::from_millis(sleep)).await;
         }
     }
     Ok(())
@@ -2565,6 +3054,85 @@ fn send_char_event(ch: char) {
     }
 }
 
+/// Merges an inline macro plan with a saved preset. Explicit action fields win, except
+/// that the GUI defaults (one repeat, normal speed) let a preset supply its own values.
+fn resolve_macro_plan(
+    events: &[crate::models::MacroEvent],
+    repeat: u32,
+    speed: f32,
+    infinite: bool,
+    preset: Option<&crate::models::MacroPreset>,
+) -> (Vec<crate::models::MacroEvent>, u32, f32, bool) {
+    if let Some(preset) = preset {
+        let events = if events.is_empty() {
+            preset.events.clone()
+        } else {
+            events.to_vec()
+        };
+        let repeat = if repeat == 1 && preset.repeat > 1 {
+            preset.repeat
+        } else {
+            repeat
+        };
+        let speed = if (speed - 1.0).abs() < f32::EPSILON
+            && (preset.speed - 1.0).abs() > f32::EPSILON
+        {
+            preset.speed
+        } else {
+            speed
+        };
+        (events, repeat, speed, infinite || preset.infinite)
+    } else {
+        (events.to_vec(), repeat, speed, infinite)
+    }
+}
+
+/// Replays one macro plan: registers the cancellation token for Toggle/Run bookkeeping,
+/// repeats until done or cancelled, and always unregisters the token afterwards.
+async fn run_macro(
+    events: Vec<crate::models::MacroEvent>,
+    repeat: u32,
+    speed: f32,
+    infinite: bool,
+    key: Option<String>,
+    context: &HashMap<String, String>,
+) -> Result<(), String> {
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    if let Some(key) = key.as_ref() {
+        let mut lock = macro_cancellations().lock().unwrap();
+        lock.entry(key.clone())
+            .or_default()
+            .push(Arc::clone(&cancel_flag));
+    }
+
+    let repeats = repeat.max(1);
+    let mut count = 0;
+    let mut result = Ok(());
+    while (infinite || count < repeats) && !cancel_flag.load(Ordering::Relaxed) {
+        for event in &events {
+            if cancel_flag.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Err(err) = execute_macro_event(event, speed, context).await {
+                result = Err(err);
+                break;
+            }
+        }
+        if result.is_err() {
+            break;
+        }
+        count += 1;
+    }
+
+    if let Some(key) = key.as_ref() {
+        let mut lock = macro_cancellations().lock().unwrap();
+        if let Some(tokens) = lock.get_mut(key) {
+            tokens.retain(|flag| !Arc::ptr_eq(flag, &cancel_flag));
+        }
+    }
+    result
+}
+
 pub async fn execute_macro_event(
     event: &crate::models::MacroEvent,
     speed: f32,
@@ -2593,7 +3161,7 @@ pub async fn execute_macro_event(
             }
             crate::models::MacroEvent::Text { text, delay_ms, organic } => {
                 let interpolated = ActionRunner::interpolate_tokens(text, context);
-                simulate_text_typing(&interpolated, *delay_ms, *organic, 30)?;
+                simulate_text_typing(&interpolated, *delay_ms, *organic, 30).await?;
             }
             crate::models::MacroEvent::MouseMove { x, y, coord_mode, smooth, duration_ms, organic } => {
                 let default_dur = if *smooth { 250 } else { 16 };
@@ -2612,7 +3180,8 @@ pub async fn execute_macro_event(
                     None,
                     None,
                     false,
-                )?;
+                )
+                .await?;
             }
             crate::models::MacroEvent::MouseDown { button } => {
                 mouse_control(
@@ -2620,7 +3189,8 @@ pub async fn execute_macro_event(
                     *button,
                     MouseCoordMode::Current,
                     None, None, false, None, false, None, None, None, false,
-                )?;
+                )
+                .await?;
             }
             crate::models::MacroEvent::MouseUp { button } => {
                 mouse_control(
@@ -2628,7 +3198,8 @@ pub async fn execute_macro_event(
                     *button,
                     MouseCoordMode::Current,
                     None, None, false, None, false, None, None, None, false,
-                )?;
+                )
+                .await?;
             }
             crate::models::MacroEvent::MouseClick { button, clicks, x, y, coord_mode, smooth } => {
                 let cm = if x.is_some() || y.is_some() { *coord_mode } else { MouseCoordMode::Current };
@@ -2653,7 +3224,8 @@ pub async fn execute_macro_event(
                     Some(*clicks),
                     Some(click_hold),
                     true,
-                )?;
+                )
+                .await?;
             }
             crate::models::MacroEvent::MouseWheel { delta } => {
                 mouse_control(
@@ -2663,7 +3235,8 @@ pub async fn execute_macro_event(
                     None, None, false, None, false,
                     Some(*delta),
                     None, None, false,
-                )?;
+                )
+                .await?;
             }
             crate::models::MacroEvent::Delay { ms, organic, jitter_percent } => {
                 let eff_ms = (*ms as f32 / speed.max(0.01)).round() as u32;
@@ -2681,21 +3254,13 @@ pub async fn execute_macro_event(
     Ok(())
 }
 
-fn set_power_plan(plan: PowerPlanType) -> Result<(), String> {
+async fn set_power_plan(plan: PowerPlanType) -> Result<(), String> {
     let guid = match plan {
         PowerPlanType::HighPerformance => "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c",
         PowerPlanType::Balanced => "381b4222-f694-41f0-9685-ff5bb577002f",
         PowerPlanType::PowerSaver => "a1841308-3541-4fab-bc81-f71556f20b4a",
     };
-    let mut cmd = Command::new("powercfg");
-    cmd.args(["/setactive", guid]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    let _ = cmd.spawn();
-    Ok(())
+    run_system_tool("powercfg", &["/setactive", guid]).await
 }
 
 #[cfg(windows)]
@@ -2741,14 +3306,14 @@ fn play_sound_file(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn set_firewall_rule(proc_name: &str, action: crate::models::FirewallAction) -> Result<(), String> {
+async fn set_firewall_rule(proc_name: &str, action: crate::models::FirewallAction) -> Result<(), String> {
     let rule_name = format!("Synector_{}", proc_name);
     let exe_path = crate::daemon::watcher::ProcessWatcher::find_exe_path_by_name(proc_name)
         .unwrap_or_else(|| proc_name.to_string());
     let should_block = match action {
         crate::models::FirewallAction::Block => true,
         crate::models::FirewallAction::Allow => false,
-        crate::models::FirewallAction::Toggle => !is_firewall_rule_active(&rule_name),
+        crate::models::FirewallAction::Toggle => !is_firewall_rule_active(&rule_name).await,
     };
     let mut cmd = Command::new("netsh");
     if should_block {
@@ -2762,27 +3327,25 @@ fn set_firewall_rule(proc_name: &str, action: crate::models::FirewallAction) -> 
     } else {
         cmd.args(["advfirewall", "firewall", "delete", "rule", &format!("name={}", rule_name)]);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
+    apply_no_window(&mut cmd);
+    let out = run_command_bounded_async(cmd, UTILITY_TIMEOUT).await?;
+    if out.timed_out {
+        return Err(format!("netsh timed out after {}s", UTILITY_TIMEOUT.as_secs()));
     }
-    let _ = cmd.spawn();
+    if !out.succeeded() {
+        return Err(format!("netsh failed with exit code {:?}", out.exit_code()));
+    }
     Ok(())
 }
 
-pub fn is_firewall_rule_active(rule_name: &str) -> bool {
+pub async fn is_firewall_rule_active(rule_name: &str) -> bool {
     let mut cmd = Command::new("netsh");
     cmd.args(["advfirewall", "firewall", "show", "rule", &format!("name={}", rule_name)]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    match cmd.output() {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
+    apply_no_window(&mut cmd);
+    run_command_bounded_async(cmd, UTILITY_TIMEOUT)
+        .await
+        .map(|out| out.succeeded())
+        .unwrap_or(false)
 }
 
 pub fn has_matching_window(process_name: &str, match_mode: crate::models::ProcessMatchMode) -> bool {
@@ -2909,78 +3472,322 @@ fn construct_waveformat_extensible(sample_rate: u32, bit_depth: u16, channels: u
 }
 
 #[cfg(windows)]
-fn set_audio_device_format(
+struct ComApartment {
+    uninit: bool,
+}
+
+#[cfg(windows)]
+impl ComApartment {
+    fn init() -> Self {
+        use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        Self { uninit: hr.is_ok() }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        if self.uninit {
+            unsafe {
+                windows::Win32::System::Com::CoUninitialize();
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn audio_data_flow(target: crate::models::AudioTarget) -> windows::Win32::Media::Audio::EDataFlow {
+    use windows::Win32::Media::Audio::{eCapture, eRender};
+    match target {
+        crate::models::AudioTarget::Microphone => eCapture,
+        _ => eRender,
+    }
+}
+
+#[cfg(windows)]
+fn audio_flow_registry_dir(target: crate::models::AudioTarget) -> &'static str {
+    match target {
+        crate::models::AudioTarget::Microphone => "Capture",
+        _ => "Render",
+    }
+}
+
+#[cfg(windows)]
+fn get_default_audio_endpoint(
+    enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+    target: crate::models::AudioTarget,
+) -> Result<windows::Win32::Media::Audio::IMMDevice, String> {
+    use windows::Win32::Media::Audio::{eCapture, eCommunications, eConsole, eMultimedia};
+    let result = if matches!(target, crate::models::AudioTarget::Microphone) {
+        unsafe {
+            enumerator
+                .GetDefaultAudioEndpoint(eCapture, eConsole)
+                .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications))
+                .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia))
+        }
+    } else {
+        unsafe { enumerator.GetDefaultAudioEndpoint(audio_data_flow(target), eMultimedia) }
+    };
+    result.map_err(|e| format!("GetDefaultAudioEndpoint failed: {e}"))
+}
+
+/// Splits an endpoint id such as `{0.0.1.00000000}.{guid}` into its registry key part.
+fn endpoint_registry_guid(device_id: &str) -> Option<&str> {
+    let guid = device_id.rsplit('.').next()?.trim();
+    if guid.starts_with('{') && guid.ends_with('}') {
+        Some(guid)
+    } else {
+        None
+    }
+}
+
+/// Matches a requested device name against the display names collected from the endpoint
+/// registry (friendly name, device description and adapter name).
+fn device_name_matches(requested: &str, candidates: &[String]) -> bool {
+    let requested = requested.trim().to_lowercase();
+    if requested.is_empty() {
+        return false;
+    }
+    candidates.iter().any(|candidate| {
+        let candidate = candidate.to_lowercase();
+        !candidate.is_empty()
+            && (candidate.contains(&requested) || requested.contains(&candidate))
+    })
+}
+
+#[cfg(windows)]
+fn read_mmdevice_property(flow_dir: &str, device_id: &str, value_name: &str) -> Option<String> {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ};
+
+    let guid = endpoint_registry_guid(device_id)?;
+    let subkey = format!(
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\{flow_dir}\\{guid}\\Properties"
+    );
+    let subkey_wide: Vec<u16> = subkey.encode_utf16().chain(std::iter::once(0)).collect();
+    let value_wide: Vec<u16> = value_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buffer = [0u16; 512];
+    let mut size = (buffer.len() * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey_wide.as_ptr()),
+            PCWSTR(value_wide.as_ptr()),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status != windows::Win32::Foundation::WIN32_ERROR(0) {
+        return None;
+    }
+    let length = ((size as usize) / 2).min(buffer.len());
+    let text = String::from_utf16_lossy(&buffer[..length]);
+    let text = text.trim_end_matches('\0').trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Display names for one endpoint, closest to what `Get-AudioDevice -List` reports:
+/// the device description with the adapter name in parentheses, plus both parts alone.
+#[cfg(windows)]
+fn audio_endpoint_display_names(flow_dir: &str, device_id: &str) -> Vec<String> {
+    const PKEY_DEVICE_DESC: &str = "{a45c254e-df1c-4efd-8020-67d146a850e0},2";
+    const PKEY_ADAPTER_NAME: &str = "{b3f8fa53-0004-438e-9003-51a46e139bfc},6";
+
+    let desc = read_mmdevice_property(flow_dir, device_id, PKEY_DEVICE_DESC);
+    let adapter = read_mmdevice_property(flow_dir, device_id, PKEY_ADAPTER_NAME);
+    let mut names = Vec::new();
+    if let (Some(desc), Some(adapter)) = (&desc, &adapter) {
+        names.push(format!("{desc} ({adapter})"));
+    }
+    if let Some(desc) = desc {
+        names.push(desc);
+    }
+    if let Some(adapter) = adapter {
+        names.push(adapter);
+    }
+    names
+}
+
+#[cfg(windows)]
+fn find_audio_endpoint_by_name(
+    enumerator: &windows::Win32::Media::Audio::IMMDeviceEnumerator,
+    target: crate::models::AudioTarget,
+    requested: &str,
+) -> Result<windows::Win32::Media::Audio::IMMDevice, String> {
+    use windows::Win32::Media::Audio::DEVICE_STATE_ACTIVE;
+
+    let collection = unsafe { enumerator.EnumAudioEndpoints(audio_data_flow(target), DEVICE_STATE_ACTIVE) }
+        .map_err(|e| format!("EnumAudioEndpoints failed: {e}"))?;
+    let count = unsafe { collection.GetCount() }.map_err(|e| format!("GetCount failed: {e}"))?;
+    let mut available = Vec::new();
+    for index in 0..count {
+        let device = match unsafe { collection.Item(index) } {
+            Ok(device) => device,
+            Err(_) => continue,
+        };
+        let device_id = match unsafe { device.GetId() } {
+            Ok(id) => unsafe { id.to_string() }.unwrap_or_default(),
+            Err(_) => continue,
+        };
+        let names = audio_endpoint_display_names(audio_flow_registry_dir(target), &device_id);
+        if device_name_matches(requested, &names) {
+            return Ok(device);
+        }
+        if let Some(name) = names.into_iter().next() {
+            available.push(name);
+        }
+    }
+    let mut message = format!("No audio device matches '{requested}'");
+    if !available.is_empty() {
+        available.truncate(5);
+        message.push_str("; available: ");
+        message.push_str(&available.join(", "));
+    }
+    Err(message)
+}
+
+/// Runs `f` against a default or explicitly named audio endpoint, owning the COM
+/// apartment and enumerator lifetime for the call.
+#[cfg(windows)]
+fn with_audio_endpoint<T>(
+    target: crate::models::AudioTarget,
+    device_name: Option<&str>,
+    f: impl FnOnce(&windows::Win32::Media::Audio::IMMDevice) -> Result<T, String>,
+) -> Result<T, String> {
+    use windows::Win32::Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
+
+    let _com = ComApartment::init();
+    let enumerator: IMMDeviceEnumerator = unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
+        .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator failed: {e}"))?;
+    let device = match device_name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => find_audio_endpoint_by_name(&enumerator, target, name)?,
+        None => get_default_audio_endpoint(&enumerator, target)?,
+    };
+    f(&device)
+}
+
+#[cfg(windows)]
+fn with_default_endpoint_volume<T>(
+    target: crate::models::AudioTarget,
+    f: impl FnOnce(&windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume) -> Result<T, String>,
+) -> Result<T, String> {
+    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
+    use windows::Win32::System::Com::CLSCTX_ALL;
+
+    with_audio_endpoint(target, None, |device| {
+        let endpoint: IAudioEndpointVolume = unsafe { device.Activate(CLSCTX_ALL, None) }
+            .map_err(|e| format!("Activate IAudioEndpointVolume failed: {e}"))?;
+        f(&endpoint)
+    })
+}
+
+#[cfg(windows)]
+fn apply_endpoint_volume_action(
+    endpoint: &windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume,
+    action_type: AudioVolumeAction,
+    volume_level: u8,
+    left_volume: Option<u8>,
+    right_volume: Option<u8>,
+) -> Result<(), String> {
+    match action_type {
+        AudioVolumeAction::Mute => {
+            unsafe { endpoint.SetMute(true, std::ptr::null()) }
+                .map_err(|e| format!("SetMute failed: {e}"))
+        }
+        AudioVolumeAction::Unmute => {
+            unsafe { endpoint.SetMute(false, std::ptr::null()) }
+                .map_err(|e| format!("SetMute failed: {e}"))
+        }
+        AudioVolumeAction::ToggleMute => {
+            let current = unsafe { endpoint.GetMute() }.map_err(|e| format!("GetMute failed: {e}"))?;
+            unsafe { endpoint.SetMute(!current.as_bool(), std::ptr::null()) }
+                .map_err(|e| format!("SetMute failed: {e}"))
+        }
+        AudioVolumeAction::SetVolume => {
+            let channel_count = unsafe { endpoint.GetChannelCount() }.unwrap_or(2);
+            let mut applied_channel = false;
+            if let Some(left) = left_volume {
+                if channel_count > 0 {
+                    let scalar = (left.min(100) as f32) / 100.0;
+                    unsafe {
+                        let _ = endpoint.SetChannelVolumeLevelScalar(0, scalar, std::ptr::null());
+                    }
+                    applied_channel = true;
+                }
+            }
+            if let Some(right) = right_volume {
+                if channel_count > 1 {
+                    let scalar = (right.min(100) as f32) / 100.0;
+                    unsafe {
+                        let _ = endpoint.SetChannelVolumeLevelScalar(1, scalar, std::ptr::null());
+                    }
+                    applied_channel = true;
+                }
+            }
+            if !applied_channel {
+                let scalar = (volume_level.min(100) as f32) / 100.0;
+                unsafe { endpoint.SetMasterVolumeLevelScalar(scalar, std::ptr::null()) }
+                    .map_err(|e| format!("SetMasterVolumeLevelScalar failed: {e}"))?;
+            }
+            Ok(())
+        }
+        AudioVolumeAction::PlayBeep => Ok(()),
+    }
+}
+
+#[cfg(windows)]
+async fn set_audio_device_format(
     target: crate::models::AudioTarget,
     sample_rate: u32,
     bit_depth: u32,
     channels: u32,
-    _device_name: Option<&str>,
+    device_name: Option<&str>,
 ) -> Result<(), String> {
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
-    use windows::Win32::Media::Audio::{eCapture, eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-
     let sample_rate = sample_rate.clamp(8000, 384000);
     let bit_depth = (bit_depth as u16).clamp(8, 32);
     let channels = (channels as u16).clamp(1, 8);
 
     let wave_bytes = construct_waveformat_extensible(sample_rate, bit_depth, channels);
 
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
+    let dev_id = with_audio_endpoint(target, device_name, |device| {
+        let dev_id_pwstr = unsafe { device.GetId() }.map_err(|e| format!("GetId failed: {e}"))?;
+        unsafe { dev_id_pwstr.to_string() }.map_err(|e| format!("DevId parse: {e}"))
+    })?;
 
-        let res = (|| -> Result<(), String> {
-            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator failed: {e}"))?;
-
-            let data_flow = match target {
-                crate::models::AudioTarget::Playback | crate::models::AudioTarget::Process => eRender,
-                crate::models::AudioTarget::Microphone => eCapture,
-            };
-
-            let device = enumerator.GetDefaultAudioEndpoint(data_flow, eMultimedia)
-                .map_err(|e| format!("GetDefaultAudioEndpoint failed: {e}"))?;
-
-            let dev_id_pwstr = device.GetId()
-                .map_err(|e| format!("GetId failed: {e}"))?;
-            let dev_id = dev_id_pwstr.to_string().map_err(|e| format!("DevId parse: {e}"))?;
-
-            let flow_dir = match target {
-                crate::models::AudioTarget::Playback | crate::models::AudioTarget::Process => "Render",
-                crate::models::AudioTarget::Microphone => "Capture",
-            };
-
-            let byte_list = wave_bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
-            let ps_script = format!(
-                r#"
-                $id = '{}'
-                $keyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{}\$id\Properties"
-                if (Test-Path $keyPath) {{
-                    $bytes = [byte[]]@({})
-                    Set-ItemProperty -Path $keyPath -Name '{{e4870e26-3cc5-4cd2-ba46-56665703c64e}},0' -Value $bytes -Type Binary -ErrorAction SilentlyContinue
-                    Set-ItemProperty -Path $keyPath -Name '{{e4870e26-3cc5-4cd2-ba46-56665703c64e}},3' -Value $bytes -Type Binary -ErrorAction SilentlyContinue
-                    Set-ItemProperty -Path $keyPath -Name '{{f19f064d-0824-4d22-8222-99be777a77f0}},0' -Value $bytes -Type Binary -ErrorAction SilentlyContinue
-                }}
+    let flow_dir = audio_flow_registry_dir(target);
+    let byte_list = wave_bytes.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(",");
+    let ps_script = format!(
+        r#"
+                $ErrorActionPreference = 'Stop'
+                $id = '{0}'
+                $keyPath = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\{1}\$id\Properties"
+                if (-not (Test-Path $keyPath)) {{ exit 4 }}
+                $bytes = [byte[]]@({2})
+                Set-ItemProperty -Path $keyPath -Name '{{e4870e26-3cc5-4cd2-ba46-56665703c64e}},0' -Value $bytes -Type Binary
+                Set-ItemProperty -Path $keyPath -Name '{{e4870e26-3cc5-4cd2-ba46-56665703c64e}},3' -Value $bytes -Type Binary
+                Set-ItemProperty -Path $keyPath -Name '{{f19f064d-0824-4d22-8222-99be777a77f0}},0' -Value $bytes -Type Binary
                 "#,
-                dev_id.replace('\'', "''"),
-                flow_dir,
-                byte_list
-            );
+        ps_single_quoted(&dev_id),
+        flow_dir,
+        byte_list
+    );
 
-            let mut cmd = std::process::Command::new("powershell");
-            cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &ps_script]);
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000);
-            let _ = cmd.output().map_err(|e| format!("Failed to apply audio format: {e}"))?;
-
-            Ok(())
-        })();
-
-        if must_uninit {
-            CoUninitialize();
-        }
-
-        res
+    let out = run_command_bounded_async(powershell_helper_command(&ps_script), AUDIO_HELPER_TIMEOUT)
+        .await?;
+    if out.timed_out {
+        return Err(format!(
+            "Audio format helper timed out after {}s",
+            AUDIO_HELPER_TIMEOUT.as_secs()
+        ));
+    }
+    match out.exit_code() {
+        Some(0) => Ok(()),
+        Some(4) => Err("Audio format: the endpoint registry key does not exist".to_string()),
+        code => Err(format!("Audio format: helper failed (exit code {code:?})")),
     }
 }
 
@@ -2991,148 +3798,30 @@ fn set_audio_volume_or_mute(
     left_volume: Option<u8>,
     right_volume: Option<u8>,
 ) -> Result<(), String> {
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
-    use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
-
-        let res = (|| -> Result<(), String> {
-            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator failed: {e}"))?;
-
-            let device = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(|e| format!("GetDefaultAudioEndpoint failed: {e}"))?;
-
-            let endpoint_volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)
-                .map_err(|e| format!("Activate IAudioEndpointVolume failed: {e}"))?;
-
-            match action_type {
-                AudioVolumeAction::Mute => {
-                    endpoint_volume.SetMute(true, std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::Unmute => {
-                    endpoint_volume.SetMute(false, std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::ToggleMute => {
-                    let current = endpoint_volume.GetMute()
-                        .map_err(|e| format!("GetMute failed: {e}"))?;
-                    endpoint_volume.SetMute(!current.as_bool(), std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::SetVolume => {
-                    let channel_count = endpoint_volume.GetChannelCount().unwrap_or(2);
-                    if let Some(left) = left_volume {
-                        if channel_count > 0 {
-                            let left_scalar = (left.min(100) as f32) / 100.0;
-                            let _ = endpoint_volume.SetChannelVolumeLevelScalar(0, left_scalar, std::ptr::null());
-                        }
-                    }
-                    if let Some(right) = right_volume {
-                        if channel_count > 1 {
-                            let right_scalar = (right.min(100) as f32) / 100.0;
-                            let _ = endpoint_volume.SetChannelVolumeLevelScalar(1, right_scalar, std::ptr::null());
-                        }
-                    }
-                    if left_volume.is_none() && right_volume.is_none() {
-                        let scalar = (volume_level.min(100) as f32) / 100.0;
-                        endpoint_volume.SetMasterVolumeLevelScalar(scalar, std::ptr::null())
-                            .map_err(|e| format!("SetMasterVolumeLevelScalar failed: {e}"))?;
-                    }
-                }
-                AudioVolumeAction::PlayBeep => {}
-            }
-            Ok(())
-        })();
-
-        if must_uninit {
-            CoUninitialize();
-        }
-
-        res
-    }
+    with_default_endpoint_volume(crate::models::AudioTarget::Playback, |endpoint| {
+        apply_endpoint_volume_action(endpoint, action_type, volume_level, left_volume, right_volume)
+    })
 }
 
 pub fn set_master_volume_scalar(scalar: f32) {
     #[cfg(windows)]
-    unsafe {
-        use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-        use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-        use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
-
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
-
-        if let Ok(enumerator) = CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL) {
-            if let Ok(device) = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
-                if let Ok(endpoint_volume) = device.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
-                    let _ = endpoint_volume.SetMasterVolumeLevelScalar(scalar.clamp(0.0, 1.0), std::ptr::null());
-                }
-            }
-        }
-
-        if must_uninit {
-            CoUninitialize();
-        }
+    {
+        let _ = with_default_endpoint_volume(crate::models::AudioTarget::Playback, |endpoint| {
+            unsafe { endpoint.SetMasterVolumeLevelScalar(scalar.clamp(0.0, 1.0), std::ptr::null()) }
+                .map_err(|e| format!("SetMasterVolumeLevelScalar failed: {e}"))
+        });
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = scalar;
     }
 }
 
+#[cfg(windows)]
 fn set_microphone_volume_or_mute(action_type: AudioVolumeAction, volume_level: u8) -> Result<(), String> {
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
-    use windows::Win32::Media::Audio::{eCapture, eCommunications, eConsole, eMultimedia, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
-
-        let res = (|| -> Result<(), String> {
-            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator failed: {e}"))?;
-
-            let device = enumerator.GetDefaultAudioEndpoint(eCapture, eConsole)
-                .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications))
-                .or_else(|_| enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia))
-                .map_err(|e| format!("GetDefaultAudioEndpoint (eCapture) failed: {e}"))?;
-
-            let endpoint_volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None)
-                .map_err(|e| format!("Activate IAudioEndpointVolume failed: {e}"))?;
-
-            match action_type {
-                AudioVolumeAction::Mute => {
-                    endpoint_volume.SetMute(true, std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::Unmute => {
-                    endpoint_volume.SetMute(false, std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::ToggleMute => {
-                    let current = endpoint_volume.GetMute()
-                        .map_err(|e| format!("GetMute failed: {e}"))?;
-                    endpoint_volume.SetMute(!current.as_bool(), std::ptr::null())
-                        .map_err(|e| format!("SetMute failed: {e}"))?;
-                }
-                AudioVolumeAction::SetVolume => {
-                    let scalar = (volume_level.min(100) as f32) / 100.0;
-                    endpoint_volume.SetMasterVolumeLevelScalar(scalar, std::ptr::null())
-                        .map_err(|e| format!("SetMasterVolumeLevelScalar failed: {e}"))?;
-                }
-                AudioVolumeAction::PlayBeep => {}
-            }
-            Ok(())
-        })();
-
-        if must_uninit {
-            CoUninitialize();
-        }
-
-        res
-    }
+    with_default_endpoint_volume(crate::models::AudioTarget::Microphone, |endpoint| {
+        apply_endpoint_volume_action(endpoint, action_type, volume_level, None, None)
+    })
 }
 
 #[cfg(windows)]
@@ -3143,106 +3832,89 @@ fn set_process_audio(
     volume_level: u8,
 ) -> Result<bool, String> {
     use windows::core::Interface;
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
-    use windows::Win32::Media::Audio::{eMultimedia, eRender, IMMDeviceEnumerator, MMDeviceEnumerator, IAudioSessionManager2, IAudioSessionControl2, ISimpleAudioVolume};
+    use windows::Win32::Media::Audio::{IAudioSessionManager2, IAudioSessionControl2, ISimpleAudioVolume};
+    use windows::Win32::System::Com::CLSCTX_ALL;
 
-    unsafe {
-        let hr = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let must_uninit = hr.is_ok();
+    with_audio_endpoint(crate::models::AudioTarget::Playback, None, |device| unsafe {
+        let session_manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("Activate IAudioSessionManager2 failed: {e}"))?;
 
-        let res = (|| -> Result<bool, String> {
-            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-                .map_err(|e| format!("CoCreateInstance MMDeviceEnumerator failed: {e}"))?;
+        let session_enumerator = session_manager.GetSessionEnumerator()
+            .map_err(|e| format!("GetSessionEnumerator failed: {e}"))?;
 
-            let device = enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia)
-                .map_err(|e| format!("GetDefaultAudioEndpoint failed: {e}"))?;
+        let count = session_enumerator.GetCount()
+            .map_err(|e| format!("GetCount failed: {e}"))?;
 
-            let session_manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)
-                .map_err(|e| format!("Activate IAudioSessionManager2 failed: {e}"))?;
+        let proc_map = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
+        let target_clean = target_process.trim().to_lowercase();
+        let is_wildcard_or_current = target_clean == "*" || target_clean == "current" || target_clean.is_empty();
 
-            let session_enumerator = session_manager.GetSessionEnumerator()
-                .map_err(|e| format!("GetSessionEnumerator failed: {e}"))?;
+        let mut matched_any = false;
 
-            let count = session_enumerator.GetCount()
-                .map_err(|e| format!("GetCount failed: {e}"))?;
+        for i in 0..count {
+            let session_control = match session_enumerator.GetSession(i) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
 
-            let proc_map = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
-            let target_clean = target_process.trim().to_lowercase();
-            let is_wildcard_or_current = target_clean == "*" || target_clean == "current" || target_clean.is_empty();
+            let session_control2: IAudioSessionControl2 = match session_control.cast() {
+                Ok(c2) => c2,
+                Err(_) => continue,
+            };
 
-            let mut matched_any = false;
+            let pid = match session_control2.GetProcessId() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
 
-            for i in 0..count {
-                let session_control = match session_enumerator.GetSession(i) {
-                    Ok(s) => s,
-                    Err(_) => continue,
-                };
-
-                let session_control2: IAudioSessionControl2 = match session_control.cast() {
-                    Ok(c2) => c2,
-                    Err(_) => continue,
-                };
-
-                let pid = match session_control2.GetProcessId() {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-
-                if pid == 0 {
-                    continue;
-                }
-
-                let matches_pid = target_pid.map(|tp| tp == pid).unwrap_or(false);
-                let matches_name = if !target_clean.is_empty() && target_clean != "current" {
-                    proc_map.get(&pid).map(|name| {
-                        name.eq_ignore_ascii_case(&target_clean)
-                            || name.trim_end_matches(".exe").eq_ignore_ascii_case(target_clean.trim_end_matches(".exe"))
-                    }).unwrap_or(false)
-                } else {
-                    false
-                };
-
-                if (is_wildcard_or_current && matches_pid) || matches_name || (target_clean == "*" && target_pid.is_none()) {
-                    let volume: ISimpleAudioVolume = match session_control.cast() {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    };
-
-                    match action_type {
-                        AudioVolumeAction::Mute => {
-                            volume.SetMute(true, std::ptr::null())
-                                .map_err(|e| format!("SetMute failed: {e}"))?;
-                        }
-                        AudioVolumeAction::Unmute => {
-                            volume.SetMute(false, std::ptr::null())
-                                .map_err(|e| format!("SetMute failed: {e}"))?;
-                        }
-                        AudioVolumeAction::ToggleMute => {
-                            let current = volume.GetMute()
-                                .map_err(|e| format!("GetMute failed: {e}"))?;
-                            volume.SetMute(!current.as_bool(), std::ptr::null())
-                                .map_err(|e| format!("SetMute failed: {e}"))?;
-                        }
-                        AudioVolumeAction::SetVolume => {
-                            let scalar = (volume_level.min(100) as f32) / 100.0;
-                            volume.SetMasterVolume(scalar, std::ptr::null())
-                                .map_err(|e| format!("SetMasterVolume failed: {e}"))?;
-                        }
-                        AudioVolumeAction::PlayBeep => {}
-                    }
-                    matched_any = true;
-                }
+            if pid == 0 {
+                continue;
             }
 
-            Ok(matched_any)
-        })();
+            let matches_pid = target_pid.map(|tp| tp == pid).unwrap_or(false);
+            let matches_name = if !target_clean.is_empty() && target_clean != "current" {
+                proc_map.get(&pid).map(|name| {
+                    name.eq_ignore_ascii_case(&target_clean)
+                        || name.trim_end_matches(".exe").eq_ignore_ascii_case(target_clean.trim_end_matches(".exe"))
+                }).unwrap_or(false)
+            } else {
+                false
+            };
 
-        if must_uninit {
-            CoUninitialize();
+            if (is_wildcard_or_current && matches_pid) || matches_name || (target_clean == "*" && target_pid.is_none()) {
+                let volume: ISimpleAudioVolume = match session_control.cast() {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                match action_type {
+                    AudioVolumeAction::Mute => {
+                        volume.SetMute(true, std::ptr::null())
+                            .map_err(|e| format!("SetMute failed: {e}"))?;
+                    }
+                    AudioVolumeAction::Unmute => {
+                        volume.SetMute(false, std::ptr::null())
+                            .map_err(|e| format!("SetMute failed: {e}"))?;
+                    }
+                    AudioVolumeAction::ToggleMute => {
+                        let current = volume.GetMute()
+                            .map_err(|e| format!("GetMute failed: {e}"))?;
+                        volume.SetMute(!current.as_bool(), std::ptr::null())
+                            .map_err(|e| format!("SetMute failed: {e}"))?;
+                    }
+                    AudioVolumeAction::SetVolume => {
+                        let scalar = (volume_level.min(100) as f32) / 100.0;
+                        volume.SetMasterVolume(scalar, std::ptr::null())
+                            .map_err(|e| format!("SetMasterVolume failed: {e}"))?;
+                    }
+                    AudioVolumeAction::PlayBeep => {}
+                }
+                matched_any = true;
+            }
         }
 
-        res
-    }
+        Ok(matched_any)
+    })
 }
 
 #[cfg(test)]
@@ -3252,6 +3924,10 @@ mod tests {
     // Compile-time guard against a future change that would let `cargo test` type into the
     // focused window or move the cursor while the developer is working.
     const _: () = assert!(!INPUT_INJECTION_ENABLED, "unit tests must not inject input into the desktop");
+
+    /// The macro cancellation registry is process-global, so tests that inspect it must not
+    /// overlap with a test that transiently registers a running macro.
+    static MACRO_REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     #[test]
     fn test_active_held_inputs_and_release() {
@@ -3279,8 +3955,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_relative_mouse_control_no_panic() {
+    #[tokio::test]
+    async fn test_relative_mouse_control_no_panic() {
         #[cfg(windows)]
         {
             // Cursor movement is suppressed under `cfg(test)`, so this exercises the
@@ -3298,7 +3974,8 @@ mod tests {
                 None,
                 None,
                 false,
-            );
+            )
+            .await;
             assert!(res.is_ok());
             // A move never leaves a button in the held-input registry.
             assert!(ACTIVE_HELD_MOUSE_BUTTONS.lock().unwrap().is_empty());
@@ -3708,8 +4385,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_macro_cancellation_by_id_and_all() {
+    #[tokio::test]
+    async fn test_macro_cancellation_by_id_and_all() {
+        let _guard = MACRO_REGISTRY_TEST_LOCK.lock().await;
         let cancel_token_1 = Arc::new(AtomicBool::new(false));
         let cancel_token_2 = Arc::new(AtomicBool::new(false));
 
@@ -3739,5 +4417,266 @@ mod tests {
         assert!(cancel_token_2.load(Ordering::SeqCst));
         assert!(!is_macro_running("test_macro_beta"));
         assert!(!has_any_active_macro());
+    }
+
+    #[test]
+    fn test_webhook_request_keeps_injection_as_data_and_sends_headers() {
+        let client = webhook_client().expect("webhook client");
+        let payload = r#"{"note":"'; Remove-Item C:\\ -Recurse -Force; '"}"#;
+        let headers = vec![(
+            "Authorization".to_string(),
+            "Bearer '; calc; '".to_string(),
+        )];
+        let request = build_webhook_request(
+            client,
+            "http://127.0.0.1:9/hook",
+            "POST",
+            &headers,
+            Some(payload),
+        )
+        .expect("valid request");
+        assert_eq!(request.method(), reqwest::Method::POST);
+        assert_eq!(request.url().as_str(), "http://127.0.0.1:9/hook");
+        assert_eq!(
+            request.headers().get("authorization").unwrap().to_str().unwrap(),
+            "Bearer '; calc; '"
+        );
+        assert_eq!(
+            request.headers().get("content-type").unwrap().to_str().unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            request.body().and_then(|body| body.as_bytes()),
+            Some(payload.as_bytes())
+        );
+
+        // Quotes and spaces in a URL stay URL data (percent-encoded by the URL parser);
+        // they are never pasted into a PowerShell command line any more.
+        let quoted = build_webhook_request(
+            client,
+            "http://127.0.0.1:9/' ; calc ; '",
+            "GET",
+            &[],
+            None,
+        )
+        .expect("URL text stays data");
+        assert!(quoted.url().as_str().starts_with("http://127.0.0.1:9/"));
+        assert!(quoted.url().as_str().contains("calc"));
+        assert!(build_webhook_request(client, "not a url", "GET", &[], None).is_err());
+        // Header names and methods are validated instead of being concatenated.
+        assert!(build_webhook_request(
+            client,
+            "http://127.0.0.1:9/hook",
+            "POST",
+            &[("Bad Header".to_string(), "x".to_string())],
+            None
+        )
+        .is_err());
+        assert!(
+            build_webhook_request(client, "http://127.0.0.1:9/hook", "P OST", &[], None).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_wait_rejects_invalid_durations_without_panic() {
+        let ctx = HashMap::new();
+        for seconds in [-1.0f64, f64::NAN, 1e300] {
+            let wait = Action::Wait {
+                mode: crate::models::WaitMode::Timer,
+                seconds,
+                condition: None,
+                timeout_sec: 1.0,
+                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+            };
+            assert!(
+                ActionRunner::execute(&wait, &ctx).await.is_err(),
+                "seconds={seconds} must be rejected instead of panicking"
+            );
+        }
+
+        let wait_timeout = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::File {
+                path: "C:\\synector_never_exists.tmp".into(),
+                condition: crate::models::WaitFileCondition::Exists,
+            }),
+            timeout_sec: -1.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert!(ActionRunner::execute(&wait_timeout, &ctx).await.is_err());
+    }
+
+    #[test]
+    fn test_split_windows_arguments_is_quote_aware() {
+        assert_eq!(
+            split_windows_arguments(r#"-m "C:\Program Files\app.exe" "a b" plain"#),
+            vec!["-m", r"C:\Program Files\app.exe", "a b", "plain"]
+        );
+        assert_eq!(
+            split_windows_arguments(r#""say \"hi\"""#),
+            vec![r#"say "hi""#]
+        );
+        assert_eq!(split_windows_arguments(r#"a""b"#), vec!["ab"]);
+        assert_eq!(
+            split_windows_arguments(r#""C:\path with space\\""#),
+            vec!["C:\\path with space\\"]
+        );
+        assert_eq!(split_windows_arguments("\"\""), vec![""]);
+        assert_eq!(split_windows_arguments("\"a b\""), vec!["a b"]);
+        assert!(split_windows_arguments("   ").is_empty());
+
+        let arguments = vec![
+            "one".to_string(),
+            "two words".to_string(),
+            "quote\"inside".to_string(),
+            "trailing\\".to_string(),
+            String::new(),
+        ];
+        let joined = join_windows_arguments(&arguments);
+        assert_eq!(split_windows_arguments(&joined), arguments);
+    }
+
+    #[tokio::test]
+    async fn test_if_else_propagates_nested_script_output() {
+        let action = Action::IfElse {
+            conditions: vec![],
+            then_actions: vec![Action::ExecuteScript {
+                interpreter: crate::models::ScriptType::Lua,
+                script: "return 'nested-output'".to_string(),
+                run_in_window: false,
+            }],
+            else_if_branches: vec![],
+            else_actions: vec![],
+        };
+        let res = ActionRunner::execute(&action, &HashMap::new()).await;
+        assert_eq!(
+            res,
+            Ok(ActionOutcome::Continue(Some("nested-output".to_string())))
+        );
+    }
+
+    #[test]
+    fn test_macro_plan_resolution_prefers_preset_defaults() {
+        let inline_event = crate::models::MacroEvent::Delay {
+            ms: 5,
+            organic: false,
+            jitter_percent: 0,
+        };
+        let preset = crate::models::MacroPreset {
+            id: "preset_actions_test".into(),
+            name: "Preset".into(),
+            events: vec![crate::models::MacroEvent::Delay {
+                ms: 99,
+                organic: false,
+                jitter_percent: 0,
+            }],
+            repeat: 3,
+            speed: 2.0,
+            infinite: true,
+        };
+
+        let (events, repeat, speed, infinite) = resolve_macro_plan(
+            std::slice::from_ref(&inline_event),
+            1,
+            1.0,
+            false,
+            Some(&preset),
+        );
+        assert_eq!(events, vec![inline_event.clone()]);
+        assert_eq!(repeat, 3);
+        assert!((speed - 2.0).abs() < f32::EPSILON);
+        assert!(infinite);
+
+        let (events, repeat, speed, infinite) = resolve_macro_plan(&[], 2, 0.5, false, Some(&preset));
+        assert_eq!(events, preset.events);
+        assert_eq!(repeat, 2);
+        assert!((speed - 0.5).abs() < f32::EPSILON);
+        assert!(infinite);
+
+        let (events, repeat, speed, infinite) = resolve_macro_plan(
+            std::slice::from_ref(&inline_event),
+            1,
+            1.0,
+            false,
+            None,
+        );
+        assert_eq!(events, vec![inline_event]);
+        assert_eq!(repeat, 1);
+        assert!((speed - 1.0).abs() < f32::EPSILON);
+        assert!(!infinite);
+    }
+
+    #[tokio::test]
+    async fn test_run_macro_finite_cleans_up_registration() {
+        let _guard = MACRO_REGISTRY_TEST_LOCK.lock().await;
+        let key = "test_run_macro_helper_key";
+        let res = run_macro(vec![], 2, 1.0, false, Some(key.to_string()), &HashMap::new()).await;
+        assert!(res.is_ok());
+        assert!(!is_macro_running(key));
+    }
+
+    #[test]
+    fn test_read_capped_bounds_output() {
+        let data = vec![b'x'; 1000];
+        assert_eq!(read_capped(std::io::Cursor::new(data.clone()), 100).len(), 100);
+        assert_eq!(read_capped(std::io::Cursor::new(data), 2000).len(), 1000);
+    }
+
+    #[test]
+    fn test_bounded_command_runner_maps_status_and_timeout() {
+        let mut ok_cmd = Command::new("cmd");
+        ok_cmd.args(["/C", "exit 0"]);
+        let ok = run_command_bounded(ok_cmd, std::time::Duration::from_secs(10)).expect("exit 0");
+        assert!(ok.succeeded(), "exit code {:?}", ok.exit_code());
+
+        let mut failing_cmd = Command::new("cmd");
+        failing_cmd.args(["/C", "exit 7"]);
+        let failing = run_command_bounded(failing_cmd, std::time::Duration::from_secs(10))
+            .expect("exit 7");
+        assert!(!failing.succeeded());
+        assert_eq!(failing.exit_code(), Some(7));
+
+        let mut slow_cmd = Command::new("cmd");
+        slow_cmd.args(["/C", "ping -n 6 127.0.0.1 >nul"]);
+        let started = std::time::Instant::now();
+        let slow =
+            run_command_bounded(slow_cmd, std::time::Duration::from_millis(200)).expect("timeout");
+        assert!(slow.timed_out);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_audio_endpoint_name_helpers() {
+        assert_eq!(
+            endpoint_registry_guid("{0.0.1.00000000}.{abc-def}"),
+            Some("{abc-def}")
+        );
+        assert_eq!(endpoint_registry_guid("no-dots"), None);
+
+        let names = vec![
+            "Speakers (Realtek(R) Audio)".to_string(),
+            "Speakers".to_string(),
+            "Realtek(R) Audio".to_string(),
+        ];
+        assert!(device_name_matches("speakers", &names));
+        assert!(device_name_matches("REALTEK", &names));
+        assert!(device_name_matches("Speakers (Realtek", &names));
+        assert!(!device_name_matches("Microphone", &names));
+        assert!(!device_name_matches("   ", &names));
+    }
+
+    #[tokio::test]
+    async fn test_process_tuning_current_process() {
+        let mut ctx = HashMap::new();
+        ctx.insert("ProcessId".to_string(), std::process::id().to_string());
+        let action = crate::models::Action::ProcessTuning {
+            target_process: None,
+            priority: Some(crate::models::ProcessPriorityLevel::Normal),
+            affinity_mask: None,
+            trim_memory: false,
+        };
+        let res = ActionRunner::execute(&action, &ctx).await;
+        assert!(res.is_ok(), "tuning own process should succeed: {res:?}");
     }
 }

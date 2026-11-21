@@ -157,7 +157,7 @@ Synector/
 ├── docs/                   # Documentation set, indexed in docs/README.md
 ├── installer/              # Inno Setup script and console bootstrap
 ├── src/                    # Rust sources: daemon, GUI, IPC, CLI, domain model, i18n
-├── build.rs                # Windows resources: icon, version, manifest
+├── build.rs                # Windows resources: icon, VERSIONINFO, manifest
 ├── Cargo.lock              # Pinned dependency versions
 ├── Cargo.toml              # Manifest and dependencies
 ├── CHANGELOG.md            # Release history
@@ -190,8 +190,9 @@ directory for portable or isolated runs.
 | `logs\` | Daily diagnostic logs, one file per day, 7-day retention and an 8 MiB cap per file |
 
 Writes are atomic and versioned, and while the daemon is reachable it is the only writer — back up or
-edit these files with Synector stopped. The write path, the quarantine of a section that fails to
-parse, read caches and coalescing rules are documented in
+edit these files with Synector stopped. A section written by a newer Synector build is read but never
+overwritten by an older build, so downgrading cannot silently rewrite it. The write path, the
+quarantine of a section that fails to parse, read caches and coalescing rules are documented in
 [docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
 
 ### Settings fields
@@ -204,7 +205,7 @@ parse, read caches and coalescing rules are documented in
 | `window` | object | Saved main-window geometry and state; managed by the app |
 | `tray_icon_path` | string, optional | Custom tray icon file; the field is omitted while unset |
 | `hide_tray_icon` | boolean (default `false`) | Hide the tray icon |
-| `mask_daemon_process` | boolean (default `false`) | Run the daemon from the masked `WindowsServiceHost.exe` copy |
+| `mask_daemon_process` | boolean (default `false`) | Run the daemon from the masked `WindowsServiceHost.exe` copy; changes apply after the next Synector restart |
 | `language` | `"english"` or `"russian"` (default `"english"`) | Interface language |
 | `check_updates_on_startup` | boolean (default `true`) | Check GitHub for a new release at startup |
 | `auto_install_updates` | boolean (default `false`) | Install a downloaded update without asking |

@@ -5,14 +5,14 @@
 //! through IPC so it takes effect immediately, otherwise `rules.json` is edited directly.
 //! Runtime counters stay in the daemon-owned `runtime.json`, never in rule files.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
 use crate::config::{AppConfig, RulesFile, RuntimeState};
 use crate::ipc::{IpcClient, IpcRequest, IpcResponse};
-use crate::models::{Action, QuotaPeriod, Rule, ScheduleType, Trigger};
+use crate::models::{Action, QuotaPeriod, Rule, Trigger};
 
 pub const USAGE: &str = r#"Synector - rule authoring from the command line
 
@@ -31,7 +31,8 @@ pub const USAGE: &str = r#"Synector - rule authoring from the command line
   --rules-schema              Print the draft-07 JSON Schema for one rule object
   --rules-reference           Print a human-readable reference of every trigger, action and condition
   --rules-template <t[:a]>    Print a ready-to-edit rule skeleton for a trigger and action
-  --json                      Machine-readable output for validate/apply/sync/delete/enable/disable/reset
+  --json                      Machine-readable output for validate/apply/sync/list/export/
+                              share/import-share/delete/enable/disable/reset
   --dry-run                   With --rules-apply or --rules-sync: report changes without writing
   --enable-imported           With --rules-import-share: enable the imported rules (default: disabled)
   --help                      Print this help
@@ -80,28 +81,109 @@ const EXAMPLE_RULES_JSON: &str = r#"[
   }
 ]"#;
 
-const KNOWN_FLAGS: &[&str] = &[
-    "--rules-validate",
-    "--rules-apply",
-    "--rules-list",
-    "--rules-export",
-    "--rules-share",
-    "--rules-import-share",
-    "--rules-delete",
-    "--rules-sync",
-    "--rules-enable",
-    "--rules-disable",
-    "--rules-reset",
-    "--rules-example",
-    "--rules-schema",
-    "--rules-reference",
-    "--rules-template",
-    "--json",
-    "--dry-run",
-    "--enable-imported",
-    "--help",
-    "-h",
-];
+/// Flags that modify a command instead of selecting one.
+const MODIFIER_FLAGS: &[&str] = &["--json", "--dry-run", "--enable-imported"];
+
+/// One rule-authoring command. The command is resolved before anything runs, so the priority that
+/// used to be implicit in the ordered `if` chain is gone: two command flags in one invocation are
+/// a usage error instead of a silent preference ([U13-002]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Command {
+    Help,
+    Example,
+    Schema,
+    Reference,
+    Template,
+    Validate,
+    Apply,
+    Sync,
+    Delete,
+    Enable,
+    Disable,
+    Reset,
+    List,
+    Export,
+    Share,
+    ImportShare,
+}
+
+/// How a command consumes the argument after its flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandArgument {
+    /// A plain switch: the next argument is not part of the command.
+    None,
+    /// The value is required. `-` means stdin for the commands that read input.
+    Required,
+    /// The value is optional; without it the command uses its default selector.
+    Optional,
+}
+
+impl Command {
+    fn from_flag(flag: &str) -> Option<Self> {
+        Some(match flag {
+            "--help" | "-h" => Self::Help,
+            "--rules-example" => Self::Example,
+            "--rules-schema" => Self::Schema,
+            "--rules-reference" => Self::Reference,
+            "--rules-template" => Self::Template,
+            "--rules-validate" => Self::Validate,
+            "--rules-apply" => Self::Apply,
+            "--rules-sync" => Self::Sync,
+            "--rules-delete" => Self::Delete,
+            "--rules-enable" => Self::Enable,
+            "--rules-disable" => Self::Disable,
+            "--rules-reset" => Self::Reset,
+            "--rules-list" => Self::List,
+            "--rules-export" => Self::Export,
+            "--rules-share" => Self::Share,
+            "--rules-import-share" => Self::ImportShare,
+            _ => return None,
+        })
+    }
+
+    fn argument(self) -> CommandArgument {
+        match self {
+            Self::Help | Self::Example | Self::Schema | Self::Reference | Self::List => {
+                CommandArgument::None
+            }
+            Self::Template | Self::Export | Self::Share => CommandArgument::Optional,
+            Self::Validate
+            | Self::Apply
+            | Self::Sync
+            | Self::Delete
+            | Self::Enable
+            | Self::Disable
+            | Self::Reset
+            | Self::ImportShare => CommandArgument::Required,
+        }
+    }
+
+    /// What the value after the flag is, for usage errors ([U13-014]).
+    fn value_label(self) -> &'static str {
+        match self {
+            Self::Template => "a trigger[:action] spec",
+            Self::Validate | Self::Apply | Self::Sync => "a file path or -",
+            Self::Delete | Self::Enable | Self::Disable | Self::Reset => "a rule id",
+            Self::Export => "an output file path",
+            Self::Share => "a rule id or name",
+            Self::ImportShare => "a share code, file path or -",
+            Self::Help | Self::Example | Self::Schema | Self::Reference | Self::List => {
+                "no argument"
+            }
+        }
+    }
+}
+
+fn is_known_flag(arg: &str) -> bool {
+    Command::from_flag(arg).is_some() || MODIFIER_FLAGS.contains(&arg)
+}
+
+/// A validated invocation: exactly one command and its optional value.
+#[derive(Debug, PartialEq, Eq)]
+struct Invocation {
+    command: Command,
+    value: Option<String>,
+}
 
 /// Result of an upsert: which rule ids were created and which replaced an existing rule.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -112,7 +194,16 @@ pub struct ApplyReport {
 
 /// Entry point from `main`. Returns `false` when the arguments are not a CLI authoring command.
 pub fn run(args: &[String]) -> bool {
-    if !args.iter().any(|arg| KNOWN_FLAGS.contains(&arg.as_str())) {
+    if !args.iter().any(|arg| is_known_flag(arg)) {
+        // A mistyped `--rules-*` command must not fall through to update cleanup, UAC
+        // self-elevation and a daemon/GUI start: fail closed with usage instead ([U13-001]).
+        if has_unresolved_rule_command(args) {
+            ensure_console();
+            crate::logging::error("CLI", "Unknown rule command");
+            eprintln!("error: unknown rule command");
+            eprintln!("{USAGE}");
+            std::process::exit(2);
+        }
         return false;
     }
     ensure_console();
@@ -126,25 +217,29 @@ pub fn run(args: &[String]) -> bool {
     std::process::exit(exit_code)
 }
 
+/// True when argv contains a `--rules*` spelling that matches no command while no known flag is
+/// present. `main` used to fall through to self-elevation and a GUI start for these ([U13-001]).
+fn has_unresolved_rule_command(args: &[String]) -> bool {
+    !args.iter().any(|arg| is_known_flag(arg))
+        && args.iter().any(|arg| arg.starts_with("--rules"))
+}
+
 /// Records which command was requested. Only the flag and its path/id argument are logged, never
 /// rule JSON, script bodies or other content read from the file.
 fn log_invocation(args: &[String]) -> String {
-    let is_known = |arg: &String| KNOWN_FLAGS.contains(&arg.as_str());
-    let is_modifier = |arg: &String| matches!(arg.as_str(), "--json" | "--dry-run" | "-h");
-    let command = args
-        .iter()
-        .find(|arg| is_known(arg) && !is_modifier(arg))
-        .or_else(|| args.iter().find(|arg| is_known(arg)));
-    let Some(command) = command else {
+    let Some(flag) = args.iter().find(|arg| Command::from_flag(arg).is_some()) else {
         return "unknown command".to_string();
     };
-    let label = if command == "--rules-import-share" {
+    let Some(command) = Command::from_flag(flag) else {
+        return "unknown command".to_string();
+    };
+    let label = if command == Command::ImportShare {
         // Never log the code itself: it contains the user's automation definitions.
-        command.clone()
+        flag.clone()
     } else {
-        match flag_optional_value(args, command) {
-            Some(value) if !value.is_empty() => format!("{command} {value}"),
-            _ => command.clone(),
+        match command_argument_value(args, flag, command) {
+            Some(value) if !value.is_empty() => format!("{flag} {value}"),
+            _ => flag.clone(),
         }
     };
     crate::logging::info("CLI", &format!("Invoked {label}"));
@@ -152,80 +247,133 @@ fn log_invocation(args: &[String]) -> String {
 }
 
 fn dispatch(args: &[String]) -> i32 {
-    if has_flag(args, "--help") || has_flag(args, "-h") {
-        print!("{USAGE}");
-        return 0;
-    }
     let json_output = has_flag(args, "--json");
+    let Invocation { command, value } = match resolve_invocation(args, json_output) {
+        Ok(invocation) => invocation,
+        Err(exit_code) => return exit_code,
+    };
     let dry_run = has_flag(args, "--dry-run");
-    if has_flag(args, "--rules-example") {
-        println!("{EXAMPLE_RULES_JSON}");
-        return 0;
-    }
-    if has_flag(args, "--rules-schema") {
-        return cmd_schema();
-    }
-    if has_flag(args, "--rules-reference") {
-        return cmd_reference();
-    }
-    if has_flag(args, "--rules-template") {
-        let spec = flag_optional_value(args, "--rules-template");
-        return cmd_template(spec.as_deref());
-    }
+    let enable_imported = has_flag(args, "--enable-imported");
+    let value = value.as_deref().unwrap_or_default();
 
-    match flag_value(args, "--rules-validate") {
-        Ok(Some(path)) => return cmd_validate(&path, json_output),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-apply") {
-        Ok(Some(path)) => return cmd_apply(&path, json_output, dry_run),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-sync") {
-        Ok(Some(path)) => return cmd_sync(&path, json_output, dry_run),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-delete") {
-        Ok(Some(id)) => return cmd_delete(&id, json_output),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-enable") {
-        Ok(Some(id)) => return cmd_toggle(&id, true, json_output),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-disable") {
-        Ok(Some(id)) => return cmd_toggle(&id, false, json_output),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    match flag_value(args, "--rules-reset") {
-        Ok(Some(id)) => return cmd_reset(&id, json_output),
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
-    }
-    if has_flag(args, "--rules-list") {
-        return cmd_list(args);
-    }
-    if has_flag(args, "--rules-export") {
-        return cmd_export(args);
-    }
-    if has_flag(args, "--rules-share") {
-        return cmd_share(args, json_output);
-    }
-    match flag_value(args, "--rules-import-share") {
-        Ok(Some(code)) => {
-            return cmd_import_share(&code, json_output, has_flag(args, "--enable-imported"))
+    match command {
+        Command::Help => {
+            print!("{USAGE}");
+            0
         }
-        Ok(None) => {}
-        Err(err) => return fail_with(json_output, &err),
+        Command::Example => {
+            println!("{EXAMPLE_RULES_JSON}");
+            0
+        }
+        Command::Schema => cmd_schema(),
+        Command::Reference => cmd_reference(),
+        Command::Template => cmd_template(Some(value).filter(|value| !value.is_empty())),
+        Command::Validate => cmd_validate(value, json_output),
+        Command::Apply => cmd_apply(value, json_output, dry_run),
+        Command::Sync => cmd_sync(value, json_output, dry_run),
+        Command::Delete => cmd_delete(value, json_output),
+        Command::Enable => cmd_toggle(value, true, json_output),
+        Command::Disable => cmd_toggle(value, false, json_output),
+        Command::Reset => cmd_reset(value, json_output),
+        Command::List => cmd_list(json_output),
+        Command::Export => cmd_export(Some(value).filter(|value| !value.is_empty()), json_output),
+        Command::Share => cmd_share(Some(value).filter(|value| !value.is_empty()), json_output),
+        Command::ImportShare => cmd_import_share(value, json_output, enable_imported),
+    }
+}
+
+/// Parses the invocation the way `dispatch` does, returning the usage exit code on rejection.
+/// Split out so tests can exercise the real argument parser without executing a command.
+fn resolve_invocation(args: &[String], json_output: bool) -> Result<Invocation, i32> {
+    parse_invocation(args).map_err(|message| usage_error(json_output, &message))
+}
+
+/// Resolves exactly one command and validates every other argument. Conflicting or repeated
+/// commands, a missing value and arguments that are neither that command's value nor a known flag
+/// are usage errors ([U13-001], [U13-002]).
+fn parse_invocation(args: &[String]) -> Result<Invocation, String> {
+    let mut selected: Option<(Command, &str)> = None;
+    for arg in args {
+        let Some(command) = Command::from_flag(arg) else {
+            continue;
+        };
+        match selected {
+            Some((existing, existing_flag)) if existing == command => {
+                return Err(format!(
+                    "{existing_flag} and {arg} select the same command; give it once"
+                ));
+            }
+            Some((_, existing_flag)) => {
+                return Err(format!("conflicting commands: {existing_flag} and {arg}"));
+            }
+            None => selected = Some((command, arg.as_str())),
+        }
+    }
+    let Some((command, flag)) = selected else {
+        return Err("no command given".to_string());
+    };
+    let flag_position = args
+        .iter()
+        .position(|arg| arg == flag)
+        .expect("the selected command flag is present");
+
+    let value = match command.argument() {
+        CommandArgument::None => None,
+        CommandArgument::Required => Some(required_value(args, flag_position, flag, command)?),
+        CommandArgument::Optional => command_argument_value(args, flag, command),
+    };
+    let value_position = value
+        .as_ref()
+        .filter(|_| command.argument() != CommandArgument::None)
+        .map(|_| flag_position + 1);
+
+    // Everything else must be a modifier. A typo like `--dry-runn` used to be ignored, so the
+    // command ran for real; rejecting it is the point of [U13-001].
+    for (position, argument) in args.iter().enumerate() {
+        if position == flag_position || Some(position) == value_position {
+            continue;
+        }
+        if MODIFIER_FLAGS.contains(&argument.as_str()) {
+            continue;
+        }
+        return Err(format!("unexpected argument \"{argument}\""));
     }
 
-    eprintln!("No command given.");
+    Ok(Invocation { command, value })
+}
+
+/// The value attached to `flag`, if the next argument can be a value. `-` is stdin.
+fn command_argument_value(args: &[String], flag: &str, command: Command) -> Option<String> {
+    if command.argument() == CommandArgument::None {
+        return None;
+    }
+    let position = args.iter().position(|arg| arg == flag)?;
+    args.get(position + 1)
+        .filter(|value| value.as_str() == "-" || !value.starts_with('-'))
+        .cloned()
+}
+
+fn required_value(
+    args: &[String],
+    flag_position: usize,
+    flag: &str,
+    command: Command,
+) -> Result<String, String> {
+    let label = command.value_label();
+    match args.get(flag_position + 1) {
+        Some(value) if value == "-" || !value.starts_with('-') => Ok(value.clone()),
+        Some(value) => Err(format!("{flag} requires {label}, not \"{value}\"")),
+        None => Err(format!("{flag} requires {label}")),
+    }
+}
+
+/// Prints a usage error with the command reference and returns the usage exit code ([U13-001]).
+fn usage_error(json_output: bool, message: &str) -> i32 {
+    crate::logging::error("CLI", &format!("usage: {message}"));
+    if json_output {
+        emit_error_json(message, &[message.to_string()], &[], None);
+    }
+    eprintln!("error: {message}");
     eprintln!("{USAGE}");
     2
 }
@@ -245,12 +393,16 @@ fn cmd_validate(path: &str, json_output: bool) -> i32 {
     log_warnings(&warnings);
 
     if json_output {
-        emit_json(json!({
-            "ok": errors.is_empty(),
-            "rules": rules.len(),
-            "errors": errors,
-            "warnings": warnings,
-        }));
+        if let Some(first) = errors.first() {
+            emit_json(error_json(first, &errors, &warnings, None));
+        } else {
+            emit_json(json!({
+                "ok": true,
+                "rules": rules.len(),
+                "errors": errors,
+                "warnings": warnings,
+            }));
+        }
     } else {
         for warning in &warnings {
             eprintln!("warning: {warning}");
@@ -302,16 +454,15 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
     if !errors.is_empty() {
         log_errors(&errors);
         if json_output {
-            emit_json(json!({ "ok": false, "errors": errors, "warnings": warnings }));
-        } else {
-            for warning in &warnings {
-                eprintln!("warning: {warning}");
-            }
-            for error in &errors {
-                eprintln!("error: {error}");
-            }
-            eprintln!("Nothing was applied.");
+            return fail_validation(&errors, &warnings, target_name(from_daemon));
         }
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        for error in &errors {
+            eprintln!("error: {error}");
+        }
+        eprintln!("Nothing was applied.");
         return 1;
     }
     if !json_output {
@@ -332,45 +483,73 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
     }
 
     if from_daemon {
-        match IpcClient::call(&IpcRequest::ImportRules(rules)) {
-            Ok(IpcResponse::Ok) => {
-                if json_output {
-                    emit_json(report_json(true, "daemon", &report, &[], false, &warnings));
-                } else {
-                    println!("Applied to the running daemon.");
-                    print_report(&report);
-                }
-                0
+        return apply_via_daemon(rules, &report, json_output, &warnings);
+    }
+
+    let previous = cfg.rules.clone();
+    if IpcClient::is_daemon_running() {
+        // The daemon became reachable after the snapshot and now owns the rule set. Route the
+        // change through IPC instead of rewriting rules.json under it ([U13-003]).
+        return match daemon_config() {
+            Ok(current) => {
+                let report = classify_rules(&current.rules, &rules);
+                apply_via_daemon(rules, &report, json_output, &warnings)
             }
-            Ok(IpcResponse::Error(err)) => {
-                fail_with(json_output, &format!("daemon rejected the rules: {err}"))
-            }
-            Ok(other) => fail_with(
+            Err(err) => fail_with(
                 json_output,
-                &format!("unexpected daemon response: {other:?}"),
+                &format!(
+                    "the daemon started while the command was running; re-run it so the change goes through IPC: {err}"
+                ),
             ),
-            Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
-        }
+        };
+    }
+
+    let report = upsert_rules(&mut cfg.rules, &rules);
+    if let Err(err) = save_rules(&cfg.rules) {
+        return fail_with(json_output, &err);
+    }
+    if let Err(err) = reset_redefined_quota_runtime(&previous, &rules) {
+        return fail_with(
+            json_output,
+            &format!("rules were written but runtime counters could not be updated: {err}"),
+        );
+    }
+    if json_output {
+        emit_json(report_json(true, "rules", &report, &[], false, &warnings));
     } else {
-        let previous = cfg.rules.clone();
-        let report = upsert_rules(&mut cfg.rules, &rules);
-        if let Err(err) = save_rules(&cfg.rules) {
-            return fail_with(json_output, &err);
+        println!(
+            "Daemon is offline: rules written to {}",
+            RulesFile::path().display()
+        );
+        println!("They take effect on the next daemon start.");
+        print_report(&report);
+    }
+    0
+}
+
+/// Applies an upsert through the running daemon. Shared by the daemon-online path and the race
+/// where the daemon starts after the CLI took its offline snapshot ([U13-003]).
+fn apply_via_daemon(
+    rules: Vec<Rule>,
+    report: &ApplyReport,
+    json_output: bool,
+    warnings: &[String],
+) -> i32 {
+    match IpcClient::call(&IpcRequest::ImportRules(rules)) {
+        Ok(IpcResponse::Ok) => {
+            if json_output {
+                emit_json(report_json(true, "daemon", report, &[], false, warnings));
+            } else {
+                println!("Applied to the running daemon.");
+                print_report(report);
+            }
+            0
         }
-        if let Err(err) = reset_redefined_quota_runtime(&previous, &rules) {
-            return fail_with(json_output, &err);
+        Ok(IpcResponse::Error(err)) => {
+            fail_with(json_output, &format!("daemon rejected the rules: {err}"))
         }
-        if json_output {
-            emit_json(report_json(true, "rules", &report, &[], false, &warnings));
-        } else {
-            println!(
-                "Daemon is offline: rules written to {}",
-                RulesFile::path().display()
-            );
-            println!("They take effect on the next daemon start.");
-            print_report(&report);
-        }
-        0
+        Ok(other) => fail_with(json_output, &format!("unexpected daemon response: {other:?}")),
+        Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
     }
 }
 
@@ -379,7 +558,7 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         Ok(raw) => raw,
         Err(err) => return fail_with(json_output, &err),
     };
-    let rules = match parse_rules_json(&raw) {
+    let rules = match parse_rules_json_for_sync(&raw) {
         Ok(rules) => rules,
         Err(err) => return fail_with(json_output, &format!("invalid rule file: {err}")),
     };
@@ -394,16 +573,15 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
     if !errors.is_empty() {
         log_errors(&errors);
         if json_output {
-            emit_json(json!({ "ok": false, "errors": errors, "warnings": warnings }));
-        } else {
-            for warning in &warnings {
-                eprintln!("warning: {warning}");
-            }
-            for error in &errors {
-                eprintln!("error: {error}");
-            }
-            eprintln!("Nothing was synced.");
+            return fail_validation(&errors, &warnings, target_name(from_daemon));
         }
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+        for error in &errors {
+            eprintln!("error: {error}");
+        }
+        eprintln!("Nothing was synced.");
         return 1;
     }
     if !json_output {
@@ -433,63 +611,101 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
     }
 
     if from_daemon {
-        // One declarative request: the daemon replaces the set atomically, persists once
-        // and reloads hotkeys once, instead of an upsert followed by a delete per rule.
-        match IpcClient::call(&IpcRequest::SyncRules(rules)) {
-            Ok(IpcResponse::Ok) => {
-                if json_output {
-                    emit_json(report_json(true, "daemon", &report, &deleted, false, &warnings));
-                } else {
-                    println!("Synced to the running daemon.");
-                    print_report(&report);
-                    print_deleted(&deleted);
-                }
-                0
+        return sync_via_daemon(rules, &report, &deleted, json_output, &warnings);
+    }
+
+    if IpcClient::is_daemon_running() {
+        // The daemon became reachable after the snapshot: send the declarative replace over IPC
+        // rather than overwriting rules.json under it ([U13-003]).
+        return match daemon_config() {
+            Ok(current) => {
+                let (report, deleted) = plan_sync(&current.rules, &rules);
+                sync_via_daemon(rules, &report, &deleted, json_output, &warnings)
             }
-            Ok(IpcResponse::Error(err)) => {
-                fail_with(json_output, &format!("daemon rejected the rules: {err}"))
-            }
-            Ok(other) => fail_with(
+            Err(err) => fail_with(
                 json_output,
-                &format!("unexpected daemon response: {other:?}"),
+                &format!(
+                    "the daemon started while the command was running; re-run it so the change goes through IPC: {err}"
+                ),
             ),
-            Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
-        }
+        };
+    }
+
+    cfg.rules = rules;
+    if let Err(err) = save_rules(&cfg.rules) {
+        return fail_with(json_output, &err);
+    }
+    // A removed rule must not keep counters that a later rule with the same id would inherit
+    // ([U13-004]); `reset_redefined_quota_runtime` only touches surviving ids.
+    let removed: Vec<&str> = deleted.iter().map(String::as_str).collect();
+    if let Err(err) = forget_runtime_counters(&removed) {
+        return fail_with(
+            json_output,
+            &format!("rules were synced but runtime counters could not be pruned: {err}"),
+        );
+    }
+    if let Err(err) = reset_redefined_quota_runtime(&previous, &cfg.rules) {
+        return fail_with(
+            json_output,
+            &format!("rules were synced but runtime counters could not be updated: {err}"),
+        );
+    }
+    if json_output {
+        emit_json(report_json(true, "rules", &report, &deleted, false, &warnings));
     } else {
-        cfg.rules = rules;
-        if let Err(err) = save_rules(&cfg.rules) {
-            return fail_with(json_output, &err);
+        println!(
+            "Daemon is offline: rules written to {}",
+            RulesFile::path().display()
+        );
+        println!("They take effect on the next daemon start.");
+        print_report(&report);
+        print_deleted(&deleted);
+    }
+    0
+}
+
+/// Replaces the rule set through the running daemon as one declarative request: it persists once
+/// and reloads hotkeys once instead of an upsert followed by a delete per rule ([U13-003]).
+fn sync_via_daemon(
+    rules: Vec<Rule>,
+    report: &ApplyReport,
+    deleted: &[String],
+    json_output: bool,
+    warnings: &[String],
+) -> i32 {
+    match IpcClient::call(&IpcRequest::SyncRules(rules)) {
+        Ok(IpcResponse::Ok) => {
+            if json_output {
+                emit_json(report_json(
+                    true, "daemon", report, deleted, false, warnings,
+                ));
+            } else {
+                println!("Synced to the running daemon.");
+                print_report(report);
+                print_deleted(deleted);
+            }
+            0
         }
-        if let Err(err) = reset_redefined_quota_runtime(&previous, &cfg.rules) {
-            return fail_with(json_output, &err);
+        Ok(IpcResponse::Error(err)) => {
+            fail_with(json_output, &format!("daemon rejected the rules: {err}"))
         }
-        if json_output {
-            emit_json(report_json(true, "rules", &report, &deleted, false, &warnings));
-        } else {
-            println!(
-                "Daemon is offline: rules written to {}",
-                RulesFile::path().display()
-            );
-            println!("They take effect on the next daemon start.");
-            print_report(&report);
-            print_deleted(&deleted);
-        }
-        0
+        Ok(other) => fail_with(json_output, &format!("unexpected daemon response: {other:?}")),
+        Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
     }
 }
 
-fn cmd_list(args: &[String]) -> i32 {
+fn cmd_list(json_output: bool) -> i32 {
     let (cfg, from_daemon) = match current_config() {
         Ok(value) => value,
-        Err(err) => return fail(&err),
+        Err(err) => return fail_with(json_output, &err),
     };
-    if has_flag(args, "--json") {
+    if json_output {
         return match serde_json::to_string_pretty(&cfg.rules) {
             Ok(json) => {
                 println!("{json}");
                 0
             }
-            Err(err) => fail(&err.to_string()),
+            Err(err) => fail_with(true, &err.to_string()),
         };
     }
 
@@ -540,23 +756,24 @@ fn quota_period_summary(period: QuotaPeriod) -> String {
     }
 }
 
-fn cmd_export(args: &[String]) -> i32 {
+/// Exports all rules as JSON to stdout or to an atomic file write ([U13-013]).
+fn cmd_export(output: Option<&str>, json_output: bool) -> i32 {
     let (cfg, _) = match current_config() {
         Ok(value) => value,
-        Err(err) => return fail(&err),
+        Err(err) => return fail_with(json_output, &err),
     };
     let json = match serde_json::to_string_pretty(&cfg.rules) {
         Ok(json) => json,
-        Err(err) => return fail(&err.to_string()),
+        Err(err) => return fail_with(json_output, &err.to_string()),
     };
 
-    match flag_optional_value(args, "--rules-export") {
-        Some(path) => match std::fs::write(&path, format!("{json}\n")) {
+    match output.filter(|path| *path != "-") {
+        Some(path) => match write_text_atomic(Path::new(path), &format!("{json}\n")) {
             Ok(()) => {
                 println!("Exported {} rule(s) to {path}", cfg.rules.len());
                 0
             }
-            Err(err) => fail(&format!("cannot write {path}: {err}")),
+            Err(err) => fail_with(json_output, &format!("cannot write {path}: {err}")),
         },
         None => {
             println!("{json}");
@@ -570,17 +787,17 @@ fn cmd_export(args: &[String]) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Prints a `SYN1:` share code for one rule (by id or name) or for every rule.
-fn cmd_share(args: &[String], json_output: bool) -> i32 {
+fn cmd_share(selector: Option<&str>, json_output: bool) -> i32 {
     let cfg = match current_config() {
         Ok((cfg, _)) => cfg,
         Err(err) => return fail_with(json_output, &err),
     };
 
-    let rules = match flag_optional_value(args, "--rules-share") {
+    let rules = match selector {
         Some(selector) => match cfg
             .rules
             .iter()
-            .find(|rule| rule.id == selector || rule.name.eq_ignore_ascii_case(&selector))
+            .find(|rule| rule.id == selector || rule.name.eq_ignore_ascii_case(selector))
         {
             Some(rule) => vec![rule.clone()],
             None => return fail_with(json_output, &format!("rule \"{selector}\" not found")),
@@ -661,62 +878,42 @@ fn cmd_import_share(raw_argument: &str, json_output: bool, enable: bool) -> i32 
         }
     };
 
-    let errors = validate_rules(&prepared.rules);
-    if !errors.is_empty() {
-        log_errors(&errors);
-        if json_output {
-            emit_json(json!({ "ok": false, "errors": errors }));
-        } else {
-            for error in &errors {
-                eprintln!("error: {error}");
-            }
-            eprintln!("Nothing was imported.");
-        }
-        return 1;
-    }
     let warning_texts: Vec<String> = prepared
         .warnings
         .iter()
         .map(share_warning_text_cli)
         .collect();
+    let errors = validate_rules(&prepared.rules);
+    if !errors.is_empty() {
+        log_errors(&errors);
+        if json_output {
+            return fail_validation(&errors, &warning_texts, target_name(from_daemon));
+        }
+        for error in &errors {
+            eprintln!("error: {error}");
+        }
+        eprintln!("Nothing was imported.");
+        return 1;
+    }
 
+    let mut target = target_name(from_daemon);
     let summary = if from_daemon {
-        match IpcClient::call(&IpcRequest::ImportShare {
-            payload: Box::new(payload),
-            enable,
-        }) {
-            Ok(IpcResponse::ShareImportResult(summary)) => summary,
-            Ok(IpcResponse::Error(err)) => {
-                return fail_with(json_output, &format!("daemon rejected the share code: {err}"))
-            }
-            Ok(other) => {
-                return fail_with(
-                    json_output,
-                    &format!("unexpected daemon response: {other:?}"),
-                )
-            }
-            Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
+        match import_share_via_daemon(&payload, enable, json_output) {
+            Ok(summary) => summary,
+            Err(exit_code) => return exit_code,
+        }
+    } else if IpcClient::is_daemon_running() {
+        // The daemon became reachable after the snapshot: one IPC request gets the import right
+        // instead of writing the sections under it ([U13-003]).
+        target = "daemon";
+        match import_share_via_daemon(&payload, enable, json_output) {
+            Ok(summary) => summary,
+            Err(exit_code) => return exit_code,
         }
     } else {
-        let mut rules = cfg.rules.clone();
-        rules.extend(prepared.rules.iter().cloned());
-        if let Err(err) = save_rules(&rules) {
-            return fail_with(json_output, &err);
-        }
-        if !prepared.overlays.is_empty() || !prepared.macro_presets.is_empty() {
-            let mut library = crate::config::Library::read();
-            library.overlays.extend(prepared.overlays.iter().cloned());
-            library.macro_presets.extend(prepared.macro_presets.iter().cloned());
-            if let Err(err) = library.save() {
-                return fail_with(json_output, &format!("cannot write library: {err}"));
-            }
-        }
-        crate::sharing::ShareImportSummary {
-            imported: prepared.rules.len(),
-            skipped_duplicates: prepared.skipped_duplicates,
-            overlays: prepared.overlays.len(),
-            macro_presets: prepared.macro_presets.len(),
-            enabled: enable,
+        match import_share_offline(&cfg, &prepared, enable, json_output) {
+            Ok(summary) => summary,
+            Err(exit_code) => return exit_code,
         }
     };
 
@@ -735,7 +932,7 @@ fn cmd_import_share(raw_argument: &str, json_output: bool, enable: bool) -> i32 
             "overlays": summary.overlays,
             "macro_presets": summary.macro_presets,
             "enabled": summary.enabled,
-            "target": if from_daemon { "daemon" } else { "rules" },
+            "target": target,
             "warnings": warning_texts,
         }));
     } else {
@@ -756,19 +953,104 @@ fn cmd_import_share(raw_argument: &str, json_output: bool, enable: bool) -> i32 
                 "Imported rules are disabled; pass --enable-imported or use --rules-enable <id> to activate them."
             );
         }
-        if !from_daemon {
+        if target == "rules" {
             println!("Applied to {} (daemon is offline).", RulesFile::path().display());
         }
     }
     0
 }
 
-/// A share argument is either a literal code, a file path, or `-` for stdin.
+/// Sends one share import through the running daemon.
+fn import_share_via_daemon(
+    payload: &crate::sharing::SharePayload,
+    enable: bool,
+    json_output: bool,
+) -> Result<crate::sharing::ShareImportSummary, i32> {
+    match IpcClient::call(&IpcRequest::ImportShare {
+        payload: Box::new(payload.clone()),
+        enable,
+    }) {
+        Ok(IpcResponse::ShareImportResult(summary)) => Ok(summary),
+        Ok(IpcResponse::Error(err)) => Err(fail_with(
+            json_output,
+            &format!("daemon rejected the share code: {err}"),
+        )),
+        Ok(other) => Err(fail_with(
+            json_output,
+            &format!("unexpected daemon response: {other:?}"),
+        )),
+        Err(err) => Err(fail_with(json_output, &format!("IPC error: {err}"))),
+    }
+}
+
+/// Writes a share import straight to the config sections. The library is committed first, because
+/// a rule that references a preset or overlay the library never received is worse than an unused
+/// library entry; a failed rules write is reported as a partial commit ([U13-005]).
+fn import_share_offline(
+    cfg: &AppConfig,
+    prepared: &crate::sharing::PreparedShareImport,
+    enable: bool,
+    json_output: bool,
+) -> Result<crate::sharing::ShareImportSummary, i32> {
+    let library = merged_library(prepared, crate::config::Library::read());
+    if let Some(library) = &library {
+        if let Err(err) = library.save() {
+            return Err(fail_with(
+                json_output,
+                &format!("cannot write library: {err}"),
+            ));
+        }
+    }
+    // Re-check immediately before the second write: a daemon that started in between would be
+    // overwritten by this whole-section rewrite ([U13-003]).
+    if IpcClient::is_daemon_running() {
+        return Err(fail_with(
+            json_output,
+            "the daemon started while the import was running; the library was updated but the rules were not imported - re-run the command so it goes through IPC",
+        ));
+    }
+    let mut rules = cfg.rules.clone();
+    rules.extend(prepared.rules.iter().cloned());
+    if let Err(err) = save_rules(&rules) {
+        if library.is_some() {
+            return Err(fail_with(
+                json_output,
+                &format!("library was updated but rules could not be written: {err}"),
+            ));
+        }
+        return Err(fail_with(json_output, &err));
+    }
+    Ok(crate::sharing::ShareImportSummary {
+        imported: prepared.rules.len(),
+        skipped_duplicates: prepared.skipped_duplicates,
+        overlays: prepared.overlays.len(),
+        macro_presets: prepared.macro_presets.len(),
+        enabled: enable,
+    })
+}
+
+/// Merges the library entries a share payload references into `library`, returning the snapshot to
+/// write. `None` when the payload carries no library entries, so the section is left untouched
+/// ([U13-005]).
+fn merged_library(
+    prepared: &crate::sharing::PreparedShareImport,
+    mut library: crate::config::Library,
+) -> Option<crate::config::Library> {
+    if prepared.overlays.is_empty() && prepared.macro_presets.is_empty() {
+        return None;
+    }
+    library.overlays.extend(prepared.overlays.iter().cloned());
+    library.macro_presets.extend(prepared.macro_presets.iter().cloned());
+    Some(library)
+}
+
+/// A share argument is a literal `SYN1:` code, a file path, or `-` for stdin. Anything else is a
+/// path, so a mistyped path reports a read error instead of a misleading decode error ([U13-015]).
 fn read_share_argument(value: &str) -> Result<String, String> {
-    if value == "-" || Path::new(value).is_file() {
-        read_input(value)
-    } else {
+    if value.starts_with(crate::sharing::SHARE_PREFIX) {
         Ok(value.to_string())
+    } else {
+        read_input(value)
     }
 }
 
@@ -784,6 +1066,10 @@ fn share_warning_text_cli(warning: &crate::sharing::ShareWarning) -> String {
         W::SensitiveAdminProcess => "starts processes with administrator rights".to_string(),
         W::SensitiveWebhook => "sends HTTP requests and may contain tokens".to_string(),
         W::CustomIconDropped => "custom icon is not included".to_string(),
+        W::OverlayAssetDropped => "overlay images and icons are not included".to_string(),
+        W::MissingRule(id) => {
+            format!("rule \"{id}\" is missing; overlay buttons that use it will not work")
+        }
     }
 }
 
@@ -1342,14 +1628,46 @@ fn cmd_delete(id: &str, json_output: bool) -> i32 {
     }
 
     if IpcClient::is_daemon_running() {
-        let cfg = match daemon_config() {
-            Ok(cfg) => cfg,
-            Err(err) => return fail_with(json_output, &err),
-        };
-        if !cfg.rules.iter().any(|rule| rule.id == id) {
-            return fail_with(json_output, &format!("rule \"{id}\" not found"));
+        return delete_via_daemon(id, json_output);
+    }
+
+    let mut cfg = load_config_for_cli();
+    let Some(removed) = take_rule(&mut cfg.rules, id) else {
+        return fail_with(json_output, &format!("rule \"{id}\" not found"));
+    };
+    if IpcClient::is_daemon_running() {
+        // A daemon that started after the offline read owns runtime and rules now ([U13-003]).
+        return delete_via_daemon(id, json_output);
+    }
+    if let Err(err) = save_rules(&cfg.rules) {
+        return fail_with(json_output, &err);
+    }
+    // The id no longer exists in rules.json, so its counters must not survive to be inherited by
+    // a later rule with the same id ([U13-004]).
+    if let Err(err) = forget_runtime_counters(&[removed.id.as_str()]) {
+        return fail_with(
+            json_output,
+            &format!("rule was deleted but runtime counters could not be pruned: {err}"),
+        );
+    }
+    if json_output {
+        emit_json(json!({ "ok": true, "id": id, "target": "rules" }));
+    } else {
+        println!(
+            "Deleted rule \"{id}\" from {}",
+            RulesFile::path().display()
+        );
+    }
+    0
+}
+
+/// Deletes one rule through the running daemon, checking that it exists first.
+fn delete_via_daemon(id: &str, json_output: bool) -> i32 {
+    match daemon_config() {
+        Ok(cfg) if !cfg.rules.iter().any(|rule| rule.id == id) => {
+            fail_with(json_output, &format!("rule \"{id}\" not found"))
         }
-        return match IpcClient::call(&IpcRequest::DeleteRule(id.to_string())) {
+        Ok(_) => match IpcClient::call(&IpcRequest::DeleteRule(id.to_string())) {
             Ok(IpcResponse::Ok) => {
                 if json_output {
                     emit_json(json!({ "ok": true, "id": id, "target": "daemon" }));
@@ -1361,27 +1679,12 @@ fn cmd_delete(id: &str, json_output: bool) -> i32 {
             Ok(IpcResponse::Error(err)) => fail_with(json_output, &err),
             Ok(other) => fail_with(json_output, &format!("unexpected daemon response: {other:?}")),
             Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
-        };
+        },
+        Err(err) => fail_with(
+            json_output,
+            &format!("the daemon became reachable but could not be used; nothing was written: {err}"),
+        ),
     }
-
-    let mut cfg = load_config_for_cli();
-    let before = cfg.rules.len();
-    cfg.rules.retain(|rule| rule.id != id);
-    if cfg.rules.len() == before {
-        return fail_with(json_output, &format!("rule \"{id}\" not found"));
-    }
-    if let Err(err) = save_rules(&cfg.rules) {
-        return fail_with(json_output, &err);
-    }
-    if json_output {
-        emit_json(json!({ "ok": true, "id": id, "target": "rules" }));
-    } else {
-        println!(
-            "Deleted rule \"{id}\" from {}",
-            RulesFile::path().display()
-        );
-    }
-    0
 }
 
 fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
@@ -1397,18 +1700,14 @@ fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
         return fail_with(json_output, &err);
     }
     if from_daemon {
-        match IpcClient::call(&IpcRequest::ToggleRule {
-            id: id.to_string(),
-            enabled,
-        }) {
-            Ok(IpcResponse::Ok) => {}
-            Ok(IpcResponse::Error(err)) => return fail_with(json_output, &err),
-            Ok(other) => {
-                return fail_with(json_output, &format!("unexpected daemon response: {other:?}"));
-            }
-            Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
-        }
-    } else if let Err(err) = save_rules(&cfg.rules) {
+        return toggle_via_daemon(id, enabled, json_output);
+    }
+    if IpcClient::is_daemon_running() {
+        // The daemon became reachable after the snapshot and would be overwritten here
+        // ([U13-003]).
+        return toggle_via_daemon(id, enabled, json_output);
+    }
+    if let Err(err) = save_rules(&cfg.rules) {
         return fail_with(json_output, &err);
     }
     if json_output {
@@ -1416,7 +1715,7 @@ fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
             "ok": true,
             "id": id,
             "is_enabled": enabled,
-            "target": target_name(from_daemon),
+            "target": "rules",
         }));
     } else {
         println!(
@@ -1425,6 +1724,33 @@ fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
         );
     }
     0
+}
+
+fn toggle_via_daemon(id: &str, enabled: bool, json_output: bool) -> i32 {
+    match IpcClient::call(&IpcRequest::ToggleRule {
+        id: id.to_string(),
+        enabled,
+    }) {
+        Ok(IpcResponse::Ok) => {
+            if json_output {
+                emit_json(json!({
+                    "ok": true,
+                    "id": id,
+                    "is_enabled": enabled,
+                    "target": "daemon",
+                }));
+            } else {
+                println!(
+                    "Rule \"{id}\" is now {}.",
+                    if enabled { "enabled" } else { "disabled" }
+                );
+            }
+            0
+        }
+        Ok(IpcResponse::Error(err)) => fail_with(json_output, &err),
+        Ok(other) => fail_with(json_output, &format!("unexpected daemon response: {other:?}")),
+        Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
+    }
 }
 
 fn cmd_reset(id: &str, json_output: bool) -> i32 {
@@ -1440,21 +1766,20 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
         return fail_with(json_output, &format!("rule \"{id}\" not found"));
     }
     if from_daemon {
-        match IpcClient::call(&IpcRequest::ResetRule(id.to_string())) {
-            Ok(IpcResponse::Ok) => {}
-            Ok(IpcResponse::Error(err)) => return fail_with(json_output, &err),
-            Ok(other) => {
-                return fail_with(json_output, &format!("unexpected daemon response: {other:?}"));
-            }
-            Err(err) => return fail_with(json_output, &format!("IPC error: {err}")),
-        }
-    } else {
-        if let Err(err) = save_rules(&cfg.rules) {
-            return fail_with(json_output, &err);
-        }
-        if let Err(err) = forget_runtime_counters(&[id]) {
-            return fail_with(json_output, &err);
-        }
+        return reset_via_daemon(id, json_output);
+    }
+    if IpcClient::is_daemon_running() {
+        // The daemon became reachable after the snapshot; it owns runtime counters ([U13-003]).
+        return reset_via_daemon(id, json_output);
+    }
+    if let Err(err) = save_rules(&cfg.rules) {
+        return fail_with(json_output, &err);
+    }
+    if let Err(err) = forget_runtime_counters(&[id]) {
+        return fail_with(
+            json_output,
+            &format!("rule was reset but runtime counters could not be cleared: {err}"),
+        );
     }
     if json_output {
         emit_json(json!({
@@ -1462,12 +1787,34 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
             "id": id,
             "execution_count": 0,
             "is_enabled": true,
-            "target": target_name(from_daemon),
+            "target": "rules",
         }));
     } else {
         println!("Reset rule \"{id}\": execution counter cleared, rule enabled.");
     }
     0
+}
+
+fn reset_via_daemon(id: &str, json_output: bool) -> i32 {
+    match IpcClient::call(&IpcRequest::ResetRule(id.to_string())) {
+        Ok(IpcResponse::Ok) => {
+            if json_output {
+                emit_json(json!({
+                    "ok": true,
+                    "id": id,
+                    "execution_count": 0,
+                    "is_enabled": true,
+                    "target": "daemon",
+                }));
+            } else {
+                println!("Reset rule \"{id}\": execution counter cleared, rule enabled.");
+            }
+            0
+        }
+        Ok(IpcResponse::Error(err)) => fail_with(json_output, &err),
+        Ok(other) => fail_with(json_output, &format!("unexpected daemon response: {other:?}")),
+        Err(err) => fail_with(json_output, &format!("IPC error: {err}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,6 +1823,17 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
 
 /// Parses a rule file: a single rule object, an array of rules, or `{"rules": [...]}`.
 pub fn parse_rules_json(raw: &str) -> Result<Vec<Rule>, String> {
+    parse_rule_file(raw, false)
+}
+
+/// Parses a rule file for `--rules-sync`. An empty array is the exact representation of "no rules"
+/// and must be accepted, otherwise a declarative sync can never delete every rule ([U13-009]);
+/// `--rules-apply` and `--rules-validate` keep rejecting an empty set.
+fn parse_rules_json_for_sync(raw: &str) -> Result<Vec<Rule>, String> {
+    parse_rule_file(raw, true)
+}
+
+fn parse_rule_file(raw: &str, allow_empty: bool) -> Result<Vec<Rule>, String> {
     let clean = raw.trim_start_matches('\u{feff}').trim();
     if clean.is_empty() {
         return Err("input is empty".into());
@@ -1497,7 +1855,7 @@ pub fn parse_rules_json(raw: &str) -> Result<Vec<Rule>, String> {
             ))
         }
     };
-    if items.is_empty() {
+    if items.is_empty() && !allow_empty {
         return Err("rule file contains no rules".into());
     }
 
@@ -1533,8 +1891,18 @@ pub fn parse_rules_json(raw: &str) -> Result<Vec<Rule>, String> {
                 "rule #{number} ({name}): \"id\" is required - it is the upsert key used by --rules-apply"
             ));
         }
-        let rule: Rule = serde_json::from_value(Value::Object(object))
+        let rule_value = Value::Object(object);
+        if let Err(unknown) = crate::models::validate_rule_keys(&rule_value) {
+            let details = unknown
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!("rule #{number} ({name}): {details}"));
+        }
+        let mut rule: Rule = serde_json::from_value(rule_value)
             .map_err(|err| format!("rule #{number} ({name}): {err}"))?;
+        rule.normalize();
         rules.push(rule);
     }
     Ok(rules)
@@ -1566,19 +1934,43 @@ pub fn validate_rules(rules: &[Rule]) -> Vec<String> {
                 display_id(rule)
             ));
         }
-        if let Some(QuotaPeriod::Custom { value: 0, .. }) = rule.quota_period {
-            errors.push(format!(
-                "rule #{number} ({}): a custom quota_period window needs value > 0",
-                display_id(rule)
-            ));
+        if let Some(period) = rule.quota_period {
+            if let Some(message) = period.validation_error() {
+                errors.push(format!(
+                    "rule #{number} ({}): {message}",
+                    display_id(rule)
+                ));
+            }
         }
 
         validate_trigger(&rule.trigger, number, rule, &mut errors);
+
+        for (condition_index, item) in rule.conditions.iter().enumerate() {
+            for message in item.condition.validation_errors() {
+                errors.push(format!(
+                    "rule #{number} ({}): condition #{}: {message}",
+                    display_id(rule),
+                    condition_index + 1
+                ));
+            }
+        }
+        if let Some(message) = rule.tag_color_error() {
+            errors.push(format!(
+                "rule #{number} ({}): {message}",
+                display_id(rule)
+            ));
+        }
 
         let mut has_infinite_macro = false;
         let mut check = |action: &Action| {
             if matches!(action, Action::Macro { infinite: true, .. }) {
                 has_infinite_macro = true;
+            }
+            for message in action.validation_errors() {
+                errors.push(format!(
+                    "rule #{number} ({}): action: {message}",
+                    display_id(rule)
+                ));
             }
         };
         walk_actions(&rule.actions, &mut check);
@@ -1617,15 +2009,12 @@ fn validate_trigger(
             ram_mb,
             ..
         }) => {
-            if process_name.trim().is_empty() {
-                errors.push(format!(
-                    "rule #{number} ({id}): resource trigger needs a non-empty process_name"
-                ));
-            }
-            if cpu_percent.is_none() && ram_mb.is_none() {
-                errors.push(format!(
-                    "rule #{number} ({id}): resource trigger needs cpu_percent or ram_mb"
-                ));
+            for message in crate::models::resource_threshold_errors(
+                process_name,
+                *cpu_percent,
+                *ram_mb,
+            ) {
+                errors.push(format!("rule #{number} ({id}): {message}"));
             }
         }
         Some(Trigger::GlobalHotkey {
@@ -1640,14 +2029,10 @@ fn validate_trigger(
                 "rule #{number} ({id}): file_watcher trigger needs a non-empty folder_path"
             ));
         }
-        Some(Trigger::Schedule {
-            schedule_type: ScheduleType::Interval,
-            interval_sec,
-            ..
-        }) if *interval_sec == 0 => {
-            errors.push(format!(
-                "rule #{number} ({id}): interval schedule needs interval_sec > 0"
-            ));
+        Some(trigger @ Trigger::Schedule { .. }) => {
+            for message in trigger.schedule_errors() {
+                errors.push(format!("rule #{number} ({id}): {message}"));
+            }
         }
         _ => {}
     }
@@ -1704,7 +2089,7 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
                 condition: None,
                 ..
             } => warnings.push(format!(
-                "rule #{number} ({id}): wait has no condition and will block until its timeout"
+                "rule #{number} ({id}): an until_condition wait without a condition returns immediately"
             )),
             Action::Wait {
                 mode: crate::models::WaitMode::UntilCondition,
@@ -1914,11 +2299,48 @@ fn emit_json(value: Value) {
     }
 }
 
+/// One `--json` failure envelope for every failure path, so a machine consumer can always read
+/// `.ok`, `.error`, `.errors`, `.warnings` and `.target` regardless of the failure class
+/// ([U13-011]).
+fn error_json(
+    error: &str,
+    errors: &[String],
+    warnings: &[String],
+    target: Option<&str>,
+) -> Value {
+    json!({
+        "ok": false,
+        "error": error,
+        "errors": errors,
+        "warnings": warnings,
+        "target": target,
+    })
+}
+
+fn emit_error_json(
+    error: &str,
+    errors: &[String],
+    warnings: &[String],
+    target: Option<&str>,
+) -> i32 {
+    emit_json(error_json(error, errors, warnings, target));
+    1
+}
+
+/// Reports validation errors in `--json` mode. The first error is promoted to `error`; the full
+/// list stays in `errors` ([U13-011]).
+fn fail_validation(errors: &[String], warnings: &[String], target: &str) -> i32 {
+    let error = errors
+        .first()
+        .map(String::as_str)
+        .unwrap_or("validation failed");
+    emit_error_json(error, errors, warnings, Some(target))
+}
+
 fn fail_with(json_output: bool, message: &str) -> i32 {
     if json_output {
         crate::logging::error("CLI", message);
-        emit_json(json!({ "ok": false, "error": message, "errors": [message] }));
-        1
+        emit_error_json(message, &[message.to_string()], &[], None)
     } else {
         fail(message)
     }
@@ -1973,10 +2395,10 @@ fn reset_redefined_quota_runtime(previous: &[Rule], applied: &[Rule]) -> Result<
     let redefined: Vec<&str> = applied
         .iter()
         .filter(|rule| {
-            previous.iter().find(|old| old.id == rule.id).is_some_and(|old| {
-                old.quota_period != rule.quota_period
-                    || (old.max_executions.is_none() && rule.max_executions.is_some())
-            })
+            previous
+                .iter()
+                .find(|old| old.id == rule.id)
+                .is_some_and(|old| rule.quota_redefined_from(old))
         })
         .map(|rule| rule.id.as_str())
         .collect();
@@ -2093,22 +2515,41 @@ fn has_flag(args: &[String], flag: &str) -> bool {
     args.iter().any(|arg| arg == flag)
 }
 
-fn flag_value(args: &[String], flag: &str) -> Result<Option<String>, String> {
-    let Some(position) = args.iter().position(|arg| arg == flag) else {
-        return Ok(None);
-    };
-    match args.get(position + 1) {
-        Some(value) if value == "-" || !value.starts_with('-') => Ok(Some(value.clone())),
-        _ => Err(format!("{flag} requires a file path argument")),
-    }
+/// Removes one rule by id and returns it, so the caller can drop its runtime counters ([U13-004]).
+fn take_rule(rules: &mut Vec<Rule>, id: &str) -> Option<Rule> {
+    let position = rules.iter().position(|rule| rule.id == id)?;
+    Some(rules.remove(position))
 }
 
-fn flag_optional_value(args: &[String], flag: &str) -> Option<String> {
-    let position = args.iter().position(|arg| arg == flag)?;
-    match args.get(position + 1) {
-        Some(value) if !value.starts_with('-') => Some(value.clone()),
-        _ => None,
+/// Writes text through a sibling temp file and a rename, the same way the config sections do, so a
+/// crash or full disk during `--rules-export <file>` never leaves the previous export truncated
+/// ([U13-013]).
+fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
     }
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp_name);
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+    }
+    // Antivirus and indexers can hold a fresh file open for a moment on Windows; a short retry
+    // keeps a transient share violation from losing the write.
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(err) => last_error = Some(err),
+        }
+        if attempt < 2 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Err(last_error.unwrap_or_else(|| std::io::Error::other("atomic rename failed")))
 }
 
 fn fail(message: &str) -> i32 {
@@ -2120,7 +2561,7 @@ fn fail(message: &str) -> i32 {
 /// Release builds use the Windows GUI subsystem, so a CLI invocation has to reattach to the
 /// parent console before the first line is printed. Redirected std handles (pipes) are left
 /// untouched so machine-readable output keeps working.
-fn ensure_console() {
+pub(crate) fn ensure_console() {
     #[cfg(all(windows, not(debug_assertions)))]
     attach_parent_console();
 }
@@ -2166,7 +2607,7 @@ fn attach_parent_console() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{MacroOperation, WaitMode};
+    use crate::models::{MacroOperation, ScheduleType, WaitMode};
 
     fn rule_with_notification(id: &str) -> Rule {
         Rule {
@@ -2225,6 +2666,61 @@ mod tests {
         let missing_name = r#"{"id": "x", "actions": []}"#;
         let err = parse_rules_json(missing_name).expect_err("missing name");
         assert!(err.contains("\"name\" is required"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_rejects_unknown_keys() {
+        let raw = r#"[{"id":"a","name":"A","max_execution":5,"actions":[]}]"#;
+        let err = parse_rules_json(raw).expect_err("typo must be rejected");
+        assert!(err.contains("max_execution"), "{err}");
+
+        let nested = r#"[{"id":"a","name":"A","actions":[{"$action_type":"notification","title":"T","message":"M","mesage":"typo"}]}]"#;
+        let err = parse_rules_json(nested).expect_err("nested typo must be rejected");
+        assert!(err.contains("mesage"), "{err}");
+    }
+
+    #[test]
+    fn test_validate_rules_schedule_quota_and_wait_errors() {
+        let mut daily = rule_with_notification("daily");
+        daily.trigger = Some(Trigger::Schedule {
+            schedule_type: ScheduleType::Daily,
+            interval_sec: 0,
+            daily_time: None,
+            days_of_week: vec![],
+            day_of_month: None,
+            target_datetime: None,
+        });
+        let errors = validate_rules(&[daily]);
+        assert!(
+            errors.iter().any(|error| error.contains("daily_time")),
+            "{errors:?}"
+        );
+
+        let mut wait = rule_with_notification("wait");
+        wait.actions = vec![Action::Wait {
+            mode: WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }];
+        let errors = validate_rules(&[wait]);
+        assert!(
+            errors.iter().any(|error| error.contains("needs a condition")),
+            "{errors:?}"
+        );
+
+        let mut quota = rule_with_notification("quota");
+        quota.max_executions = Some(1);
+        quota.quota_period = Some(QuotaPeriod::Custom {
+            value: u32::MAX,
+            unit: crate::models::QuotaUnit::Minutes,
+        });
+        let errors = validate_rules(&[quota]);
+        assert!(
+            errors.iter().any(|error| error.contains("between 1 and 100000")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -2303,7 +2799,9 @@ mod tests {
         });
         let errors = validate_rules(&[rule.clone()]);
         assert!(
-            errors.iter().any(|e| e.contains("custom quota_period window needs value > 0")),
+            errors
+                .iter()
+                .any(|e| e.contains("custom quota window length must be between 1 and 100000")),
             "{errors:?}"
         );
 
@@ -2407,7 +2905,9 @@ mod tests {
             "{warnings:?}"
         );
         assert!(
-            warnings.iter().any(|w| w.contains("wait has no condition")),
+            warnings
+                .iter()
+                .any(|w| w.contains("until_condition wait without a condition")),
             "{warnings:?}"
         );
     }
@@ -2656,17 +3156,210 @@ mod tests {
         assert_eq!(value["deleted"][0], serde_json::json!("c"));
     }
 
+    fn cli_args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
     #[test]
-    fn test_share_argument_accepts_literal_and_stdin() {
+    fn test_unknown_argument_is_rejected_with_usage_exit_code() {
+        // U13-001: `--dry-runn` next to a real command used to be ignored and the apply ran.
+        let unknown = cli_args(&["--rules-apply", "rules.json", "--dry-runn"]);
+        let message = parse_invocation(&unknown).expect_err("unknown flag");
+        assert!(
+            message.contains("unexpected argument \"--dry-runn\""),
+            "{message}"
+        );
+        assert_eq!(resolve_invocation(&unknown, false).expect_err("usage exit code"), 2);
+
+        // A misspelled command with no known flag must be claimed by the CLI and fail closed
+        // instead of falling through to elevation and a GUI start.
+        let misspelled = cli_args(&["--rules-appply", "rules.json"]);
+        assert!(has_unresolved_rule_command(&misspelled));
+        assert_eq!(
+            parse_invocation(&misspelled).expect_err("no command"),
+            "no command given"
+        );
+        assert!(resolve_invocation(&misspelled, false).is_err());
+
+        assert!(!has_unresolved_rule_command(&cli_args(&[
+            "--rules-apply",
+            "rules.json"
+        ])));
+        assert!(!has_unresolved_rule_command(&cli_args(&["--json"])));
+        assert!(!has_unresolved_rule_command(&cli_args(&[])));
+    }
+
+    #[test]
+    fn test_conflicting_and_repeated_commands_are_rejected() {
+        // U13-002: the ordered if-chain silently preferred the first command it matched.
+        let conflicting = cli_args(&["--rules-validate", "a.json", "--rules-apply", "b.json"]);
+        let message = parse_invocation(&conflicting).expect_err("conflict");
+        assert!(message.contains("conflicting commands"), "{message}");
+        assert!(message.contains("--rules-validate"), "{message}");
+        assert!(message.contains("--rules-apply"), "{message}");
+
+        let repeated = cli_args(&["--rules-apply", "a.json", "--rules-apply", "b.json"]);
+        let message = parse_invocation(&repeated).expect_err("repeated command");
+        assert!(message.contains("select the same command"), "{message}");
+
+        assert!(parse_invocation(&cli_args(&["--help", "--rules-list"])).is_err());
+
+        let invocation =
+            parse_invocation(&cli_args(&["--rules-apply", "rules.json", "--json", "--dry-run"]))
+                .expect("valid invocation");
+        assert_eq!(invocation.command, Command::Apply);
+        assert_eq!(invocation.value.as_deref(), Some("rules.json"));
+    }
+
+    #[test]
+    fn test_command_values_are_validated_per_command() {
+        // U13-014: the error names the value the flag actually takes.
+        let message = parse_invocation(&cli_args(&["--rules-delete"])).expect_err("missing id");
+        assert!(
+            message.contains("--rules-delete requires a rule id"),
+            "{message}"
+        );
+
+        let message =
+            parse_invocation(&cli_args(&["--rules-delete", "--json"])).expect_err("flag as id");
+        assert!(
+            message.contains("--rules-delete requires a rule id"),
+            "{message}"
+        );
+        assert!(message.contains("--json"), "{message}");
+
+        let message = parse_invocation(&cli_args(&["--rules-import-share", "--json"]))
+            .expect_err("missing share argument");
+        assert!(message.contains("a share code, file path or -"), "{message}");
+
+        let invocation =
+            parse_invocation(&cli_args(&["--rules-export", "rules.json"])).expect("export path");
+        assert_eq!(invocation.value.as_deref(), Some("rules.json"));
+        let invocation = parse_invocation(&cli_args(&["--rules-export"])).expect("export stdout");
+        assert_eq!(invocation.value, None);
+        let invocation =
+            parse_invocation(&cli_args(&["--rules-list", "--json"])).expect("list has no value");
+        assert_eq!(invocation.command, Command::List);
+        assert_eq!(invocation.value, None);
+    }
+
+    #[test]
+    fn test_json_error_envelope_shape() {
+        // U13-011: validation failures used to emit {ok:false, errors} with no "error" key.
+        let errors = vec!["rule #1 (typo): bad".to_string()];
+        let warnings = vec!["no trigger".to_string()];
+        let value = error_json("rule #1 (typo): bad", &errors, &warnings, Some("rules"));
+        assert_eq!(value["ok"], serde_json::json!(false));
+        assert_eq!(value["error"], serde_json::json!("rule #1 (typo): bad"));
+        assert_eq!(value["errors"][0], serde_json::json!("rule #1 (typo): bad"));
+        assert_eq!(value["warnings"][0], serde_json::json!("no trigger"));
+        assert_eq!(value["target"], serde_json::json!("rules"));
+
+        let value = error_json("boom", &["boom".to_string()], &[], None);
+        assert!(value["target"].is_null());
+        assert!(
+            value.as_object().expect("object").contains_key("target"),
+            "every failure envelope names the target key"
+        );
+    }
+
+    #[test]
+    fn test_sync_accepts_an_empty_rule_set_but_apply_rejects_it() {
+        // U13-009: sync makes the configured set match the file, including "no rules at all".
+        assert!(parse_rules_json("[]").is_err());
+        assert!(parse_rules_json_for_sync("[]").expect("empty array").is_empty());
+        assert!(
+            parse_rules_json_for_sync(r#"{"rules": []}"#)
+                .expect("empty wrapper")
+                .is_empty()
+        );
+        assert!(
+            parse_rules_json_for_sync("").is_err(),
+            "an empty file is still malformed"
+        );
+
+        let existing = vec![rule_with_notification("keep"), rule_with_notification("gone")];
+        let (report, deleted) = plan_sync(&existing, &[]);
+        assert!(report.created.is_empty() && report.updated.is_empty());
+        assert_eq!(deleted, vec!["keep".to_string(), "gone".to_string()]);
+    }
+
+    #[test]
+    fn test_offline_updates_drop_removed_runtime_counters() {
+        // U13-004: a removed rule's counters must be pruned, otherwise a rule re-created with the
+        // same id inherits an exhausted quota and a stale last_executed_at.
+        let mut rules = vec![rule_with_notification("keep"), rule_with_notification("gone")];
+        let removed = take_rule(&mut rules, "gone").expect("rule is removed");
+        assert_eq!(removed.id, "gone");
+        assert!(rules.iter().all(|rule| rule.id != "gone"));
+        assert!(
+            take_rule(&mut rules, "gone").is_none(),
+            "delete reports a missing id"
+        );
+
+        let existing = vec![rule_with_notification("keep"), rule_with_notification("gone")];
+        let applied = vec![rule_with_notification("keep")];
+        let (_, deleted) = plan_sync(&existing, &applied);
+        assert_eq!(deleted, vec!["gone".to_string()]);
+    }
+
+    #[test]
+    fn test_import_plan_merges_library_entries_before_rules_are_written() {
+        // U13-005: the library snapshot is built and written before rules.json so a failed second
+        // write cannot leave imported rules pointing at missing presets/overlays.
+        let mut prepared = crate::sharing::PreparedShareImport::default();
+        prepared.rules.push(rule_with_notification("imported"));
+        prepared.overlays.push(crate::models::OverlayDefinition::default());
+        prepared
+            .macro_presets
+            .push(crate::models::default_macro_presets().remove(0));
+
+        let base = crate::config::Library::default();
+        let overlay_count = base.overlays.len();
+        let preset_count = base.macro_presets.len();
+        let library = merged_library(&prepared, base.clone()).expect("library entries");
+        assert_eq!(library.overlays.len(), overlay_count + 1);
+        assert_eq!(library.macro_presets.len(), preset_count + 1);
+
+        let mut rules_only = crate::sharing::PreparedShareImport::default();
+        rules_only.rules.push(rule_with_notification("imported"));
+        assert!(merged_library(&rules_only, base).is_none());
+    }
+
+    #[test]
+    fn test_export_write_replaces_the_target_and_leaves_no_temp_file() {
+        // U13-013: the export previously truncated the target in place; an atomic sibling write
+        // must replace it and clean up after itself.
+        let dir = std::env::temp_dir().join(format!("synector_cli_export_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("rules.json");
+        std::fs::write(&path, "old export").expect("previous export");
+
+        write_text_atomic(&path, "new export\n").expect("atomic write");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read export"),
+            "new export\n"
+        );
+        assert!(
+            !dir.join("rules.json.tmp").exists(),
+            "the sibling temp file must not survive"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_share_argument_is_literal_only_for_syn1_codes() {
         assert_eq!(
             read_share_argument("SYN1:abc").expect("literal"),
             "SYN1:abc"
         );
-        // A value that is not an existing file is treated as a literal code, not as a path.
-        assert_eq!(
-            read_share_argument("synector_missing_code_file_12345").expect("literal fallback"),
-            "synector_missing_code_file_12345"
-        );
+        // Anything that is not a SYN1: code is a path, so a typo reports a read error instead of
+        // a misleading "invalid share code" ([U13-015]).
+        let err = read_share_argument("synector_missing_code_file_12345")
+            .expect_err("missing path must not become a literal");
+        assert!(err.contains("cannot read"), "{err}");
+        assert!(err.contains("synector_missing_code_file_12345"), "{err}");
     }
 
     #[test]

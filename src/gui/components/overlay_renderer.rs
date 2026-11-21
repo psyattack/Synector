@@ -66,10 +66,62 @@ pub fn normalize_image_uri(path: &str) -> String {
     format!("file:///{}", final_clean)
 }
 
-pub fn resolve_font_id(font_family: &str, font_size: f32, bold: bool, zoom: f32) -> FontId {
-    let sz = (font_size * zoom).max(7.0);
-    let norm = font_family.trim().to_lowercase();
-    let family = match norm.as_str() {
+/// Memoized [`normalize_image_uri`] for the render path. An `Image` element is
+/// re-rendered ~33 times per second and the uncached version performs a
+/// `std::fs::canonicalize` syscall plus several allocations per call (U06-007).
+fn cached_image_uri(path: &str) -> String {
+    type UriCache = std::collections::HashMap<String, String>;
+    static CACHE: std::sync::Mutex<Option<UriCache>> = std::sync::Mutex::new(None);
+
+    if let Ok(mut guard) = CACHE.lock() {
+        let cache = guard.get_or_insert_with(UriCache::new);
+        if let Some(uri) = cache.get(path) {
+            return uri.clone();
+        }
+        let uri = normalize_image_uri(path);
+        if cache.len() >= 128 {
+            cache.clear();
+        }
+        cache.insert(path.to_string(), uri.clone());
+        return uri;
+    }
+    normalize_image_uri(path)
+}
+
+/// Resolves the egui font family for an overlay element. The renderer calls this
+/// for every text element on every frame, and both the lowercased name and the
+/// `FontFamily::Name` `Arc<str>` are fresh allocations, so the result is memoized
+/// per name and weight (U06-015). The trim + lookup path allocates nothing; the
+/// raw and normalized spellings are cached after the first call.
+fn cached_font_family(font_family: &str, bold: bool) -> egui::FontFamily {
+    type FontFamilyCache = std::collections::HashMap<String, [Option<egui::FontFamily>; 2]>;
+    static CACHE: std::sync::Mutex<Option<FontFamilyCache>> = std::sync::Mutex::new(None);
+
+    let trimmed = font_family.trim();
+    let weight = usize::from(bold);
+    if let Ok(mut guard) = CACHE.lock() {
+        let cache = guard.get_or_insert_with(FontFamilyCache::new);
+        if let Some(family) = cache.get(trimmed).and_then(|entry| entry[weight].as_ref()) {
+            return family.clone();
+        }
+        let normalized = trimmed.to_lowercase();
+        let family = cache
+            .get(normalized.as_str())
+            .and_then(|entry| entry[weight].as_ref())
+            .cloned()
+            .unwrap_or_else(|| resolve_font_family(&normalized, bold));
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.entry(trimmed.to_string()).or_default()[weight] = Some(family.clone());
+        cache.entry(normalized).or_default()[weight] = Some(family.clone());
+        return family;
+    }
+    resolve_font_family(&trimmed.to_lowercase(), bold)
+}
+
+fn resolve_font_family(norm: &str, bold: bool) -> egui::FontFamily {
+    match norm {
         "archivo" | "archivo display" => {
             if bold { theme::font_archivo_bold() } else { theme::font_archivo() }
         }
@@ -93,8 +145,12 @@ pub fn resolve_font_id(font_family: &str, font_size: f32, bold: bool, zoom: f32)
         _ => {
             if bold { theme::semibold() } else { theme::medium() }
         }
-    };
-    FontId::new(sz, family)
+    }
+}
+
+pub fn resolve_font_id(font_family: &str, font_size: f32, bold: bool, zoom: f32) -> FontId {
+    let sz = (font_size * zoom).max(7.0);
+    FontId::new(sz, cached_font_family(font_family, bold))
 }
 
 pub fn draw_filled_convex_polygon(
@@ -418,55 +474,123 @@ pub struct RenderContext<'a> {
     pub target_process: Option<&'a str>,
 }
 
-pub fn execute_click_action(action: &OverlayClickAction) {
-    match action {
-        OverlayClickAction::TriggerRule { rule_id } => {
+/// Work that must never run on the overlay render thread: `taskkill` waits for
+/// a child process and every named-pipe call blocks until the daemon answers,
+/// so running them inline would stall a click for hundreds of milliseconds or
+/// indefinitely (U06-005).
+#[derive(Clone)]
+enum OverlayTask {
+    Click(OverlayClickAction),
+    /// Bound `ToggleSwitch`: the switch already knows the target state, unlike a
+    /// `ToggleRule` click action whose state has to be resolved first.
+    SetRuleEnabled { rule_id: String, enabled: bool },
+}
+static OVERLAY_TASKS: std::sync::OnceLock<std::sync::mpsc::Sender<OverlayTask>> = std::sync::OnceLock::new();
+
+/// Lazily starts the single background worker that executes blocking overlay
+/// actions. A failed spawn is logged once; its sender then has no receiver, so
+/// `dispatch_overlay_task` falls back to inline execution instead of silently
+/// dropping the click.
+fn overlay_task_sender() -> &'static std::sync::mpsc::Sender<OverlayTask> {
+    OVERLAY_TASKS.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<OverlayTask>();
+        match std::thread::Builder::new()
+            .name("overlay-click-actions".into())
+            .spawn(move || {
+                for task in rx {
+                    run_overlay_task(task);
+                }
+            }) {
+            Ok(_) => tx,
+            Err(err) => {
+                crate::logging::error("OVERLAY", &format!("Failed to spawn overlay action worker: {err}"));
+                std::sync::mpsc::channel::<OverlayTask>().0
+            }
+        }
+    })
+}
+
+fn dispatch_overlay_task(task: OverlayTask) {
+    if overlay_task_sender().send(task.clone()).is_ok() {
+        return;
+    }
+    run_overlay_task(task);
+}
+
+fn run_overlay_task(task: OverlayTask) {
+    match task {
+        OverlayTask::SetRuleEnabled { rule_id, enabled } => {
+            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ToggleRule { id: rule_id, enabled });
+        }
+        OverlayTask::Click(OverlayClickAction::TriggerRule { rule_id }) => {
             let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::TestRunRule {
-                id: rule_id.clone(),
+                id: rule_id,
                 rule: None,
             });
         }
-        OverlayClickAction::ToggleRule { rule_id } => {
-            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ToggleRule {
-                id: rule_id.clone(),
-                enabled: true,
-            });
+        OverlayTask::Click(OverlayClickAction::ToggleRule { rule_id }) => toggle_rule_clicked(&rule_id),
+        OverlayTask::Click(OverlayClickAction::KillProcess { process_name }) => {
+            let _ = std::process::Command::new("taskkill").args(["/F", "/IM", &process_name]).output();
         }
-        OverlayClickAction::CloseOverlay => {
-            #[cfg(windows)]
-            unsafe {
-                use windows::Win32::Foundation::{HWND, LPARAM};
-                use windows::Win32::System::Threading::GetCurrentThreadId;
-                use windows::Win32::UI::WindowsAndMessaging::{
-                    EnumThreadWindows, GetWindowTextW, PostMessageW, WM_CLOSE,
-                };
-                struct Context { hwnd: Option<HWND> }
-                unsafe extern "system" fn find_overlay_wnd(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
-                    let ctx = &mut *(lparam.0 as *mut Context);
-                    let mut title_buf = [0u16; 128];
-                    let len = GetWindowTextW(hwnd, &mut title_buf);
-                    if len > 0 {
-                        let title = String::from_utf16_lossy(&title_buf[..len as usize]);
-                        if title.contains("Synector Overlay") {
-                            ctx.hwnd = Some(hwnd);
-                            return windows::core::BOOL(0);
-                        }
-                    }
-                    windows::core::BOOL(1)
-                }
-                let mut ctx = Context { hwnd: None };
-                let _ = EnumThreadWindows(GetCurrentThreadId(), Some(find_overlay_wnd), LPARAM(&mut ctx as *mut _ as isize));
-                if let Some(hwnd) = ctx.hwnd {
-                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0));
-                }
-            }
+        OverlayTask::Click(OverlayClickAction::TrimMemory { process_name }) => {
+            let _ = crate::daemon::actions::trim_working_set(&process_name, None, None, false);
         }
-        OverlayClickAction::KillProcess { process_name } => {
-            let _ = std::process::Command::new("taskkill").args(["/F", "/IM", process_name]).output();
+        // Local actions (close, media keys, timers) never reach the worker:
+        // `execute_click_action` runs them on the window thread.
+        OverlayTask::Click(_) => {}
+    }
+}
+
+/// The daemon treats `ToggleRule` as an absolute assignment, so the inverse of
+/// the rule's current state has to be resolved first; the old click path always
+/// sent `enabled: true` and could never disable a rule (U06-003).
+fn inverted_rule_state(current: Option<bool>) -> Option<bool> {
+    current.map(|enabled| !enabled)
+}
+
+fn rule_toggle_target(rule_id: &str) -> Option<bool> {
+    match crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetState) {
+        Ok(crate::ipc::IpcResponse::State(state)) => inverted_rule_state(
+            state
+                .config
+                .rules
+                .iter()
+                .find(|rule| rule.id == rule_id)
+                .map(|rule| rule.is_enabled),
+        ),
+        _ => None,
+    }
+}
+
+fn toggle_rule_clicked(rule_id: &str) {
+    let Some(enabled) = rule_toggle_target(rule_id) else {
+        crate::logging::warn(
+            "OVERLAY",
+            &format!("ToggleRule click ignored: rule '{rule_id}' is unavailable"),
+        );
+        return;
+    };
+    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ToggleRule {
+        id: rule_id.to_string(),
+        enabled,
+    });
+}
+
+/// Dispatches one overlay click action. Blocking work (`taskkill`, IPC) is
+/// queued to the background worker; only genuinely local actions run inline, so
+/// a click can never freeze the render pass (U06-005). `ResetTimer` /
+/// `ToggleTimer` are applied by the overlay window against the `ClockTimer`
+/// elements because a click action carries no element reference of its own
+/// (U06-002).
+pub fn execute_click_action(action: &OverlayClickAction) {
+    match action {
+        OverlayClickAction::TriggerRule { .. }
+        | OverlayClickAction::ToggleRule { .. }
+        | OverlayClickAction::KillProcess { .. }
+        | OverlayClickAction::TrimMemory { .. } => {
+            dispatch_overlay_task(OverlayTask::Click(action.clone()));
         }
-        OverlayClickAction::TrimMemory { process_name } => {
-            let _ = crate::daemon::actions::trim_working_set(process_name, None, None, false);
-        }
+        OverlayClickAction::CloseOverlay => close_overlay_window_now(),
         OverlayClickAction::ToggleMute => {
             crate::daemon::telemetry::simulate_media_key(0xAD); // VK_VOLUME_MUTE
         }
@@ -479,14 +603,48 @@ pub fn execute_click_action(action: &OverlayClickAction) {
         OverlayClickAction::MediaPrev => {
             crate::daemon::telemetry::simulate_media_key(0xB1); // VK_MEDIA_PREV_TRACK
         }
-        OverlayClickAction::ResetTimer => {}
-        OverlayClickAction::ToggleTimer => {}
+        OverlayClickAction::ResetTimer | OverlayClickAction::ToggleTimer => {}
     }
 }
 
-pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
+fn close_overlay_window_now() {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Foundation::{HWND, LPARAM};
+        use windows::Win32::System::Threading::GetCurrentThreadId;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            EnumThreadWindows, GetWindowTextW, PostMessageW, WM_CLOSE,
+        };
+        struct Context { hwnd: Option<HWND> }
+        unsafe extern "system" fn find_overlay_wnd(hwnd: HWND, lparam: LPARAM) -> windows::core::BOOL {
+            let ctx = &mut *(lparam.0 as *mut Context);
+            let mut title_buf = [0u16; 128];
+            let len = GetWindowTextW(hwnd, &mut title_buf);
+            if len > 0 {
+                let title = String::from_utf16_lossy(&title_buf[..len as usize]);
+                if title.contains("Synector Overlay") {
+                    ctx.hwnd = Some(hwnd);
+                    return windows::core::BOOL(0);
+                }
+            }
+            windows::core::BOOL(1)
+        }
+        let mut ctx = Context { hwnd: None };
+        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(find_overlay_wnd), LPARAM(&mut ctx as *mut _ as isize));
+        if let Some(hwnd) = ctx.hwnd {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, windows::Win32::Foundation::WPARAM(0), windows::Win32::Foundation::LPARAM(0));
+        }
+    }
+}
+
+/// Renders one overlay element and returns the click action the element fired,
+/// if any. The action is not executed here: the overlay window owns the element
+/// list, so it applies timer actions and queues blocking work off the render
+/// thread (U06-002/U06-005).
+pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) -> Option<OverlayClickAction> {
     let zoom = ctx.zoom;
     let card_canvas_rect = ctx.card_canvas_rect;
+    let mut pending_action: Option<OverlayClickAction> = None;
     let (raw_w, raw_h) = get_element_size(elem);
     let center = match elem {
         OverlayElement::Crosshair { x, y, .. } => {
@@ -576,7 +734,7 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 if let Some(pos) = local_pointer_pos {
                     if rect.contains(pos) {
                         if let Some(act) = on_click {
-                            execute_click_action(act);
+                            pending_action = Some(act.clone());
                         }
                     }
                 }
@@ -753,7 +911,7 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 if let Some(pos) = local_pointer_pos {
                     if rect.contains(pos) {
                         if let Some(act) = on_click {
-                            execute_click_action(act);
+                            pending_action = Some(act.clone());
                         }
                     }
                 }
@@ -808,17 +966,19 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                             if rect.contains(pos) {
                                 *is_active = !*is_active;
                                 if let Some(rule_id) = bind_rule_id {
-                                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ToggleRule {
-                                        id: rule_id.clone(),
+                                    // The switch already knows the target state, so it must not
+                                    // go through the resolve-and-invert click action (U06-005).
+                                    dispatch_overlay_task(OverlayTask::SetRuleEnabled {
+                                        rule_id: rule_id.clone(),
                                         enabled: *is_active,
                                     });
                                 }
                                 if *is_active {
                                     if let Some(act) = on_enable {
-                                        execute_click_action(act);
+                                        pending_action = Some(act.clone());
                                     }
                                 } else if let Some(act) = on_disable {
-                                    execute_click_action(act);
+                                    pending_action = Some(act.clone());
                                 }
                             }
                         }
@@ -889,7 +1049,7 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
 
                     if ctx.is_interactive && ctx.pointer_clicked && is_hovered {
                         if let Some(act) = action {
-                            execute_click_action(act);
+                            pending_action = Some(act.clone());
                         }
                     }
                 }
@@ -1116,7 +1276,9 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 p.rect_filled(Rect::from_min_size(pos2(bx, by), vec2(bar_w, bh)), CornerRadius::same(1), col);
             }
 
-            // Track title & Artist
+            // Track title & Artist. No progress bar or seek control: playback
+            // position needs a Windows media-session (GSMTC) integration that does not
+            // exist, and an always-zero bar with a dead seek knob is fake UI (U10-015).
             let text_left = eq_left + (bar_count as f32 * (bar_w + 2.0 * zoom)) + 6.0 * zoom;
             let title_pos = pos2(text_left, rect.top() + pad);
             let short_title = safe_truncate(&media.title, 22);
@@ -1126,41 +1288,6 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
             let artist_line = format!("{} • {}", media.artist, media.player_name);
             let short_artist = safe_truncate(&artist_line, 26);
             p.text(artist_pos, Align2::LEFT_TOP, short_artist, FontId::new((9.0 * zoom).max(7.0), theme::medium()), Color32::from_gray(180));
-
-            // Scrubber progress bar with interactive knob (ползунок)
-            let bar_y = rect.top() + rect.height() * 0.58;
-            let bar_w = rect.width() - pad * 2.0;
-            let track_h = (3.5 * zoom).max(2.5);
-            let bar_rect = Rect::from_min_size(pos2(rect.left() + pad, bar_y), vec2(bar_w, track_h));
-            let is_hover_bar = local_pointer_pos.map(|p| bar_rect.expand(6.0 * zoom).contains(p)).unwrap_or(false);
-
-            // Interactive seeking: click or drag along the progress bar
-            if ctx.is_interactive && (ctx.pointer_down || ctx.pointer_clicked) && is_hover_bar {
-                if let Some(pos) = local_pointer_pos {
-                    let new_pct = ((pos.x - bar_rect.left()) / bar_rect.width().max(1.0)).clamp(0.0, 1.0);
-                    crate::daemon::telemetry::seek_media_progress(new_pct);
-                }
-            }
-
-            // Track background
-            p.rect_filled(bar_rect, CornerRadius::same(2), Color32::from_rgb(50, 55, 65));
-
-            // Filled progress portion
-            let fill_w = bar_w * media.progress_pct.clamp(0.0, 1.0);
-            if fill_w > 0.0 {
-                p.rect_filled(Rect::from_min_size(bar_rect.min, vec2(fill_w, track_h)), CornerRadius::same(2), col);
-            }
-
-            // Slider Knob / Thumb (Ползунок)
-            let thumb_r = if is_hover_bar { 5.5 * zoom } else { 4.2 * zoom };
-            let thumb_x = bar_rect.left() + fill_w;
-            let thumb_center = pos2(thumb_x, bar_rect.center().y);
-
-            if is_hover_bar {
-                p.circle_filled(thumb_center, thumb_r + 2.5 * zoom, col.gamma_multiply(0.28));
-            }
-            p.circle_filled(thumb_center, thumb_r, Color32::WHITE);
-            p.circle_stroke(thumb_center, thumb_r, Stroke::new((1.5 * zoom).max(1.0), col));
 
             // Transport buttons
             if *show_controls {
@@ -1295,7 +1422,7 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 if let Some(pos) = local_pointer_pos {
                     if rect.contains(pos) {
                         if let Some(act) = on_click {
-                            execute_click_action(act);
+                            pending_action = Some(act.clone());
                         }
                     }
                 }
@@ -1318,7 +1445,7 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 p.rect_stroke(rect, CornerRadius::same(4), Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 30)), egui::StrokeKind::Inside);
                 p.text(center, Align2::CENTER_CENTER, "🖼 Image (Empty)", FontId::new((10.0 * zoom).max(7.0), theme::semibold()), Color32::from_gray(180));
             } else {
-                let uri = normalize_image_uri(trimmed_path);
+                let uri = cached_image_uri(trimmed_path);
                 let p_ctx = p.ctx();
                 let load_res = p_ctx.try_load_texture(
                     &uri,
@@ -1367,18 +1494,51 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) {
                 if let Some(pos) = local_pointer_pos {
                     if rect.contains(pos) {
                         if let Some(act) = on_click {
-                            execute_click_action(act);
+                            pending_action = Some(act.clone());
                         }
                     }
                 }
             }
         }
     }
+
+    pending_action
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cached_image_uri_matches_uncached_and_is_stable() {
+        let path = "assets\\app.png";
+        let first = cached_image_uri(path);
+        assert_eq!(first, normalize_image_uri(path));
+        assert_eq!(cached_image_uri(path), first);
+        let second = cached_image_uri("assets/other.png");
+        assert!(second.ends_with("/assets/other.png"));
+        assert_ne!(second, first);
+    }
+
+    #[test]
+    fn test_font_family_cache_is_case_and_space_insensitive() {
+        let plain = resolve_font_id("Inter", 12.0, true, 1.0);
+        let normalized = resolve_font_id("  inter ", 12.0, true, 1.0);
+        assert_eq!(plain, normalized);
+        assert_eq!(resolve_font_id("Inter", 12.0, true, 1.0), plain);
+
+        // Unknown families keep the author's name instead of falling back to a token font.
+        let custom = resolve_font_id("My Custom Font", 10.0, false, 1.0);
+        assert_eq!(custom.family, egui::FontFamily::Name("my custom font".into()));
+    }
+
+    #[test]
+    fn test_rule_toggle_inverts_resolved_state() {
+        assert_eq!(inverted_rule_state(Some(true)), Some(false));
+        assert_eq!(inverted_rule_state(Some(false)), Some(true));
+        // An unknown rule must never be toggled by guessing.
+        assert_eq!(inverted_rule_state(None), None);
+    }
 
     #[test]
     fn test_rect_shape_fields() {

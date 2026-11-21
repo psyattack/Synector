@@ -4,7 +4,7 @@ use egui::Color32;
 use crate::config::{Library, Settings};
 use crate::gui::components::overlay_renderer;
 use crate::gui::theme;
-use crate::models::OverlayDefinition;
+use crate::models::{OverlayClickAction, OverlayDefinition, OverlayElement, TimerMode};
 
 #[derive(Clone)]
 struct OverlayRuntimeState {
@@ -18,6 +18,115 @@ struct OverlayRuntimeState {
 static OVERLAY_RUNTIME_STATE: Mutex<Option<OverlayRuntimeState>> = Mutex::new(None);
 static LAST_MOVE_IPC: Mutex<Option<Instant>> = Mutex::new(None);
 static FADEOUT_TRIGGERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// DPI scale of the monitor under `hwnd`; `GetWindowRect` reports physical
+/// pixels while `OverlayRect` and `MonitorInfo` are in logical points.
+#[cfg(windows)]
+fn window_dpi_scale(hwnd: windows::Win32::Foundation::HWND) -> f32 {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+    };
+
+    unsafe {
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut _).as_bool() {
+            let device = String::from_utf16_lossy(&info.szDevice).trim_matches('\0').to_string();
+            crate::daemon::overlay_manager::monitor_scale(&device)
+        } else {
+            1.0
+        }
+    }
+}
+
+/// Latest logical position reported by `WM_MOVE` / `WM_EXITSIZEMOVE`. The window
+/// procedure only records it; a background worker performs the named-pipe call,
+/// because `IpcClient::call` has no timeout and a stalled daemon would otherwise
+/// freeze the overlay mid-drag and block its message loop (U06-004).
+static PENDING_OVERLAY_POSITION: Mutex<Option<(String, f32, f32)>> = Mutex::new(None);
+static OVERLAY_POSITION_WAKE: std::sync::Condvar = std::sync::Condvar::new();
+
+fn ensure_overlay_position_worker() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    STARTED.get_or_init(|| {
+        if let Err(err) = std::thread::Builder::new()
+            .name("overlay-position".into())
+            .spawn(|| loop {
+                let update = {
+                    let mut slot = PENDING_OVERLAY_POSITION.lock().unwrap_or_else(|e| e.into_inner());
+                    while slot.is_none() {
+                        slot = OVERLAY_POSITION_WAKE.wait(slot).unwrap_or_else(|e| e.into_inner());
+                    }
+                    slot.take()
+                };
+                if let Some((id, x, y)) = update {
+                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::UpdateOverlayPosition { id, x, y });
+                }
+            })
+        {
+            crate::logging::error("OVERLAY", &format!("Failed to spawn overlay position worker: {err}"));
+        }
+    });
+}
+
+/// Queues the newest window position; intermediate `WM_MOVE` reports are coalesced.
+fn queue_overlay_position(id: String, x: f32, y: f32) {
+    ensure_overlay_position_worker();
+    if let Ok(mut slot) = PENDING_OVERLAY_POSITION.lock() {
+        *slot = Some((id, x, y));
+    }
+    OVERLAY_POSITION_WAKE.notify_one();
+}
+
+/// Progress values fed by the update-progress poller. The overlay only needs the two updater
+/// fields, so it polls the narrow `GetUpdateProgress` query on a worker instead of pulling and
+/// deserializing the whole `DaemonState` (config plus logs) on the render thread; the frame loop
+/// reads these cached values (U06-013).
+static UPDATE_PROGRESS_BITS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static UPDATE_STATUS_TEXT: Mutex<Option<String>> = Mutex::new(None);
+
+fn ensure_update_progress_poller() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    STARTED.get_or_init(|| {
+        if let Err(err) = std::thread::Builder::new()
+            .name("overlay-update-progress".into())
+            .spawn(|| loop {
+                std::thread::sleep(Duration::from_millis(100));
+                if let Ok(response) =
+                    crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetUpdateProgress)
+                {
+                    cache_update_progress(&response);
+                }
+            })
+        {
+            crate::logging::error("OVERLAY", &format!("Failed to spawn update-progress poller: {err}"));
+        }
+    });
+}
+
+/// Stores one poll answer in the atomics the frame loop reads. Any other response is ignored,
+/// and a missing progress keeps the last value (the daemon reports progress only while a
+/// download is running).
+fn cache_update_progress(response: &crate::ipc::IpcResponse) {
+    let crate::ipc::IpcResponse::UpdateProgress { progress, status } = response else {
+        return;
+    };
+    if let Some(progress) = progress {
+        UPDATE_PROGRESS_BITS.store(progress.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    }
+    if let Ok(mut slot) = UPDATE_STATUS_TEXT.lock() {
+        *slot = status.clone();
+    }
+}
+
+fn cached_update_progress() -> f32 {
+    f32::from_bits(UPDATE_PROGRESS_BITS.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+fn cached_update_status() -> Option<String> {
+    UPDATE_STATUS_TEXT.lock().ok().and_then(|slot| slot.clone())
+}
 
 #[cfg(windows)]
 unsafe extern "system" fn overlay_subclass_proc(
@@ -145,11 +254,8 @@ unsafe extern "system" fn overlay_subclass_proc(
                     if should_send {
                         let mut rect = RECT::default();
                         if GetWindowRect(hwnd, &mut rect).is_ok() {
-                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::UpdateOverlayPosition {
-                                id: rt.id.clone(),
-                                x: rect.left as f32,
-                                y: rect.top as f32,
-                            });
+                            let scale = window_dpi_scale(hwnd);
+                            queue_overlay_position(rt.id.clone(), rect.left as f32 / scale, rect.top as f32 / scale);
                         }
                     }
                 }
@@ -160,11 +266,8 @@ unsafe extern "system" fn overlay_subclass_proc(
                 if (rt.calibration || rt.draggable) && !rt.id.is_empty() {
                     let mut rect = RECT::default();
                     if GetWindowRect(hwnd, &mut rect).is_ok() {
-                        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::UpdateOverlayPosition {
-                            id: rt.id.clone(),
-                            x: rect.left as f32,
-                            y: rect.top as f32,
-                        });
+                        let scale = window_dpi_scale(hwnd);
+                        queue_overlay_position(rt.id.clone(), rect.left as f32 / scale, rect.top as f32 / scale);
                     }
                 }
             }
@@ -173,6 +276,123 @@ unsafe extern "system" fn overlay_subclass_proc(
     }
 
     DefSubclassProc(hwnd, umsg, wparam, lparam)
+}
+
+/// Per-window timer bookkeeping. The renderer only flips `is_running` on a click;
+/// advancing the stored milliseconds from real elapsed time belongs to the frame
+/// loop, and a countdown's `on_finish` action fires exactly once per completed
+/// run (U06-016).
+#[derive(Default)]
+struct TimerRuntime {
+    last_tick: Option<Instant>,
+    /// Indices of countdowns whose `on_finish` already fired for the current run.
+    finished: std::collections::HashSet<usize>,
+}
+
+/// Advances every running `ClockTimer` by the real frame delta and returns the
+/// `on_finish` actions of countdowns that reached zero on this tick. Subtraction
+/// and addition saturate, so a clock jump or a paused process can never wrap the
+/// stored milliseconds.
+fn advance_clock_timers(
+    elements: &mut [OverlayElement],
+    runtime: &mut TimerRuntime,
+    now: Instant,
+) -> Vec<OverlayClickAction> {
+    let delta_ms = runtime.last_tick.map_or(0, |last| {
+        now.saturating_duration_since(last).as_millis().min(u64::MAX as u128) as u64
+    });
+    runtime.last_tick = Some(now);
+
+    let mut finished_actions = Vec::new();
+    for (index, elem) in elements.iter_mut().enumerate() {
+        let OverlayElement::ClockTimer {
+            mode,
+            is_running,
+            countdown_remaining_ms,
+            stopwatch_elapsed_ms,
+            on_finish,
+            ..
+        } = elem
+        else {
+            continue;
+        };
+
+        // A countdown that was reset (or restarted) above zero can finish again.
+        if *mode == TimerMode::Countdown && *countdown_remaining_ms > 0 {
+            runtime.finished.remove(&index);
+        }
+
+        if !*is_running || delta_ms == 0 {
+            continue;
+        }
+
+        match mode {
+            TimerMode::Stopwatch => {
+                *stopwatch_elapsed_ms = stopwatch_elapsed_ms.saturating_add(delta_ms);
+            }
+            TimerMode::Countdown => {
+                *countdown_remaining_ms = countdown_remaining_ms.saturating_sub(delta_ms);
+                if *countdown_remaining_ms == 0 {
+                    *is_running = false;
+                    if runtime.finished.insert(index) {
+                        if let Some(action) = on_finish {
+                            finished_actions.push(action.clone());
+                        }
+                    }
+                }
+            }
+            TimerMode::Clock | TimerMode::Uptime => {}
+        }
+    }
+    finished_actions
+}
+
+/// `OverlayClickAction::ResetTimer`: countdowns return to their configured
+/// duration, stopwatches to zero (U06-002).
+fn reset_clock_timers(elements: &mut [OverlayElement]) {
+    for elem in elements.iter_mut() {
+        if let OverlayElement::ClockTimer {
+            mode,
+            countdown_total_ms,
+            countdown_remaining_ms,
+            stopwatch_elapsed_ms,
+            ..
+        } = elem
+        {
+            match mode {
+                TimerMode::Countdown => *countdown_remaining_ms = *countdown_total_ms,
+                TimerMode::Stopwatch => *stopwatch_elapsed_ms = 0,
+                TimerMode::Clock | TimerMode::Uptime => {}
+            }
+        }
+    }
+}
+
+/// `OverlayClickAction::ToggleTimer`: flips `is_running` exactly like a direct
+/// click on the timer, including re-arming a countdown that sits at zero
+/// (U06-002).
+fn toggle_clock_timers(elements: &mut [OverlayElement]) {
+    for elem in elements.iter_mut() {
+        if let OverlayElement::ClockTimer {
+            mode,
+            is_running,
+            countdown_total_ms,
+            countdown_remaining_ms,
+            ..
+        } = elem
+        {
+            match mode {
+                TimerMode::Countdown => {
+                    if *countdown_remaining_ms == 0 {
+                        *countdown_remaining_ms = *countdown_total_ms;
+                    }
+                    *is_running = !*is_running;
+                }
+                TimerMode::Stopwatch => *is_running = !*is_running,
+                TimerMode::Clock | TimerMode::Uptime => {}
+            }
+        }
+    }
 }
 
 pub struct OverlayWindowApp {
@@ -189,13 +409,19 @@ pub struct OverlayWindowApp {
     pub is_closing: bool,
     pub hwnd: Option<isize>,
     pub last_window_track: Instant,
+    /// Last time the `WindowRelative` target handle was re-resolved. The process
+    /// table is scanned on a seconds-scale timer instead of on every 50 ms tick
+    /// (U06-006).
+    pub last_target_window_lookup: Instant,
+    /// Cached `HWND` of the tracked target window (raw pointer value).
+    pub target_window: Option<isize>,
     pub frame_count: u32,
-    pub last_progress_query: Instant,
-    pub cached_progress: f32,
-    pub cached_status: Option<String>,
+    /// Throttle for the live-text channel (`ph.overlay_set_text` / `SetText`).
+    pub last_text_poll: Instant,
     /// UI language resolved once at window startup: overlay windows are short-lived and
     /// must not re-read settings every frame.
     pub language: crate::i18n::Language,
+    timer_runtime: TimerRuntime,
 }
 
 impl OverlayWindowApp {
@@ -268,16 +494,37 @@ impl OverlayWindowApp {
             is_closing: false,
             hwnd: None,
             last_window_track: Instant::now(),
+            last_target_window_lookup: Instant::now() - Duration::from_secs(10),
+            target_window: None,
             frame_count: 0,
-            last_progress_query: Instant::now() - Duration::from_secs(1),
-            cached_progress: 0.0,
-            cached_status: None,
+            last_text_poll: Instant::now() - Duration::from_secs(1),
             language: Settings::read().language,
+            timer_runtime: TimerRuntime::default(),
         };
+
+        // Start the workers up front so the window procedure never has to spawn a
+        // thread from inside a message handler.
+        if !calibration && app.overlay.id == "overlay_update_progress" {
+            ensure_update_progress_poller();
+        }
+        if app.calibration || app.overlay.draggable {
+            ensure_overlay_position_worker();
+        }
 
         app.apply_win32_window_styles();
 
         app
+    }
+
+    /// Applies a click action returned by the renderer. Timer actions need the
+    /// element list, which only the window owns; everything else is the renderer
+    /// dispatcher (blocking work goes to its worker thread).
+    fn apply_click_action(&mut self, action: &OverlayClickAction) {
+        match action {
+            OverlayClickAction::ResetTimer => reset_clock_timers(&mut self.overlay.elements),
+            OverlayClickAction::ToggleTimer => toggle_clock_timers(&mut self.overlay.elements),
+            other => overlay_renderer::execute_click_action(other),
+        }
     }
 
     fn apply_win32_window_styles(&mut self) {
@@ -427,8 +674,37 @@ impl OverlayWindowApp {
     }
 }
 
+/// True while a cached window handle still designates a window the overlay can
+/// follow: it exists, is visible and is not minimized.
 #[cfg(windows)]
-pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32, i32, i32)> {
+fn is_trackable_window(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindow, IsWindowVisible};
+
+    unsafe {
+        IsWindow(Some(hwnd)).as_bool()
+            && IsWindowVisible(hwnd).as_bool()
+            && !IsIconic(hwnd).as_bool()
+    }
+}
+
+/// Physical screen rectangle `(x, y, width, height)` of a live window.
+#[cfg(windows)]
+fn physical_window_rect(hwnd: windows::Win32::Foundation::HWND) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut rect = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut rect) }.ok()?;
+    let w = rect.right - rect.left;
+    let h = rect.bottom - rect.top;
+    (w > 50 && h > 50).then_some((rect.left, rect.top, w, h))
+}
+
+/// Resolves the window that the `WindowRelative` anchor follows. This is the only
+/// path that enumerates the process table; callers cache the handle because the
+/// full scan must not run every 50 ms over a game (U06-006).
+#[cfg(windows)]
+pub fn resolve_target_window(target_process: Option<&str>) -> Option<windows::Win32::Foundation::HWND> {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -442,19 +718,17 @@ pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32,
                 let mut pid = 0u32;
                 GetWindowThreadProcessId(fg_hwnd, Some(&mut pid));
                 let snap = crate::daemon::watcher::ProcessWatcher::snapshot_process_map();
-                if let Some(name) = snap.get(&pid) {
-                    let clean_target = std::path::Path::new(target)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or(target);
-                    if name.eq_ignore_ascii_case(clean_target) {
-                        let mut rect = RECT::default();
-                        if GetWindowRect(fg_hwnd, &mut rect).is_ok() {
-                            let w = rect.right - rect.left;
-                            let h = rect.bottom - rect.top;
-                            if w > 50 && h > 50 {
-                                return Some((rect.left, rect.top, w, h));
-                            }
+                let clean_target = std::path::Path::new(target)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(target);
+                if snap.get(&pid).is_some_and(|name| name.eq_ignore_ascii_case(clean_target)) {
+                    let mut rect = RECT::default();
+                    if GetWindowRect(fg_hwnd, &mut rect).is_ok() {
+                        let w = rect.right - rect.left;
+                        let h = rect.bottom - rect.top;
+                        if w > 50 && h > 50 {
+                            return Some(fg_hwnd);
                         }
                     }
                 }
@@ -464,7 +738,7 @@ pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32,
                     let w = rect.right - rect.left;
                     let h = rect.bottom - rect.top;
                     if w > 50 && h > 50 {
-                        return Some((rect.left, rect.top, w, h));
+                        return Some(fg_hwnd);
                     }
                 }
             }
@@ -489,7 +763,7 @@ pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32,
 
             struct SearchCtx<'a> {
                 pids: &'a [u32],
-                rect: Option<(i32, i32, i32, i32)>,
+                hwnd: Option<HWND>,
             }
 
             unsafe extern "system" fn enum_wnd(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -505,7 +779,7 @@ pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32,
                         let w = r.right - r.left;
                         let h = r.bottom - r.top;
                         if w > 100 && h > 100 {
-                            ctx.rect = Some((r.left, r.top, w, h));
+                            ctx.hwnd = Some(hwnd);
                             return BOOL(0);
                         }
                     }
@@ -515,10 +789,10 @@ pub fn get_target_window_rect(target_process: Option<&str>) -> Option<(i32, i32,
 
             let mut search = SearchCtx {
                 pids: &matching_pids,
-                rect: None,
+                hwnd: None,
             };
             let _ = EnumWindows(Some(enum_wnd), LPARAM(&mut search as *mut _ as isize));
-            return search.rect;
+            return search.hwnd;
         }
 
         None
@@ -538,6 +812,27 @@ impl eframe::App for OverlayWindowApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        // Advance running timers from the real frame delta before drawing; the renderer
+        // only flips `is_running` / resets values on a click (U06-016).
+        let elapsed_actions = advance_clock_timers(&mut self.overlay.elements, &mut self.timer_runtime, Instant::now());
+        for action in elapsed_actions {
+            self.apply_click_action(&action);
+        }
+
+        // Live text updates are published to a per-overlay file by the daemon, so
+        // a `SetText` action swaps the label instead of restarting this process.
+        if !self.calibration && self.last_text_poll.elapsed() >= Duration::from_millis(150) {
+            self.last_text_poll = Instant::now();
+            if let Some(text) = crate::daemon::overlay_manager::live_overlay_text_if_changed(
+                &self.overlay.id,
+                self.override_text.as_deref(),
+            ) {
+                self.override_text = Some(text);
+                ctx.request_repaint();
+            }
+        }
+
         if !self.hw_configured {
             self.apply_win32_window_styles();
         }
@@ -669,30 +964,46 @@ impl eframe::App for OverlayWindowApp {
             }
         }
 
-        // 4. Track WindowRelative target window
+        // 4. Track WindowRelative target window. The process table is scanned only when
+        // the cached handle goes stale; the per-tick work is a GetWindowRect on a live
+        // handle instead of two full Toolhelp snapshots every 50 ms (U06-006). The
+        // target rect is physical pixels, while element geometry is logical points, so
+        // the target monitor's DPI converts between the two (U11-005).
         #[cfg(windows)]
         if self.overlay.anchor == crate::models::OverlayAnchor::WindowRelative
             && !self.calibration
             && !self.overlay.draggable
             && self.last_window_track.elapsed() >= Duration::from_millis(50)
         {
+            use windows::Win32::Foundation::HWND;
             self.last_window_track = Instant::now();
-            if let Some((wx, wy, ww, _)) = get_target_window_rect(self.overlay.target_process.as_deref()) {
-                let target_x = (wx + ww - self.overlay.rect.width as i32 - self.overlay.rect.x as i32) as f32;
-                let target_y = (wy + self.overlay.rect.y as i32) as f32;
-                if let Some(hwnd_val) = self.hwnd {
-                    unsafe {
-                        use windows::Win32::Foundation::HWND;
-                        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
-                        let _ = SetWindowPos(
-                            HWND(hwnd_val as _),
-                            None,
-                            target_x as i32,
-                            target_y as i32,
-                            0,
-                            0,
-                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
+            let cached_handle = self.target_window.map(|value| HWND(value as _));
+            let needs_lookup = cached_handle.is_none_or(|hwnd| !is_trackable_window(hwnd))
+                || self.last_target_window_lookup.elapsed() >= Duration::from_secs(2);
+            if needs_lookup {
+                self.target_window = resolve_target_window(self.overlay.target_process.as_deref())
+                    .map(|hwnd| hwnd.0 as isize);
+                self.last_target_window_lookup = Instant::now();
+            }
+            if let Some(target_hwnd) = self.target_window.map(|value| HWND(value as _)) {
+                if let Some((wx, wy, ww, _)) = physical_window_rect(target_hwnd) {
+                    let scale = window_dpi_scale(target_hwnd);
+                    let logical_w = self.overlay.rect.width + self.overlay.rect.x;
+                    let target_x = (wx as f32 + ww as f32 - logical_w * scale).round() as i32;
+                    let target_y = (wy as f32 + self.overlay.rect.y * scale).round() as i32;
+                    if let Some(hwnd_val) = self.hwnd {
+                        unsafe {
+                            use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER};
+                            let _ = SetWindowPos(
+                                HWND(hwnd_val as _),
+                                None,
+                                target_x,
+                                target_y,
+                                0,
+                                0,
+                                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
             }
@@ -788,26 +1099,16 @@ impl eframe::App for OverlayWindowApp {
         }
 
         if self.overlay.id == "overlay_update_progress" {
-            if !crate::single_instance::is_daemon_running() || crate::single_instance::is_gui_running() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                std::process::exit(0);
-            }
-
+            // The standalone overlay fast path never probes single-instance
+            // mutexes; lifetime is owned by the daemon that spawned it (child
+            // process plus the kill-on-close job object).
             let version = self.override_text.as_deref().unwrap_or("latest");
             let loc = crate::i18n::get(self.language);
 
-            // Query daemon state every 50ms
-            if self.last_progress_query.elapsed() >= Duration::from_millis(50) {
-                self.last_progress_query = Instant::now();
-                if let Ok(crate::ipc::IpcResponse::State(state)) = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetState) {
-                    if let Some(p) = state.update_progress {
-                        self.cached_progress = p;
-                    }
-                    self.cached_status = state.update_status;
-                }
-            }
-
-            let progress = self.cached_progress;
+            // The worker polls the daemon and publishes the two fields this card
+            // needs; the frame loop never deserializes the full DaemonState (U06-013).
+            let progress = cached_update_progress();
+            let cached_status = cached_update_status();
 
             let bg_color = Color32::from_rgba_premultiplied(16, 17, 23, 245);
             let border_color = Color32::from_white_alpha(40);
@@ -861,7 +1162,7 @@ impl eframe::App for OverlayWindowApp {
             // Status line
             let display_status = if progress >= 1.0 {
                 loc.update_progress_applying.to_string()
-            } else if let Some(ref s) = self.cached_status {
+            } else if let Some(ref s) = cached_status {
                 s.clone()
             } else {
                 loc.update_progress_downloading.replace("{}", version)
@@ -974,21 +1275,32 @@ impl eframe::App for OverlayWindowApp {
             }
         }
 
-        let mut render_ctx = overlay_renderer::RenderContext {
-            painter,
-            card_canvas_rect: card_rect,
-            zoom: 1.0,
-            global_opacity: egui_render_opacity,
-            is_interactive: (!self.overlay.click_through || self.calibration) && !self.is_closing,
-            pointer_pos,
-            pointer_clicked,
-            pointer_down,
-            override_text: self.override_text.as_deref(),
-            target_process: self.overlay.target_process.as_deref(),
-        };
+        let mut pending_actions = Vec::new();
+        {
+            let mut render_ctx = overlay_renderer::RenderContext {
+                painter,
+                card_canvas_rect: card_rect,
+                zoom: 1.0,
+                global_opacity: egui_render_opacity,
+                is_interactive: (!self.overlay.click_through || self.calibration) && !self.is_closing,
+                pointer_pos,
+                pointer_clicked,
+                pointer_down,
+                override_text: self.override_text.as_deref(),
+                target_process: self.overlay.target_process.as_deref(),
+            };
 
-        for elem in &mut self.overlay.elements {
-            overlay_renderer::render_element(&mut render_ctx, elem);
+            for elem in &mut self.overlay.elements {
+                if let Some(action) = overlay_renderer::render_element(&mut render_ctx, elem) {
+                    pending_actions.push(action);
+                }
+            }
+        }
+
+        // Click actions run after the element pass so timer actions can reach the real
+        // `ClockTimer` state and blocking work is queued instead of stalling the frame.
+        for action in pending_actions {
+            self.apply_click_action(&action);
         }
 
         // Request repaint every 30ms for smooth 60fps animations (equalizer, key visualizer glow, graphs)
@@ -1060,14 +1372,19 @@ pub fn run_overlay_window(
     let (abs_x, abs_y) = if overlay.anchor == crate::models::OverlayAnchor::WindowRelative && !calibration {
         #[cfg(windows)]
         {
-            if let Some((wx, wy, ww, _)) = get_target_window_rect(overlay.target_process.as_deref()) {
-                (
-                    (wx + ww - overlay.rect.width as i32 - overlay.rect.x as i32) as f32,
-                    (wy + overlay.rect.y as i32) as f32,
-                )
-            } else {
-                (mon_x + rel_x, mon_y + rel_y)
-            }
+            // `GetWindowRect` reports physical pixels while `with_position` expects
+            // logical points, so the target monitor's DPI scale converts them (U11-005).
+            resolve_target_window(overlay.target_process.as_deref())
+                .and_then(|hwnd| {
+                    physical_window_rect(hwnd).map(|(wx, wy, ww, _)| {
+                        let scale = window_dpi_scale(hwnd);
+                        (
+                            (wx as f32 + ww as f32) / scale - overlay.rect.width - overlay.rect.x,
+                            wy as f32 / scale + overlay.rect.y,
+                        )
+                    })
+                })
+                .unwrap_or((mon_x + rel_x, mon_y + rel_y))
         }
         #[cfg(not(windows))]
         (mon_x + rel_x, mon_y + rel_y)
@@ -1120,6 +1437,50 @@ mod tests {
     use std::sync::Mutex;
 
     static TEST_OVERLAY_LOCK: Mutex<()> = Mutex::new(());
+
+    /// U06-013: the frame loop reads cached values fed by the narrow `GetUpdateProgress` answer.
+    #[test]
+    fn test_update_progress_poller_caches_the_narrow_answer() {
+        let _lock = TEST_OVERLAY_LOCK.lock().unwrap();
+
+        cache_update_progress(&crate::ipc::IpcResponse::UpdateProgress {
+            progress: Some(0.37),
+            status: Some("37%".to_string()),
+        });
+        assert!((cached_update_progress() - 0.37).abs() < f32::EPSILON);
+        assert_eq!(cached_update_status().as_deref(), Some("37%"));
+
+        // A missing progress keeps the last value; the status still updates.
+        cache_update_progress(&crate::ipc::IpcResponse::UpdateProgress {
+            progress: None,
+            status: Some("done".to_string()),
+        });
+        assert!((cached_update_progress() - 0.37).abs() < f32::EPSILON);
+        assert_eq!(cached_update_status().as_deref(), Some("done"));
+
+        // A response that is not the narrow answer is ignored.
+        cache_update_progress(&crate::ipc::IpcResponse::Pong);
+        assert!((cached_update_progress() - 0.37).abs() < f32::EPSILON);
+        assert_eq!(cached_update_status().as_deref(), Some("done"));
+    }
+
+    /// The poller itself must use the narrow query; `GetState` would pull the whole snapshot.
+    #[test]
+    fn test_update_progress_poller_uses_the_narrow_request() {
+        let source = include_str!("overlay_window.rs");
+        let production = source
+            .find(concat!("#[cfg(", "test)]"))
+            .map(|tests_start| &source[..tests_start])
+            .unwrap_or(source);
+        assert!(
+            production.contains("GetUpdateProgress"),
+            "the update-progress poller must use the narrow query"
+        );
+        assert!(
+            !production.contains("GetState"),
+            "the overlay fast path must not pull the full daemon state"
+        );
+    }
 
     #[test]
     fn test_overlay_window_fade_in_and_fade_out_initialization() {
@@ -1224,5 +1585,181 @@ mod tests {
         assert_eq!(decoded.name, "Test B64 Overlay");
         assert_eq!(decoded.fade_in_ms, Some(200));
         assert_eq!(decoded.fade_out_ms, Some(350));
+    }
+
+    fn timer_element(
+        mode: TimerMode,
+        is_running: bool,
+        total_ms: u64,
+        remaining_ms: u64,
+        elapsed_ms: u64,
+        on_finish: Option<OverlayClickAction>,
+    ) -> OverlayElement {
+        OverlayElement::ClockTimer {
+            id: "timer_test".to_string(),
+            mode,
+            format_str: "%M:%S".to_string(),
+            countdown_total_ms: total_ms,
+            countdown_remaining_ms: remaining_ms,
+            stopwatch_elapsed_ms: elapsed_ms,
+            is_running,
+            font_size: 14.0,
+            color: [255, 255, 255, 255],
+            bg_color: [0, 0, 0, 0],
+            bold: false,
+            font_family: "Inter".to_string(),
+            x: 0.0,
+            y: 0.0,
+            width: 120.0,
+            height: 30.0,
+            rotation: 0.0,
+            on_finish,
+        }
+    }
+
+    fn countdown_ms(elem: &OverlayElement) -> u64 {
+        match elem {
+            OverlayElement::ClockTimer { countdown_remaining_ms, .. } => *countdown_remaining_ms,
+            _ => panic!("expected ClockTimer"),
+        }
+    }
+
+    fn stopwatch_ms(elem: &OverlayElement) -> u64 {
+        match elem {
+            OverlayElement::ClockTimer { stopwatch_elapsed_ms, .. } => *stopwatch_elapsed_ms,
+            _ => panic!("expected ClockTimer"),
+        }
+    }
+
+    fn timer_running(elem: &OverlayElement) -> bool {
+        match elem {
+            OverlayElement::ClockTimer { is_running, .. } => *is_running,
+            _ => panic!("expected ClockTimer"),
+        }
+    }
+
+    #[test]
+    fn test_clock_timer_stopwatch_advances_from_frame_delta_and_pauses() {
+        let start = Instant::now();
+        let mut elements = vec![timer_element(TimerMode::Stopwatch, true, 0, 0, 1_000, None)];
+        let mut runtime = TimerRuntime::default();
+
+        // The first tick only establishes the anchor.
+        assert!(advance_clock_timers(&mut elements, &mut runtime, start).is_empty());
+        assert_eq!(stopwatch_ms(&elements[0]), 1_000);
+
+        assert!(advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_millis(250)).is_empty());
+        assert_eq!(stopwatch_ms(&elements[0]), 1_250);
+
+        if let OverlayElement::ClockTimer { is_running, .. } = &mut elements[0] {
+            *is_running = false;
+        }
+        let paused_at = start + Duration::from_millis(700);
+        assert!(advance_clock_timers(&mut elements, &mut runtime, paused_at).is_empty());
+        assert_eq!(stopwatch_ms(&elements[0]), 1_250);
+    }
+
+    #[test]
+    fn test_clock_timer_stopwatch_saturates_instead_of_overflowing() {
+        let start = Instant::now();
+        let mut elements = vec![timer_element(TimerMode::Stopwatch, true, 0, 0, u64::MAX, None)];
+        let mut runtime = TimerRuntime::default();
+        advance_clock_timers(&mut elements, &mut runtime, start);
+        advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_secs(86_400));
+        assert_eq!(stopwatch_ms(&elements[0]), u64::MAX);
+    }
+
+    #[test]
+    fn test_countdown_finish_action_fires_exactly_once_and_rearms_on_reset() {
+        let start = Instant::now();
+        let mut elements = vec![timer_element(
+            TimerMode::Countdown,
+            true,
+            2_000,
+            100,
+            0,
+            Some(OverlayClickAction::CloseOverlay),
+        )];
+        let mut runtime = TimerRuntime::default();
+
+        advance_clock_timers(&mut elements, &mut runtime, start);
+        let actions = advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_millis(150));
+        assert_eq!(actions.len(), 1, "countdown reaching zero must execute on_finish once");
+        assert!(matches!(actions[0], OverlayClickAction::CloseOverlay));
+        assert_eq!(countdown_ms(&elements[0]), 0);
+        assert!(!timer_running(&elements[0]), "a finished countdown stops");
+
+        // Further ticks must not repeat the finish action.
+        assert!(advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_millis(600)).is_empty());
+
+        // Reset re-arms it; starting again finishes a second time.
+        reset_clock_timers(&mut elements);
+        assert_eq!(countdown_ms(&elements[0]), 2_000);
+        toggle_clock_timers(&mut elements);
+        assert!(timer_running(&elements[0]));
+        advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_millis(700));
+        let second = advance_clock_timers(&mut elements, &mut runtime, start + Duration::from_millis(2_800));
+        assert_eq!(second.len(), 1, "a reset countdown must be able to finish again");
+        assert_eq!(countdown_ms(&elements[0]), 0);
+    }
+
+    #[test]
+    fn test_timer_click_actions_reset_and_toggle_elements() {
+        let mut elements = vec![
+            timer_element(TimerMode::Countdown, false, 5_000, 4_200, 0, None),
+            timer_element(TimerMode::Stopwatch, false, 0, 0, 900, None),
+        ];
+
+        reset_clock_timers(&mut elements);
+        assert_eq!(countdown_ms(&elements[0]), 5_000);
+        assert_eq!(stopwatch_ms(&elements[1]), 0);
+
+        toggle_clock_timers(&mut elements);
+        assert!(timer_running(&elements[0]));
+        assert!(timer_running(&elements[1]));
+
+        // Toggling a countdown that sits at zero re-arms it, exactly like a direct click.
+        if let OverlayElement::ClockTimer { countdown_remaining_ms, .. } = &mut elements[0] {
+            *countdown_remaining_ms = 0;
+        }
+        toggle_clock_timers(&mut elements);
+        assert!(!timer_running(&elements[0]));
+        assert_eq!(countdown_ms(&elements[0]), 5_000);
+    }
+
+    #[test]
+    fn test_overlay_window_applies_timer_click_actions() {
+        let _lock = TEST_OVERLAY_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut def = OverlayDefinition::default_new_overlay();
+        def.elements = vec![timer_element(TimerMode::Countdown, false, 3_000, 1_000, 0, None)];
+
+        let mut app = OverlayWindowApp::new(def, false, None, None, &ctx);
+        app.apply_click_action(&OverlayClickAction::ResetTimer);
+        assert_eq!(countdown_ms(&app.overlay.elements[0]), 3_000);
+
+        app.apply_click_action(&OverlayClickAction::ToggleTimer);
+        assert!(timer_running(&app.overlay.elements[0]));
+    }
+
+    /// The standalone `--overlay-window` fast path must never probe single-instance mutexes
+    /// (U06-001). The needles are built with `concat!` so this test cannot match itself.
+    #[test]
+    fn test_fast_path_never_probes_single_instance_state() {
+        let source = include_str!("overlay_window.rs");
+        let mut production = source;
+        if let Some(tests_start) = source.find(concat!("#[cfg(", "test)]")) {
+            production = &source[..tests_start];
+        }
+        for needle in [
+            concat!("single_", "instance::"),
+            concat!("is_daemon_", "running("),
+            concat!("is_gui_", "running("),
+        ] {
+            assert!(
+                !production.contains(needle),
+                "overlay window fast path must not reference {needle}"
+            );
+        }
     }
 }

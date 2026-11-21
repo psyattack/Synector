@@ -33,22 +33,17 @@ impl GuideTopic {
         ]
     }
 
-    fn title(&self, lang: Language) -> &'static str {
-        match (self, lang) {
-            (GuideTopic::Architecture, Language::Russian) => "Концепция и Архитектура",
-            (GuideTopic::Architecture, Language::English) => "Concepts & Architecture",
-            (GuideTopic::Shortcuts, Language::Russian) => "Горячие клавиши и Запись",
-            (GuideTopic::Shortcuts, Language::English) => "Shortcuts & Recording",
-            (GuideTopic::Triggers, Language::Russian) => "Все виды Триггеров",
-            (GuideTopic::Triggers, Language::English) => "Triggers Deep-Dive",
-            (GuideTopic::Actions, Language::Russian) => "Пайплайн Действий",
-            (GuideTopic::Actions, Language::English) => "Actions Pipeline",
-            (GuideTopic::Tokens, Language::Russian) => "Токены и Контекст",
-            (GuideTopic::Tokens, Language::English) => "Tokens & Context",
-            (GuideTopic::OutputPiping, Language::Russian) => "Output Piping (Вывод)",
-            (GuideTopic::OutputPiping, Language::English) => "Output Piping & Data Flow",
-            (GuideTopic::Recipes, Language::Russian) => "Практические Рецепты",
-            (GuideTopic::Recipes, Language::English) => "Practical Recipes",
+    /// Sidebar chapter title. Chrome, so it comes from `Strings`; the chapter bodies below keep
+    /// their `if lang == Language::Russian { ... } else { ... }` prose branches.
+    fn title(&self, loc: &crate::i18n::Strings) -> &'static str {
+        match self {
+            GuideTopic::Architecture => loc.guide_topic_architecture,
+            GuideTopic::Shortcuts => loc.guide_topic_shortcuts,
+            GuideTopic::Triggers => loc.guide_topic_triggers,
+            GuideTopic::Actions => loc.guide_topic_actions,
+            GuideTopic::Tokens => loc.guide_topic_tokens,
+            GuideTopic::OutputPiping => loc.guide_topic_output_piping,
+            GuideTopic::Recipes => loc.guide_topic_recipes,
         }
     }
 
@@ -63,6 +58,16 @@ impl GuideTopic {
             GuideTopic::Recipes => egui_phosphor::regular::LIGHTBULB,
         }
     }
+}
+
+/// Resolves the stored chapter index through [`GuideTopic::all`] — the same list the sidebar
+/// enumerates — so inserting or reordering a topic cannot silently render a different chapter.
+/// An out-of-range index falls back to the first chapter.
+fn selected_topic(index: usize) -> GuideTopic {
+    GuideTopic::all()
+        .get(index)
+        .copied()
+        .unwrap_or(GuideTopic::Architecture)
 }
 
 pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
@@ -89,7 +94,7 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                             .color(t.accent_ink),
                     );
                     ui.add_space(8.0);
-                    widgets::eyebrow(ui, "GUIDE", loc.guide_eyebrow_sub);
+                    widgets::eyebrow(ui, loc.guide_eyebrow, loc.guide_eyebrow_sub);
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
@@ -132,7 +137,7 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                             let topics = GuideTopic::all();
                             for (idx, topic) in topics.iter().enumerate() {
                                 let is_active = state.guide_selected_topic == idx;
-                                let title = topic.title(lang);
+                                let title = topic.title(loc);
                                 let glyph = topic.glyph();
 
                                 let bg = if is_active { t.accent_ink.gamma_multiply(0.12) } else { egui::Color32::TRANSPARENT };
@@ -183,15 +188,11 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                                     ui.set_width(ui.available_width());
                                     ui.spacing_mut().item_spacing.y = 8.0;
 
-                                    let cur_topic = match state.guide_selected_topic {
-                                        0 => GuideTopic::Architecture,
-                                        1 => GuideTopic::Shortcuts,
-                                        2 => GuideTopic::Triggers,
-                                        3 => GuideTopic::Actions,
-                                        4 => GuideTopic::Tokens,
-                                        5 => GuideTopic::OutputPiping,
-                                        _ => GuideTopic::Recipes,
-                                    };
+                                    // Resolve through the same list the sidebar enumerates, so
+                                    // reordering or inserting a topic cannot silently render a
+                                    // different chapter (the old hardcoded match fell through to
+                                    // Recipes).
+                                    let cur_topic = selected_topic(state.guide_selected_topic);
 
                                     render_topic_content(ui, cur_topic, &t, lang);
                                 });
@@ -416,6 +417,9 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
 // ----------------------------------------------------------------------------
 // Chapter 02: Shortcuts & Recording
 // ----------------------------------------------------------------------------
+// Parity checklist for the two branches below: editor shortcuts (Ctrl+Z, Ctrl+Y /
+// Ctrl+Shift+Z, F9, F10, Escape incl. cancelling an active Drag & Drop) and every capability
+// listed in the table must appear in both languages (AUDIT U03-003).
 fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
     if lang == Language::Russian {
         doc_header(ui, "Горячие Клавиши и Запись", t);
@@ -428,7 +432,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Ctrl + Y или Ctrl + Shift + Z — Повтор отмененного действия (Redo).\n\
              • F9 — Старт / стоп аппаратной записи макроса; при открытой Студии макросов работает из любого окна Windows.\n\
              • F10 — Быстрый запуск пробного тестирования макроса (Test Run live).\n\
-             • Escape — Мгновенная остановка записи макроса или закрытие модальных окон.",
+             • Escape — Мгновенная остановка записи макроса, отмена активного Drag & Drop или закрытие модальных окон.",
             t,
             true,
         );
@@ -497,6 +501,10 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
 // ----------------------------------------------------------------------------
 // Chapter 03: Triggers Deep-Dive
 // ----------------------------------------------------------------------------
+// Parity checklist for the two branches below: trigger categories, pre-condition catalog
+// entries (including the file/folder extension filters), File Watcher events, resource
+// thresholds and duration, webhook address and hotkey modes must appear in both languages
+// (AUDIT U03-003).
 fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
     if lang == Language::Russian {
         doc_header(ui, "Все Виды Триггеров", t);
@@ -512,7 +520,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Предварительные Условия (Каталог Условий)",
             "• Интерактивный каталог: быстрый выбор условий через библиотеку с категориями и полнотекстовым поиском.\n\
-             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон/пробуждение, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, слежение за папкой или файлом, а также активность другого правила (выполняется ли его пайплайн прямо сейчас).\n\
+             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон/пробуждение, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, слежение за папкой или отдельным файлом с фильтрами по расширению, а также активность другого правила (выполняется ли его пайплайн прямо сейчас).\n\
              • Логика связывания: объединение операторами И (AND) и ИЛИ (OR) в любых сочетаниях.\n\
              • Тихий пропуск: при невыполнении условий запуск правила мягко пропускается без ошибок.",
             t,
@@ -1106,5 +1114,54 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             t,
             false,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// U03-002: the content pane resolves the stored index through the same list the sidebar
+    /// enumerates, so every chapter round-trips and an out-of-range index falls back to the
+    /// first chapter instead of silently rendering the last one.
+    #[test]
+    fn test_selected_topic_matches_sidebar_order() {
+        for (index, topic) in GuideTopic::all().iter().enumerate() {
+            assert!(selected_topic(index) == *topic, "chapter {index} must resolve to its own topic");
+        }
+        assert!(selected_topic(usize::MAX) == GuideTopic::Architecture);
+        assert_eq!(GuideTopic::all().len(), 7);
+    }
+
+    /// U03-001 / U16-013: the guide chrome — the eyebrow prefix and the seven sidebar chapter
+    /// titles — comes from `Strings`, and each topic maps to its own field. The catalogs must
+    /// differ, otherwise a title pinned to one language would leak into the other UI.
+    #[test]
+    fn test_guide_chrome_uses_catalog_and_differs_by_language() {
+        let en = crate::i18n::get(Language::English);
+        let ru = crate::i18n::get(Language::Russian);
+
+        assert_eq!(en.guide_eyebrow, "GUIDE");
+        assert_eq!(ru.guide_eyebrow, "СПРАВОЧНИК");
+        assert_ne!(en.guide_eyebrow, ru.guide_eyebrow);
+
+        // Same order as `GuideTopic::all`, so a title mapped to the wrong field fails here.
+        let expected_en = [
+            en.guide_topic_architecture,
+            en.guide_topic_shortcuts,
+            en.guide_topic_triggers,
+            en.guide_topic_actions,
+            en.guide_topic_tokens,
+            en.guide_topic_output_piping,
+            en.guide_topic_recipes,
+        ];
+        for (topic, expected) in GuideTopic::all().iter().zip(expected_en) {
+            assert_eq!(topic.title(en), expected);
+            assert_ne!(
+                topic.title(en),
+                topic.title(ru),
+                "chapter title {expected:?} must be translated"
+            );
+        }
     }
 }

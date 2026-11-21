@@ -434,6 +434,9 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
   `runtime.json`; values in a rule file are ignored when an existing rule is updated.
 - **Share codes** (`SYN1:`) bundle the presets and overlays a rule references; imported rules are
   created disabled unless `--enable-imported` is passed.
+- **Quoted process arguments** — `start_process.arguments` is split with the Windows command-line
+  rules, so `-m "C:\\Program Files\\App\\mod.ini"` stays one argument. Quote paths with spaces and
+  escape an embedded quote as `\"` or `\"\"`.
 - **Rule control** (`rule_control`) chains rules: `operation: "call"` runs another pipeline,
   `operation: "stop"` aborts its executions without disabling it. Share codes do not rewrite these
   references, so export a calling rule and its target together.

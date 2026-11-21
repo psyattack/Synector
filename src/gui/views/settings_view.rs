@@ -20,7 +20,13 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
         }
     };
 
-    let mut changed = false;
+    // A failed write leaves the edited draft in egui's temporary data. Render it again next
+    // frame so an unreachable daemon does not silently revert the user's toggles or path.
+    if let Some(draft) = ui.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())) {
+        cfg = draft;
+    }
+
+    let mut changes = SettingsChanges::default();
 
     egui::ScrollArea::vertical()
         .id_salt("settings_scroll_area")
@@ -61,7 +67,7 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
                         egui::Layout::top_down(egui::Align::LEFT),
                         |ui| {
                             ui.spacing_mut().item_spacing.y = 12.0;
-                            render_content_panel(ui, state, &mut cfg, &mut changed, current_autorun, &t, loc);
+                            render_content_panel(ui, state, &mut cfg, &mut changes, current_autorun, &t, loc);
                         },
                     );
                     content_rect = resp_content.response.rect;
@@ -94,39 +100,88 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
                     ];
                     widgets::cells(ui, &mut state.settings_tab, &tab_options);
                     widgets::hrule(ui);
-                    render_content_panel(ui, state, &mut cfg, &mut changed, current_autorun, &t, loc);
+                    render_content_panel(ui, state, &mut cfg, &mut changes, current_autorun, &t, loc);
                 });
             }
         });
 
-    if changed {
-        crate::daemon::tray::update_tray_icon(cfg.tray_icon_path.clone());
-        crate::daemon::tray::set_tray_visible(!cfg.hide_tray_icon);
-        // The daemon is the only writer of settings.json while it is reachable; a direct
-        // write is the offline fallback so the GUI cannot race the daemon on a read-modify-
-        // write of the same file.
-        let saved = matches!(
-            crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())),
-            Ok(crate::ipc::IpcResponse::Ok)
-        );
-        if !saved {
-            persist_settings_fallback(&cfg);
+    if changes.config {
+        match finish_settings_commit(save_settings(&cfg), changes.mask) {
+            SettingsCommit::Saved { restart_required } => {
+                ui.data_mut(|d| d.remove_temp::<crate::config::Settings>(pending_settings_id()));
+                if restart_required {
+                    state.set_toast(loc.settings_mask_restart_required);
+                } else {
+                    state.set_toast(loc.toast_config_saved);
+                }
+                state.sync_with_daemon();
+            }
+            SettingsCommit::Failed(detail) => {
+                // Keep the draft so the edit is not lost, and never claim success.
+                ui.data_mut(|d| {
+                    d.insert_temp(pending_settings_id(), cfg.clone());
+                });
+                crate::logging::error("CONFIG", &format!("Failed to save settings: {detail}"));
+                state.set_toast(loc.toast_settings_save_failed.replace("{}", &detail));
+            }
         }
-        state.set_toast(loc.toast_config_saved);
-        state.sync_with_daemon();
     }
+}
+
+/// Key of the unsaved settings draft in egui's temporary data.
+fn pending_settings_id() -> egui::Id {
+    egui::Id::unique("settings_unsaved_draft")
+}
+
+/// Which settings edits a frame produced: `config` asks for a write at the end of the frame,
+/// `mask` additionally asks for the restart notice (masking is applied only when the daemon
+/// starts).
+#[derive(Default)]
+struct SettingsChanges {
+    config: bool,
+    mask: bool,
+}
+
+/// Outcome of committing the settings draft at the end of a frame.
+#[derive(Debug, PartialEq, Eq)]
+enum SettingsCommit {
+    /// The preference was written; `restart_required` marks the daemon-masking change, which
+    /// only takes effect on the next daemon start.
+    Saved { restart_required: bool },
+    /// Neither the daemon nor the direct-file fallback accepted the write. The draft is kept.
+    Failed(String),
+}
+
+fn finish_settings_commit(result: Result<(), String>, mask_changed: bool) -> SettingsCommit {
+    match result {
+        Ok(()) => SettingsCommit::Saved {
+            restart_required: mask_changed,
+        },
+        Err(detail) => SettingsCommit::Failed(detail),
+    }
+}
+
+/// The daemon is the only writer of settings.json while it is reachable; a direct write is the
+/// offline fallback so the GUI cannot race the daemon on a read-modify-write of the same file.
+/// Both failures are reported instead of being discarded.
+fn save_settings(cfg: &crate::config::Settings) -> Result<(), String> {
+    let daemon_error = match crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())) {
+        Ok(crate::ipc::IpcResponse::Ok) => return Ok(()),
+        Ok(crate::ipc::IpcResponse::Error(error)) => error,
+        Ok(_) => "the daemon did not confirm the settings write".to_string(),
+        Err(error) => error,
+    };
+    persist_settings_fallback(cfg).map_err(|error| format!("{daemon_error}; {error}"))
 }
 
 /// Offline fallback for settings persistence. Window geometry is preserved from the file
 /// because the settings view never edits it and the GUI owns it through `UpdateWindowState`.
-fn persist_settings_fallback(cfg: &crate::config::Settings) {
+fn persist_settings_fallback(cfg: &crate::config::Settings) -> Result<(), String> {
     let mut current = crate::config::Settings::read();
     let window = current.window.clone();
     current = cfg.clone();
     current.window = window;
-    if let Err(err) = current.save() {
-        crate::logging::error("CONFIG", &format!("Failed to save settings: {err}"));
-    }
+    current.save().map_err(|err| err.to_string())
 }
 
 fn render_sidebar(ui: &mut Ui, state: &mut GuiState, loc: &crate::i18n::Strings, t: &Tokens, w: f32) {
@@ -190,7 +245,7 @@ fn render_content_panel(
     ui: &mut Ui,
     state: &mut GuiState,
     cfg: &mut crate::config::Settings,
-    changed: &mut bool,
+    changes: &mut SettingsChanges,
     current_autorun: bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,
@@ -206,13 +261,13 @@ fn render_content_panel(
 
             match state.settings_tab {
                 SettingsTab::General => {
-                    render_general_content(ui, state, cfg, changed, current_autorun, t, loc);
+                    render_general_content(ui, state, cfg, changes, current_autorun, t, loc);
                 }
                 SettingsTab::Appearance => {
-                    render_appearance_content(ui, state, cfg, changed, t, loc);
+                    render_appearance_content(ui, state, cfg, &mut changes.config, t, loc);
                 }
                 SettingsTab::Updates => {
-                    render_updates_content(ui, state, cfg, changed, t, loc);
+                    render_updates_content(ui, state, cfg, &mut changes.config, t, loc);
                 }
             }
         });
@@ -255,11 +310,52 @@ fn render_setting_row<F: FnOnce(&mut Ui)>(
     });
 }
 
+/// Editable text and validation state of the tray-icon path field, kept in egui's temporary
+/// data so typing is not persisted until the field loses focus.
+#[derive(Clone, Default)]
+struct TrayIconPathEdit {
+    text: String,
+    invalid: bool,
+}
+
+/// Why a typed tray-icon path cannot be stored.
+#[derive(Debug, PartialEq, Eq)]
+enum TrayIconPathError {
+    /// The file does not exist (the daemon would silently fall back to the default icon).
+    Missing,
+    /// The extension is not one the daemon's icon loader understands.
+    Unsupported,
+}
+
+/// Validates a typed tray-icon path with the same rules the daemon's loader applies: the file
+/// must exist and be an `.ico`, `.exe` or `.dll`. Returns the normalized value to persist,
+/// `None` for an empty field, or the reason it was rejected.
+fn validate_tray_icon_path(raw: &str) -> Result<Option<String>, TrayIconPathError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let path = std::path::Path::new(trimmed);
+    // The daemon expands `%VAR%` segments before loading, so such a path cannot be checked
+    // for existence here; only its extension is validated.
+    if !trimmed.contains('%') && !path.is_file() {
+        return Err(TrayIconPathError::Missing);
+    }
+    let supported = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "ico" | "exe" | "dll"));
+    if !supported {
+        return Err(TrayIconPathError::Unsupported);
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
 fn render_general_content(
     ui: &mut Ui,
     state: &mut GuiState,
     cfg: &mut crate::config::Settings,
-    changed: &mut bool,
+    changes: &mut SettingsChanges,
     current_autorun: bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,
@@ -276,6 +372,10 @@ fn render_general_content(
 
     // 2. Custom Tray Icon with live thumbnail preview
     render_setting_row(ui, loc.settings_tray_icon_title, loc.settings_tray_icon_desc, t, |ui| {
+        let edit_id = egui::Id::unique("settings_tray_icon_edit");
+        let input_id = egui::Id::unique("settings_tray_icon_input");
+        let mut edit = ui.data(|d| d.get_temp::<TrayIconPathEdit>(edit_id)).unwrap_or_default();
+
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
@@ -330,11 +430,14 @@ fn render_general_content(
                 .clicked()
             {
                 if let Some(file) = rfd::FileDialog::new()
-                    .add_filter("Icons & Executables", &["ico", "exe", "dll"])
+                    .add_filter(loc.settings_tray_icon_filter, &["ico", "exe", "dll"])
                     .pick_file()
                 {
-                    cfg.tray_icon_path = Some(file.to_string_lossy().to_string());
-                    *changed = true;
+                    let picked = file.to_string_lossy().to_string();
+                    cfg.tray_icon_path = Some(picked.clone());
+                    edit.text = picked;
+                    edit.invalid = false;
+                    changes.config = true;
                 }
             }
 
@@ -346,24 +449,64 @@ fn render_general_content(
             };
             let input_w = (ui.available_width() - reset_w - 8.0).clamp(60.0, 240.0);
 
-            let mut path = cfg.tray_icon_path.clone().unwrap_or_default();
-            if ui.add(
+            // The typed path is committed on focus loss / Enter instead of on every keystroke:
+            // each keystroke used to persist settings.json and reload the tray icon. The draft
+            // lives in egui's temporary data so the field does not jump back while being typed.
+            let focused = ui.memory(|m| m.has_focus(input_id));
+            let stored = cfg.tray_icon_path.clone().unwrap_or_default();
+            let mut path = if focused || edit.invalid { edit.text.clone() } else { stored.clone() };
+            let response = ui.add(
                 egui::TextEdit::singleline(&mut path)
+                    .id(input_id)
                     .hint_text(loc.settings_tray_icon_placeholder)
                     .desired_width(input_w)
                     .min_size(vec2(input_w, theme::CONTROL_H))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(8.0, 6.0)),
-            ).changed() {
-                cfg.tray_icon_path = if path.trim().is_empty() { None } else { Some(path) };
-                *changed = true;
+            );
+            if response.changed() {
+                edit.text = path.clone();
+                edit.invalid = false;
+            }
+            if response.lost_focus() {
+                match validate_tray_icon_path(&path) {
+                    Ok(next) if next != cfg.tray_icon_path => {
+                        cfg.tray_icon_path = next;
+                        edit.invalid = false;
+                        changes.config = true;
+                    }
+                    Ok(_) => edit.invalid = false,
+                    Err(_) => {
+                        // Keep the rejected text in the field (outlined in red) so the user can
+                        // correct it, and report why it was not stored.
+                        edit.text = path.clone();
+                        edit.invalid = true;
+                        crate::logging::warn("GUI", "Rejected an invalid tray icon path");
+                        state.set_toast(loc.settings_tray_icon_invalid);
+                    }
+                }
+            }
+            if !focused && !edit.invalid {
+                edit.text = stored;
+            }
+            if edit.invalid {
+                ui.painter().rect_stroke(
+                    response.rect,
+                    CornerRadius::ZERO,
+                    Stroke::new(1.0, t.bad),
+                    egui::StrokeKind::Inside,
+                );
             }
 
             if has_reset && widgets::button(ui, loc.settings_btn_reset, Kind::Secondary, 0.0).clicked() {
                 cfg.tray_icon_path = None;
-                *changed = true;
+                edit.text.clear();
+                edit.invalid = false;
+                changes.config = true;
             }
         });
+
+        ui.data_mut(|d| d.insert_temp(edit_id, edit));
     });
 
     widgets::hrule(ui);
@@ -371,46 +514,22 @@ fn render_general_content(
     // 3. Hide Tray Icon Toggle
     render_setting_row(ui, loc.settings_hide_tray_icon_title, loc.settings_hide_tray_icon_desc, t, |ui| {
         if widgets::toggle_switch(ui, &mut cfg.hide_tray_icon).changed() {
-            *changed = true;
+            changes.config = true;
         }
     });
 
     widgets::hrule(ui);
 
     // 4. Mask Daemon as System Service Toggle
+    //
+    // The daemon applies masking deployment only at start-up, and `ShutdownDaemon` also posts
+    // WM_CLOSE to this GUI window (dropping unsaved drafts). The view therefore persists the
+    // preference through the normal commit path and tells the user a restart is required; it
+    // never stops the daemon from the frame thread.
     render_setting_row(ui, loc.settings_mask_daemon_title, loc.settings_mask_daemon_desc, t, |ui| {
         if widgets::toggle_switch(ui, &mut cfg.mask_daemon_process).changed() {
-            *changed = true;
-            // The restart below reads settings.json, so persist now: through the daemon,
-            // or directly when it is already unreachable.
-            let saved = matches!(
-                crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())),
-                Ok(crate::ipc::IpcResponse::Ok)
-            );
-            if !saved {
-                persist_settings_fallback(cfg);
-            }
-            #[cfg(windows)]
-            {
-                let mask = cfg.mask_daemon_process;
-                let _ = crate::ipc::client::IpcClient::call(&crate::ipc::protocol::IpcRequest::ShutdownDaemon);
-                for _ in 0..30 {
-                    if !crate::ipc::client::IpcClient::is_daemon_running() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if mask {
-                    let _ = crate::daemon::pe_mask::prepare_masked_daemon();
-                } else {
-                    crate::daemon::pe_mask::cleanup_masked_daemon();
-                }
-                crate::ensure_daemon_running();
-                if current_autorun {
-                    let _ = crate::autorun::set_autorun(crate::autorun::APP_NAME, true);
-                }
-            }
+            changes.config = true;
+            changes.mask = true;
         }
     });
 
@@ -446,9 +565,23 @@ fn render_appearance_content(
             crate::i18n::Language::English => 0usize,
             crate::i18n::Language::Russian => 1usize,
         };
+        // A language is always named in its own language (endonym), so the option labels stay
+        // from `Language::label()`; only the descriptions follow the UI language.
         let lang_options = [
-            (0usize, widgets::Cell::new("ENGLISH", "English interface")),
-            (1usize, widgets::Cell::new("РУССКИЙ", "Русский интерфейс")),
+            (
+                0usize,
+                widgets::Cell::new(
+                    crate::i18n::Language::English.label(),
+                    loc.settings_language_en_desc,
+                ),
+            ),
+            (
+                1usize,
+                widgets::Cell::new(
+                    crate::i18n::Language::Russian.label(),
+                    loc.settings_language_ru_desc,
+                ),
+            ),
         ];
 
         if widgets::cells(ui, &mut lang_idx, &lang_options) {
@@ -467,34 +600,19 @@ fn render_appearance_content(
 
     // 2. Color Theme with visual palette cards
     render_setting_row(ui, loc.settings_theme_title, loc.settings_theme_desc, t, |ui| {
+        // Preview swatches come from the live palette, so a Tokens change cannot desynchronize
+        // the cards from the theme the user actually gets.
         let themes = [
-            (
-                crate::config::AppTheme::Dark,
-                loc.settings_theme_dark,
-                Color32::from_rgb(0x12, 0x13, 0x16),
-                Color32::from_rgb(0xf2, 0xf1, 0xee),
-                Color32::from_rgb(0x2d, 0x81, 0xff),
-            ),
-            (
-                crate::config::AppTheme::Light,
-                loc.settings_theme_light,
-                Color32::from_rgb(0xf2, 0xf1, 0xee),
-                Color32::from_rgb(0x10, 0x10, 0x14),
-                Color32::from_rgb(0x2d, 0x81, 0xff),
-            ),
-            (
-                crate::config::AppTheme::Chocolate,
-                loc.settings_theme_chocolate,
-                Color32::from_rgb(0x20, 0x17, 0x14),
-                Color32::from_rgb(0xf2, 0xe8, 0xdc),
-                Color32::from_rgb(0xd9, 0x77, 0x36),
-            ),
+            (crate::config::AppTheme::Dark, loc.settings_theme_dark),
+            (crate::config::AppTheme::Light, loc.settings_theme_light),
+            (crate::config::AppTheme::Chocolate, loc.settings_theme_chocolate),
         ];
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
-            for (thm, label, bg_col, ink_col, accent_col) in themes {
+            for (thm, label) in themes {
+                let palette = Tokens::of(thm);
                 let is_selected = state.theme == thm;
                 let card_size = vec2(90.0, theme::CONTROL_H);
                 let (rect, resp) = ui.allocate_exact_size(card_size, Sense::click());
@@ -514,20 +632,27 @@ fn render_appearance_content(
                     t.hairline()
                 };
 
-                ui.painter().rect(rect, CornerRadius::ZERO, bg_col, border_stroke, egui::StrokeKind::Inside);
+                ui.painter().rect(rect, CornerRadius::ZERO, palette.bg, border_stroke, egui::StrokeKind::Inside);
 
                 // Accent dot + theme name
                 let dot_center = pos2(rect.left() + 14.0, rect.center().y);
-                ui.painter().circle_filled(dot_center, 4.0, accent_col);
+                ui.painter().circle_filled(dot_center, 4.0, palette.accent);
 
                 let text_pos = pos2(rect.left() + 24.0, rect.center().y);
-                let galley = widgets::caps(ui, label, 10.0, theme::mono_bold(), 1.0, ink_col);
-                widgets::paint_left(ui, Rect::from_min_size(pos2(text_pos.x, text_pos.y - galley.size().y / 2.0), galley.size()), galley, ink_col);
+                let galley = widgets::caps(ui, label, 10.0, theme::mono_bold(), 1.0, palette.ink);
+                widgets::paint_left(ui, Rect::from_min_size(pos2(text_pos.x, text_pos.y - galley.size().y / 2.0), galley.size()), galley, palette.ink);
 
                 resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             }
         });
     });
+}
+
+/// Installed-version subtitle of the updates row. The catalog supplies the product name and
+/// `{}`; the build version comes from `CARGO_PKG_VERSION`.
+fn updates_version_subtitle(loc: &crate::i18n::Strings) -> String {
+    loc.settings_updates_version
+        .replace("{}", env!("CARGO_PKG_VERSION"))
 }
 
 fn render_updates_content(
@@ -557,7 +682,7 @@ fn render_updates_content(
     widgets::hrule(ui);
 
     // 3. Installed Version & Manual Check
-    let version_subtitle = format!("Process Handler v{}", env!("CARGO_PKG_VERSION"));
+    let version_subtitle = updates_version_subtitle(loc);
     render_setting_row(ui, loc.settings_updates_check_title, &version_subtitle, t, |ui| {
         let btn_label = if state.is_checking_update {
             loc.settings_btn_checking_updates
@@ -587,7 +712,6 @@ mod tests {
             autorun_enabled: true,
             uptime_secs: 100,
             daemon_memory_bytes: 1000,
-            daemon_cpu_usage: 0.5,
             active_rules_count: 0,
             total_rules_count: 0,
             config: crate::config::AppConfig::default(),
@@ -645,5 +769,160 @@ mod tests {
         });
         out.textures_delta.clear();
         assert!(general_height > 250.0, "Settings content card should not be clipped; was {general_height}");
+    }
+
+    /// U03-NEW-01 regression: a mask-preference change is persisted and reported as
+    /// "restart required"; it never turns into a plain save notice for a change the running
+    /// daemon has not applied. The toggle path does not request `ShutdownDaemon` (that request
+    /// also closes this GUI window, losing unsaved rule drafts), so the only notice it can
+    /// produce after a successful write is the restart one.
+    #[test]
+    fn test_mask_toggle_requests_restart_without_stopping_the_daemon() {
+        assert_eq!(
+            finish_settings_commit(Ok(()), true),
+            SettingsCommit::Saved { restart_required: true }
+        );
+        assert_eq!(
+            finish_settings_commit(Ok(()), false),
+            SettingsCommit::Saved { restart_required: false }
+        );
+        // A failed write is reported as a failure even when masking changed: no success notice.
+        assert_eq!(
+            finish_settings_commit(Err("daemon unreachable".to_string()), true),
+            SettingsCommit::Failed("daemon unreachable".to_string())
+        );
+        let en = crate::i18n::get(crate::i18n::Language::English);
+        assert_ne!(en.settings_mask_restart_required, en.toast_config_saved);
+    }
+
+    /// U03-004: the updates-row subtitle is the catalog template with the real product name
+    /// ("Synector", not "Process Handler"), and the language-picker descriptions come from
+    /// `Strings` so they follow the UI language.
+    #[test]
+    fn test_updates_version_subtitle_uses_catalog_product_name() {
+        let en = crate::i18n::get(crate::i18n::Language::English);
+        let ru = crate::i18n::get(crate::i18n::Language::Russian);
+        let version = env!("CARGO_PKG_VERSION");
+
+        for loc in [en, ru] {
+            let subtitle = updates_version_subtitle(loc);
+            assert!(subtitle.starts_with("Synector v"), "was {subtitle:?}");
+            assert!(subtitle.ends_with(version), "was {subtitle:?}");
+            assert!(!subtitle.contains("Process Handler"), "was {subtitle:?}");
+            assert!(!subtitle.contains("{}"), "the placeholder must be replaced");
+        }
+
+        assert_eq!(en.settings_language_en_desc, "English interface");
+        assert_eq!(ru.settings_language_en_desc, "Английский интерфейс");
+        assert_eq!(ru.settings_language_ru_desc, "Русский интерфейс");
+        assert_ne!(en.settings_language_en_desc, ru.settings_language_en_desc);
+        assert_ne!(en.settings_language_ru_desc, ru.settings_language_ru_desc);
+    }
+
+    /// U03-006: a failed settings write keeps the edited draft for the next frame instead of
+    /// silently reverting to the daemon snapshot.
+    #[test]
+    fn test_settings_commit_keeps_the_draft_when_the_write_fails() {
+        assert_eq!(
+            finish_settings_commit(Err("disk full".to_string()), false),
+            SettingsCommit::Failed("disk full".to_string())
+        );
+
+        let ctx = egui::Context::default();
+        let draft = crate::config::Settings {
+            hide_tray_icon: true,
+            ..Default::default()
+        };
+        ctx.data_mut(|d| d.insert_temp(pending_settings_id(), draft.clone()));
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())),
+            Some(draft)
+        );
+        ctx.data_mut(|d| d.remove_temp::<crate::config::Settings>(pending_settings_id()));
+        assert_eq!(
+            ctx.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())),
+            None,
+            "a confirmed write clears the draft"
+        );
+    }
+
+    /// U03-007: typing is not persisted; only an existing icon file with a supported extension
+    /// is accepted on commit.
+    #[test]
+    fn test_validate_tray_icon_path_accepts_only_existing_icon_files() {
+        let dir = std::env::temp_dir().join(format!("synector-tray-icon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let icon = dir.join("icon.ico");
+        std::fs::write(&icon, b"stub").expect("write icon");
+        let upper = dir.join("ICON.ICO");
+        std::fs::write(&upper, b"stub").expect("write upper-case icon");
+        let text = dir.join("icon.txt");
+        std::fs::write(&text, b"stub").expect("write text file");
+
+        assert_eq!(validate_tray_icon_path(""), Ok(None));
+        assert_eq!(validate_tray_icon_path("   "), Ok(None));
+        assert_eq!(
+            validate_tray_icon_path(&format!("  {}  ", icon.display())),
+            Ok(Some(icon.display().to_string()))
+        );
+        assert!(
+            matches!(validate_tray_icon_path(&upper.display().to_string()), Ok(Some(_))),
+            "extensions are case-insensitive like the icon loader"
+        );
+        assert_eq!(
+            validate_tray_icon_path(&text.display().to_string()),
+            Err(TrayIconPathError::Unsupported)
+        );
+        assert_eq!(
+            validate_tray_icon_path("%USERPROFILE%\\icon.ico"),
+            Ok(Some("%USERPROFILE%\\icon.ico".to_string())),
+            "the daemon expands %VAR% paths, so they are stored without an existence check"
+        );
+        assert_eq!(
+            validate_tray_icon_path(&dir.join("missing.ico").display().to_string()),
+            Err(TrayIconPathError::Missing)
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// I18N-GAP: the tray-icon file dialog filter is a catalog value, not a view literal.
+    #[test]
+    fn test_tray_icon_dialog_filter_comes_from_the_catalog() {
+        let en = crate::i18n::get(crate::i18n::Language::English);
+        let ru = crate::i18n::get(crate::i18n::Language::Russian);
+        assert_eq!(en.settings_tray_icon_filter, concat!("Icons & ", "Executables"));
+        assert_ne!(en.settings_tray_icon_filter, ru.settings_tray_icon_filter);
+        let source = include_str!("settings_view.rs");
+        assert!(
+            !source.contains(concat!("\"Icons & ", "Executables\"")),
+            "the native dialog filter literal is back in the view"
+        );
+    }
+
+    /// U03-NEW-01: the mask row and its commit path must never request a daemon shutdown. That
+    /// request also posts WM_CLOSE to this GUI window and would drop unsaved drafts; masking is
+    /// applied on the next daemon start instead. The needle is built with `concat!` so the scan
+    /// cannot match this test, and the scan stops at `#[cfg(test)]` and skips comment lines
+    /// (the row's explanatory comment names the request).
+    #[test]
+    fn test_mask_setting_never_requests_a_daemon_shutdown() {
+        let source = include_str!("settings_view.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(source);
+        let production = production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let shutdown_request = concat!("Shutdown", "Daemon");
+        assert!(
+            !production.contains(shutdown_request),
+            "the settings view must not stop the daemon: masking applies on the next start and \
+             {shutdown_request} also closes the GUI, dropping unsaved drafts"
+        );
     }
 }

@@ -28,50 +28,49 @@ impl<'a> ModalFrame<'a> {
     /// Provides `&mut Ui` scoped to the header rect and `&mut bool` to trigger close.
     pub fn header<R>(&mut self, add_contents: impl FnOnce(&mut Ui, &mut bool) -> R) -> Option<R> {
         let rect = self.header_rect?;
-        let close_req = &mut *self.close_requested;
-        Some(self.ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            ui.set_width(rect.width());
-            ui.set_height(rect.height());
-            ui.set_clip_rect(rect);
-            add_contents(ui, close_req)
-        }).inner)
+        let close_requested = &mut *self.close_requested;
+        Some(scoped_slice(&mut *self.ui, rect, |ui| {
+            add_contents(ui, close_requested)
+        }))
     }
 
     /// Render content in the secondary toolbar slice below the header (if `toolbar_height` was specified).
     /// Provides `&mut Ui` scoped to the toolbar rect and `&mut bool` to trigger close.
     pub fn toolbar<R>(&mut self, add_contents: impl FnOnce(&mut Ui, &mut bool) -> R) -> Option<R> {
         let rect = self.toolbar_rect?;
-        let close_req = &mut *self.close_requested;
-        Some(self.ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            ui.set_width(rect.width());
-            ui.set_height(rect.height());
-            ui.set_clip_rect(rect);
-            add_contents(ui, close_req)
-        }).inner)
+        let close_requested = &mut *self.close_requested;
+        Some(scoped_slice(&mut *self.ui, rect, |ui| {
+            add_contents(ui, close_requested)
+        }))
     }
 
     /// Render content in the main body area.
     pub fn body<R>(&mut self, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-        self.ui.scope_builder(egui::UiBuilder::new().max_rect(self.body_rect), |ui| {
-            ui.set_width(self.body_rect.width());
-            ui.set_height(self.body_rect.height());
-            ui.set_clip_rect(self.body_rect);
-            add_contents(ui)
-        }).inner
+        let rect = self.body_rect;
+        scoped_slice(&mut *self.ui, rect, add_contents)
     }
 
     /// Render content in the footer slice (if `footer_height` was specified).
     /// Provides `&mut Ui` scoped to the footer rect and `&mut bool` to trigger close.
     pub fn footer<R>(&mut self, add_contents: impl FnOnce(&mut Ui, &mut bool) -> R) -> Option<R> {
         let rect = self.footer_rect?;
-        let close_req = &mut *self.close_requested;
-        Some(self.ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-            ui.set_width(rect.width());
-            ui.set_height(rect.height());
-            ui.set_clip_rect(rect);
-            add_contents(ui, close_req)
-        }).inner)
+        let close_requested = &mut *self.close_requested;
+        Some(scoped_slice(&mut *self.ui, rect, |ui| {
+            add_contents(ui, close_requested)
+        }))
     }
+}
+
+/// Builds the isolated `Ui` for one modal slice: exact rect, matching size and clip.
+/// Shared by header, toolbar, body and footer so sizing and clipping stay in one place.
+fn scoped_slice<R>(ui: &mut Ui, rect: Rect, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.set_width(rect.width());
+        ui.set_height(rect.height());
+        ui.set_clip_rect(rect);
+        add_contents(ui)
+    })
+    .inner
 }
 
 /// Unified, high-performance base modal dialog builder.
@@ -257,8 +256,12 @@ impl Modal {
                 });
         }
 
-        // Close on Escape key if allowed
-        if self.close_on_escape && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Close on Escape key if allowed. An open ComboBox/filter popup consumes Escape
+        // first, so guard on egui's popup state and close only when nothing is open.
+        if self.close_on_escape
+            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            && !egui::Popup::is_any_open(ctx)
+        {
             close_requested = true;
         }
 
@@ -480,6 +483,61 @@ mod tests {
             assert!(res.is_some());
             let res = res.unwrap();
             assert!(res.anim < 0.2, "Expected reopened modal anim to start near 0.0, but got {}", res.anim);
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_modal_escape_ignores_the_key_while_a_popup_is_open() {
+        let ctx = egui::Context::default();
+        let escape_input = || egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            time: Some(0.1),
+            ..Default::default()
+        };
+
+        // No popup: Escape closes the modal.
+        let mut out = ctx.run_ui(escape_input(), |ui| {
+            let response = Modal::new("test-modal-escape-popup", true)
+                .show(ui.ctx(), &Tokens::DARK, |_frame| {})
+                .expect("modal is open");
+            assert!(response.close_requested);
+        });
+        out.textures_delta.clear();
+
+        // A ComboBox-like popup is open: Escape must only dismiss the popup.
+        let mut out = ctx.run_ui(escape_input(), |ui| {
+            egui::Popup::open_id(ui.ctx(), egui::Id::unique("test-modal-popup"));
+            let response = Modal::new("test-modal-escape-popup", true)
+                .show(ui.ctx(), &Tokens::DARK, |_frame| {})
+                .expect("modal is open");
+            assert!(
+                !response.close_requested,
+                "Escape must not close the modal while a popup owns it"
+            );
+        });
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn test_scoped_slice_sets_exact_rect_and_clip_rect() {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let rect = Rect::from_min_size(pos2(20.0, 30.0), vec2(200.0, 80.0));
+            let (max_rect, clip_rect) =
+                scoped_slice(ui, rect, |inner| (inner.max_rect(), inner.clip_rect()));
+            assert_eq!(max_rect, rect);
+            assert_eq!(clip_rect, rect);
         });
         out.textures_delta.clear();
     }

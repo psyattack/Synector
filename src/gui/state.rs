@@ -120,6 +120,34 @@ pub struct OverlayStudioState {
 }
 
 impl OverlayStudioState {
+    /// Fresh studio for one overlay definition. `action_target_idx` marks an edit that is
+    /// written back into the rule action instead of the library.
+    pub fn new(
+        overlay: crate::models::OverlayDefinition,
+        action_target_idx: Option<usize>,
+        is_exit_pipeline: bool,
+        preset_save_name: String,
+    ) -> Self {
+        Self {
+            overlay,
+            is_calibrating: false,
+            selected_element_idx: None,
+            action_target_idx,
+            is_exit_pipeline,
+            active_color_target: None,
+            snap_to_grid: false,
+            card_lock_aspect: false,
+            canvas_pan: egui::Vec2::ZERO,
+            canvas_zoom: None,
+            last_synced_pos: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            show_presets_popover: false,
+            preset_save_name,
+            preset_search_query: String::new(),
+        }
+    }
+
     pub fn push_undo_snapshot(&mut self) {
         if self.undo_stack.last() != Some(&self.overlay) {
             self.undo_stack.push(self.overlay.clone());
@@ -194,6 +222,440 @@ pub enum RuleSortMode {
     Status,
 }
 
+// ---------------------------------------------------------------------------
+// Off-thread plumbing
+//
+// `GuiState::sync_with_daemon` runs inside `SynectorApp::ui`, so every named-pipe round-trip
+// there used to freeze the window when the daemon was slow or hung. Requests now go through
+// one worker thread (`IpcGateway`); the frame thread only enqueues and applies results, and a
+// mutation keeps its draft until the daemon (or the documented direct-file fallback) confirms it.
+// ---------------------------------------------------------------------------
+
+/// Daemon sync cadence: fast while something executes (live progress), relaxed when idle.
+const DAEMON_SYNC_FAST_MS: u128 = 80;
+const DAEMON_SYNC_IDLE_MS: u128 = 400;
+/// Consecutive failed polls and the quiet period that turn a single miss into a confirmed
+/// outage: the client reports a lost daemon instead of treating one dropped poll as a disconnect.
+const DAEMON_OUTAGE_POLLS: u32 = 3;
+const DAEMON_OUTAGE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+/// A state poll that takes longer than this is treated as a failure. The IPC client has no read
+/// timeout, so without it a hung daemon would leave the GUI waiting silently forever.
+const DAEMON_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// Minimum spacing between failed process-snapshot retries: the inspector asks for a snapshot on
+/// every frame while it edits, and a down daemon must not turn that into a request flood.
+const PROCESS_SNAPSHOT_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Identifies a queued IPC request so its result can update GUI state on the frame thread.
+/// Mutations carry just enough identity for the success/failure reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum IpcJobKind {
+    Sync,
+    Processes,
+    SaveRule { rule_id: String },
+    /// A cloned rule is saved under a new id; success keeps the editor the clone opened.
+    CloneRule { rule_id: String },
+    DeleteRule { rule_id: String },
+    ToggleRule { rule_id: String, enabled: bool },
+    ReorderRules,
+    ResetRule { rule_id: String },
+    SaveOverlay { overlay_id: String },
+    SaveMacroPreset { preset_id: String },
+    TestRunRule { rule_id: String },
+    StopRuleExecution { rule_id: String },
+    ImportShare,
+    SetAutorun { enabled: bool },
+    StartUpdate,
+    /// Requests whose result has no user-visible effect (acknowledgements, update fan-out).
+    Background,
+}
+
+impl IpcJobKind {
+    /// Short identifier used in log lines; identifiers and outcomes only, never payloads.
+    fn label(&self) -> String {
+        match self {
+            Self::Sync => "GetState".into(),
+            Self::Processes => "GetProcesses".into(),
+            Self::SaveRule { rule_id } => format!("SaveRule '{rule_id}'"),
+            Self::CloneRule { rule_id } => format!("CloneRule save '{rule_id}'"),
+            Self::DeleteRule { rule_id } => format!("DeleteRule '{rule_id}'"),
+            Self::ToggleRule { rule_id, enabled } => format!("ToggleRule '{rule_id}' ({enabled})"),
+            Self::ReorderRules => "ReorderRules".into(),
+            Self::ResetRule { rule_id } => format!("ResetRule '{rule_id}'"),
+            Self::SaveOverlay { overlay_id } => format!("SaveOverlay '{overlay_id}'"),
+            Self::SaveMacroPreset { preset_id } => format!("SaveMacroPreset '{preset_id}'"),
+            Self::TestRunRule { rule_id } => format!("TestRunRule '{rule_id}'"),
+            Self::StopRuleExecution { rule_id } => format!("StopRuleExecution '{rule_id}'"),
+            Self::ImportShare => "ImportShare".into(),
+            Self::SetAutorun { enabled } => format!("SetAutorun ({enabled})"),
+            Self::StartUpdate => "StartUpdate".into(),
+            Self::Background => "background request".into(),
+        }
+    }
+}
+
+/// One request handed to the IPC worker. `direct` is the section write used only when the
+/// daemon is unreachable (the fallback promised by `docs/ARCHITECTURE.md#data-flow`).
+struct IpcJob {
+    kind: IpcJobKind,
+    request: IpcRequest,
+    direct: Option<DirectWrite>,
+}
+
+/// Worker → frame result. A transport failure that the direct fallback completed arrives as
+/// `Ok(IpcResponse::Ok)`, so the frame thread only has to interpret daemon-level outcomes.
+struct IpcJobResult {
+    kind: IpcJobKind,
+    result: Result<IpcResponse, String>,
+}
+
+/// Direct section writes used when IPC is unavailable. The daemon remains the only writer
+/// while it is reachable, so these run only after a failed liveness probe.
+enum DirectWrite {
+    Rules(DirectRuleChange),
+    Library(DirectLibraryChange),
+    ResetRuntime { rule_id: String },
+}
+
+enum DirectRuleChange {
+    Upsert(Box<Rule>),
+    Delete(String),
+    SetEnabled { id: String, enabled: bool },
+    Reorder(Vec<String>),
+}
+
+enum DirectLibraryChange {
+    UpsertOverlay(Box<crate::models::OverlayDefinition>),
+    UpsertMacroPreset(Box<crate::models::MacroPreset>),
+}
+
+impl DirectWrite {
+    /// Applies the change to the section files under `dir`. Split from the runtime path so
+    /// tests can point it at an isolated directory.
+    fn apply_in(&self, dir: &std::path::Path) -> Result<(), String> {
+        match self {
+            Self::Rules(change) => {
+                let mut file = crate::config::RulesFile::read_from(dir);
+                match change {
+                    DirectRuleChange::Upsert(rule) => {
+                        if let Some(existing) = file.rules.iter_mut().find(|r| r.id == rule.id) {
+                            *existing = (**rule).clone();
+                        } else {
+                            file.rules.push((**rule).clone());
+                        }
+                    }
+                    DirectRuleChange::Delete(id) => file.rules.retain(|r| &r.id != id),
+                    DirectRuleChange::SetEnabled { id, enabled } => {
+                        if let Some(rule) = file.rules.iter_mut().find(|r| &r.id == id) {
+                            rule.is_enabled = *enabled;
+                        }
+                    }
+                    DirectRuleChange::Reorder(order) => reorder_rules(&mut file.rules, order),
+                }
+                crate::config::RulesFile::save_rules_to(dir, &file.rules).map_err(|e| e.to_string())
+            }
+            Self::ResetRuntime { rule_id } => {
+                let mut file = crate::config::RulesFile::read_from(dir);
+                if let Some(rule) = file.rules.iter_mut().find(|r| &r.id == rule_id) {
+                    rule.is_enabled = true;
+                }
+                crate::config::RulesFile::save_rules_to(dir, &file.rules)
+                    .map_err(|e| e.to_string())?;
+                let mut runtime = crate::config::RuntimeState::read_from(dir);
+                runtime.rules.remove(rule_id);
+                runtime.save_to(dir).map_err(|e| e.to_string())
+            }
+            Self::Library(change) => {
+                let mut library = crate::config::Library::read_from(dir);
+                match change {
+                    DirectLibraryChange::UpsertOverlay(overlay) => {
+                        if let Some(existing) = library.overlays.iter_mut().find(|o| o.id == overlay.id) {
+                            *existing = (**overlay).clone();
+                        } else {
+                            library.overlays.push((**overlay).clone());
+                        }
+                    }
+                    DirectLibraryChange::UpsertMacroPreset(preset) => {
+                        if let Some(existing) = library.macro_presets.iter_mut().find(|p| p.id == preset.id) {
+                            *existing = (**preset).clone();
+                        } else {
+                            library.macro_presets.push((**preset).clone());
+                        }
+                    }
+                }
+                library.save_to(dir).map_err(|e| e.to_string())
+            }
+        }
+    }
+}
+
+/// The direct fallback never runs in tests: they share one per-process config directory, so a
+/// worker-thread write could race another test. `DirectWrite::apply_in` is covered separately.
+fn direct_fallback_allowed() -> bool {
+    !cfg!(test)
+}
+
+/// Rebuilds the rule list in an explicit order; ids not named keep their relative order at the
+/// end. Mirrors the daemon's `ReorderRules` handler for the direct-file fallback.
+fn reorder_rules(rules: &mut Vec<Rule>, order: &[String]) {
+    let mut remaining = std::mem::take(rules);
+    let mut ordered = Vec::with_capacity(remaining.len());
+    for id in order {
+        if let Some(position) = remaining.iter().position(|rule| &rule.id == id) {
+            ordered.push(remaining.remove(position));
+        }
+    }
+    ordered.append(&mut remaining);
+    *rules = ordered;
+}
+
+/// A mutation the daemon did not confirm. `UnexpectedResponse` means the daemon answered with a
+/// shape the client cannot interpret for that request, so the toast must use the generic
+/// localized line instead of embedding an English detail.
+enum MutationFailure {
+    /// Daemon rejection or transport failure. Identifiers only — never user data.
+    Detail(String),
+    /// Unexpected response shape, described for log lines by its variant name.
+    UnexpectedResponse(String),
+}
+
+impl MutationFailure {
+    /// Detail for log lines and for toasts whose catalog line embeds one.
+    fn diagnostic(&self) -> &str {
+        match self {
+            Self::Detail(detail) | Self::UnexpectedResponse(detail) => detail,
+        }
+    }
+}
+
+/// Variant name of a response for diagnostics. Never formats the contents: `DaemonState`
+/// embeds rule JSON, which must not reach the log.
+fn ipc_response_name(response: &IpcResponse) -> &'static str {
+    match response {
+        IpcResponse::Ok => "Ok",
+        IpcResponse::Pong => "Pong",
+        IpcResponse::State(_) => "State",
+        IpcResponse::Processes(_) => "Processes",
+        IpcResponse::TestStepResult(_) => "TestStepResult",
+        IpcResponse::OverlayPosition(_) => "OverlayPosition",
+        IpcResponse::ShareImportResult(_) => "ShareImportResult",
+        IpcResponse::UpdateProgress { .. } => "UpdateProgress",
+        IpcResponse::Error(_) => "Error",
+    }
+}
+
+/// Runs one request on the IPC worker. A transport failure is retried as a direct section
+/// write only when the daemon is confirmed unreachable; a daemon-level rejection is returned
+/// untouched for the caller to report.
+fn run_ipc_job(job: &IpcJob) -> IpcJobResult {
+    let result = match IpcClient::call(&job.request) {
+        Ok(response) => Ok(response),
+        Err(error) => match &job.direct {
+            Some(direct) if direct_fallback_allowed() => {
+                if IpcClient::is_daemon_running() {
+                    Err(error)
+                } else {
+                    match direct.apply_in(&crate::config::AppConfig::config_dir()) {
+                        Ok(()) => {
+                            crate::logging::info(
+                                "CONFIG",
+                                &format!("Daemon unreachable; {} applied directly to the config section", job.kind.label()),
+                            );
+                            Ok(IpcResponse::Ok)
+                        }
+                        Err(fallback) => {
+                            Err(format!("{error}; direct config write failed: {fallback}"))
+                        }
+                    }
+                }
+            }
+            _ => Err(error),
+        },
+    };
+    IpcJobResult {
+        kind: job.kind.clone(),
+        result,
+    }
+}
+
+/// Off-thread IPC gateway: the frame thread enqueues, the worker serializes round-trips.
+struct IpcGateway {
+    job_tx: std::sync::mpsc::Sender<IpcJob>,
+    result_rx: std::sync::mpsc::Receiver<IpcJobResult>,
+    sync_in_flight: bool,
+    processes_in_flight: bool,
+    /// When the last process snapshot was requested, to space retries that failed.
+    last_process_request: Option<Instant>,
+    /// Latest frame context, used to schedule a repaint when a request is queued so its result
+    /// is applied promptly instead of waiting for the next input event.
+    frame_ctx: Option<egui::Context>,
+}
+
+impl IpcGateway {
+    fn new() -> Self {
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<IpcJob>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<IpcJobResult>();
+        let spawned = std::thread::Builder::new()
+            .name("synector-gui-ipc".into())
+            .spawn(move || {
+                while let Ok(job) = job_rx.recv() {
+                    if result_tx.send(run_ipc_job(&job)).is_err() {
+                        break;
+                    }
+                }
+            });
+        if let Err(err) = spawned {
+            crate::logging::error("GUI", &format!("Cannot start the IPC worker: {err}"));
+        }
+        Self {
+            job_tx,
+            result_rx,
+            sync_in_flight: false,
+            processes_in_flight: false,
+            last_process_request: None,
+            frame_ctx: None,
+        }
+    }
+
+    fn attach_frame_ctx(&mut self, ctx: &egui::Context) {
+        self.frame_ctx = Some(ctx.clone());
+    }
+
+    /// Queues a request and requests a repaint for its result. Returns `false` when the worker
+    /// is gone, so callers can clear their in-flight markers.
+    fn send(&mut self, job: IpcJob) -> bool {
+        if self.job_tx.send(job).is_err() {
+            crate::logging::error("GUI", "IPC worker is not running; request dropped");
+            return false;
+        }
+        if let Some(ctx) = &self.frame_ctx {
+            ctx.request_repaint();
+        }
+        true
+    }
+}
+
+/// One share-code compression job waiting behind the running one.
+struct ShareExportJob {
+    payload: crate::sharing::SharePayload,
+    warnings: Vec<crate::sharing::ShareWarning>,
+}
+
+/// Share-code export bookkeeping: one compression runs at a time and further copies queue
+/// instead of overwriting the running receiver (which used to lose the earlier result).
+#[derive(Default)]
+struct ShareExports {
+    rx: Option<std::sync::mpsc::Receiver<ShareExportOutcome>>,
+    queued: std::collections::VecDeque<ShareExportJob>,
+}
+
+/// Daemon sync cadence and outage bookkeeping.
+struct DaemonSync {
+    last_sync: Instant,
+    last_success: Instant,
+    last_error: Option<String>,
+    /// Set while a state request is outstanding; used to detect a daemon that never answers.
+    pending_since: Option<Instant>,
+}
+
+impl DaemonSync {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            // Start due so the first frame primes the state immediately.
+            last_sync: now - std::time::Duration::from_secs(10),
+            last_success: now - std::time::Duration::from_secs(10),
+            last_error: None,
+            pending_since: None,
+        }
+    }
+
+    fn due(&self, executing: bool) -> bool {
+        let interval = if executing {
+            DAEMON_SYNC_FAST_MS
+        } else {
+            DAEMON_SYNC_IDLE_MS
+        };
+        self.last_sync.elapsed().as_millis() >= interval
+    }
+
+    fn mark_requested(&mut self) {
+        self.last_sync = Instant::now();
+        self.pending_since = Some(self.last_sync);
+    }
+
+    /// Makes the next poll due immediately (after a mutation, so the fresh state is fetched).
+    fn force(&mut self) {
+        self.last_sync = Instant::now() - std::time::Duration::from_secs(1);
+    }
+
+    fn note_success(&mut self) {
+        self.last_success = Instant::now();
+        self.last_error = None;
+        self.pending_since = None;
+    }
+
+    /// Records a failed poll. Returns `Some(detail)` the first time a streak starts so the
+    /// caller can log it once instead of on every 80 ms retry.
+    fn note_failure(&mut self, error: String) -> Option<String> {
+        let first = self.last_error.is_none();
+        self.last_error = Some(error.clone());
+        if first {
+            Some(error)
+        } else {
+            None
+        }
+    }
+
+    fn outage_confirmed(&self, consecutive_failures: u32) -> bool {
+        consecutive_failures >= DAEMON_OUTAGE_POLLS
+            && self.last_success.elapsed() >= DAEMON_OUTAGE_GRACE
+    }
+}
+
+/// How long a locally advertised release is protected from a daemon snapshot produced before
+/// the client's `SetAvailableUpdate` notification reached the daemon.
+const UPDATE_ADVERTISE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Updater worker channel and the client-side release advertisement bookkeeping.
+struct Updates {
+    tx: std::sync::mpsc::Sender<crate::updater::UpdateEvent>,
+    rx: std::sync::mpsc::Receiver<crate::updater::UpdateEvent>,
+    /// When the client last changed the advertisement itself (manual check, cleared release).
+    advertised_at: Option<Instant>,
+}
+
+impl Updates {
+    fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self {
+            tx,
+            rx,
+            advertised_at: None,
+        }
+    }
+
+    /// Records a local change to the advertised release.
+    fn advertise(&mut self) {
+        self.advertised_at = Some(Instant::now());
+    }
+
+    /// The daemon is the authority, but an in-flight snapshot may predate our notification:
+    /// only let it drop the local advertisement after that notification had time to arrive.
+    fn daemon_may_clear(&self) -> bool {
+        self.advertised_at
+            .is_none_or(|at| at.elapsed() >= UPDATE_ADVERTISE_GRACE)
+    }
+}
+
+/// A `SaveMacroPreset` awaiting its result. The recorded events stay in the action — the only
+/// live copy until the preset is persisted — and are cleared only after confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingMacroSave {
+    step_idx: usize,
+    is_exit_pipeline: bool,
+    preset_id: String,
+}
+
 pub struct GuiState {
     pub active_view: ActiveView,
     pub search_query: String,
@@ -229,7 +691,6 @@ pub struct GuiState {
     pub last_element_catalog: Option<ElementCatalogModalState>,
     pub language: crate::i18n::Language,
     pub theme: crate::config::AppTheme,
-    pub last_sync: Instant,
     pub toast: Option<(String, Instant)>,
     pub is_daemon_connected: bool,
     pub has_connected_daemon: bool,
@@ -256,15 +717,21 @@ pub struct GuiState {
     pub new_tag_name: String,
     pub new_tag_color: Option<String>,
     pub new_tag_icon: Option<String>,
-    share_export_rx: Option<std::sync::mpsc::Receiver<ShareExportOutcome>>,
-    update_event_tx: std::sync::mpsc::Sender<crate::updater::UpdateEvent>,
-    update_event_rx: std::sync::mpsc::Receiver<crate::updater::UpdateEvent>,
+    /// Off-thread IPC (daemon sync, process snapshots, mutations).
+    ipc: IpcGateway,
+    /// Share-code compression worker and its queue.
+    share: ShareExports,
+    /// Poll cadence and last outage detail.
+    daemon_sync: DaemonSync,
+    /// Updater channel and release advertisement.
+    updates: Updates,
+    /// Macro preset saves awaiting confirmation.
+    pending_macro_saves: Vec<PendingMacroSave>,
 }
 
 impl GuiState {
     pub fn new() -> Self {
         let settings = crate::config::Settings::read();
-        let (update_event_tx, update_event_rx) = std::sync::mpsc::channel();
         Self {
             active_view: ActiveView::Rules,
             search_query: String::new(),
@@ -300,7 +767,6 @@ impl GuiState {
             last_element_catalog: None,
             language: settings.language,
             theme: settings.theme,
-            last_sync: Instant::now() - std::time::Duration::from_secs(10),
             toast: None,
             is_daemon_connected: false,
             has_connected_daemon: false,
@@ -327,9 +793,11 @@ impl GuiState {
             new_tag_name: String::new(),
             new_tag_color: Some("#3B82F6".into()),
             new_tag_icon: None,
-            share_export_rx: None,
-            update_event_tx,
-            update_event_rx,
+            ipc: IpcGateway::new(),
+            share: ShareExports::default(),
+            daemon_sync: DaemonSync::new(),
+            updates: Updates::new(),
+            pending_macro_saves: Vec::new(),
         }
     }
 
@@ -417,7 +885,11 @@ impl GuiState {
         };
         self.macro_editor = Some(editor.clone());
         self.last_macro_editor = Some(editor);
-        self.macro_preset_save_name = self.editing_rule.as_ref().map(|r| r.name.clone()).unwrap_or_else(|| "Custom Macro".to_string());
+        self.macro_preset_save_name = self
+            .editing_rule
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| self.loc().macro_studio_custom_preset_name.to_string());
         crate::gui::macro_recorder::set_studio_active(true);
     }
 
@@ -428,123 +900,155 @@ impl GuiState {
         }
         crate::gui::macro_recorder::stop_macro_test();
         if let Some(edit_info) = self.macro_editor.take() {
+            let mut pending_preset = None;
             if let Some(rule) = &mut self.editing_rule {
                 let actions = if edit_info.is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
                 if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(edit_info.step_idx) {
                     let library = crate::config::Library::read();
                     let preset_name = library.find_macro(pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.clone());
-                    let preset = crate::models::MacroPreset {
+                    // The recorded events stay in the action until the daemon confirms the preset:
+                    // they are the only live copy and the engine hydrates empty events from the
+                    // library, so clearing them on a failed save would lose the recording.
+                    pending_preset = Some(crate::models::MacroPreset {
                         id: pid.clone(),
                         name: preset_name,
                         events: events.clone(),
                         repeat: *repeat,
                         speed: *speed,
                         infinite: *infinite,
-                    };
-                    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(preset));
-                    events.clear();
+                    });
                 }
+            }
+            if let Some(preset) = pending_preset {
+                self.pending_macro_saves.push(PendingMacroSave {
+                    step_idx: edit_info.step_idx,
+                    is_exit_pipeline: edit_info.is_exit_pipeline,
+                    preset_id: preset.id.clone(),
+                });
+                let direct = DirectWrite::Library(DirectLibraryChange::UpsertMacroPreset(Box::new(preset.clone())));
+                self.enqueue_ipc(
+                    IpcJobKind::SaveMacroPreset { preset_id: preset.id.clone() },
+                    IpcRequest::SaveMacroPreset(preset),
+                    Some(direct),
+                );
             }
         }
         crate::gui::macro_recorder::set_studio_active(false);
     }
 
-    pub fn open_overlay_studio(&mut self, overlay_id: &str) {
-        let library = crate::config::Library::read();
-        let overlay = library.overlays.iter().find(|o| o.id == overlay_id).cloned().unwrap_or_else(|| {
-            match overlay_id {
-                "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
-                "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
-                "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
-                _ => crate::models::OverlayDefinition::default_new_overlay(),
-            }
-        });
-        let studio = OverlayStudioState {
-            overlay,
-            is_calibrating: false,
-            selected_element_idx: None,
-            action_target_idx: None,
-            is_exit_pipeline: false,
-            active_color_target: None,
-            snap_to_grid: false,
-            card_lock_aspect: false,
-            canvas_pan: egui::Vec2::ZERO,
-            canvas_zoom: None,
-            last_synced_pos: None,
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            show_presets_popover: false,
-            preset_save_name: String::new(),
-            preset_search_query: String::new(),
-        };
-        self.overlay_studio = Some(studio.clone());
-        self.last_overlay_studio = Some(studio);
-    }
-
-    pub fn open_overlay_studio_for_action(&mut self, action_idx: usize, is_exit: bool) {
-        if let Some(rule) = &self.editing_rule {
-            let actions = if is_exit { &rule.on_exit_actions } else { &rule.actions };
-            if let Some(crate::models::Action::Overlay { overlay_id, custom_overlay, .. }) = actions.get(action_idx) {
-                let overlay = if let Some(cust) = custom_overlay {
-                    *cust.clone()
-                } else {
-                    let library = crate::config::Library::read();
-                    library.overlays.iter().find(|o| o.id == *overlay_id).cloned().unwrap_or_else(|| {
-                        match overlay_id.as_str() {
-                            "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
-                            "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
-                            "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
-                            _ => crate::models::OverlayDefinition::default_new_overlay(),
-                        }
-                    })
-                };
-                let save_name = overlay.name.clone();
-                let studio = OverlayStudioState {
-                    overlay,
-                    is_calibrating: false,
-                    selected_element_idx: None,
-                    action_target_idx: Some(action_idx),
-                    is_exit_pipeline: is_exit,
-                    active_color_target: None,
-                    snap_to_grid: false,
-                    card_lock_aspect: false,
-                    canvas_pan: egui::Vec2::ZERO,
-                    canvas_zoom: None,
-                    last_synced_pos: None,
-                    undo_stack: Vec::new(),
-                    redo_stack: Vec::new(),
-                    show_presets_popover: false,
-                    preset_save_name: save_name,
-                    preset_search_query: String::new(),
-                };
-                self.overlay_studio = Some(studio.clone());
-                self.last_overlay_studio = Some(studio);
-            }
-        }
-    }
-
-    pub fn close_overlay_studio(&mut self) {
-        if let Some(studio) = &self.overlay_studio {
-            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::HideOverlayPreview(studio.overlay.id.clone()));
-            if let Some(action_idx) = studio.action_target_idx {
+    /// Clears the recorded events only once the preset is persisted. On failure the recording
+    /// stays in the action — it is the only live copy, and the engine hydrates empty events from
+    /// the library — and the error is surfaced instead of a silent loss.
+    fn apply_macro_save_result(&mut self, preset_id: &str, result: Result<IpcResponse, String>) {
+        let failure = Self::mutation_failure(result);
+        let pending = self
+            .pending_macro_saves
+            .iter()
+            .position(|pending| pending.preset_id == preset_id)
+            .map(|position| self.pending_macro_saves.remove(position));
+        match (failure, pending) {
+            (None, Some(pending)) => {
                 if let Some(rule) = &mut self.editing_rule {
-                    let actions = if studio.is_exit_pipeline {
+                    let actions = if pending.is_exit_pipeline {
                         &mut rule.on_exit_actions
                     } else {
                         &mut rule.actions
                     };
-                    if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(action_idx) {
-                        if custom_overlay.is_some() {
-                            *custom_overlay = Some(Box::new(studio.overlay.clone()));
-                            *overlay_id = studio.overlay.id.clone();
-                        } else {
-                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(studio.overlay.clone()));
+                    if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, .. }) =
+                        actions.get_mut(pending.step_idx)
+                    {
+                        if pid.as_str() == preset_id {
+                            events.clear();
                         }
                     }
                 }
-            } else {
-                let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(studio.overlay.clone()));
             }
+            (None, None) => {}
+            (Some(failure), _) => {
+                crate::logging::warn(
+                    "GUI",
+                    &format!(
+                        "SaveMacroPreset '{preset_id}' was not applied: {}",
+                        failure.diagnostic()
+                    ),
+                );
+                self.set_toast(self.mutation_failure_toast(&failure));
+            }
+        }
+    }
+
+    pub fn open_overlay_studio(&mut self, overlay_id: &str) {
+        let library = crate::config::Library::read();
+        let overlay = library
+            .overlays
+            .iter()
+            .find(|o| o.id == overlay_id)
+            .cloned()
+            .unwrap_or_else(|| default_overlay_for(overlay_id));
+        self.show_overlay_studio(OverlayStudioState::new(overlay, None, false, String::new()));
+    }
+
+    pub fn open_overlay_studio_for_action(&mut self, action_idx: usize, is_exit: bool) {
+        let studio = {
+            let Some(rule) = &self.editing_rule else { return };
+            let actions = if is_exit { &rule.on_exit_actions } else { &rule.actions };
+            let Some(crate::models::Action::Overlay { overlay_id, custom_overlay, .. }) = actions.get(action_idx) else {
+                return;
+            };
+            let overlay = if let Some(cust) = custom_overlay {
+                (**cust).clone()
+            } else {
+                let library = crate::config::Library::read();
+                library
+                    .overlays
+                    .iter()
+                    .find(|o| o.id == *overlay_id)
+                    .cloned()
+                    .unwrap_or_else(|| default_overlay_for(overlay_id))
+            };
+            let preset_save_name = overlay.name.clone();
+            OverlayStudioState::new(overlay, Some(action_idx), is_exit, preset_save_name)
+        };
+        self.show_overlay_studio(studio);
+    }
+
+    fn show_overlay_studio(&mut self, studio: OverlayStudioState) {
+        self.overlay_studio = Some(studio.clone());
+        self.last_overlay_studio = Some(studio);
+    }
+
+    pub fn close_overlay_studio(&mut self) {
+        let Some(studio) = self.overlay_studio.as_ref() else { return };
+        let overlay = studio.overlay.clone();
+        let action_target = studio.action_target_idx;
+        let is_exit_pipeline = studio.is_exit_pipeline;
+        let _ = IpcClient::call(&IpcRequest::HideOverlayPreview(overlay.id.clone()));
+        let mut save_to_library = action_target.is_none();
+        if let Some(action_idx) = action_target {
+            if let Some(rule) = &mut self.editing_rule {
+                let actions = if is_exit_pipeline {
+                    &mut rule.on_exit_actions
+                } else {
+                    &mut rule.actions
+                };
+                if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(action_idx) {
+                    if custom_overlay.is_some() {
+                        // Inline definitions live in the rule action, not in the library.
+                        *custom_overlay = Some(Box::new(overlay.clone()));
+                        *overlay_id = overlay.id.clone();
+                    } else {
+                        save_to_library = true;
+                    }
+                }
+            }
+        }
+        if save_to_library {
+            let direct = DirectWrite::Library(DirectLibraryChange::UpsertOverlay(Box::new(overlay.clone())));
+            self.enqueue_ipc(
+                IpcJobKind::SaveOverlay { overlay_id: overlay.id.clone() },
+                IpcRequest::SaveOverlay(overlay),
+                Some(direct),
+            );
         }
         self.overlay_studio = None;
     }
@@ -733,18 +1237,55 @@ impl GuiState {
         self.toast = Some((msg.into(), Instant::now()));
     }
 
-    pub fn toggle_autorun(&mut self, enable: bool) {
-        match IpcClient::call(&IpcRequest::SetAutorun(enable)) {
-            Ok(IpcResponse::Ok) => {
-                let msg = if enable { self.loc().toast_autorun_enabled } else { self.loc().toast_autorun_disabled };
-                self.set_toast(msg);
-            }
-            Ok(IpcResponse::Error(err)) => {
-                self.set_toast(format!("Autorun error: {err}"));
-            }
-            _ => {}
+    /// Queues a request to the IPC worker. `direct` is the section write used only when the
+    /// daemon is unreachable; the frame thread never sees the round-trip.
+    fn enqueue_ipc(&mut self, kind: IpcJobKind, request: IpcRequest, direct: Option<DirectWrite>) -> bool {
+        self.ipc.send(IpcJob { kind, request, direct })
+    }
+
+    /// `Some(failure)` unless the daemon (or the direct fallback) confirmed the mutation.
+    fn mutation_failure(result: Result<IpcResponse, String>) -> Option<MutationFailure> {
+        match result {
+            Ok(IpcResponse::Ok) => None,
+            Ok(IpcResponse::Error(error)) => Some(MutationFailure::Detail(error)),
+            Ok(other) => Some(MutationFailure::UnexpectedResponse(format!(
+                "unexpected {} response",
+                ipc_response_name(&other)
+            ))),
+            Err(error) => Some(MutationFailure::Detail(error)),
         }
-        self.sync_with_daemon();
+    }
+
+    /// Localized toast line for a mutation the daemon did not confirm.
+    fn mutation_failure_toast(&self, failure: &MutationFailure) -> String {
+        match failure {
+            MutationFailure::Detail(detail) => self.loc().toast_request_failed.replace("{}", detail),
+            MutationFailure::UnexpectedResponse(_) => {
+                self.loc().toast_request_failed_unexpected.to_string()
+            }
+        }
+    }
+
+    /// Reports a mutation that was not applied and keeps whatever draft was in flight.
+    fn report_mutation_failure(&mut self, kind: &IpcJobKind, failure: &MutationFailure) {
+        crate::logging::warn(
+            "GUI",
+            &format!("{} was not applied: {}", kind.label(), failure.diagnostic()),
+        );
+        self.set_toast(self.mutation_failure_toast(failure));
+    }
+
+    /// Drops a release the daemon no longer advertises (nothing found by a manual check, the
+    /// daemon restarted, the update was applied) so the footer and changelog stop offering it.
+    fn clear_available_update(&mut self) {
+        self.updates.advertise();
+        if self.available_update.take().is_some() {
+            self.show_changelog_modal = false;
+        }
+    }
+
+    pub fn toggle_autorun(&mut self, enable: bool) {
+        self.enqueue_ipc(IpcJobKind::SetAutorun { enabled: enable }, IpcRequest::SetAutorun(enable), None);
     }
 
     pub fn is_any_rule_executing(&self) -> bool {
@@ -757,71 +1298,196 @@ impl GuiState {
             .unwrap_or(false)
     }
 
+    /// Drains finished IPC work and queues a daemon poll when one is due. Called once per frame
+    /// from `SynectorApp::ui`; it never blocks on the named pipe.
     pub fn sync_with_daemon(&mut self) {
-        let interval_ms = if self.is_any_rule_executing() { 80 } else { 400 };
-        if self.last_sync.elapsed().as_millis() < interval_ms {
+        self.drain_ipc_results();
+        self.check_sync_timeout();
+        if self.ipc.sync_in_flight || !self.daemon_sync.due(self.is_any_rule_executing()) {
             return;
         }
-        self.last_sync = Instant::now();
+        self.daemon_sync.mark_requested();
+        if self.enqueue_ipc(IpcJobKind::Sync, IpcRequest::GetState, None) {
+            self.ipc.sync_in_flight = true;
+        }
+    }
 
-        match IpcClient::call(&IpcRequest::GetState) {
-            Ok(IpcResponse::State(state)) => {
-                self.has_connected_daemon = true;
-                self.failed_daemon_syncs = 0;
-                let rules_action_counts: std::collections::HashMap<String, usize> = state
-                    .config
-                    .rules
-                    .iter()
-                    .map(|r| (r.id.clone(), r.actions.len()))
-                    .collect();
+    /// An outstanding poll that never returns must not stall the client silently: treat it as a
+    /// failure and let the cadence retry (the hung request stays queued in the worker).
+    fn check_sync_timeout(&mut self) {
+        let Some(since) = self.daemon_sync.pending_since else { return };
+        if since.elapsed() < DAEMON_SYNC_TIMEOUT {
+            return;
+        }
+        self.ipc.sync_in_flight = false;
+        self.daemon_sync.pending_since = None;
+        self.note_sync_failure("the daemon did not answer the state request within 2 s".to_string());
+    }
 
-                self.active_test_runs.retain(|id, started_at| {
-                    if state.active_test_rule_ids.contains(id) {
-                        return true;
-                    }
-                    let num_actions = rules_action_counts.get(id).copied().unwrap_or(1);
-                    let min_dur = std::time::Duration::from_millis(((num_actions * 400).max(900) as u64).min(4000));
-                    started_at.elapsed() < min_dur || state.active_rule_executions.contains_key(id)
-                });
-                for id in &state.active_test_rule_ids {
-                    self.active_test_runs.entry(id.clone()).or_insert_with(Instant::now);
-                }
+    /// Applies every completed job on the frame thread.
+    fn drain_ipc_results(&mut self) {
+        while let Ok(result) = self.ipc.result_rx.try_recv() {
+            self.apply_ipc_result(result);
+        }
+    }
 
-                if let Some(ref update) = state.available_update {
-                    if self.available_update.as_ref().map(|u| &u.version) != Some(&update.version) {
-                        self.available_update = Some(update.clone());
-                    }
+    fn apply_ipc_result(&mut self, job: IpcJobResult) {
+        let IpcJobResult { kind, result } = job;
+        match &kind {
+            IpcJobKind::Sync => {
+                self.ipc.sync_in_flight = false;
+                match result {
+                    Ok(IpcResponse::State(state)) => self.apply_daemon_state(state),
+                    Ok(IpcResponse::Error(error)) => self.note_sync_failure(error),
+                    Ok(other) => self.note_sync_failure(format!("unexpected {} response", ipc_response_name(&other))),
+                    Err(error) => self.note_sync_failure(error),
                 }
-                if let Some(pct) = state.update_progress {
-                    self.is_downloading_update = true;
-                    self.update_download_progress = pct;
-                } else if self.is_downloading_update {
-                    self.is_downloading_update = false;
-                }
-                if state.pending_open_update_modal {
-                    self.show_changelog_modal = true;
-                    let _ = IpcClient::call(&IpcRequest::AcknowledgeOpenUpdateModal);
-                }
-                if state.pending_auto_start_update && !self.is_downloading_update {
-                    if let Some(ref update) = state.available_update {
-                        let _ = IpcClient::call(&IpcRequest::AcknowledgeAutoStartUpdate);
-                        self.start_update(update.clone());
-                    }
-                }
-
-                self.daemon_state = Some(state);
-                self.is_daemon_connected = true;
             }
-            _ => {
-                self.is_daemon_connected = false;
-                self.failed_daemon_syncs += 1;
+            IpcJobKind::Processes => {
+                self.ipc.processes_in_flight = false;
+                match result {
+                    Ok(IpcResponse::Processes(processes)) => self.cached_processes = processes,
+                    Ok(other) => crate::logging::warn(
+                        "GUI",
+                        &format!("Process snapshot failed: unexpected {} response", ipc_response_name(&other)),
+                    ),
+                    // Background refresh: a daemon outage is already reported by the state sync,
+                    // so the transport detail is logged at debug to avoid per-retry noise.
+                    Err(error) => crate::logging::debug("GUI", &format!("Process snapshot failed: {error}")),
+                }
+            }
+            IpcJobKind::SaveRule { rule_id } => self.apply_save_rule_result(rule_id, result),
+            IpcJobKind::CloneRule { .. } => {
+                if let Some(failure) = Self::mutation_failure(result) {
+                    self.report_mutation_failure(&kind, &failure);
+                }
+                self.daemon_sync.force();
+            }
+            IpcJobKind::DeleteRule { rule_id } => {
+                match Self::mutation_failure(result) {
+                    None => {
+                        if self.selected_rule_id.as_deref() == Some(rule_id.as_str()) {
+                            self.selected_rule_id = None;
+                            self.editing_rule = None;
+                            self.is_creating_new_rule = false;
+                        }
+                        self.set_toast(self.loc().toast_rule_deleted);
+                    }
+                    Some(failure) => self.report_mutation_failure(&kind, &failure),
+                }
+                self.daemon_sync.force();
+            }
+            IpcJobKind::ToggleRule { .. }
+            | IpcJobKind::ReorderRules
+            | IpcJobKind::ResetRule { .. }
+            | IpcJobKind::SaveOverlay { .. }
+            | IpcJobKind::StopRuleExecution { .. } => {
+                if let Some(failure) = Self::mutation_failure(result) {
+                    self.report_mutation_failure(&kind, &failure);
+                }
+                self.daemon_sync.force();
+            }
+            IpcJobKind::SaveMacroPreset { preset_id } => self.apply_macro_save_result(preset_id, result),
+            IpcJobKind::TestRunRule { rule_id } => self.apply_test_run_result(rule_id, result),
+            IpcJobKind::ImportShare => self.apply_import_result(result),
+            IpcJobKind::SetAutorun { enabled } => self.apply_autorun_result(*enabled, result),
+            IpcJobKind::StartUpdate => self.apply_start_update_result(result),
+            IpcJobKind::Background => {
+                if let Err(error) = result {
+                    crate::logging::debug("GUI", &format!("{} failed: {error}", kind.label()));
+                }
+            }
+        }
+    }
+
+    fn apply_daemon_state(&mut self, state: DaemonState) {
+        self.has_connected_daemon = true;
+        self.failed_daemon_syncs = 0;
+        self.is_daemon_connected = true;
+        self.daemon_sync.note_success();
+        let rules_action_counts: std::collections::HashMap<String, usize> = state
+            .config
+            .rules
+            .iter()
+            .map(|r| (r.id.clone(), r.actions.len()))
+            .collect();
+
+        self.active_test_runs.retain(|id, started_at| {
+            if state.active_test_rule_ids.contains(id) {
+                return true;
+            }
+            let num_actions = rules_action_counts.get(id).copied().unwrap_or(1);
+            let min_dur = std::time::Duration::from_millis(((num_actions * 400).max(900) as u64).min(4000));
+            started_at.elapsed() < min_dur || state.active_rule_executions.contains_key(id)
+        });
+        for id in &state.active_test_rule_ids {
+            self.active_test_runs.entry(id.clone()).or_insert_with(Instant::now);
+        }
+
+        match state.available_update {
+            Some(ref update) => {
+                if self.available_update.as_ref().map(|u| &u.version) != Some(&update.version) {
+                    self.available_update = Some(update.clone());
+                }
+            }
+            // The daemon is the authority: a manual check that found nothing and a fresh daemon
+            // must not leave the client offering a stale release. A snapshot that was in flight
+            // while the client changed the advertisement cannot be distinguished from a fresh
+            // one, so it is ignored for the grace period.
+            None => {
+                if self.updates.daemon_may_clear() {
+                    self.clear_available_update();
+                }
+            }
+        }
+        if let Some(pct) = state.update_progress {
+            self.is_downloading_update = true;
+            self.update_download_progress = pct;
+        } else if self.is_downloading_update {
+            self.is_downloading_update = false;
+        }
+        if state.pending_open_update_modal {
+            self.show_changelog_modal = true;
+            self.enqueue_ipc(
+                IpcJobKind::Background,
+                IpcRequest::AcknowledgeOpenUpdateModal,
+                None,
+            );
+        }
+        if state.pending_auto_start_update && !self.is_downloading_update {
+            if let Some(ref update) = state.available_update {
+                self.enqueue_ipc(
+                    IpcJobKind::Background,
+                    IpcRequest::AcknowledgeAutoStartUpdate,
+                    None,
+                );
+                self.start_update(update.clone());
             }
         }
 
-        if self.picker_target.is_some() || self.editing_rule.is_some() || !self.search_query.is_empty() {
-            if let Ok(IpcResponse::Processes(procs)) = IpcClient::call(&IpcRequest::GetProcesses) {
-                self.cached_processes = procs;
-            }
+        self.daemon_state = Some(state);
+    }
+
+    fn note_sync_failure(&mut self, error: String) {
+        self.failed_daemon_syncs = self.failed_daemon_syncs.saturating_add(1);
+        if let Some(first) = self.daemon_sync.note_failure(error) {
+            crate::logging::warn("GUI", &format!("Daemon state sync failed: {first}"));
+        }
+        // A single missed poll is not an outage: report the disconnected state only after a
+        // sustained stretch of failures, with the collected error detail.
+        if self.daemon_sync.outage_confirmed(self.failed_daemon_syncs) && self.is_daemon_connected {
+            let last_error = self.daemon_sync.last_error.clone();
+            crate::logging::warn(
+                "GUI",
+                &format!(
+                    "Daemon unreachable after {} failed polls: {}",
+                    self.failed_daemon_syncs,
+                    last_error.as_deref().unwrap_or("no response")
+                ),
+            );
+            self.is_daemon_connected = false;
+            let detail = last_error.as_deref().unwrap_or(self.loc().toast_daemon_no_response);
+            self.set_toast(format!("{}: {detail}", self.loc().settings_daemon_offline));
         }
     }
 
@@ -886,6 +1552,17 @@ impl GuiState {
             // copying stays a single click.
             crate::logging::warn("SHARE", &self.share_warning_text(warning));
         }
+        if self.share.rx.is_some() {
+            // A second Copy must not drop the running export's receiver: the earlier code would
+            // have swallowed its result and only the second code reached the clipboard.
+            let rule_count = payload.rules.len();
+            self.share.queued.push_back(ShareExportJob { payload, warnings });
+            crate::logging::info(
+                "SHARE",
+                &format!("Queued share code for {rule_count} automation(s) behind the running export"),
+            );
+            return;
+        }
         self.spawn_share_export(payload, warnings);
     }
 
@@ -900,29 +1577,45 @@ impl GuiState {
             let result = crate::sharing::compress_and_encode(&payload);
             let _ = tx.send((result, rule_count, warnings));
         });
-        self.share_export_rx = Some(rx);
+        self.share.rx = Some(rx);
+        // Keep a frame coming so the result reaches the clipboard without waiting for input.
+        if let Some(ctx) = &self.ipc.frame_ctx {
+            ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
         crate::logging::info(
             "SHARE",
             &format!("Building share code for {rule_count} automation(s) in the background"),
         );
     }
 
+    fn start_next_queued_export(&mut self) {
+        if self.share.rx.is_none() {
+            if let Some(next) = self.share.queued.pop_front() {
+                self.spawn_share_export(next.payload, next.warnings);
+            }
+        }
+    }
+
     /// Drains the background export channel; called once per frame from the app loop.
     pub fn poll_share_events(&mut self, ctx: &egui::Context) {
+        self.ipc.attach_frame_ctx(ctx);
         enum Polled {
             Outcome(ShareExportOutcome),
             Empty,
             Closed,
         }
-        let polled = match self.share_export_rx.as_ref().map(|rx| rx.try_recv()) {
-            None => return,
+        let polled = match self.share.rx.as_ref().map(|rx| rx.try_recv()) {
+            None => {
+                self.start_next_queued_export();
+                return;
+            }
             Some(Ok(outcome)) => Polled::Outcome(outcome),
             Some(Err(std::sync::mpsc::TryRecvError::Empty)) => Polled::Empty,
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => Polled::Closed,
         };
         match polled {
             Polled::Outcome((Ok(code), count, warnings)) => {
-                self.share_export_rx = None;
+                self.share.rx = None;
                 crate::sharing::copy_text_to_clipboard(ctx, &code);
                 let mut message = self.loc().toast_share_copied.replace("{}", &count.to_string());
                 if !warnings.is_empty() {
@@ -941,18 +1634,21 @@ impl GuiState {
                         warnings.len()
                     ),
                 );
+                self.start_next_queued_export();
             }
             Polled::Outcome((Err(error), _, _)) => {
-                self.share_export_rx = None;
+                self.share.rx = None;
                 let detail = self.share_error_text(&error);
                 self.set_toast(self.loc().toast_share_failed.replace("{}", &detail));
                 crate::logging::warn("SHARE", &format!("Share code export failed: {error}"));
+                self.start_next_queued_export();
             }
             Polled::Empty => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
             Polled::Closed => {
-                self.share_export_rx = None;
+                self.share.rx = None;
+                self.start_next_queued_export();
             }
         }
     }
@@ -1003,7 +1699,13 @@ impl GuiState {
             payload: Box::new(payload),
             enable: false,
         };
-        match IpcClient::call(&request) {
+        self.enqueue_ipc(IpcJobKind::ImportShare, request, None);
+    }
+
+    /// Applies the daemon's answer to a decoded share code. Imported rules are disabled and the
+    /// toast summarizes what the daemon actually applied.
+    fn apply_import_result(&mut self, result: Result<IpcResponse, String>) {
+        match result {
             Ok(IpcResponse::ShareImportResult(summary)) => {
                 let mut message = if summary.imported == 0 {
                     self.loc().share_import_nothing_new.to_string()
@@ -1036,14 +1738,14 @@ impl GuiState {
                         summary.skipped_duplicates
                     ),
                 );
-                self.sync_with_daemon();
+                self.daemon_sync.force();
             }
             Ok(IpcResponse::Error(error)) => {
                 crate::logging::warn("SHARE", &format!("Import rejected by daemon: {error}"));
                 self.set_toast(self.loc().toast_import_failed.replace("{}", &error));
             }
             Ok(_) => {
-                self.set_toast(self.loc().toast_import_failed.replace("{}", "unexpected daemon response"));
+                self.set_toast(self.loc().toast_request_failed_unexpected);
             }
             Err(error) => {
                 crate::logging::warn("SHARE", &format!("Import IPC failed: {error}"));
@@ -1066,6 +1768,7 @@ impl GuiState {
             E::ChecksumMismatch => loc.share_err_checksum.to_string(),
             E::PayloadTooLarge => loc.share_err_payload_too_large.to_string(),
             E::TooManyRules => loc.share_err_too_many_rules.to_string(),
+            E::TooManyLibraryItems => loc.share_err_too_many_library_items.to_string(),
             E::EmptyPayload => loc.share_err_empty_payload.to_string(),
             E::InvalidPayload => loc.share_err_invalid_payload.to_string(),
             E::UnsupportedVersion(version) => {
@@ -1085,15 +1788,39 @@ impl GuiState {
             W::SensitiveAdminProcess => loc.share_warn_admin.to_string(),
             W::SensitiveWebhook => loc.share_warn_webhook.to_string(),
             W::CustomIconDropped => loc.share_warn_icon.to_string(),
+            W::OverlayAssetDropped => loc.share_warn_asset.to_string(),
+            W::MissingRule(id) => loc.share_warn_missing_rule.replace("{}", id),
         }
     }
 
 
+    /// Fetches a process snapshot when the cache is still empty. Non-blocking: the result is
+    /// applied by the next frame.
     pub fn ensure_processes(&mut self) {
-        if self.cached_processes.is_empty() {
-            if let Ok(IpcResponse::Processes(procs)) = IpcClient::call(&IpcRequest::GetProcesses) {
-                self.cached_processes = procs;
+        self.request_process_snapshot(false);
+    }
+
+    /// Queues a `GetProcesses` round-trip unless one is already in flight. `force` is used when
+    /// the picker opens, so the list is fresh exactly when the user asks for it.
+    fn request_process_snapshot(&mut self, force: bool) {
+        if self.ipc.processes_in_flight {
+            return;
+        }
+        if !force {
+            if !self.cached_processes.is_empty() {
+                return;
             }
+            if self
+                .ipc
+                .last_process_request
+                .is_some_and(|at| at.elapsed() < PROCESS_SNAPSHOT_RETRY)
+            {
+                return;
+            }
+        }
+        if self.enqueue_ipc(IpcJobKind::Processes, IpcRequest::GetProcesses, None) {
+            self.ipc.processes_in_flight = true;
+            self.ipc.last_process_request = Some(Instant::now());
         }
     }
 
@@ -1305,7 +2032,9 @@ impl GuiState {
     }
 
     pub fn open_process_picker(&mut self, target: ProcessPickerTarget) {
-        self.ensure_processes();
+        // Opening the picker is the explicit refresh point: the list is fetched for exactly the
+        // moment the user needs it, instead of on every daemon-sync tick while editing.
+        self.request_process_snapshot(true);
         self.process_search_query.clear();
         self.picker_target = Some(target);
         self.last_picker_target = Some(target);
@@ -1471,8 +2200,9 @@ impl GuiState {
             .as_ref()
             .is_some_and(|state| state.config.rules.iter().any(|saved| saved.id == rule.id));
         if saved {
-            let _ = IpcClient::call(&IpcRequest::ResetRule(rule.id.clone()));
-            self.sync_with_daemon();
+            let id = rule.id.clone();
+            let direct = DirectWrite::ResetRuntime { rule_id: id.clone() };
+            self.enqueue_ipc(IpcJobKind::ResetRule { rule_id: id.clone() }, IpcRequest::ResetRule(id), Some(direct));
         }
     }
 
@@ -1515,16 +2245,38 @@ impl GuiState {
         deduplicate_overlay_ids(&mut rule.actions, &mut seen_ids);
         deduplicate_overlay_ids(&mut rule.on_exit_actions, &mut seen_ids);
 
-        let _ = IpcClient::call(&IpcRequest::SaveRule(rule));
-        self.editing_rule = None;
-        self.is_creating_new_rule = false;
-        self.selected_rule_id = None;
-        self.builder_draft = None;
-        self.set_toast(self.loc().toast_rule_saved);
-        self.sync_with_daemon();
+        // The draft stays in `editing_rule` until the daemon confirms the save; a transport or
+        // validation failure must not discard the only copy of the user's rule.
+        let rule_id = rule.id.clone();
+        let direct = DirectWrite::Rules(DirectRuleChange::Upsert(Box::new(rule.clone())));
+        self.enqueue_ipc(IpcJobKind::SaveRule { rule_id }, IpcRequest::SaveRule(rule), Some(direct));
+    }
+
+    /// Applies the daemon's answer to `SaveRule`: clears the editor only on confirmation and
+    /// reports the reason otherwise.
+    fn apply_save_rule_result(&mut self, rule_id: &str, result: Result<IpcResponse, String>) {
+        match Self::mutation_failure(result) {
+            None => {
+                self.editing_rule = None;
+                self.is_creating_new_rule = false;
+                self.selected_rule_id = None;
+                self.builder_draft = None;
+                self.set_toast(self.loc().toast_rule_saved);
+            }
+            Some(failure) => {
+                crate::logging::warn(
+                    "GUI",
+                    &format!("SaveRule '{rule_id}' was not applied: {}", failure.diagnostic()),
+                );
+                self.set_toast(self.mutation_failure_toast(&failure));
+            }
+        }
+        self.daemon_sync.force();
     }
 
     pub fn delete_rule(&mut self, id: &str) {
+        // Previews are hidden right away; the rule itself is removed only once the daemon
+        // confirms, so a failed delete leaves the editor and selection intact.
         if let Some(rule) = self.daemon_state.as_ref().and_then(|s| s.config.rules.iter().find(|r| r.id == id)) {
             Self::hide_rule_overlays(rule);
         }
@@ -1533,30 +2285,35 @@ impl GuiState {
                 Self::hide_rule_overlays(rule);
             }
         }
-        let _ = IpcClient::call(&IpcRequest::DeleteRule(id.to_string()));
-        if self.selected_rule_id.as_deref() == Some(id) {
-            self.selected_rule_id = None;
-            self.editing_rule = None;
-        }
-        self.set_toast(self.loc().toast_rule_deleted);
-        self.sync_with_daemon();
+        let direct = DirectWrite::Rules(DirectRuleChange::Delete(id.to_string()));
+        self.enqueue_ipc(
+            IpcJobKind::DeleteRule { rule_id: id.to_string() },
+            IpcRequest::DeleteRule(id.to_string()),
+            Some(direct),
+        );
     }
 
     pub fn clone_rule(&mut self, rule: &Rule) {
         let cloned = rule.clone_with_new_id();
         let new_name = cloned.name.clone();
 
-        let _ = IpcClient::call(&IpcRequest::SaveRule(cloned.clone()));
+        // The clone opens in the editor immediately; the daemon save is confirmed separately.
         self.selected_rule_id = None;
         if self.editing_rule.is_some() {
-            self.editing_rule = Some(cloned);
+            self.editing_rule = Some(cloned.clone());
             self.is_creating_new_rule = false;
         }
         self.set_toast(format!("{}: {}", self.loc().toast_rule_cloned, new_name));
-        self.sync_with_daemon();
+        let direct = DirectWrite::Rules(DirectRuleChange::Upsert(Box::new(cloned.clone())));
+        self.enqueue_ipc(
+            IpcJobKind::CloneRule { rule_id: cloned.id.clone() },
+            IpcRequest::SaveRule(cloned),
+            Some(direct),
+        );
     }
 
     pub fn reorder_rule_by_id(&mut self, src_id: &str, target_id: Option<&str>, insert_after: bool) {
+        let mut order = None;
         if let Some(ds) = &mut self.daemon_state {
             if let Some(src_pos) = ds.config.rules.iter().position(|r| r.id == src_id) {
                 let rule = ds.config.rules.remove(src_pos);
@@ -1577,62 +2334,97 @@ impl GuiState {
                 };
                 let insert_idx = insert_idx.min(ds.config.rules.len());
                 ds.config.rules.insert(insert_idx, rule);
-                let order: Vec<String> = ds.config.rules.iter().map(|rule| rule.id.clone()).collect();
-                let _ = IpcClient::call(&IpcRequest::ReorderRules(order));
+                order = Some(ds.config.rules.iter().map(|rule| rule.id.clone()).collect::<Vec<String>>());
             }
+        }
+        if let Some(order) = order {
+            let direct = DirectWrite::Rules(DirectRuleChange::Reorder(order.clone()));
+            self.enqueue_ipc(IpcJobKind::ReorderRules, IpcRequest::ReorderRules(order), Some(direct));
         }
     }
 
     pub fn toggle_rule(&mut self, id: &str, enabled: bool) {
-        let _ = IpcClient::call(&IpcRequest::ToggleRule {
-            id: id.to_string(),
-            enabled,
-        });
-        self.sync_with_daemon();
+        let direct = DirectWrite::Rules(DirectRuleChange::SetEnabled { id: id.to_string(), enabled });
+        self.enqueue_ipc(
+            IpcJobKind::ToggleRule { rule_id: id.to_string(), enabled },
+            IpcRequest::ToggleRule { id: id.to_string(), enabled },
+            Some(direct),
+        );
     }
 
     pub fn test_run_rule(&mut self, id: &str) {
         self.active_test_runs.insert(id.to_string(), Instant::now());
+        let mut overlay_ids = Vec::new();
         if let Some(rule) = self.daemon_state.as_ref().and_then(|s| s.config.rules.iter().find(|r| r.id == id)) {
-            for id in Self::extract_rule_overlay_ids(rule) {
-                self.active_test_overlays.insert(id);
-            }
+            overlay_ids.extend(Self::extract_rule_overlay_ids(rule));
         }
         let mut rule_override = None;
         if let Some(rule) = &self.editing_rule {
             if rule.id == id {
-                for id in Self::extract_rule_overlay_ids(rule) {
-                    self.active_test_overlays.insert(id);
-                }
+                overlay_ids.extend(Self::extract_rule_overlay_ids(rule));
                 rule_override = Some(Box::new(rule.clone()));
             }
         }
-        let _ = IpcClient::call(&IpcRequest::TestRunRule {
-            id: id.to_string(),
-            rule: rule_override,
-        });
-        self.set_toast(self.loc().toast_test_execution);
-        self.last_sync = Instant::now() - std::time::Duration::from_secs(1);
-        self.sync_with_daemon();
+        for overlay_id in overlay_ids {
+            self.active_test_overlays.insert(overlay_id);
+        }
+        self.enqueue_ipc(
+            IpcJobKind::TestRunRule { rule_id: id.to_string() },
+            IpcRequest::TestRunRule { id: id.to_string(), rule: rule_override },
+            None,
+        );
+        self.daemon_sync.force();
+    }
+
+    /// Overlay ids referenced by the saved rule or by the open draft with the same id.
+    fn rule_overlay_ids(&self, rule_id: &str) -> Option<Vec<String>> {
+        self.daemon_state
+            .as_ref()
+            .and_then(|s| s.config.rules.iter().find(|r| r.id == rule_id))
+            .map(Self::extract_rule_overlay_ids)
+            .or_else(|| {
+                self.editing_rule
+                    .as_ref()
+                    .filter(|r| r.id == rule_id)
+                    .map(Self::extract_rule_overlay_ids)
+            })
+    }
+
+    /// A test run starts only when the daemon accepts it; otherwise the optimistic running
+    /// markers are rolled back.
+    fn apply_test_run_result(&mut self, rule_id: &str, result: Result<IpcResponse, String>) {
+        match Self::mutation_failure(result) {
+            None => self.set_toast(self.loc().toast_test_execution),
+            Some(failure) => {
+                self.active_test_runs.remove(rule_id);
+                if let Some(ids) = self.rule_overlay_ids(rule_id) {
+                    for overlay_id in ids {
+                        self.active_test_overlays.remove(&overlay_id);
+                    }
+                }
+                crate::logging::warn(
+                    "GUI",
+                    &format!("TestRunRule '{rule_id}' was not applied: {}", failure.diagnostic()),
+                );
+                self.set_toast(self.mutation_failure_toast(&failure));
+            }
+        }
+        self.daemon_sync.force();
     }
 
     pub fn stop_rule_execution(&mut self, id: &str) {
         self.active_test_runs.remove(id);
-        if let Some(rule) = self.daemon_state.as_ref().and_then(|s| s.config.rules.iter().find(|r| r.id == id)) {
-            for ov_id in Self::extract_rule_overlay_ids(rule) {
+        if let Some(ids) = self.rule_overlay_ids(id) {
+            for ov_id in ids {
                 self.active_test_overlays.remove(&ov_id);
             }
         }
-        if let Some(rule) = &self.editing_rule {
-            if rule.id == id {
-                for ov_id in Self::extract_rule_overlay_ids(rule) {
-                    self.active_test_overlays.remove(&ov_id);
-                }
-            }
-        }
-        let _ = IpcClient::call(&IpcRequest::StopRuleExecution(id.to_string()));
-        self.last_sync = Instant::now() - std::time::Duration::from_secs(1);
-        self.sync_with_daemon();
+        self.enqueue_ipc(
+            IpcJobKind::StopRuleExecution { rule_id: id.to_string() },
+            IpcRequest::StopRuleExecution(id.to_string()),
+            None,
+        );
+        self.daemon_sync.force();
     }
 
     pub fn check_for_updates(&mut self, is_manual: bool) {
@@ -1640,7 +2432,7 @@ impl GuiState {
             return;
         }
         self.is_checking_update = true;
-        let tx = self.update_event_tx.clone();
+        let tx = self.updates.tx.clone();
         let current_ver = env!("CARGO_PKG_VERSION").to_string();
 
         std::thread::spawn(move || {
@@ -1676,11 +2468,54 @@ impl GuiState {
         self.update_download_progress = 0.0;
         self.set_toast(self.loc().toast_update_downloading.replace("{}", &info.version));
 
-        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::StartUpdate);
+        self.enqueue_ipc(IpcJobKind::StartUpdate, IpcRequest::StartUpdate, None);
+    }
+
+    /// The optimistic "downloading" flag is rolled back when the daemon never accepted the
+    /// request, so the footer stops claiming progress that will never happen.
+    fn apply_start_update_result(&mut self, result: Result<IpcResponse, String>) {
+        if let Some(failure) = Self::mutation_failure(result) {
+            self.is_downloading_update = false;
+            self.update_download_progress = 0.0;
+            crate::logging::warn(
+                "GUI",
+                &format!("StartUpdate was not applied: {}", failure.diagnostic()),
+            );
+            self.set_toast(match &failure {
+                MutationFailure::UnexpectedResponse(_) => {
+                    self.loc().toast_update_failed_unexpected.to_string()
+                }
+                MutationFailure::Detail(_) => {
+                    self.loc().toast_update_failed.replace("{}", failure.diagnostic())
+                }
+            });
+        }
+        self.daemon_sync.force();
+    }
+
+    fn apply_autorun_result(&mut self, enabled: bool, result: Result<IpcResponse, String>) {
+        match Self::mutation_failure(result) {
+            None => {
+                let msg = if enabled {
+                    self.loc().toast_autorun_enabled
+                } else {
+                    self.loc().toast_autorun_disabled
+                };
+                self.set_toast(msg);
+            }
+            Some(failure) => {
+                crate::logging::warn(
+                    "GUI",
+                    &format!("SetAutorun was not applied: {}", failure.diagnostic()),
+                );
+                self.set_toast(self.mutation_failure_toast(&failure));
+            }
+        }
+        self.daemon_sync.force();
     }
 
     pub fn poll_update_events(&mut self) {
-        while let Ok(event) = self.update_event_rx.try_recv() {
+        while let Ok(event) = self.updates.rx.try_recv() {
             match event {
                 crate::updater::UpdateEvent::CheckStarted => {
                     self.is_checking_update = true;
@@ -1690,14 +2525,26 @@ impl GuiState {
                     match *result {
                         Ok(Some(info)) => {
                             let ver = info.version.clone();
-                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SetAvailableUpdate(Some(info.clone())));
-                            self.available_update = Some(info);
+                            self.available_update = Some(info.clone());
+                            self.updates.advertise();
+                            self.enqueue_ipc(
+                                IpcJobKind::Background,
+                                IpcRequest::SetAvailableUpdate(Some(info)),
+                                None,
+                            );
                             if is_manual {
                                 self.set_toast(self.loc().toast_update_available.replace("{}", &ver));
                             }
                         }
                         Ok(None) => {
-                            let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SetAvailableUpdate(None));
+                            self.enqueue_ipc(
+                                IpcJobKind::Background,
+                                IpcRequest::SetAvailableUpdate(None),
+                                None,
+                            );
+                            // The manual check found nothing: stop offering the release the
+                            // client remembered from an older daemon session.
+                            self.clear_available_update();
                             if is_manual {
                                 self.set_toast(self.loc().toast_latest_version.replace("{}", env!("CARGO_PKG_VERSION")));
                             }
@@ -1759,6 +2606,17 @@ fn apply_process_to_action(action: &mut crate::models::Action, proc_name: &str) 
             apply_process_to_condition(condition, proc_name);
         }
         _ => {}
+    }
+}
+
+/// Built-in overlay definitions by id; unknown ids fall back to the blank template. Shared by
+/// both studio openers so a new built-in overlay is declared once.
+fn default_overlay_for(id: &str) -> crate::models::OverlayDefinition {
+    match id {
+        "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
+        "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
+        "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
+        _ => crate::models::OverlayDefinition::default_new_overlay(),
     }
 }
 
@@ -2032,7 +2890,6 @@ mod tests {
             autorun_enabled: false,
             uptime_secs: 0,
             daemon_memory_bytes: 0,
-            daemon_cpu_usage: 0.0,
             active_rules_count: 0,
             total_rules_count: 0,
             config,
@@ -2121,6 +2978,501 @@ mod tests {
         );
         let version = state.share_error_text(&crate::sharing::ShareError::UnsupportedVersion(9));
         assert!(version.contains('9'));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mutation outcomes (U05-001, U05-002)
+    // -----------------------------------------------------------------------
+
+    fn macro_rule(state: &GuiState, preset_id: &str) -> Rule {
+        let mut rule = state.initial_new_rule();
+        rule.name = "Macro rule".into();
+        rule.actions.push(Action::Macro {
+            preset_id: Some(preset_id.into()),
+            operation: crate::models::MacroOperation::Run,
+            events: vec![crate::models::MacroEvent::KeyPress { key: "A".into() }],
+            repeat: 1,
+            speed: 1.0,
+            infinite: false,
+        });
+        rule
+    }
+
+    fn macro_events(state: &GuiState, step_idx: usize) -> &[crate::models::MacroEvent] {
+        match &state.editing_rule.as_ref().expect("draft").actions[step_idx] {
+            Action::Macro { events, .. } => events,
+            other => panic!("expected a macro action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_save_rule_failure_keeps_the_draft() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        let mut rule = state.initial_new_rule();
+        rule.name = "Unsaved draft".into();
+        state.editing_rule = Some(rule.clone());
+        state.is_creating_new_rule = true;
+
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::SaveRule { rule_id: rule.id.clone() },
+            result: Err("Cannot connect to daemon pipe".into()),
+        });
+
+        let draft = state.editing_rule.as_ref().expect("a failed save must keep the only draft");
+        assert_eq!(draft.id, rule.id);
+        assert!(state.is_creating_new_rule, "the editor stays in create mode");
+        let toast = state.toast.as_ref().expect("failure is reported").0.clone();
+        assert_eq!(
+            toast,
+            crate::i18n::get(state.language).toast_request_failed.replace("{}", "Cannot connect to daemon pipe")
+        );
+
+        // A confirmed save is the only path that clears the editor.
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::SaveRule { rule_id: rule.id.clone() },
+            result: Ok(IpcResponse::Ok),
+        });
+        assert!(state.editing_rule.is_none());
+        assert!(!state.is_creating_new_rule);
+        assert_eq!(state.toast.as_ref().unwrap().0, crate::i18n::get(state.language).toast_rule_saved);
+    }
+
+    #[test]
+    fn test_macro_preset_failure_keeps_the_recorded_events() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.editing_rule = Some(macro_rule(&state, "macro_demo"));
+        let preset_id = "macro_demo".to_string();
+        state.pending_macro_saves.push(PendingMacroSave {
+            step_idx: 0,
+            is_exit_pipeline: false,
+            preset_id: preset_id.clone(),
+        });
+
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::SaveMacroPreset { preset_id: preset_id.clone() },
+            result: Err("daemon unavailable".into()),
+        });
+
+        assert!(!macro_events(&state, 0).is_empty(), "a failed preset save must keep the recording");
+        assert!(state.pending_macro_saves.is_empty(), "no retry is queued");
+        let toast = state.toast.as_ref().expect("failure is reported").0.clone();
+        assert_eq!(
+            toast,
+            crate::i18n::get(state.language).toast_request_failed.replace("{}", "daemon unavailable")
+        );
+
+        // Confirmation is the only path that drops the events from the rule.
+        state.pending_macro_saves.push(PendingMacroSave {
+            step_idx: 0,
+            is_exit_pipeline: false,
+            preset_id: preset_id.clone(),
+        });
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::SaveMacroPreset { preset_id },
+            result: Ok(IpcResponse::Ok),
+        });
+        assert!(macro_events(&state, 0).is_empty(), "confirmed presets are referenced by id");
+    }
+
+    // -----------------------------------------------------------------------
+    // User-visible failure copy (U05-010, U16-012)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_macro_preset_default_name_is_localized() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.open_macro_editor(0, false);
+        assert_eq!(
+            state.macro_preset_save_name,
+            crate::i18n::get(crate::i18n::Language::English).macro_studio_custom_preset_name
+        );
+
+        state.language = crate::i18n::Language::Russian;
+        state.open_macro_editor(0, false);
+        assert_eq!(
+            state.macro_preset_save_name,
+            crate::i18n::get(crate::i18n::Language::Russian).macro_studio_custom_preset_name
+        );
+        assert_ne!(
+            crate::i18n::get(crate::i18n::Language::English).macro_studio_custom_preset_name,
+            crate::i18n::get(crate::i18n::Language::Russian).macro_studio_custom_preset_name,
+            "the default preset name is translated, not an English literal"
+        );
+    }
+
+    #[test]
+    fn test_unexpected_response_toast_is_localized() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        let toggle = IpcJobResult {
+            kind: IpcJobKind::ToggleRule { rule_id: "rule-unexpected".into(), enabled: true },
+            result: Ok(IpcResponse::Pong),
+        };
+        state.apply_ipc_result(toggle);
+        let toast = state.toast.as_ref().expect("failure is reported").0.clone();
+        assert_eq!(
+            toast,
+            crate::i18n::get(crate::i18n::Language::English).toast_request_failed_unexpected
+        );
+        assert!(!toast.contains("Pong"), "the response name stays in the log only: {toast}");
+
+        state.language = crate::i18n::Language::Russian;
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::ToggleRule { rule_id: "rule-unexpected".into(), enabled: true },
+            result: Ok(IpcResponse::Pong),
+        });
+        assert_eq!(
+            state.toast.as_ref().expect("failure is reported").0.as_str(),
+            crate::i18n::get(crate::i18n::Language::Russian).toast_request_failed_unexpected
+        );
+    }
+
+    #[test]
+    fn test_import_unexpected_response_toast_is_localized() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::Russian;
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::ImportShare,
+            result: Ok(IpcResponse::Pong),
+        });
+        assert_eq!(
+            state.toast.as_ref().expect("failure is reported").0.as_str(),
+            crate::i18n::get(crate::i18n::Language::Russian).toast_request_failed_unexpected
+        );
+    }
+
+    /// I18N-GAP: the update path reports an unexpected response with its own localized line
+    /// instead of embedding the English protocol detail in `toast_update_failed`.
+    #[test]
+    fn test_update_unexpected_response_toast_is_localized() {
+        let en = crate::i18n::get(crate::i18n::Language::English);
+        let ru = crate::i18n::get(crate::i18n::Language::Russian);
+
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.apply_start_update_result(Ok(IpcResponse::Pong));
+        let toast = state.toast.as_ref().expect("failure is reported").0.clone();
+        assert_eq!(toast, en.toast_update_failed_unexpected);
+        assert!(!toast.contains("Pong"), "the response name stays in the log only: {toast}");
+        assert!(!toast.contains("{}"), "the generic update toast must not keep a placeholder: {toast}");
+
+        state.language = crate::i18n::Language::Russian;
+        state.apply_start_update_result(Ok(IpcResponse::Pong));
+        assert_eq!(
+            state.toast.as_ref().expect("failure is reported").0.as_str(),
+            ru.toast_update_failed_unexpected
+        );
+
+        // A daemon rejection still carries its (already safe) detail through the generic line.
+        state.language = crate::i18n::Language::English;
+        state.apply_start_update_result(Ok(IpcResponse::Error("startup refused".into())));
+        assert_eq!(
+            state.toast.as_ref().expect("failure is reported").0.as_str(),
+            en.toast_update_failed.replace("{}", "startup refused")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Daemon sync (U05-003)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sync_failure_needs_a_sustained_outage_and_keeps_the_error() {
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.has_connected_daemon = true;
+        state.is_daemon_connected = true;
+        state.daemon_sync.note_success();
+
+        for failures in 1..=2 {
+            state.apply_ipc_result(IpcJobResult {
+                kind: IpcJobKind::Sync,
+                result: Err("pipe closed".into()),
+            });
+            assert_eq!(state.failed_daemon_syncs, failures);
+            assert!(state.is_daemon_connected, "one or two missed polls are not an outage yet");
+        }
+        assert_eq!(state.daemon_sync.last_error.as_deref(), Some("pipe closed"));
+
+        // The quiet period has elapsed: the third failure confirms the outage and is reported.
+        state.daemon_sync.last_success = Instant::now() - std::time::Duration::from_secs(2);
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::Sync,
+            result: Err("pipe closed".into()),
+        });
+        assert!(!state.is_daemon_connected);
+        let toast = state.toast.as_ref().expect("the outage is reported").0.clone();
+        assert_eq!(
+            toast,
+            format!("{}: pipe closed", crate::i18n::get(state.language).settings_daemon_offline)
+        );
+
+        // A successful poll resets the streak and the stored error.
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::Sync,
+            result: Ok(IpcResponse::State(daemon_state_json(serde_json::json!({
+                "autorun_enabled": false,
+                "uptime_secs": 0,
+                "daemon_memory_bytes": 0,
+                "daemon_cpu_usage": 0.0,
+                "active_rules_count": 0,
+                "total_rules_count": 0,
+                "config": { "rules": [] },
+                "logs": []
+            })))),
+        });
+        assert!(state.is_daemon_connected);
+        assert_eq!(state.failed_daemon_syncs, 0);
+        assert!(state.daemon_sync.last_error.is_none());
+    }
+
+    #[test]
+    fn test_process_snapshot_requests_are_rate_limited() {
+        let mut state = GuiState::new();
+        assert!(state.cached_processes.is_empty());
+
+        state.ensure_processes();
+        assert!(state.ipc.processes_in_flight, "an empty cache requests a snapshot");
+
+        // The request fails (no daemon). The inspector asks again on the next frame: the retry
+        // must not be issued immediately.
+        state.apply_ipc_result(IpcJobResult {
+            kind: IpcJobKind::Processes,
+            result: Err("Cannot connect to daemon pipe".into()),
+        });
+        assert!(!state.ipc.processes_in_flight);
+        state.ensure_processes();
+        assert!(!state.ipc.processes_in_flight, "failed retries are spaced out");
+
+        // Opening the picker is an explicit request and bypasses the spacing.
+        state.open_process_picker(ProcessPickerTarget::Trigger);
+        assert!(state.ipc.processes_in_flight);
+    }
+
+    #[test]
+    fn test_overdue_sync_is_reported_instead_of_waiting_forever() {
+        let mut state = GuiState::new();
+        state.has_connected_daemon = true;
+        state.is_daemon_connected = true;
+        state.daemon_sync.note_success();
+        state.ipc.sync_in_flight = true;
+        state.daemon_sync.pending_since = Some(Instant::now() - DAEMON_SYNC_TIMEOUT);
+
+        state.check_sync_timeout();
+
+        assert!(!state.ipc.sync_in_flight, "an overdue poll stops blocking the next one");
+        assert_eq!(state.failed_daemon_syncs, 1);
+        let error = state.daemon_sync.last_error.as_deref().expect("timeout is recorded");
+        assert!(error.contains("did not answer"), "error: {error}");
+        assert!(state.is_daemon_connected, "one overdue poll is not an outage");
+    }
+
+    // -----------------------------------------------------------------------
+    // Direct-file fallback (U05-001)
+    // -----------------------------------------------------------------------
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "synector_gui_state_{label}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    #[test]
+    fn test_direct_rule_writes_when_ipc_is_unavailable() {
+        let dir = temp_dir("direct_rules");
+        let rule = Rule {
+            id: "rule_direct".into(),
+            name: "Direct".into(),
+            is_enabled: false,
+            ..Rule::default()
+        };
+
+        DirectWrite::Rules(DirectRuleChange::Upsert(Box::new(rule)))
+            .apply_in(&dir)
+            .expect("upsert");
+        let saved = crate::config::RulesFile::read_from(&dir);
+        assert_eq!(saved.rules.len(), 1);
+        assert_eq!(saved.rules[0].id, "rule_direct");
+        assert!(!saved.rules[0].is_enabled);
+
+        DirectWrite::Rules(DirectRuleChange::SetEnabled { id: "rule_direct".into(), enabled: true })
+            .apply_in(&dir)
+            .expect("toggle");
+        assert!(crate::config::RulesFile::read_from(&dir).rules[0].is_enabled);
+
+        DirectWrite::ResetRuntime { rule_id: "rule_direct".into() }
+            .apply_in(&dir)
+            .expect("reset runtime");
+        assert!(crate::config::RulesFile::read_from(&dir).rules[0].is_enabled);
+
+        DirectWrite::Rules(DirectRuleChange::Delete("rule_direct".into()))
+            .apply_in(&dir)
+            .expect("delete");
+        assert!(crate::config::RulesFile::read_from(&dir).rules.is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_direct_reorder_keeps_unnamed_rules_at_the_end() {
+        let mut rules = vec![
+            Rule { id: "a".into(), ..Rule::default() },
+            Rule { id: "b".into(), ..Rule::default() },
+            Rule { id: "c".into(), ..Rule::default() },
+        ];
+        reorder_rules(&mut rules, &["c".to_string(), "a".to_string()]);
+        let ids: Vec<_> = rules.iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(ids, vec!["c", "a", "b"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Built-in overlay studio (U05-009)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_overlay_for_builtin_ids() {
+        assert_eq!(
+            default_overlay_for("overlay_crosshair").id,
+            crate::models::OverlayDefinition::default_crosshair().id
+        );
+        assert_eq!(
+            default_overlay_for("overlay_telemetry").id,
+            crate::models::OverlayDefinition::default_telemetry().id
+        );
+        assert_eq!(
+            default_overlay_for("overlay_macro_badge").id,
+            crate::models::OverlayDefinition::default_macro_badge().id
+        );
+        assert_eq!(
+            default_overlay_for("something_custom").id,
+            crate::models::OverlayDefinition::default_new_overlay().id
+        );
+
+        let studio = OverlayStudioState::new(
+            crate::models::OverlayDefinition::default_crosshair(),
+            Some(3),
+            true,
+            "Saved name".into(),
+        );
+        assert_eq!(studio.action_target_idx, Some(3));
+        assert!(studio.is_exit_pipeline);
+        assert_eq!(studio.preset_save_name, "Saved name");
+        assert!(studio.undo_stack.is_empty() && studio.redo_stack.is_empty());
+        assert!(!studio.is_calibrating);
+    }
+
+    // -----------------------------------------------------------------------
+    // Share export queue (U05-011)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_second_share_copy_queues_instead_of_dropping_the_running_export() {
+        let mut state = GuiState::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        state.share.rx = Some(rx);
+
+        state.start_share_export(vec![]);
+        assert_eq!(state.share.queued.len(), 1, "the second copy is queued");
+        assert!(state.share.rx.is_some(), "the running receiver is kept");
+
+        // The first export ends without a result; the queued one takes over.
+        drop(tx);
+        state.poll_share_events(&egui::Context::default());
+        assert!(state.share.queued.is_empty());
+        assert!(state.share.rx.is_some(), "the queued export starts after the running one");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stale update advertisement (U03-013)
+    // -----------------------------------------------------------------------
+
+    fn release_info() -> crate::updater::ReleaseInfo {
+        crate::updater::ReleaseInfo {
+            version: "9.9.9".into(),
+            tag_name: "v9.9.9".into(),
+            name: "v9.9.9".into(),
+            body: "Notes".into(),
+            html_url: "http://example.com".into(),
+            portable: None,
+            installer: None,
+        }
+    }
+
+    fn daemon_state_json(value: serde_json::Value) -> DaemonState {
+        serde_json::from_value(value).expect("daemon state deserializes")
+    }
+
+    #[test]
+    fn test_manual_check_without_update_clears_the_stale_release() {
+        let mut state = GuiState::new();
+        state.available_update = Some(release_info());
+        state.show_changelog_modal = true;
+
+        state
+            .updates
+            .tx
+            .send(crate::updater::UpdateEvent::CheckComplete {
+                result: Box::new(Ok(None)),
+                is_manual: true,
+            })
+            .expect("send check result");
+        state.poll_update_events();
+
+        assert!(state.available_update.is_none(), "the manual check found nothing");
+        assert!(!state.show_changelog_modal, "the changelog must stop offering the release");
+        assert!(state.toast.is_some());
+    }
+
+    #[test]
+    fn test_daemon_state_without_update_clears_the_stale_release() {
+        let mut state = GuiState::new();
+        state.available_update = Some(release_info());
+        state.show_changelog_modal = true;
+
+        state.apply_daemon_state(daemon_state_json(serde_json::json!({
+            "autorun_enabled": false,
+            "uptime_secs": 0,
+            "daemon_memory_bytes": 0,
+            "daemon_cpu_usage": 0.0,
+            "active_rules_count": 0,
+            "total_rules_count": 0,
+            "config": { "rules": [] },
+            "logs": []
+        })));
+
+        assert!(state.available_update.is_none(), "the daemon is the authority on updates");
+        assert!(!state.show_changelog_modal);
+    }
+
+    #[test]
+    fn test_fresh_manual_result_survives_a_snapshot_taken_before_the_notification() {
+        let mut state = GuiState::new();
+        // The manual check just advertised a release; its notification is still in flight.
+        state.available_update = Some(release_info());
+        state.updates.advertise();
+
+        state.apply_daemon_state(daemon_state_json(serde_json::json!({
+            "autorun_enabled": false,
+            "uptime_secs": 0,
+            "daemon_memory_bytes": 0,
+            "daemon_cpu_usage": 0.0,
+            "active_rules_count": 0,
+            "total_rules_count": 0,
+            "config": { "rules": [] },
+            "logs": []
+        })));
+
+        assert!(
+            state.available_update.is_some(),
+            "a stale snapshot must not erase the release the client just found"
+        );
     }
 }
 

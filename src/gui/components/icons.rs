@@ -1,6 +1,13 @@
 //! Win32 process icon extraction and GPU texture caching.
+//!
+//! Extraction (OpenProcess / ExtractIconExW / GDI conversion) runs on a worker thread
+//! so the first paint of a long process list does not stall the UI thread. Requested
+//! keys are queued once, the queue is bounded, and a failed load is cached as `None`
+//! so a permanent failure (icon-less binary, inaccessible process) is never retried.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 
 #[cfg(windows)]
@@ -21,42 +28,158 @@ use windows::Win32::UI::Shell::ExtractIconExW;
 #[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
+/// Extractions kept in flight at once: the picker fills its list over a few frames
+/// instead of queueing every visible row's Win32 work in one paint.
+const MAX_ICON_LOADS_IN_FLIGHT: usize = 8;
+
+/// Hard bound on the worker request channel.
+const ICON_REQUEST_QUEUE: usize = 16;
+
+struct IconLoadResult {
+    key: String,
+    texture_name: String,
+    image: Option<ColorImage>,
+}
+
+enum IconLoadRequest {
+    Process {
+        key: String,
+        texture_name: String,
+        pid: u32,
+        name: String,
+    },
+    Path {
+        key: String,
+        texture_name: String,
+        path: String,
+    },
+}
+
+impl IconLoadRequest {
+    fn key(&self) -> &str {
+        match self {
+            Self::Process { key, .. } | Self::Path { key, .. } => key,
+        }
+    }
+}
+
 pub struct ProcessIconCache {
     cache: HashMap<String, Option<TextureHandle>>,
+    pending: HashSet<String>,
+    requests: SyncSender<IconLoadRequest>,
+    results: Receiver<IconLoadResult>,
+}
+
+impl Default for ProcessIconCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProcessIconCache {
     pub fn new() -> Self {
+        let (requests, request_rx) = mpsc::sync_channel::<IconLoadRequest>(ICON_REQUEST_QUEUE);
+        let (result_tx, results) = mpsc::channel::<IconLoadResult>();
+        let _ = std::thread::Builder::new()
+            .name("synector-icon-loader".to_owned())
+            .spawn(move || icon_worker(request_rx, result_tx));
         Self {
             cache: HashMap::new(),
+            pending: HashSet::new(),
+            requests,
+            results,
         }
     }
 
     pub fn get_icon(&mut self, ctx: &Context, pid: u32, name: &str) -> Option<&TextureHandle> {
         let key = name.to_lowercase();
-        if !self.cache.contains_key(&key) {
-            let loaded = load_process_texture(ctx, pid, name);
-            self.cache.insert(key.clone(), loaded);
+        self.collect_ready(ctx);
+        if !self.cache.contains_key(&key) && !self.pending.contains(&key) {
+            self.enqueue(IconLoadRequest::Process {
+                texture_name: format!("proc_icon_{}", name),
+                key: key.clone(),
+                pid,
+                name: name.to_owned(),
+            });
         }
         self.cache.get(&key).and_then(|opt| opt.as_ref())
     }
 
     pub fn get_icon_from_path(&mut self, ctx: &Context, path: &str) -> Option<&TextureHandle> {
         let key = format!("path:{}", path.to_lowercase());
-        if !self.cache.contains_key(&key) {
-            let loaded = load_path_texture(ctx, path);
-            self.cache.insert(key.clone(), loaded);
+        self.collect_ready(ctx);
+        if !self.cache.contains_key(&key) && !self.pending.contains(&key) {
+            self.enqueue(IconLoadRequest::Path {
+                texture_name: format!("path_icon_{}", path),
+                key: key.clone(),
+                path: path.to_owned(),
+            });
         }
         self.cache.get(&key).and_then(|opt| opt.as_ref())
     }
 
     pub fn get_app_icon(&mut self, ctx: &Context) -> Option<&TextureHandle> {
         let key = "__app_logo_icon__".to_string();
+        self.collect_ready(ctx);
         if !self.cache.contains_key(&key) {
             let loaded = load_embedded_app_icon(ctx);
             self.cache.insert(key.clone(), loaded);
         }
         self.cache.get(&key).and_then(|opt| opt.as_ref())
+    }
+
+    /// Moves finished worker results into GPU textures. A failed load is stored as
+    /// `None`, which both hides the placeholder and marks the key as permanently done.
+    fn collect_ready(&mut self, ctx: &Context) {
+        while let Ok(result) = self.results.try_recv() {
+            self.pending.remove(&result.key);
+            let texture = result
+                .image
+                .map(|image| ctx.load_texture(result.texture_name, image, TextureOptions::LINEAR));
+            self.cache.insert(result.key, texture);
+        }
+    }
+
+    fn enqueue(&mut self, request: IconLoadRequest) {
+        let key = request.key().to_owned();
+        if self.pending.len() >= MAX_ICON_LOADS_IN_FLIGHT || self.pending.contains(&key) {
+            return;
+        }
+        match self.requests.try_send(request) {
+            Ok(()) => {
+                self.pending.insert(key);
+            }
+            Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {}
+        }
+    }
+}
+
+fn icon_worker(requests: Receiver<IconLoadRequest>, results: mpsc::Sender<IconLoadResult>) {
+    while let Ok(request) = requests.recv() {
+        let result = match request {
+            IconLoadRequest::Process {
+                key,
+                texture_name,
+                pid,
+                name,
+            } => IconLoadResult {
+                key,
+                texture_name,
+                image: load_process_image(pid, &name),
+            },
+            IconLoadRequest::Path {
+                key,
+                texture_name,
+                path,
+            } => IconLoadResult {
+                key,
+                texture_name,
+                image: load_path_image(&path),
+            },
+        };
+        if results.send(result).is_err() {
+            break;
+        }
     }
 }
 
@@ -73,44 +196,56 @@ fn load_embedded_app_icon(ctx: &Context) -> Option<TextureHandle> {
     }
 }
 
-fn load_process_texture(ctx: &Context, pid: u32, name: &str) -> Option<TextureHandle> {
+fn load_process_image(pid: u32, name: &str) -> Option<ColorImage> {
     #[cfg(windows)]
     {
-        let color_image = extract_process_icon(pid, name)?;
-        Some(ctx.load_texture(
-            format!("proc_icon_{}", name),
-            color_image,
-            TextureOptions::LINEAR,
-        ))
+        extract_process_icon(pid, name)
     }
     #[cfg(not(windows))]
     {
-        let _ = (ctx, pid, name);
+        let _ = (pid, name);
         None
     }
 }
 
-fn load_path_texture(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    let p = std::path::Path::new(path);
-    if !p.exists() {
+/// Executables, libraries and shortcuts are binary containers: their icons come from
+/// the shell extractor and the file bytes are never fed to the image decoder.
+fn is_shell_icon_container(extension: &str) -> bool {
+    matches!(extension, "exe" | "dll" | "lnk")
+}
+
+fn load_path_image(path: &str) -> Option<ColorImage> {
+    let path_buf = Path::new(path);
+    if !path_buf.exists() {
         return None;
     }
 
+    let ext = path_buf
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let shell_only = is_shell_icon_container(&ext);
+
     #[cfg(windows)]
     {
-        let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        if ext == "exe" || ext == "ico" || ext == "dll" || ext == "lnk" {
+        if shell_only || ext == "ico" {
             if let Some(color_image) = extract_icon_from_file_path(path) {
-                return Some(ctx.load_texture(
-                    format!("path_icon_{}", path),
-                    color_image,
-                    TextureOptions::LINEAR,
-                ));
+                return Some(color_image);
+            }
+            if shell_only {
+                return None;
             }
         }
     }
+    #[cfg(not(windows))]
+    {
+        if shell_only {
+            return None;
+        }
+    }
 
-    if let Ok(img) = image::open(p) {
+    if let Ok(img) = image::open(path_buf) {
         let rgba = img.to_rgba8();
         let final_img = if rgba.width() > 64 || rgba.height() > 64 {
             image::imageops::thumbnail(&rgba, 64, 64)
@@ -119,22 +254,15 @@ fn load_path_texture(ctx: &Context, path: &str) -> Option<TextureHandle> {
         };
         let size = [final_img.width() as usize, final_img.height() as usize];
         let pixels = final_img.into_raw();
-        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-        return Some(ctx.load_texture(
-            format!("path_img_{}", path),
-            color_image,
-            TextureOptions::LINEAR,
-        ));
+        return Some(ColorImage::from_rgba_unmultiplied(size, &pixels));
     }
 
     #[cfg(windows)]
     {
-        if let Some(color_image) = extract_icon_from_file_path(path) {
-            return Some(ctx.load_texture(
-                format!("path_icon_fb_{}", path),
-                color_image,
-                TextureOptions::LINEAR,
-            ));
+        // A single shell extraction fallback for non-container paths whose image
+        // decoding failed; there is deliberately no second attempt.
+        if !shell_only && ext != "ico" {
+            return extract_icon_from_file_path(path);
         }
     }
 
@@ -378,4 +506,89 @@ unsafe fn hicon_to_color_image(hicon: HICON) -> Option<ColorImage> {
         [w as usize, h as usize],
         final_img.as_raw(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_shell_icon_containers_are_not_decoded_as_images() {
+        for extension in ["exe", "dll", "lnk"] {
+            assert!(
+                is_shell_icon_container(extension),
+                "{extension} must be extracted through the shell"
+            );
+        }
+        for extension in ["png", "ico", "bmp", "jpg"] {
+            assert!(
+                !is_shell_icon_container(extension),
+                "{extension} may use the image decoder"
+            );
+        }
+    }
+
+    #[test]
+    fn test_icon_request_queue_is_bounded_and_deduplicated() {
+        let mut cache = ProcessIconCache::new();
+        let missing = |index: usize| {
+            format!(
+                "{}synector-icon-test-{}-{}.png",
+                std::env::temp_dir().display(),
+                std::process::id(),
+                index
+            )
+        };
+        let enqueue_missing = |cache: &mut ProcessIconCache, index: usize| {
+            let path = missing(index);
+            cache.enqueue(IconLoadRequest::Path {
+                key: format!("path:{}", path),
+                texture_name: format!("path_icon_{}", path),
+                path,
+            });
+        };
+
+        enqueue_missing(&mut cache, 0);
+        assert_eq!(cache.pending.len(), 1);
+        enqueue_missing(&mut cache, 0);
+        assert_eq!(cache.pending.len(), 1, "the same key must not be queued twice");
+
+        for index in 1..(MAX_ICON_LOADS_IN_FLIGHT * 3) {
+            enqueue_missing(&mut cache, index);
+        }
+        assert_eq!(cache.pending.len(), MAX_ICON_LOADS_IN_FLIGHT);
+        assert!(cache.cache.is_empty());
+    }
+
+    #[test]
+    fn test_failed_icon_load_is_cached_and_not_retried() {
+        let ctx = Context::default();
+        let mut cache = ProcessIconCache::new();
+        let path = format!(
+            "{}synector-icon-test-missing-{}.png",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let key = format!("path:{}", path.to_lowercase());
+
+        assert!(cache.get_icon_from_path(&ctx, &path).is_none());
+        assert!(cache.pending.contains(&key));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while cache.pending.contains(&key) && std::time::Instant::now() < deadline {
+            cache.collect_ready(&ctx);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!cache.pending.contains(&key), "worker did not finish the load");
+        assert!(
+            matches!(cache.cache.get(&key), Some(None)),
+            "a failed load must be cached as None"
+        );
+
+        assert!(cache.get_icon_from_path(&ctx, &path).is_none());
+        assert!(
+            !cache.pending.contains(&key),
+            "a cached failure must not be retried"
+        );
+    }
 }

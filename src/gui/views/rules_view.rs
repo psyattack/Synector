@@ -3,15 +3,138 @@
 //! uppercase mono badges, and inverted action buttons.
 
 use egui::{CornerRadius, pos2, Rect, Sense, Stroke, Ui, vec2};
+use crate::gui::components::icons::ProcessIconCache;
 use crate::gui::components::widgets::{self, Glyph, Kind};
-use crate::gui::state::GuiState;
+use crate::gui::state::{GuiState, RuleSortMode};
 use crate::gui::theme::{self, Tokens};
-use crate::models::{Action, ConditionOperator, Rule, RuleCondition, Trigger};
+use crate::i18n::Strings;
+use crate::models::{
+    Action, ArchiveFormat, ConditionOperator, PowerPlanType, Rule, RuleCondition, SystemEventType,
+    SystemPowerType, Trigger, WindowActionType,
+};
 
-#[derive(Clone, Copy, Debug, Default)]
+/// One drag of a rule row. The grabbed rule is tracked by id, not by its position: a daemon sync
+/// that inserts, removes or reorders rules mid-drag must not move a different rule than the one
+/// the user grabbed (U04-007).
+#[derive(Clone, Debug, Default)]
 struct RuleDndSession {
-    source_idx: usize,
+    source_id: String,
     target_idx: usize,
+}
+
+/// Why drag & drop is unavailable; each reason gets its own grip hint (U04-008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DndBlock {
+    None,
+    Sort,
+    Filters,
+}
+
+/// State mutation requested by one rule row this frame. Rows render from a shared borrow of the
+/// daemon snapshot plus the icon cache, so mutations are queued and applied once the list is done
+/// (U04-011); the rule clone happens only when the user actually clicks.
+enum RuleRowIntent {
+    Edit(Rule),
+    Toggle { id: String, enabled: bool },
+    Delete(String),
+    Share(Rule),
+    Shortcut(Rule),
+    Clone(Rule),
+    TestRun(String),
+    StopRun(String),
+}
+
+fn dnd_block(sort_mode: RuleSortMode, has_tag_filter: bool, has_search: bool) -> DndBlock {
+    if sort_mode != RuleSortMode::Default {
+        DndBlock::Sort
+    } else if has_tag_filter || has_search {
+        DndBlock::Filters
+    } else {
+        DndBlock::None
+    }
+}
+
+fn dnd_grip_tip(block: DndBlock, loc: &Strings) -> &'static str {
+    match block {
+        DndBlock::None => loc.rules_tip_drag_rule,
+        DndBlock::Sort => loc.rules_tip_dnd_disabled_sort,
+        DndBlock::Filters => loc.rules_tip_dnd_disabled_filter,
+    }
+}
+
+/// Position of the dragged rule in the live list; `None` once it has disappeared from the snapshot.
+fn dnd_source_index(session: &RuleDndSession, ids: &[&str]) -> Option<usize> {
+    ids.iter().position(|id| *id == session.source_id)
+}
+
+/// `(target id, insert after target)` for a drop on `dst_slot`, resolved against the live order.
+/// `None` when the move is a no-op or out of range.
+fn dnd_drop_target<'a>(ids: &[&'a str], src_idx: usize, dst_slot: usize) -> Option<(Option<&'a str>, bool)> {
+    if src_idx >= ids.len() || dst_slot > ids.len() || dst_slot == src_idx || dst_slot == src_idx + 1 {
+        return None;
+    }
+    if dst_slot == ids.len() {
+        ids.last().map(|last| (Some(*last), true))
+    } else if dst_slot > src_idx {
+        Some((Some(ids[dst_slot - 1]), true))
+    } else {
+        Some((Some(ids[dst_slot]), false))
+    }
+}
+
+/// True when a rule matches the tag filter and search query — the same predicate
+/// `GuiState::visible_rules` applies to the "copy all" export (U05-013).
+fn rule_matches_visible_filters(rule: &Rule, tag_filter: Option<&str>, needle_lower: &str) -> bool {
+    if let Some(tag_name) = tag_filter {
+        if !rule.tags.iter().any(|t| t.name.eq_ignore_ascii_case(tag_name)) {
+            return false;
+        }
+    }
+    if needle_lower.is_empty() {
+        return true;
+    }
+    rule.name.to_lowercase().contains(needle_lower)
+        || rule.tags.iter().any(|t| t.name.to_lowercase().contains(needle_lower))
+}
+
+/// Rule indices shown by the view, in display order: filter first, then the active sort mode.
+/// The list itself keeps indices so the row loop never clones rule payloads (U04-011).
+fn visible_rule_order(
+    rules: &[Rule],
+    tag_filter: Option<&str>,
+    search_query: &str,
+    sort_mode: RuleSortMode,
+) -> Vec<usize> {
+    let needle = search_query.trim().to_lowercase();
+    let mut order: Vec<usize> = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule_matches_visible_filters(rule, tag_filter, &needle))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    match sort_mode {
+        RuleSortMode::Default => {
+            // Keep manual user drag & drop ordering
+        }
+        RuleSortMode::NameAsc => {
+            order.sort_by_key(|&idx| rules[idx].name.to_lowercase());
+        }
+        RuleSortMode::NameDesc => {
+            order.sort_by_key(|&idx| std::cmp::Reverse(rules[idx].name.to_lowercase()));
+        }
+        RuleSortMode::TriggerType => {
+            order.sort_by_key(|&idx| trigger_sort_key(&rules[idx].trigger));
+        }
+        RuleSortMode::ActionCount => {
+            order.sort_by_key(|&idx| std::cmp::Reverse(rules[idx].actions.len() + rules[idx].on_exit_actions.len()));
+        }
+        RuleSortMode::Status => {
+            order.sort_by_key(|&idx| (!rules[idx].is_enabled, rules[idx].name.to_lowercase()));
+        }
+    }
+
+    order
 }
 
 pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
@@ -21,13 +144,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 12.0;
 
-        let rules = state
-            .daemon_state
-            .as_ref()
-            .map(|s| s.config.rules.clone())
-            .unwrap_or_default();
-
-        let total = rules.len();
+        let total = state.daemon_state.as_ref().map_or(0, |s| s.config.rules.len());
 
         // 1. Top Bar: Tag Filter ComboBox + Sort ComboBox + Search Box + Import/Export/New Rule
         ui.horizontal(|ui| {
@@ -68,24 +185,24 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
             // Sort dropdown (clean text without leading glyph)
             let current_sort_label = match state.rule_sort_mode {
-                crate::gui::state::RuleSortMode::Default => loc.rules_sort_default,
-                crate::gui::state::RuleSortMode::NameAsc => loc.rules_sort_name_asc,
-                crate::gui::state::RuleSortMode::NameDesc => loc.rules_sort_name_desc,
-                crate::gui::state::RuleSortMode::TriggerType => loc.rules_sort_trigger,
-                crate::gui::state::RuleSortMode::ActionCount => loc.rules_sort_actions,
-                crate::gui::state::RuleSortMode::Status => loc.rules_sort_status,
+                RuleSortMode::Default => loc.rules_sort_default,
+                RuleSortMode::NameAsc => loc.rules_sort_name_asc,
+                RuleSortMode::NameDesc => loc.rules_sort_name_desc,
+                RuleSortMode::TriggerType => loc.rules_sort_trigger,
+                RuleSortMode::ActionCount => loc.rules_sort_actions,
+                RuleSortMode::Status => loc.rules_sort_status,
             };
 
             egui::ComboBox::from_id_salt("rules_sort_mode_combo")
                 .selected_text(current_sort_label)
                 .show_ui(ui, |ui| {
                     let sort_options = [
-                        (crate::gui::state::RuleSortMode::Default, loc.rules_sort_default),
-                        (crate::gui::state::RuleSortMode::NameAsc, loc.rules_sort_name_asc),
-                        (crate::gui::state::RuleSortMode::NameDesc, loc.rules_sort_name_desc),
-                        (crate::gui::state::RuleSortMode::TriggerType, loc.rules_sort_trigger),
-                        (crate::gui::state::RuleSortMode::ActionCount, loc.rules_sort_actions),
-                        (crate::gui::state::RuleSortMode::Status, loc.rules_sort_status),
+                        (RuleSortMode::Default, loc.rules_sort_default),
+                        (RuleSortMode::NameAsc, loc.rules_sort_name_asc),
+                        (RuleSortMode::NameDesc, loc.rules_sort_name_desc),
+                        (RuleSortMode::TriggerType, loc.rules_sort_trigger),
+                        (RuleSortMode::ActionCount, loc.rules_sort_actions),
+                        (RuleSortMode::Status, loc.rules_sort_status),
                     ];
                     for (mode, label) in sort_options {
                         if ui.selectable_label(state.rule_sort_mode == mode, label).clicked() {
@@ -138,50 +255,22 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
             });
         });
 
-        // 2. Filter and sort rules
-        let needle = state.search_query.trim().to_lowercase();
-        let mut filtered: Vec<_> = rules
-            .into_iter()
-            .filter(|r| {
-                if let Some(tag_name) = &state.selected_tag_filter {
-                    r.tags.iter().any(|t| t.name.eq_ignore_ascii_case(tag_name))
-                } else {
-                    true
-                }
-            })
-            .filter(|r| {
-                if needle.is_empty() {
-                    true
-                } else {
-                    r.name.to_lowercase().contains(&needle)
-                        || r.tags.iter().any(|t| t.name.to_lowercase().contains(&needle))
-                }
-            })
-            .collect();
+        // 2. Filter and sort rules. Only indices are kept: the snapshot is borrowed in place.
+        let order = {
+            let rules: &[Rule] = state
+                .daemon_state
+                .as_ref()
+                .map(|s| s.config.rules.as_slice())
+                .unwrap_or(&[]);
+            visible_rule_order(
+                rules,
+                state.selected_tag_filter.as_deref(),
+                &state.search_query,
+                state.rule_sort_mode,
+            )
+        };
 
-        // Apply sort
-        match state.rule_sort_mode {
-            crate::gui::state::RuleSortMode::Default => {
-                // Keep manual user drag & drop ordering
-            }
-            crate::gui::state::RuleSortMode::NameAsc => {
-                filtered.sort_by_key(|a| a.name.to_lowercase());
-            }
-            crate::gui::state::RuleSortMode::NameDesc => {
-                filtered.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase()));
-            }
-            crate::gui::state::RuleSortMode::TriggerType => {
-                filtered.sort_by_key(|r| trigger_sort_key(&r.trigger));
-            }
-            crate::gui::state::RuleSortMode::ActionCount => {
-                filtered.sort_by_key(|r| std::cmp::Reverse(r.actions.len() + r.on_exit_actions.len()));
-            }
-            crate::gui::state::RuleSortMode::Status => {
-                filtered.sort_by_key(|r| (!r.is_enabled, r.name.to_lowercase()));
-            }
-        }
-
-        if filtered.is_empty() {
+        if order.is_empty() {
             ui.add_space(48.0);
             ui.vertical_centered(|ui| {
                 if total == 0 {
@@ -200,9 +289,13 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
         }
 
         // 3. Streamlined Track-List with Drag & Drop Reordering & Horizontal Wheel Routing
-        let is_dnd_allowed = state.rule_sort_mode == crate::gui::state::RuleSortMode::Default
-            && state.selected_tag_filter.is_none()
-            && needle.is_empty();
+        let block = dnd_block(
+            state.rule_sort_mode,
+            state.selected_tag_filter.is_some(),
+            !state.search_query.trim().is_empty(),
+        );
+        let is_dnd_allowed = block == DndBlock::None;
+        let grip_tip = dnd_grip_tip(block, loc);
 
         let dnd_id = egui::Id::unique("rules_view_dnd");
         let mut dnd_session = if is_dnd_allowed {
@@ -223,52 +316,77 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
         }
 
         let is_dnd_active = dnd_session.is_some();
-        let active_src = dnd_session.as_ref().map(|s| s.source_idx);
-        let active_dst = dnd_session.as_ref().map(|s| s.target_idx);
+        let mut drag_started: Option<(usize, String)> = None;
+        let mut current_centers: Vec<f32> = Vec::with_capacity(order.len());
+        let mut intents: Vec<RuleRowIntent> = Vec::new();
+        let mut pending_reorder: Option<(String, Option<String>, bool)> = None;
 
-        let mut drag_started_idx = None;
-        let mut current_centers = Vec::with_capacity(filtered.len());
+        // The row loop holds a shared borrow of the daemon snapshot and a mutable borrow of the
+        // icon cache (disjoint fields) and queues every mutation for after the list (U04-011).
+        {
+            let rules: &[Rule] = state
+                .daemon_state
+                .as_ref()
+                .map(|s| s.config.rules.as_slice())
+                .unwrap_or(&[]);
+            let selected_rule_id = state.selected_rule_id.clone();
+            let exec_states: Vec<Option<crate::ipc::ActiveRuleExecutionState>> = order
+                .iter()
+                .map(|&idx| state.get_rule_execution_state(&rules[idx]))
+                .collect();
+            let test_running: Vec<bool> = order
+                .iter()
+                .map(|&idx| state.active_test_runs.contains_key(&rules[idx].id))
+                .collect();
+            let rule_ids: Vec<&str> = order.iter().map(|&idx| rules[idx].id.as_str()).collect();
+            let active_src = dnd_session.as_ref().and_then(|s| dnd_source_index(s, &rule_ids));
+            let active_dst = dnd_session.as_ref().map(|s| s.target_idx);
+            let icon_cache: &mut ProcessIconCache = &mut state.icon_cache;
 
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
 
-                for (idx, rule) in filtered.iter().enumerate() {
-                    // Drop slot indicator before this row
+                    for (position, &rule_idx) in order.iter().enumerate() {
+                        // Drop slot indicator before this row
+                        if is_dnd_allowed {
+                            render_rule_drop_slot(ui, position, active_dst, active_src, &t);
+                        }
+
+                        let rule = &rules[rule_idx];
+                        let is_selected = selected_rule_id.as_deref() == Some(rule.id.as_str());
+                        let is_being_dragged = active_src == Some(position);
+
+                        let (row_rect, grip_started) = render_track_row(
+                            ui,
+                            icon_cache,
+                            loc,
+                            rule,
+                            is_selected,
+                            is_being_dragged,
+                            is_dnd_allowed,
+                            is_dnd_active,
+                            exec_states[position],
+                            test_running[position],
+                            grip_tip,
+                            &mut intents,
+                            &t,
+                        );
+                        current_centers.push(row_rect.center().y);
+
+                        if grip_started && is_dnd_allowed {
+                            drag_started = Some((position, rule.id.clone()));
+                        }
+                    }
+
+                    // Trailing drop slot after last row
                     if is_dnd_allowed {
-                        render_rule_drop_slot(ui, idx, active_dst, active_src, &t);
+                        render_rule_drop_slot(ui, order.len(), active_dst, active_src, &t);
                     }
+                });
 
-                    let is_selected = state.selected_rule_id.as_deref() == Some(&rule.id);
-                    let is_being_dragged = active_src == Some(idx);
-
-                    let (row_rect, grip_started) = render_track_row(
-                        ui,
-                        state,
-                        rule,
-                        idx,
-                        is_selected,
-                        is_being_dragged,
-                        is_dnd_allowed,
-                        is_dnd_active,
-                        &t,
-                    );
-                    current_centers.push(row_rect.center().y);
-
-                    if grip_started && is_dnd_allowed {
-                        drag_started_idx = Some(idx);
-                    }
-                }
-
-                // Trailing drop slot after last row
-                if is_dnd_allowed && !filtered.is_empty() {
-                    render_rule_drop_slot(ui, filtered.len(), active_dst, active_src, &t);
-                }
-            });
-
-        // Update target_idx using fresh current_centers
-        if is_dnd_allowed {
+            // Update target_idx using fresh current_centers
             if let (Some(session), Some(pointer)) = (&mut dnd_session, pointer_pos) {
                 let n = current_centers.len();
                 if n > 0 {
@@ -286,54 +404,46 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                     }
                 }
             }
-        }
 
-        // Commit reorder on mouse release
-        if pointer_released && is_dnd_allowed {
-            if let Some(session) = dnd_session {
-                let src = session.source_idx;
-                let dst = session.target_idx;
-                if src < filtered.len() && dst <= filtered.len() && src != dst && dst != src + 1 {
-                    let src_rule_id = filtered[src].id.clone();
-                    let (target_id, insert_after) = if dst == filtered.len() {
-                        (Some(filtered[filtered.len() - 1].id.clone()), true)
-                    } else if dst > src {
-                        (Some(filtered[dst - 1].id.clone()), true)
-                    } else {
-                        (Some(filtered[dst].id.clone()), false)
-                    };
-                    state.reorder_rule_by_id(&src_rule_id, target_id.as_deref(), insert_after);
+            // Commit reorder on mouse release. Both ends resolve by rule id against the live list,
+            // so a snapshot change during the drag cannot move the wrong rule (U04-007).
+            if pointer_released {
+                if let Some(session) = dnd_session.take() {
+                    if let Some(src_pos) = dnd_source_index(&session, &rule_ids) {
+                        if let Some((target_id, insert_after)) = dnd_drop_target(&rule_ids, src_pos, session.target_idx) {
+                            pending_reorder = Some((
+                                session.source_id,
+                                target_id.map(str::to_string),
+                                insert_after,
+                            ));
+                        }
+                    }
+                    ui.data_mut(|d| d.remove_temp::<RuleDndSession>(dnd_id));
                 }
-                dnd_session = None;
-                ui.data_mut(|d| d.remove_temp::<RuleDndSession>(dnd_id));
             }
-        }
 
-        // Handle newly started drag
-        if is_dnd_allowed {
-            if let Some(src_idx) = drag_started_idx {
+            // Handle newly started drag
+            if let Some((position, rule_id)) = drag_started {
                 dnd_session = Some(RuleDndSession {
-                    source_idx: src_idx,
-                    target_idx: src_idx,
+                    source_id: rule_id,
+                    target_idx: position,
                 });
             }
-        }
 
-        // Save session & paint floating preview
-        if let Some(session) = dnd_session {
-            ui.data_mut(|d| d.insert_temp(dnd_id, session));
-            ui.ctx().request_repaint();
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            // Save session & paint floating preview
+            if let Some(session) = &dnd_session {
+                ui.data_mut(|d| d.insert_temp(dnd_id, session.clone()));
+                ui.ctx().request_repaint();
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
 
-            if let Some(pointer) = pointer_pos {
-                if session.source_idx < filtered.len() {
-                    let dragged_rule = &filtered[session.source_idx];
+                if let (Some(pointer), Some(src_pos)) = (pointer_pos, dnd_source_index(session, &rule_ids)) {
+                    let dragged_rule = &rules[order[src_pos]];
                     let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("rule_drag_preview")));
                     let float_rect = Rect::from_min_size(pointer + vec2(14.0, 10.0), vec2(180.0, 26.0));
                     p.rect_filled(float_rect, CornerRadius::same(2), t.bg);
                     p.rect_stroke(float_rect, CornerRadius::same(2), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
 
-                    let preview_text = format!("{} {}", dragged_rule.default_icon_glyph(), dragged_rule.name);
+                    let preview_text = format!("{} {}", default_icon_glyph(dragged_rule), dragged_rule.name);
                     p.text(
                         float_rect.center(),
                         egui::Align2::CENTER_CENTER,
@@ -342,6 +452,23 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                         t.ink_strong,
                     );
                 }
+            }
+        }
+
+        if let Some((source_id, target_id, insert_after)) = pending_reorder {
+            state.reorder_rule_by_id(&source_id, target_id.as_deref(), insert_after);
+        }
+
+        for intent in intents {
+            match intent {
+                RuleRowIntent::Edit(rule) => state.edit_rule(rule),
+                RuleRowIntent::Toggle { id, enabled } => state.toggle_rule(&id, enabled),
+                RuleRowIntent::Delete(id) => state.delete_rule(&id),
+                RuleRowIntent::Share(rule) => state.copy_single_rule_to_clipboard(ui.ctx(), &rule),
+                RuleRowIntent::Shortcut(rule) => state.create_shortcut_dialog(&rule),
+                RuleRowIntent::Clone(rule) => state.clone_rule(&rule),
+                RuleRowIntent::TestRun(id) => state.test_run_rule(&id),
+                RuleRowIntent::StopRun(id) => state.stop_rule_execution(&id),
             }
         }
     });
@@ -386,19 +513,20 @@ fn render_rule_drop_slot(
 #[allow(clippy::too_many_arguments)]
 fn render_track_row(
     ui: &mut Ui,
-    state: &mut GuiState,
+    icons: &mut ProcessIconCache,
+    loc: &Strings,
     rule: &Rule,
-    _idx: usize,
     is_selected: bool,
     is_being_dragged: bool,
     is_dnd_allowed: bool,
     is_dnd_active: bool,
+    exec_opt: Option<crate::ipc::ActiveRuleExecutionState>,
+    is_test_running: bool,
+    grip_tip: &str,
+    intents: &mut Vec<RuleRowIntent>,
     t: &Tokens,
 ) -> (Rect, bool) {
-    let loc = state.loc();
     let is_manual = rule.trigger.as_ref().is_none_or(|t| matches!(t, crate::models::Trigger::Manual));
-    let exec_opt = state.get_rule_execution_state(rule);
-    let is_test_running = state.active_test_runs.contains_key(&rule.id);
     let is_running = exec_opt.is_some() || is_test_running;
 
     if is_running {
@@ -444,7 +572,6 @@ fn render_track_row(
                 ui.spacing_mut().item_spacing.y = 0.0;
 
                 // 1. Drag & Drop handle on far left
-                let grip_tip = if is_dnd_allowed { loc.rules_tip_drag_rule } else { loc.rules_tip_dnd_disabled_sort };
                 let grip_resp = widgets::drag_handle_custom_interactive(ui, 26.0, grip_tip, is_dnd_allowed);
                 if grip_resp.drag_started() && is_dnd_allowed {
                     grip_started = true;
@@ -458,7 +585,7 @@ fn render_track_row(
 
                 let mut loaded_texture = false;
                 if let Some(path) = &rule.custom_icon_path {
-                    if let Some(tex) = state.icon_cache.get_icon_from_path(ui.ctx(), path) {
+                    if let Some(tex) = icons.get_icon_from_path(ui.ctx(), path) {
                         let size = tex.size_vec2();
                         let max_dim = size.x.max(size.y).max(1.0);
                         let scale = 18.0 / max_dim;
@@ -475,7 +602,7 @@ fn render_track_row(
                 }
 
                 if !loaded_texture {
-                    let glyph = rule.default_icon_glyph();
+                    let glyph = default_icon_glyph(rule);
                     let icon_color = if rule.is_enabled || is_manual { t.ink_strong } else { t.muted };
                     ui.painter().text(
                         icon_rect.center(),
@@ -487,7 +614,7 @@ fn render_track_row(
                 }
 
                 if icon_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                    state.edit_rule(rule.clone());
+                    intents.push(RuleRowIntent::Edit(rule.clone()));
                 }
 
                 // 3. Rule Name and optional Tag Pills (In a row, strictly fixed height 28px - never alters card size)
@@ -520,7 +647,7 @@ fn render_track_row(
                     name_col_resp = name_col_resp.on_hover_text(&rule.name);
                 }
                 if name_col_resp.clicked() {
-                    state.edit_rule(rule.clone());
+                    intents.push(RuleRowIntent::Edit(rule.clone()));
                 }
 
                 let title_pos = pos2(name_rect.left(), name_rect.center().y - title_galley.size().y / 2.0);
@@ -615,34 +742,34 @@ fn render_track_row(
                             let mut is_on = rule.is_enabled;
                             let switch_tip = if is_on { loc.rules_btn_pause } else { loc.rules_btn_resume };
                             if widgets::toggle_switch(ui, &mut is_on).on_hover_text(switch_tip).changed() {
-                                state.toggle_rule(&rule.id, is_on);
+                                intents.push(RuleRowIntent::Toggle { id: rule.id.clone(), enabled: is_on });
                             }
                             ui.add_space(4.0);
                         }
 
                         // 2. Delete
                         if widgets::glyph_button_custom(ui, Glyph::Trash, 26.0, false, loc.rules_btn_delete).clicked() {
-                            state.delete_rule(&rule.id);
+                            intents.push(RuleRowIntent::Delete(rule.id.clone()));
                         }
 
                         // 3. Share
                         if widgets::glyph_button_custom(ui, Glyph::Share, 26.0, false, loc.rules_btn_copy_single_tip).clicked() {
-                            state.copy_single_rule_to_clipboard(ui.ctx(), rule);
+                            intents.push(RuleRowIntent::Share(rule.clone()));
                         }
 
                         // 3.5. Shortcut
                         if widgets::glyph_button_custom(ui, Glyph::Shortcut, 26.0, false, loc.rules_btn_create_shortcut_tip).clicked() {
-                            state.create_shortcut_dialog(rule);
+                            intents.push(RuleRowIntent::Shortcut(rule.clone()));
                         }
 
                         // 4. Clone
                         if widgets::glyph_button_custom(ui, Glyph::Clone, 26.0, false, loc.rules_btn_clone).clicked() {
-                            state.clone_rule(rule);
+                            intents.push(RuleRowIntent::Clone(rule.clone()));
                         }
 
                         // 5. Edit
                         if widgets::glyph_button_custom(ui, Glyph::Edit, 26.0, false, loc.rules_btn_edit).clicked() {
-                            state.edit_rule(rule.clone());
+                            intents.push(RuleRowIntent::Edit(rule.clone()));
                         }
 
                         // 6. Run / Stop
@@ -656,9 +783,9 @@ fn render_track_row(
                         };
                         if widgets::glyph_button_custom(ui, run_glyph, 26.0, is_stoppable, run_tip).clicked() {
                             if is_stoppable {
-                                state.stop_rule_execution(&rule.id);
+                                intents.push(RuleRowIntent::StopRun(rule.id.clone()));
                             } else {
-                                state.test_run_rule(&rule.id);
+                                intents.push(RuleRowIntent::TestRun(rule.id.clone()));
                             }
                         }
                     },
@@ -672,9 +799,9 @@ fn render_track_row(
 
 fn render_track_pipeline(
     ui: &mut Ui,
-    loc: &crate::i18n::Strings,
+    loc: &Strings,
     rule: &Rule,
-    exec_opt: Option<crate::ipc::protocol::ActiveRuleExecutionState>,
+    exec_opt: Option<crate::ipc::ActiveRuleExecutionState>,
     is_test_running: bool,
     t: &Tokens,
 ) {
@@ -715,7 +842,7 @@ fn render_track_pipeline(
                 };
                 widgets::hud(ui, op_str, t.faint);
             }
-            let label = format_single_condition_brief(&item.condition);
+            let label = format_single_condition_brief(&item.condition, loc);
             let tip = format_single_condition_tooltip(&item.condition, c_idx + 1, loc);
             widgets::badge(ui, &label, t.faint).on_hover_text(tip);
         }
@@ -734,34 +861,7 @@ fn render_track_pipeline(
             }
 
             let is_current = exec_opt.is_some_and(|e| !e.is_exit && e.current_step == a_idx);
-            let brief = format_action_brief(action, loc);
-            let icon = action_icon_glyph(action);
-
-            let (chip_fill, chip_stroke, chip_ink, font) = if is_current {
-                (
-                    t.accent.gamma_multiply(0.35),
-                    Stroke::new(1.5, t.accent_ink),
-                    t.accent_ink,
-                    theme::mono_bold(),
-                )
-            } else {
-                (t.sunken, t.hairline(), t.ink, theme::mono())
-            };
-
-            let step_label = if is_current {
-                format!("▶ {} {}", icon, brief)
-            } else {
-                format!("{} {}", icon, brief)
-            };
-            let galley = widgets::caps(ui, &step_label, 9.5, font, 0.5, chip_ink);
-            let chip_w = galley.size().x + 12.0;
-            let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
-            ui.painter().rect(chip_rect, CornerRadius::ZERO, chip_fill, chip_stroke, egui::StrokeKind::Inside);
-            widgets::paint_centred(ui, chip_rect, galley, chip_ink);
-
-            if is_current {
-                chip_resp.on_hover_text(loc.rules_summary_step_active);
-            }
+            render_action_chip(ui, action, is_current, t.ink, loc, t);
         }
     }
 
@@ -776,34 +876,7 @@ fn render_track_pipeline(
             }
 
             let is_current = exec_opt.is_some_and(|e| e.is_exit && e.current_step == e_idx);
-            let brief = format_action_brief(action, loc);
-            let icon = action_icon_glyph(action);
-
-            let (chip_fill, chip_stroke, chip_ink, font) = if is_current {
-                (
-                    t.accent.gamma_multiply(0.35),
-                    Stroke::new(1.5, t.accent_ink),
-                    t.accent_ink,
-                    theme::mono_bold(),
-                )
-            } else {
-                (t.sunken, t.hairline(), t.faint, theme::mono())
-            };
-
-            let step_label = if is_current {
-                format!("▶ {} {}", icon, brief)
-            } else {
-                format!("{} {}", icon, brief)
-            };
-            let galley = widgets::caps(ui, &step_label, 9.5, font, 0.5, chip_ink);
-            let chip_w = galley.size().x + 12.0;
-            let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
-            ui.painter().rect(chip_rect, CornerRadius::ZERO, chip_fill, chip_stroke, egui::StrokeKind::Inside);
-            widgets::paint_centred(ui, chip_rect, galley, chip_ink);
-
-            if is_current {
-                chip_resp.on_hover_text(loc.rules_summary_step_active);
-            }
+            render_action_chip(ui, action, is_current, t.faint, loc, t);
         }
     }
 
@@ -811,6 +884,50 @@ fn render_track_pipeline(
     let has_companion = rule.actions.iter().any(|a| matches!(a, Action::StartProcess { close_on_exit: true, .. }));
     if has_companion {
         widgets::badge(ui, loc.rules_summary_bound_satellite, t.good);
+    }
+}
+
+/// One action-step chip; the main and on-exit pipelines differ only in the non-current ink (U04-009).
+fn render_action_chip(
+    ui: &mut Ui,
+    action: &Action,
+    is_current: bool,
+    ink: egui::Color32,
+    loc: &Strings,
+    t: &Tokens,
+) {
+    let brief = format_action_brief(action, loc);
+    let icon = action_icon_glyph(action);
+
+    let (chip_fill, chip_stroke, chip_ink, font) = if is_current {
+        (
+            t.accent.gamma_multiply(0.35),
+            Stroke::new(1.5, t.accent_ink),
+            t.accent_ink,
+            theme::mono_bold(),
+        )
+    } else {
+        (t.sunken, t.hairline(), ink, theme::mono())
+    };
+
+    let step_label = format_step_chip(icon, &brief, is_current);
+    let galley = widgets::caps(ui, &step_label, 9.5, font, 0.5, chip_ink);
+    let chip_w = galley.size().x + 12.0;
+    let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
+    ui.painter().rect(chip_rect, CornerRadius::ZERO, chip_fill, chip_stroke, egui::StrokeKind::Inside);
+    widgets::paint_centred(ui, chip_rect, galley, chip_ink);
+
+    if is_current {
+        chip_resp.on_hover_text(loc.rules_summary_step_active);
+    }
+}
+
+/// `▶ icon brief` for the running step, `icon brief` otherwise.
+fn format_step_chip(icon: &str, brief: &str, is_current: bool) -> String {
+    if is_current {
+        format!("▶ {} {}", icon, brief)
+    } else {
+        format!("{} {}", icon, brief)
     }
 }
 
@@ -951,45 +1068,149 @@ fn trigger_sort_key(trig: &Option<crate::models::Trigger>) -> usize {
     }
 }
 
-fn format_single_condition_brief(cond: &RuleCondition) -> String {
+/// Fills the positional `{}` placeholders of a catalog value left to right. Catalog
+/// placeholders are plain braces, not format specs, and `str::replace` would overwrite a
+/// repeated one, so a multi-placeholder value must go through this helper.
+fn fill(template: &str, args: &[&str]) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    for arg in args {
+        match rest.find("{}") {
+            Some(at) => {
+                out.push_str(&rest[..at]);
+                out.push_str(arg);
+                rest = &rest[at + 2..];
+            }
+            None => break,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Localized label of a system event. Every surface that used to `{:?}`-format the enum
+/// (condition tooltip and badge, trigger summary) goes through this table.
+fn sys_event_label(event: SystemEventType, loc: &Strings) -> &'static str {
+    match event {
+        SystemEventType::SessionLock => loc.inspector_sys_event_lock,
+        SystemEventType::SessionUnlock => loc.inspector_sys_event_unlock,
+        SystemEventType::SystemSleep => loc.inspector_sys_event_sleep,
+        SystemEventType::SystemResume => loc.inspector_sys_event_resume,
+        SystemEventType::PowerSourceAc => loc.inspector_sys_event_ac,
+        SystemEventType::PowerSourceBattery => loc.inspector_sys_event_battery,
+        SystemEventType::UserIdle => loc.inspector_sys_event_idle,
+        SystemEventType::UserActive => loc.inspector_sys_event_active,
+        SystemEventType::DeviceConnected => loc.inspector_sys_event_dev_connected,
+        SystemEventType::DeviceDisconnected => loc.inspector_sys_event_dev_disconnected,
+        SystemEventType::MonitorOn => loc.inspector_sys_event_mon_on,
+        SystemEventType::MonitorOff => loc.inspector_sys_event_mon_off,
+        SystemEventType::NetworkConnected => loc.inspector_sys_event_net_connected,
+        SystemEventType::NetworkDisconnected => loc.inspector_sys_event_net_disconnected,
+    }
+}
+
+/// Localized label of a system-power action target (`ПИТАНИЕ Выключение`, not `POWER Shutdown`).
+fn power_label(power_type: SystemPowerType, loc: &Strings) -> &'static str {
+    match power_type {
+        SystemPowerType::Lock => loc.inspector_power_lock,
+        SystemPowerType::Sleep => loc.inspector_power_sleep,
+        SystemPowerType::TurnScreenOff => loc.inspector_power_screen_off,
+        SystemPowerType::Restart => loc.inspector_power_restart,
+        SystemPowerType::Shutdown => loc.inspector_power_shutdown,
+    }
+}
+
+/// Localized label of a power plan; the catalog labels already carry the meaning, so the
+/// old ` POWER` suffix is gone.
+fn power_plan_label(plan: PowerPlanType, loc: &Strings) -> &'static str {
+    match plan {
+        PowerPlanType::Balanced => loc.inspector_power_plan_balanced,
+        PowerPlanType::HighPerformance => loc.inspector_power_plan_high,
+        PowerPlanType::PowerSaver => loc.inspector_power_plan_saver,
+    }
+}
+
+/// Localized label of an archive format; `TarXz` has no inspector cell, so it uses the
+/// dedicated chip label instead of its debug name.
+fn archive_format_label(format: ArchiveFormat, loc: &Strings) -> &'static str {
+    match format {
+        ArchiveFormat::Zip => loc.inspector_archive_fmt_zip,
+        ArchiveFormat::Tar => loc.inspector_archive_fmt_tar,
+        ArchiveFormat::TarGz => loc.inspector_archive_fmt_tar_gz,
+        ArchiveFormat::TarXz => loc.rules_brief_archive_tar_xz,
+        ArchiveFormat::SevenZip => loc.inspector_archive_fmt_7z,
+        ArchiveFormat::Rar => loc.inspector_archive_fmt_rar,
+    }
+}
+
+/// One chip label per window action, including the two toggle templates that carry the
+/// target process. No `WindowActionType` debug name can reach a chip.
+fn window_action_label(action: WindowActionType, loc: &Strings) -> &'static str {
+    match action {
+        WindowActionType::Minimize => loc.rules_brief_window_minimize,
+        WindowActionType::Maximize => loc.rules_brief_window_maximize,
+        WindowActionType::Restore => loc.rules_brief_window_restore,
+        WindowActionType::Hide => loc.rules_brief_window_hide,
+        WindowActionType::Show => loc.rules_brief_window_show,
+        WindowActionType::Close => loc.rules_brief_window_close,
+        WindowActionType::ToggleAlwaysOnTop => loc.rules_brief_window_toggle_on_top,
+        WindowActionType::AlwaysOnTop => loc.rules_brief_window_on_top,
+        WindowActionType::RemoveAlwaysOnTop => loc.rules_brief_window_remove_on_top,
+        WindowActionType::SetTransparency => loc.rules_brief_window_transparency,
+        WindowActionType::SnapToPosition => loc.rules_brief_window_snap,
+        WindowActionType::ToggleMinimizeRestore => loc.rules_brief_window_toggle_min_restore,
+        WindowActionType::ToggleShowHide => loc.rules_brief_window_toggle_show_hide,
+    }
+}
+
+fn format_single_condition_brief(cond: &RuleCondition, loc: &Strings) -> String {
     match cond {
         RuleCondition::ProcessRunning { process_name, must_be_running, .. } => {
-            let name = if process_name.is_empty() { "PROC" } else { process_name.as_str() };
-            if *must_be_running { format!("RUN:{}", name) } else { format!("!RUN:{}", name) }
+            let name = if process_name.is_empty() { loc.rules_trigger_proc } else { process_name.as_str() };
+            let prefix = loc.rules_brief_cond_run;
+            if *must_be_running { format!("{prefix}{name}") } else { format!("!{prefix}{name}") }
         }
         RuleCondition::WindowFocused { process_name, must_be_focused, .. } => {
-            let name = if process_name.is_empty() { "WINDOW" } else { process_name.as_str() };
-            if *must_be_focused { format!("FOCUS:{}", name) } else { format!("!FOCUS:{}", name) }
+            let name = if process_name.is_empty() { loc.rules_trigger_window } else { process_name.as_str() };
+            let prefix = loc.rules_brief_cond_focus;
+            if *must_be_focused { format!("{prefix}{name}") } else { format!("!{prefix}{name}") }
         }
         RuleCondition::TimeRange { start_time, end_time, .. } => {
             format!("{}-{}", start_time, end_time)
         }
         RuleCondition::Event { event_type, .. } => {
-            format!("EVENT:{:?}", event_type)
+            loc.rules_badge_cond_event.replace("{}", sys_event_label(*event_type, loc))
         }
         RuleCondition::FileWatcher { path, must_exist, .. } => {
             let fname = std::path::Path::new(path)
                 .file_name()
                 .map(|f| f.to_string_lossy().to_string())
                 .unwrap_or_else(|| {
-                    if path.is_empty() { "FILE".to_string() } else { path.clone() }
+                    if path.is_empty() { loc.rules_brief_cond_any_file.to_string() } else { path.clone() }
                 });
-            if *must_exist { format!("FILE:{}", fname) } else { format!("!FILE:{}", fname) }
+            let prefix = loc.rules_brief_cond_file;
+            if *must_exist { format!("{prefix}{fname}") } else { format!("!{prefix}{fname}") }
         }
         RuleCondition::ResourceThreshold { process_name, cpu_percent, ram_mb, .. } => {
-            let name = if process_name.is_empty() { "RES" } else { process_name.as_str() };
+            let name = if process_name.is_empty() { loc.rules_brief_cond_any_res } else { process_name.as_str() };
             let mut limits = Vec::new();
-            if let Some(c) = cpu_percent { limits.push(format!("CPU>{:.0}%", c)); }
-            if let Some(m) = ram_mb { limits.push(format!("RAM>{}MB", m)); }
+            if let Some(c) = cpu_percent {
+                limits.push(loc.rules_brief_cond_cpu.replace("{}", &format!("{c:.0}")));
+            }
+            if let Some(m) = ram_mb {
+                limits.push(loc.rules_brief_cond_ram.replace("{}", &m.to_string()));
+            }
+            let prefix = loc.rules_brief_cond_res;
             if limits.is_empty() {
-                format!("RES:{}", name)
+                format!("{prefix}{name}")
             } else {
-                format!("RES:{}({})", name, limits.join(","))
+                format!("{prefix}{name}({})", limits.join(","))
             }
         }
         RuleCondition::RuleRunning { rule_id, must_be_running } => {
-            let name = if rule_id.is_empty() { "RULE" } else { rule_id.as_str() };
-            if *must_be_running { format!("RULE:{}", name) } else { format!("!RULE:{}", name) }
+            let name = if rule_id.is_empty() { loc.rules_brief_cond_any_rule } else { rule_id.as_str() };
+            let prefix = loc.rules_brief_cond_rule;
+            if *must_be_running { format!("{prefix}{name}") } else { format!("!{prefix}{name}") }
         }
     }
 }
@@ -999,42 +1220,46 @@ fn format_single_condition_tooltip(cond: &RuleCondition, idx: usize, loc: &crate
         RuleCondition::ProcessRunning { process_name, must_be_running, .. } => {
             let p = if process_name.is_empty() { "?" } else { process_name.as_str() };
             if *must_be_running {
-                format!("Process '{}' is running", p)
+                loc.rules_tip_cond_process_running.replace("{}", p)
             } else {
-                format!("Process '{}' is not running", p)
+                loc.rules_tip_cond_process_not_running.replace("{}", p)
             }
         }
         RuleCondition::WindowFocused { process_name, must_be_focused, .. } => {
             let p = if process_name.is_empty() { "?" } else { process_name.as_str() };
             if *must_be_focused {
-                format!("Window '{}' is focused", p)
+                loc.rules_tip_cond_window_focused.replace("{}", p)
             } else {
-                format!("Window '{}' is not focused", p)
+                loc.rules_tip_cond_window_not_focused.replace("{}", p)
             }
         }
         RuleCondition::TimeRange { start_time, end_time, .. } => {
-            format!("Time range {} - {}", start_time, end_time)
+            let filled = loc.rules_tip_cond_time_range.replacen("{}", start_time, 1);
+            filled.replacen("{}", end_time, 1)
         }
         RuleCondition::Event { event_type, .. } => {
-            format!("System event: {:?}", event_type)
+            loc.rules_tip_cond_event.replace("{}", sys_event_label(*event_type, loc))
         }
         RuleCondition::FileWatcher { path, must_exist, .. } => {
             if *must_exist {
-                format!("File '{}' exists", path)
+                loc.rules_tip_cond_file_exists.replace("{}", path)
             } else {
-                format!("File '{}' does not exist", path)
+                loc.rules_tip_cond_file_missing.replace("{}", path)
             }
         }
         RuleCondition::ResourceThreshold { process_name, cpu_percent, ram_mb, .. } => {
             let p = if process_name.is_empty() { "?" } else { process_name.as_str() };
-            format!("Resource threshold on '{}': CPU={:?}, RAM={:?}", p, cpu_percent, ram_mb)
+            fill(
+                loc.rules_tip_cond_resource,
+                &[p, &format!("{cpu_percent:?}"), &format!("{ram_mb:?}")],
+            )
         }
         RuleCondition::RuleRunning { rule_id, must_be_running } => {
             let p = if rule_id.is_empty() { "?" } else { rule_id.as_str() };
             if *must_be_running {
-                format!("Rule '{}' is running", p)
+                loc.rules_tip_cond_rule_running.replace("{}", p)
             } else {
-                format!("Rule '{}' is not running", p)
+                loc.rules_tip_cond_rule_not_running.replace("{}", p)
             }
         }
     };
@@ -1052,9 +1277,11 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
         }
         Action::AudioControl { target, action_type, volume_level, process_name, left_volume, right_volume } => {
             let target_str = match target {
-                crate::models::AudioTarget::Playback => "SOUND".to_string(),
-                crate::models::AudioTarget::Microphone => "MIC".to_string(),
-                crate::models::AudioTarget::Process => format!("PROC ({})", process_name.as_deref().unwrap_or("?")),
+                crate::models::AudioTarget::Playback => loc.rules_brief_audio_sound.to_string(),
+                crate::models::AudioTarget::Microphone => loc.rules_brief_audio_mic.to_string(),
+                crate::models::AudioTarget::Process => {
+                    loc.rules_brief_audio_proc.replace("{}", process_name.as_deref().unwrap_or("?"))
+                }
             };
             match action_type {
                 crate::models::AudioVolumeAction::Mute => format!("{} {}", loc.summary_action_mute, target_str),
@@ -1062,45 +1289,48 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
                 crate::models::AudioVolumeAction::ToggleMute => format!("{} {}", loc.summary_action_toggle, target_str),
                 crate::models::AudioVolumeAction::SetVolume => {
                     if let (Some(l), Some(r)) = (left_volume, right_volume) {
-                        format!("VOL L:{}% R:{}% {}", l, r, target_str)
+                        fill(loc.rules_brief_audio_balance, &[&l.to_string(), &r.to_string(), &target_str])
                     } else {
                         format!("{} {}% {}", loc.summary_action_vol, volume_level, target_str)
                     }
                 }
-                crate::models::AudioVolumeAction::PlayBeep => "BEEP".to_string(),
+                crate::models::AudioVolumeAction::PlayBeep => loc.rules_brief_audio_beep.to_string(),
             }
         }
         Action::AudioFormat { target, sample_rate, bit_depth, .. } => {
             let t_str = match target {
-                crate::models::AudioTarget::Playback | crate::models::AudioTarget::Process => "OUT",
-                crate::models::AudioTarget::Microphone => "IN",
+                crate::models::AudioTarget::Playback | crate::models::AudioTarget::Process => loc.rules_brief_audio_out,
+                crate::models::AudioTarget::Microphone => loc.rules_brief_audio_in,
             };
-            format!("FORMAT {} {}Hz/{}-bit", t_str, sample_rate, bit_depth)
+            fill(
+                loc.rules_brief_audio_format,
+                &[t_str, &sample_rate.to_string(), &bit_depth.to_string()],
+            )
         }
         Action::DefaultDevice { target, device_name } => {
             let pfx = match target {
-                crate::models::AudioTarget::Playback => "AUDIO DEV",
-                crate::models::AudioTarget::Microphone => "MIC DEV",
-                crate::models::AudioTarget::Process => "PROC AUDIO",
+                crate::models::AudioTarget::Playback => loc.rules_brief_audio_dev_output,
+                crate::models::AudioTarget::Microphone => loc.rules_brief_audio_dev_mic,
+                crate::models::AudioTarget::Process => loc.rules_brief_audio_dev_process,
             };
             format!("{} {}", pfx, device_name)
         }
         Action::ExecuteScript { interpreter, .. } => match interpreter {
-            crate::models::ScriptType::PowerShell => "POWERSHELL".to_string(),
-            crate::models::ScriptType::Batch => "CMD".to_string(),
-            crate::models::ScriptType::Lua => "LUA".to_string(),
-        }
+            crate::models::ScriptType::PowerShell => loc.inspector_script_type_powershell.to_string(),
+            crate::models::ScriptType::Batch => loc.inspector_script_type_cmd.to_string(),
+            crate::models::ScriptType::Lua => loc.rules_brief_script_lua.to_string(),
+        },
         Action::Macro { events, repeat, speed, infinite, preset_id, operation } => {
             let op_prefix = match operation {
-                crate::models::MacroOperation::Run => "MACRO",
-                crate::models::MacroOperation::Stop => "STOP MACRO",
-                crate::models::MacroOperation::Toggle => "TOGGLE MACRO",
+                crate::models::MacroOperation::Run => loc.rules_brief_macro_run,
+                crate::models::MacroOperation::Stop => loc.rules_brief_macro_stop,
+                crate::models::MacroOperation::Toggle => loc.rules_brief_macro_toggle,
             };
             if *operation == crate::models::MacroOperation::Stop {
                 if let Some(pid) = preset_id {
-                    format!("STOP MACRO ({})", pid)
+                    loc.rules_brief_macro_stop_preset.replace("{}", pid)
                 } else {
-                    "STOP ALL MACROS".to_string()
+                    loc.rules_brief_macro_stop_all.to_string()
                 }
             } else if let Some(pid) = preset_id {
                 let rep_str = if *infinite {
@@ -1121,119 +1351,143 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
                     String::new()
                 };
                 let spd_str = if (*speed - 1.0).abs() > 0.05 { format!(" @{:.1}x", speed) } else { String::new() };
-                format!("{} ({} ev){}{}", op_prefix, events.len(), rep_str, spd_str)
+                let ev_str = loc.rules_brief_macro_events.replace("{}", &events.len().to_string());
+                format!("{} ({}){}{}", op_prefix, ev_str, rep_str, spd_str)
             }
         }
-        Action::Notification { title, .. } => format!("NOTIFY \"{}\"", title),
-        Action::SystemPower { power_type } => format!("{} {:?}", loc.summary_action_power, power_type),
+        Action::Notification { title, .. } => loc.rules_brief_notify.replace("{}", title),
+        Action::SystemPower { power_type } => {
+            format!("{} {}", loc.summary_action_power, power_label(*power_type, loc))
+        }
         Action::Wait { mode, seconds, condition, .. } => match mode {
-            crate::models::WaitMode::Timer => format!("{} {:.1}S", loc.summary_action_wait, seconds),
+            crate::models::WaitMode::Timer => {
+                format!("{} {:.1}{}", loc.summary_action_wait, seconds, loc.rules_brief_seconds)
+            }
             crate::models::WaitMode::UntilCondition => {
                 let desc = match condition {
-                    Some(crate::models::WaitCondition::WindowOpened { process_name, .. }) => format!("WIN OPEN {}", process_name),
-                    Some(crate::models::WaitCondition::WindowClosed { process_name, .. }) => format!("WIN CLOSE {}", process_name),
-                    Some(crate::models::WaitCondition::ProcessStarted { process_name, .. }) => format!("PROC START {}", process_name),
-                    Some(crate::models::WaitCondition::ProcessExited { process_name, .. }) => format!("PROC EXIT {}", process_name),
-                    Some(crate::models::WaitCondition::Hotkey { key_combination }) => format!("KEY {}", key_combination),
+                    Some(crate::models::WaitCondition::WindowOpened { process_name, .. }) => {
+                        loc.rules_brief_wait_window_open.replace("{}", process_name)
+                    }
+                    Some(crate::models::WaitCondition::WindowClosed { process_name, .. }) => {
+                        loc.rules_brief_wait_window_close.replace("{}", process_name)
+                    }
+                    Some(crate::models::WaitCondition::ProcessStarted { process_name, .. }) => {
+                        loc.rules_brief_wait_process_start.replace("{}", process_name)
+                    }
+                    Some(crate::models::WaitCondition::ProcessExited { process_name, .. }) => {
+                        loc.rules_brief_wait_process_exit.replace("{}", process_name)
+                    }
+                    Some(crate::models::WaitCondition::Hotkey { key_combination }) => {
+                        loc.rules_brief_wait_hotkey.replace("{}", key_combination)
+                    }
                     Some(crate::models::WaitCondition::File { path, condition }) => {
                         let fname = std::path::Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
                         match condition {
-                            crate::models::WaitFileCondition::Exists => format!("FILE +{}", fname),
-                            crate::models::WaitFileCondition::Deleted => format!("FILE -{}", fname),
+                            crate::models::WaitFileCondition::Exists => loc.rules_brief_wait_file_created.replace("{}", fname),
+                            crate::models::WaitFileCondition::Deleted => loc.rules_brief_wait_file_deleted.replace("{}", fname),
                         }
                     }
-                    Some(crate::models::WaitCondition::RuleStarted { rule_id }) => format!("RULE START {}", rule_id),
-                    Some(crate::models::WaitCondition::RuleStopped { rule_id }) => format!("RULE STOP {}", rule_id),
-                    None => "UNTIL".to_string(),
+                    Some(crate::models::WaitCondition::RuleStarted { rule_id }) => {
+                        loc.rules_brief_wait_rule_start.replace("{}", rule_id)
+                    }
+                    Some(crate::models::WaitCondition::RuleStopped { rule_id }) => {
+                        loc.rules_brief_wait_rule_stop.replace("{}", rule_id)
+                    }
+                    None => loc.rules_brief_wait_until.to_string(),
                 };
                 format!("{} [{}]", loc.summary_action_wait, desc)
             }
         },
         Action::Check { condition } => {
-            format!("{} {}", loc.summary_action_check, format_single_condition_brief(condition))
+            format!("{} {}", loc.summary_action_check, format_single_condition_brief(condition, loc))
         }
-        Action::HttpWebhook { .. } => "WEBHOOK".to_string(),
+        Action::HttpWebhook { .. } => loc.inspector_badge_webhook.to_string(),
         Action::Window { window_action, target_process, .. } => {
-            let proc = target_process.as_deref().unwrap_or("ACTIVE");
-            match window_action {
-                crate::models::WindowActionType::ToggleMinimizeRestore => format!("TOGGLE MIN/RESTORE {}", proc),
-                crate::models::WindowActionType::ToggleShowHide => format!("TOGGLE SHOW/HIDE {}", proc),
-                other => format!("{:?} {}", other, proc),
-            }
+            let proc = target_process.as_deref().unwrap_or(loc.rules_brief_active_process);
+            fill(window_action_label(*window_action, loc), &[proc])
         }
         Action::ProcessTuning { target_process, .. } => {
-            let proc = target_process.as_deref().unwrap_or("ACTIVE");
-            format!("TUNE {}", proc)
+            let proc = target_process.as_deref().unwrap_or(loc.rules_brief_active_process);
+            loc.rules_brief_process_tuning.replace("{}", proc)
         }
-        Action::PowerPlan { plan } => format!("{:?} POWER", plan),
-        Action::PlaySound { .. } => "PLAY SOUND".to_string(),
+        Action::PowerPlan { plan } => power_plan_label(*plan, loc).to_string(),
+        Action::PlaySound { .. } => loc.rules_brief_play_sound.to_string(),
         Action::Firewall { process_name, action } => match action {
-            crate::models::FirewallAction::Block => format!("BLOCK {}", process_name),
-            crate::models::FirewallAction::Allow => format!("ALLOW {}", process_name),
+            crate::models::FirewallAction::Block => loc.rules_brief_firewall_block.replace("{}", process_name),
+            crate::models::FirewallAction::Allow => loc.rules_brief_firewall_allow.replace("{}", process_name),
             crate::models::FirewallAction::Toggle => format!("{} {}", loc.summary_action_toggle, process_name),
         },
         Action::Display { width, height, refresh_rate, monitor_index } => {
             let res = match (width, height) {
                 (Some(w), Some(h)) => format!("{}x{}", w, h),
-                _ => "AUTO RES".to_string(),
+                _ => loc.rules_brief_display_auto.to_string(),
             };
-            let mon_prefix = monitor_index.map(|m| format!("[M{}] ", m)).unwrap_or_default();
-            refresh_rate.map(|r| format!("DISPLAY {}{} @ {}Hz", mon_prefix, res, r)).unwrap_or_else(|| format!("DISPLAY {}{}", mon_prefix, res))
+            let mon_prefix = monitor_index
+                .map(|m| loc.rules_brief_display_monitor.replace("{}", &m.to_string()))
+                .unwrap_or_default();
+            match refresh_rate {
+                Some(r) => fill(loc.rules_brief_display_refresh, &[&mon_prefix, &res, &r.to_string()]),
+                None => fill(loc.rules_brief_display, &[&mon_prefix, &res]),
+            }
         }
         Action::IfElse { conditions, then_actions, else_actions, .. } => {
             let cond_summary = conditions
                 .first()
-                .map(|c| format_single_condition_brief(&c.condition))
-                .unwrap_or_else(|| "COND".to_string());
+                .map(|c| format_single_condition_brief(&c.condition, loc))
+                .unwrap_or_else(|| loc.rules_brief_cond_fallback.to_string());
             let count_suffix = if conditions.len() > 1 { format!("+{}", conditions.len() - 1) } else { String::new() };
-            format!("IF {}{} [{} | {}]", cond_summary, count_suffix, then_actions.len(), else_actions.len())
+            fill(
+                loc.rules_brief_ifelse,
+                &[&cond_summary, &count_suffix, &then_actions.len().to_string(), &else_actions.len().to_string()],
+            )
         }
         Action::TrimWorkingSet { target_process, soft_limit_mb, .. } => {
-            let proc = target_process.as_deref().unwrap_or("ACTIVE");
+            let proc = target_process.as_deref().unwrap_or(loc.rules_brief_active_process);
             match soft_limit_mb {
-                Some(mb) => format!("RAM {} ({} MB)", proc, mb),
-                None => format!("RAM {}", proc),
+                Some(mb) => fill(loc.rules_brief_trim_limit, &[proc, &mb.to_string()]),
+                None => loc.rules_brief_trim.replace("{}", proc),
             }
         }
         Action::DiscordRpcSet { details, .. } => {
             if details.is_empty() {
-                "DISCORD RPC".to_string()
+                loc.inspector_badge_discord_rpc_set.to_string()
             } else {
-                format!("RPC: {}", details)
+                loc.rules_brief_discord_text.replace("{}", details)
             }
         }
-        Action::DiscordRpcClear => "CLEAR RPC".to_string(),
+        Action::DiscordRpcClear => loc.inspector_badge_discord_rpc_clear.to_string(),
         Action::Archive { operation, format, destination_path, .. } => {
-            let fname = std::path::Path::new(destination_path).file_name().unwrap_or_default().to_string_lossy();
+            let fname = std::path::Path::new(destination_path).file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let format_label = archive_format_label(*format, loc);
             match operation {
-                crate::models::ArchiveOperation::Pack => format!("PACK {:?} {}", format, fname),
-                crate::models::ArchiveOperation::Unpack => format!("UNPACK {:?} {}", format, fname),
+                crate::models::ArchiveOperation::Pack => fill(loc.rules_brief_archive_pack, &[format_label, &fname]),
+                crate::models::ArchiveOperation::Unpack => fill(loc.rules_brief_archive_unpack, &[format_label, &fname]),
             }
         }
         Action::FileSystem { operation, path, .. } => {
-            let fname = std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy();
+            let fname = std::path::Path::new(path).file_name().unwrap_or_default().to_string_lossy().into_owned();
             match operation {
-                crate::models::FileSystemOperation::CreateFile => format!("MKFILE {}", fname),
-                crate::models::FileSystemOperation::CreateDirectory => format!("MKDIR {}", fname),
-                crate::models::FileSystemOperation::Rename => format!("RENAME {}", fname),
-                crate::models::FileSystemOperation::Copy => format!("COPY {}", fname),
-                crate::models::FileSystemOperation::Delete => format!("DEL {}", fname),
-                crate::models::FileSystemOperation::WriteText => format!("WRITE {}", fname),
-                crate::models::FileSystemOperation::AppendText => format!("APPEND {}", fname),
+                crate::models::FileSystemOperation::CreateFile => loc.rules_brief_fs_create_file.replace("{}", &fname),
+                crate::models::FileSystemOperation::CreateDirectory => loc.rules_brief_fs_create_dir.replace("{}", &fname),
+                crate::models::FileSystemOperation::Rename => loc.rules_brief_fs_rename.replace("{}", &fname),
+                crate::models::FileSystemOperation::Copy => loc.rules_brief_fs_copy.replace("{}", &fname),
+                crate::models::FileSystemOperation::Delete => loc.rules_brief_fs_delete.replace("{}", &fname),
+                crate::models::FileSystemOperation::WriteText => loc.rules_brief_fs_write.replace("{}", &fname),
+                crate::models::FileSystemOperation::AppendText => loc.rules_brief_fs_append.replace("{}", &fname),
             }
         }
         Action::Overlay { operation, .. } => {
             match operation {
-                crate::models::OverlayOperation::Toggle => "TOGGLE OVERLAY".to_string(),
-                crate::models::OverlayOperation::Flash => "FLASH OVERLAY".to_string(),
-                crate::models::OverlayOperation::Show => "SHOW OVERLAY".to_string(),
-                crate::models::OverlayOperation::Hide => "HIDE OVERLAY".to_string(),
-                crate::models::OverlayOperation::SetText => "SET OVERLAY TEXT".to_string(),
+                crate::models::OverlayOperation::Toggle => loc.rules_brief_overlay_toggle.to_string(),
+                crate::models::OverlayOperation::Flash => loc.rules_brief_overlay_flash.to_string(),
+                crate::models::OverlayOperation::Show => loc.rules_brief_overlay_show.to_string(),
+                crate::models::OverlayOperation::Hide => loc.rules_brief_overlay_hide.to_string(),
+                crate::models::OverlayOperation::SetText => loc.rules_brief_overlay_set_text.to_string(),
             }
         }
         Action::RuleControl { operation, .. } => match operation {
-            crate::models::RuleControlOperation::Call => "CALL RULE".to_string(),
-            crate::models::RuleControlOperation::Stop => "STOP RULE".to_string(),
+            crate::models::RuleControlOperation::Call => loc.rules_brief_rule_call.to_string(),
+            crate::models::RuleControlOperation::Stop => loc.rules_brief_rule_stop.to_string(),
         },
     }
 }
@@ -1247,25 +1501,29 @@ fn format_trigger_display(
             let si_suffix = if *single_instance { loc.rules_summary_single_instance } else { "" };
             (
                 egui_phosphor::regular::APP_WINDOW,
-                format!("PROC {}{}", process_name, si_suffix),
+                format!("{} {}{}", loc.rules_trigger_proc, process_name, si_suffix),
             )
         }
         Some(Trigger::WindowFocus { process_name, on_focus_gained, on_focus_lost }) => {
             let act = match (*on_focus_gained, *on_focus_lost) {
-                (true, true) => "FOCUS/BLUR",
-                (true, false) => "FOCUS",
-                (false, true) => "BLUR",
-                _ => "FOCUS",
+                (true, true) => loc.rules_trigger_focus_blur,
+                (true, false) => loc.rules_trigger_focus,
+                (false, true) => loc.rules_trigger_blur,
+                _ => loc.rules_trigger_focus,
             };
             (
                 egui_phosphor::regular::BROWSERS,
-                format!("WINDOW {} {}", act, process_name),
+                format!("{} {} {}", loc.rules_trigger_window, act, process_name),
             )
         }
         Some(Trigger::ResourceThreshold { process_name, cpu_percent, ram_mb, .. }) => {
             let mut parts = Vec::new();
-            if let Some(c) = cpu_percent { parts.push(format!("CPU > {}%", c)); }
-            if let Some(m) = ram_mb { parts.push(format!("RAM > {}MB", m)); }
+            if let Some(c) = cpu_percent {
+                parts.push(loc.rules_trigger_cpu.replace("{}", &c.to_string()));
+            }
+            if let Some(m) = ram_mb {
+                parts.push(loc.rules_trigger_ram.replace("{}", &m.to_string()));
+            }
             (
                 egui_phosphor::regular::GAUGE,
                 format!("{} ({})", process_name, parts.join(", ")),
@@ -1273,7 +1531,7 @@ fn format_trigger_display(
         }
         Some(Trigger::GlobalHotkey { key_combination, hold_mode, repeat_while_held }) => {
             let hold_str = if *hold_mode {
-                if *repeat_while_held { " [HOLD LOOP]" } else { " [HOLD]" }
+                if *repeat_while_held { loc.rules_trigger_hold_loop } else { loc.rules_trigger_hold }
             } else {
                 ""
             };
@@ -1286,7 +1544,7 @@ fn format_trigger_display(
             let name = std::path::Path::new(folder_path).file_name().and_then(|f| f.to_str()).unwrap_or(folder_path);
             (
                 egui_phosphor::regular::FOLDER_NOTCH_OPEN,
-                format!("FOLDER {}", name),
+                format!("{} {}", loc.rules_trigger_folder, name),
             )
         }
         Some(Trigger::Webhook { endpoint_path }) => {
@@ -1298,7 +1556,7 @@ fn format_trigger_display(
         Some(Trigger::SystemEvent { event_type, .. }) => {
             (
                 egui_phosphor::regular::DESKTOP,
-                format!("{:?}", event_type),
+                sys_event_label(*event_type, loc).to_string(),
             )
         }
         Some(Trigger::Schedule { schedule_type, interval_sec, daily_time, day_of_month, target_datetime, .. }) => {
@@ -1331,7 +1589,10 @@ fn format_trigger_display(
                     res.replacen("{}", time_str, 1)
                 }
                 crate::models::ScheduleType::OneShot => {
-                    loc.rules_summary_trigger_once.replace("{}", target_datetime.as_deref().unwrap_or("SPECIFIED TIME"))
+                    loc.rules_summary_trigger_once.replace(
+                        "{}",
+                        target_datetime.as_deref().unwrap_or(loc.rules_summary_trigger_once_unspecified),
+                    )
                 }
                 crate::models::ScheduleType::AppStartup => loc.rules_summary_trigger_startup.to_string(),
                 crate::models::ScheduleType::AppShutdown => loc.rules_summary_trigger_shutdown.to_string(),
@@ -1342,6 +1603,26 @@ fn format_trigger_display(
             egui_phosphor::regular::HAND_TAP,
             loc.rules_badge_manual.to_string(),
         ),
+    }
+}
+
+/// Icon shown for a rule card: the first action decides, then the trigger, then a gear.
+/// This is the single action-to-glyph table; `models` deliberately carries no presentation.
+pub(crate) fn default_icon_glyph(rule: &Rule) -> &'static str {
+    if let Some(action) = rule.actions.first() {
+        return action_icon_glyph(action);
+    }
+    match &rule.trigger {
+        Some(Trigger::Manual) => egui_phosphor::regular::PLAY,
+        Some(Trigger::Process { .. }) => egui_phosphor::regular::CPU,
+        Some(Trigger::WindowFocus { .. }) => egui_phosphor::regular::EYE,
+        Some(Trigger::ResourceThreshold { .. }) => egui_phosphor::regular::CHART_LINE,
+        Some(Trigger::GlobalHotkey { .. }) => egui_phosphor::regular::COMMAND,
+        Some(Trigger::SystemEvent { .. }) => egui_phosphor::regular::LIGHTNING,
+        Some(Trigger::Schedule { .. }) => egui_phosphor::regular::CALENDAR,
+        Some(Trigger::FileWatcher { .. }) => egui_phosphor::regular::FOLDER_NOTCH_OPEN,
+        Some(Trigger::Webhook { .. }) => egui_phosphor::regular::GLOBE_HEMISPHERE_WEST,
+        None => egui_phosphor::regular::GEAR,
     }
 }
 
@@ -1391,6 +1672,87 @@ mod tests {
     use super::*;
     use crate::i18n::{self, Language};
 
+    fn state_with_rules(rules: Vec<Rule>) -> GuiState {
+        let mut state = GuiState::new();
+        state.daemon_state = Some(crate::ipc::DaemonState {
+            autorun_enabled: false,
+            uptime_secs: 0,
+            daemon_memory_bytes: 0,
+            active_rules_count: 0,
+            total_rules_count: 0,
+            config: crate::config::AppConfig {
+                rules,
+                ..Default::default()
+            },
+            logs: vec![],
+            active_rule_executions: std::collections::HashMap::new(),
+            active_overlay_ids: std::collections::HashSet::new(),
+            active_test_rule_ids: std::collections::HashSet::new(),
+            analytics: Default::default(),
+            available_update: None,
+            update_progress: None,
+            update_status: None,
+            pending_open_update_modal: false,
+            pending_auto_start_update: false,
+        });
+        state
+    }
+
+    fn wait_action() -> Action {
+        Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds: 1.0,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }
+    }
+
+    fn sample_rules() -> Vec<Rule> {
+        use crate::models::RuleTag;
+
+        let tag_work = RuleTag::new("Work").with_color("#3B82F6");
+        let tag_dev = RuleTag::new("Dev").with_color("#10B981");
+
+        let r1 = Rule {
+            id: "r1".into(),
+            name: "Beta Work".into(),
+            is_enabled: true,
+            tags: vec![tag_work.clone()],
+            trigger: Some(Trigger::Process {
+                process_name: "notepad.exe".into(),
+                match_mode: crate::models::ProcessMatchMode::Exact,
+                single_instance: false,
+            }),
+            actions: vec![wait_action()],
+            ..Default::default()
+        };
+
+        let r2 = Rule {
+            id: "r2".into(),
+            name: "Alpha Dev".into(),
+            is_enabled: false,
+            tags: vec![tag_dev.clone()],
+            actions: vec![wait_action(), wait_action()],
+            ..Default::default()
+        };
+
+        let r3 = Rule {
+            id: "r3".into(),
+            name: "Gamma Work & Dev".into(),
+            is_enabled: true,
+            tags: vec![tag_work, tag_dev],
+            trigger: Some(Trigger::Manual),
+            ..Default::default()
+        };
+
+        vec![r1, r2, r3]
+    }
+
+    fn ids_of<'a>(rules: &'a [Rule], order: &[usize]) -> Vec<&'a str> {
+        order.iter().map(|&idx| rules[idx].id.as_str()).collect()
+    }
+
     #[test]
     fn test_format_single_condition_brief_and_tooltip() {
         let loc = i18n::get(Language::English);
@@ -1401,11 +1763,17 @@ mod tests {
             match_mode: crate::models::ProcessMatchMode::Exact,
             must_be_running: true,
         };
-        let brief1 = format_single_condition_brief(&cond1);
+        let brief1 = format_single_condition_brief(&cond1, loc);
         assert_eq!(brief1, "RUN:notepad.exe");
         let tip1 = format_single_condition_tooltip(&cond1, 1, loc);
-        assert!(tip1.contains("notepad.exe"));
-        assert!(tip1.contains("running"));
+        assert_eq!(
+            tip1,
+            format!(
+                "{} [1] {}",
+                loc.inspector_conditions_badge,
+                loc.rules_tip_cond_process_running.replace("{}", "notepad.exe")
+            )
+        );
 
         // 2. Window focused condition
         let cond2 = RuleCondition::WindowFocused {
@@ -1413,11 +1781,189 @@ mod tests {
             match_mode: crate::models::ProcessMatchMode::Exact,
             must_be_focused: true,
         };
-        let brief2 = format_single_condition_brief(&cond2);
+        let brief2 = format_single_condition_brief(&cond2, loc);
         assert_eq!(brief2, "FOCUS:code.exe");
         let tip2 = format_single_condition_tooltip(&cond2, 2, loc);
-        assert!(tip2.contains("code.exe"));
-        assert!(tip2.contains("focused"));
+        assert_eq!(
+            tip2,
+            format!(
+                "{} [2] {}",
+                loc.inspector_conditions_badge,
+                loc.rules_tip_cond_window_focused.replace("{}", "code.exe")
+            )
+        );
+    }
+
+    #[test]
+    fn test_condition_and_action_follow_ui_language() {
+        let en = i18n::get(Language::English);
+        let ru = i18n::get(Language::Russian);
+
+        let cond = RuleCondition::ProcessRunning {
+            process_name: "notepad.exe".into(),
+            match_mode: crate::models::ProcessMatchMode::Exact,
+            must_be_running: true,
+        };
+        let tip_en = format_single_condition_tooltip(&cond, 1, en);
+        let tip_ru = format_single_condition_tooltip(&cond, 1, ru);
+        assert_ne!(tip_en, tip_ru);
+        assert!(tip_ru.starts_with(ru.inspector_conditions_badge));
+        assert_eq!(
+            tip_ru,
+            format!(
+                "{} [1] {}",
+                ru.inspector_conditions_badge,
+                ru.rules_tip_cond_process_running.replace("{}", "notepad.exe")
+            )
+        );
+
+        let event_cond = RuleCondition::Event {
+            event_type: SystemEventType::SessionLock,
+            idle_duration_sec: 300,
+        };
+        let badge_en = format_single_condition_brief(&event_cond, en);
+        let badge_ru = format_single_condition_brief(&event_cond, ru);
+        assert_ne!(badge_en, badge_ru);
+        assert_eq!(badge_ru, ru.rules_badge_cond_event.replace("{}", ru.inspector_sys_event_lock));
+
+        let action = Action::Notification {
+            title: "Done".into(),
+            message: String::new(),
+        };
+        let brief_en = format_action_brief(&action, en);
+        let brief_ru = format_action_brief(&action, ru);
+        assert_ne!(brief_en, brief_ru);
+        assert_eq!(brief_ru, ru.rules_brief_notify.replace("{}", "Done"));
+
+        let power = Action::SystemPower { power_type: SystemPowerType::Shutdown };
+        assert_eq!(
+            format_action_brief(&power, ru),
+            format!("{} {}", ru.summary_action_power, ru.inspector_power_shutdown)
+        );
+    }
+
+    #[test]
+    fn test_mapped_enums_never_render_debug_names() {
+        let loc = i18n::get(Language::Russian);
+
+        for event_type in [
+            SystemEventType::SessionLock,
+            SystemEventType::SessionUnlock,
+            SystemEventType::SystemSleep,
+            SystemEventType::SystemResume,
+            SystemEventType::PowerSourceAc,
+            SystemEventType::PowerSourceBattery,
+            SystemEventType::UserIdle,
+            SystemEventType::UserActive,
+            SystemEventType::DeviceConnected,
+            SystemEventType::DeviceDisconnected,
+            SystemEventType::MonitorOn,
+            SystemEventType::MonitorOff,
+            SystemEventType::NetworkConnected,
+            SystemEventType::NetworkDisconnected,
+        ] {
+            let debug = format!("{event_type:?}");
+            let label = sys_event_label(event_type, loc);
+            let cond = RuleCondition::Event {
+                event_type,
+                idle_duration_sec: 300,
+            };
+            let tooltip = format_single_condition_tooltip(&cond, 1, loc);
+            assert_eq!(tooltip, format!("{} [1] {}", loc.inspector_conditions_badge, loc.rules_tip_cond_event.replace("{}", label)));
+            assert!(!tooltip.contains(&debug), "condition tooltip leaked the Debug enum name {debug}");
+            let badge = format_single_condition_brief(&cond, loc);
+            assert_eq!(badge, loc.rules_badge_cond_event.replace("{}", label));
+            assert!(!badge.contains(&debug), "condition badge leaked the Debug enum name {debug}");
+            let (_, trigger) = format_trigger_display(
+                &Some(Trigger::SystemEvent {
+                    event_type,
+                    device_id_filter: None,
+                }),
+                loc,
+            );
+            assert_eq!(trigger, label);
+            assert!(!trigger.contains(&debug), "trigger summary leaked the Debug enum name {debug}");
+        }
+
+        for power_type in [
+            SystemPowerType::Lock,
+            SystemPowerType::Sleep,
+            SystemPowerType::TurnScreenOff,
+            SystemPowerType::Restart,
+            SystemPowerType::Shutdown,
+        ] {
+            let debug = format!("{power_type:?}");
+            let brief = format_action_brief(&Action::SystemPower { power_type }, loc);
+            assert_eq!(brief, format!("{} {}", loc.summary_action_power, power_label(power_type, loc)));
+            assert!(!brief.contains(&debug), "power chip leaked the Debug enum name {debug}");
+        }
+
+        for plan in [
+            PowerPlanType::Balanced,
+            PowerPlanType::HighPerformance,
+            PowerPlanType::PowerSaver,
+        ] {
+            let debug = format!("{plan:?}");
+            let brief = format_action_brief(&Action::PowerPlan { plan }, loc);
+            assert_eq!(brief, power_plan_label(plan, loc));
+            assert!(!brief.contains(&debug), "power plan chip leaked the Debug enum name {debug}");
+        }
+
+        for format in [
+            ArchiveFormat::Zip,
+            ArchiveFormat::Tar,
+            ArchiveFormat::TarGz,
+            ArchiveFormat::TarXz,
+            ArchiveFormat::SevenZip,
+            ArchiveFormat::Rar,
+        ] {
+            let debug = format!("{format:?}");
+            let brief = format_action_brief(
+                &Action::Archive {
+                    operation: crate::models::ArchiveOperation::Pack,
+                    format,
+                    source_path: "C:\\source".into(),
+                    destination_path: "C:\\out.bin".into(),
+                    compression_level: None,
+                    overwrite: true,
+                },
+                loc,
+            );
+            assert_eq!(brief, fill(loc.rules_brief_archive_pack, &[archive_format_label(format, loc), "out.bin"]));
+            assert!(!brief.contains(&debug), "archive chip leaked the Debug enum name {debug}");
+        }
+
+        for action in [
+            WindowActionType::Minimize,
+            WindowActionType::Maximize,
+            WindowActionType::Restore,
+            WindowActionType::Hide,
+            WindowActionType::Show,
+            WindowActionType::Close,
+            WindowActionType::ToggleAlwaysOnTop,
+            WindowActionType::AlwaysOnTop,
+            WindowActionType::RemoveAlwaysOnTop,
+            WindowActionType::SetTransparency,
+            WindowActionType::SnapToPosition,
+            WindowActionType::ToggleMinimizeRestore,
+            WindowActionType::ToggleShowHide,
+        ] {
+            let debug = format!("{action:?}");
+            let brief = format_action_brief(
+                &Action::Window {
+                    target_process: Some("app.exe".into()),
+                    window_action: action,
+                    x: None,
+                    y: None,
+                    width: None,
+                    height: None,
+                    transparency: None,
+                },
+                loc,
+            );
+            assert_eq!(brief, fill(window_action_label(action, loc), &["app.exe"]));
+            assert!(!brief.contains(&debug), "window chip leaked the Debug enum name {debug}");
+        }
     }
 
     #[test]
@@ -1450,7 +1996,6 @@ mod tests {
                     days_of_week: vec![],
                     day_of_month: None,
                     target_datetime: None,
-                    delay_sec: 0,
                 }),
                 loc,
             );
@@ -1466,12 +2011,35 @@ mod tests {
                     days_of_week: vec![],
                     day_of_month: None,
                     target_datetime: Some("2026-12-31 23:59".into()),
-                    delay_sec: 0,
                 }),
                 loc,
             );
             assert!(!trig_once.starts_with("TRIGGER:"));
             assert!(!trig_once.starts_with("ТРИГГЕР:"));
+
+            // One-shot without a target time: the fallback must follow the UI language too (U16-011).
+            let (_, trig_once_unspecified) = format_trigger_display(
+                &Some(Trigger::Schedule {
+                    schedule_type: crate::models::ScheduleType::OneShot,
+                    interval_sec: 0,
+                    daily_time: None,
+                    days_of_week: vec![],
+                    day_of_month: None,
+                    target_datetime: None,
+                }),
+                loc,
+            );
+            assert_eq!(
+                trig_once_unspecified,
+                loc.rules_summary_trigger_once
+                    .replace("{}", loc.rules_summary_trigger_once_unspecified)
+            );
+            if lang == Language::Russian {
+                assert!(
+                    !trig_once_unspecified.contains("SPECIFIED TIME"),
+                    "the Russian one-shot summary must not embed an English fallback"
+                );
+            }
 
             // Schedule: AppStartup
             let (_, trig_startup) = format_trigger_display(
@@ -1482,7 +2050,6 @@ mod tests {
                     days_of_week: vec![],
                     day_of_month: None,
                     target_datetime: None,
-                    delay_sec: 0,
                 }),
                 loc,
             );
@@ -1498,7 +2065,6 @@ mod tests {
                     days_of_week: vec![],
                     day_of_month: None,
                     target_datetime: None,
-                    delay_sec: 0,
                 }),
                 loc,
             );
@@ -1508,101 +2074,252 @@ mod tests {
     }
 
     #[test]
-    fn test_rule_sorting_and_tag_filtering() {
-        use crate::models::{Action, Rule, RuleTag, Trigger};
+    fn test_visible_rule_order_filters_and_sorts() {
+        let rules = sample_rules();
 
-        let tag_work = RuleTag::new("Work").with_color("#3B82F6");
-        let tag_dev = RuleTag::new("Dev").with_color("#10B981");
+        // Tag filter
+        let work = visible_rule_order(&rules, Some("Work"), "", RuleSortMode::Default);
+        assert_eq!(ids_of(&rules, &work), ["r1", "r3"]);
+        let dev = visible_rule_order(&rules, Some("Dev"), "", RuleSortMode::Default);
+        assert_eq!(ids_of(&rules, &dev), ["r2", "r3"]);
 
-        let r1 = Rule {
-            id: "r1".into(),
-            name: "Beta Work".into(),
-            is_enabled: true,
-            tags: vec![tag_work.clone()],
-            actions: vec![Action::Wait {
-                mode: crate::models::WaitMode::Timer,
-                seconds: 1.0,
-                condition: None,
-                timeout_sec: 30.0,
-                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            }],
-            ..Default::default()
+        // Search (rule name or tag name, case-insensitive)
+        let alpha = visible_rule_order(&rules, None, "ALPHA", RuleSortMode::Default);
+        assert_eq!(ids_of(&rules, &alpha), ["r2"]);
+        let search_work = visible_rule_order(&rules, None, " work ", RuleSortMode::Default);
+        assert_eq!(ids_of(&rules, &search_work), ["r1", "r3"]);
+
+        // Sort by name
+        let name_asc = visible_rule_order(&rules, None, "", RuleSortMode::NameAsc);
+        assert_eq!(ids_of(&rules, &name_asc), ["r2", "r1", "r3"]);
+        let name_desc = visible_rule_order(&rules, None, "", RuleSortMode::NameDesc);
+        assert_eq!(ids_of(&rules, &name_desc), ["r3", "r1", "r2"]);
+
+        // Sort by trigger type (process first, manual/unknown last)
+        let by_trigger = visible_rule_order(&rules, None, "", RuleSortMode::TriggerType);
+        assert_eq!(ids_of(&rules, &by_trigger), ["r1", "r2", "r3"]);
+
+        // Sort by action count (most actions first)
+        let by_actions = visible_rule_order(&rules, None, "", RuleSortMode::ActionCount);
+        assert_eq!(ids_of(&rules, &by_actions), ["r2", "r1", "r3"]);
+
+        // Sort by status (enabled first, then by name)
+        let by_status = visible_rule_order(&rules, None, "", RuleSortMode::Status);
+        assert_eq!(ids_of(&rules, &by_status), ["r1", "r3", "r2"]);
+    }
+
+    #[test]
+    fn test_view_order_matches_visible_rules_export() {
+        let rules = sample_rules();
+        let mut state = state_with_rules(rules.clone());
+
+        for (tag, query) in [
+            (None, ""),
+            (Some("Work"), ""),
+            (Some("Dev"), ""),
+            (None, "alpha"),
+            (None, "work"),
+            (Some("Work"), "gamma"),
+            (Some("Dev"), "nomatch"),
+        ] {
+            state.selected_tag_filter = tag.map(str::to_string);
+            state.search_query = query.to_string();
+
+            let order = {
+                let rules: &[Rule] = state.daemon_state.as_ref().unwrap().config.rules.as_slice();
+                visible_rule_order(
+                    rules,
+                    state.selected_tag_filter.as_deref(),
+                    &state.search_query,
+                    RuleSortMode::Default,
+                )
+            };
+            let view_ids: Vec<String> = order
+                .iter()
+                .map(|&idx| state.daemon_state.as_ref().unwrap().config.rules[idx].id.clone())
+                .collect();
+            let export_ids: Vec<String> = state.visible_rules().into_iter().map(|r| r.id).collect();
+
+            assert_eq!(
+                view_ids, export_ids,
+                "the rules view and the copy-all export must share one filter (tag={tag:?}, query={query:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dnd_source_and_drop_target_resolve_by_rule_id() {
+        let mut session = RuleDndSession {
+            source_id: "rule-b".into(),
+            target_idx: 1,
         };
 
-        let r2 = Rule {
-            id: "r2".into(),
-            name: "Alpha Dev".into(),
-            is_enabled: false,
-            tags: vec![tag_dev.clone()],
-            actions: vec![
-                Action::Wait {
-                    mode: crate::models::WaitMode::Timer,
-                    seconds: 1.0,
-                    condition: None,
-                    timeout_sec: 30.0,
-                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-                },
-                Action::Wait {
-                    mode: crate::models::WaitMode::Timer,
-                    seconds: 2.0,
-                    condition: None,
-                    timeout_sec: 30.0,
-                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-                },
-            ],
-            ..Default::default()
+        // Normal list: the grabbed rule sits where it started.
+        assert_eq!(dnd_source_index(&session, &["rule-a", "rule-b", "rule-c"]), Some(1));
+
+        // A daemon sync inserted a rule above the grabbed one: the index follows the id (U04-007).
+        let resynced = ["rule-x", "rule-a", "rule-b", "rule-c"];
+        assert_eq!(dnd_source_index(&session, &resynced), Some(2));
+
+        // The same live order decides where the drop lands.
+        assert_eq!(dnd_drop_target(&resynced, 2, 0), Some((Some("rule-x"), false)));
+        assert_eq!(dnd_drop_target(&resynced, 2, 4), Some((Some("rule-c"), true)));
+        assert_eq!(dnd_drop_target(&resynced, 0, 2), Some((Some("rule-a"), true)));
+        assert_eq!(dnd_drop_target(&resynced, 2, 2), None);
+        assert_eq!(dnd_drop_target(&resynced, 2, 3), None, "dropping directly after itself is a no-op");
+        assert_eq!(dnd_drop_target(&resynced, 9, 0), None, "a stale index must not reorder anything");
+        assert_eq!(dnd_drop_target(&[], 0, 0), None);
+
+        // A rule removed by the sync leaves nothing to grab (and nothing to commit).
+        session.target_idx = 3;
+        assert_eq!(dnd_source_index(&session, &["rule-a", "rule-c"]), None);
+    }
+
+    #[test]
+    fn test_dnd_block_reason_selects_its_own_hint() {
+        let loc = i18n::get(Language::English);
+        let ru = i18n::get(Language::Russian);
+
+        assert_eq!(dnd_block(RuleSortMode::Default, false, false), DndBlock::None);
+        assert_eq!(dnd_block(RuleSortMode::NameAsc, false, false), DndBlock::Sort);
+        assert_eq!(dnd_block(RuleSortMode::Default, true, false), DndBlock::Filters);
+        assert_eq!(dnd_block(RuleSortMode::Default, false, true), DndBlock::Filters);
+
+        assert_eq!(dnd_grip_tip(DndBlock::None, loc), loc.rules_tip_drag_rule);
+        assert_eq!(dnd_grip_tip(DndBlock::Sort, loc), loc.rules_tip_dnd_disabled_sort);
+        assert_eq!(dnd_grip_tip(DndBlock::Filters, loc), loc.rules_tip_dnd_disabled_filter);
+        assert_eq!(dnd_grip_tip(DndBlock::Filters, ru), ru.rules_tip_dnd_disabled_filter);
+        assert_ne!(
+            dnd_grip_tip(DndBlock::Filters, loc),
+            loc.rules_tip_dnd_disabled_sort,
+            "a tag filter or search must not be reported as a sort-mode problem (U04-008)"
+        );
+    }
+
+    /// The trigger line and the compact condition chips follow the UI language; only the layout
+    /// separators stay in the format strings.
+    #[test]
+    fn test_trigger_display_and_compact_prefix_follow_ui_language() {
+        let en = i18n::get(Language::English);
+        let ru = i18n::get(Language::Russian);
+
+        let process = Some(Trigger::Process {
+            process_name: "notepad.exe".into(),
+            match_mode: crate::models::ProcessMatchMode::Exact,
+            single_instance: false,
+        });
+        let (_, proc_en) = format_trigger_display(&process, en);
+        let (_, proc_ru) = format_trigger_display(&process, ru);
+        assert_eq!(proc_en, format!("{} {}", en.rules_trigger_proc, "notepad.exe"));
+        assert_eq!(proc_ru, format!("{} {}", ru.rules_trigger_proc, "notepad.exe"));
+        assert_ne!(proc_en, proc_ru);
+
+        let window = Some(Trigger::WindowFocus {
+            process_name: "code.exe".into(),
+            on_focus_gained: true,
+            on_focus_lost: false,
+        });
+        let (_, window_en) = format_trigger_display(&window, en);
+        assert_eq!(
+            window_en,
+            format!("{} {} {}", en.rules_trigger_window, en.rules_trigger_focus, "code.exe")
+        );
+        assert_ne!(window_en, format_trigger_display(&window, ru).1);
+
+        let hotkey = Some(Trigger::GlobalHotkey {
+            key_combination: "Ctrl+W".into(),
+            hold_mode: true,
+            repeat_while_held: false,
+        });
+        let (_, hotkey_en) = format_trigger_display(&hotkey, en);
+        assert_eq!(hotkey_en, format!("Ctrl+W{}", en.rules_trigger_hold));
+        assert_ne!(hotkey_en, format_trigger_display(&hotkey, ru).1);
+
+        let running = RuleCondition::ProcessRunning {
+            process_name: "notepad.exe".into(),
+            match_mode: crate::models::ProcessMatchMode::Exact,
+            must_be_running: true,
         };
+        let brief_en = format_single_condition_brief(&running, en);
+        let brief_ru = format_single_condition_brief(&running, ru);
+        assert_eq!(brief_en, format!("{}{}", en.rules_brief_cond_run, "notepad.exe"));
+        assert_eq!(brief_ru, format!("{}{}", ru.rules_brief_cond_run, "notepad.exe"));
+        assert_ne!(brief_en, brief_ru);
 
-        let r3 = Rule {
-            id: "r3".into(),
-            name: "Gamma Work & Dev".into(),
-            is_enabled: true,
-            tags: vec![tag_work, tag_dev],
-            trigger: Some(Trigger::Manual),
-            ..Default::default()
+        let not_running = RuleCondition::ProcessRunning {
+            process_name: "notepad.exe".into(),
+            match_mode: crate::models::ProcessMatchMode::Exact,
+            must_be_running: false,
         };
+        assert_eq!(
+            format_single_condition_brief(&not_running, en),
+            format!("!{}{}", en.rules_brief_cond_run, "notepad.exe")
+        );
 
-        let rules = vec![r1.clone(), r2.clone(), r3.clone()];
+        let resource = RuleCondition::ResourceThreshold {
+            process_name: "game.exe".into(),
+            cpu_percent: Some(75.0),
+            ram_mb: Some(512),
+        };
+        let res_en = format_single_condition_brief(&resource, en);
+        assert_eq!(
+            res_en,
+            format!(
+                "{}{}({},{})",
+                en.rules_brief_cond_res,
+                "game.exe",
+                en.rules_brief_cond_cpu.replace("{}", "75"),
+                en.rules_brief_cond_ram.replace("{}", "512"),
+            )
+        );
+        assert_ne!(res_en, format_single_condition_brief(&resource, ru));
+    }
 
-        // Filter by tag "Work"
-        let filtered_work: Vec<_> = rules.iter().filter(|r| r.tags.iter().any(|t| t.name.eq_ignore_ascii_case("Work"))).collect();
-        assert_eq!(filtered_work.len(), 2);
-        assert_eq!(filtered_work[0].id, "r1");
-        assert_eq!(filtered_work[1].id, "r3");
+    /// The literals localized by I18N-GAP must not return to the view. Needles are assembled from
+    /// fragments so the scan cannot match its own source.
+    #[test]
+    fn test_rules_view_source_has_no_removed_literals() {
+        let source = include_str!("rules_view.rs");
+        let removed = [
+            concat!("Clear the tag filter and ", "search to reorder"),
+            concat!("PROC ", "{}{}"),
+            concat!("WINDOW ", "{} {}"),
+            concat!("\"FOC", "US/BLUR\""),
+            concat!("\"FOC", "US\""),
+            concat!("\"BL", "UR\""),
+            concat!("\" [HO", "LD LOOP]\""),
+            concat!("\" [HO", "LD]\""),
+            concat!("FOLDER ", "{}"),
+            concat!("CPU > ", "{}%"),
+            concat!("RAM > ", "{}MB"),
+            concat!("\"RU", "N:{}\""),
+            concat!("\"!RU", "N:{}\""),
+            concat!("\"FOC", "US:{}\""),
+            concat!("\"!FOC", "US:{}\""),
+            concat!("\"FI", "LE:{}\""),
+            concat!("\"!FI", "LE:{}\""),
+            concat!("\"RE", "S:{}\""),
+            concat!("\"RE", "S:{}({})\""),
+            concat!("\"RU", "LE:{}\""),
+            concat!("\"!RU", "LE:{}\""),
+            concat!("CPU>", "{:.0}%"),
+            concat!("RAM>", "{}MB"),
+            concat!("\"PR", "OC\""),
+            concat!("\"WIN", "DOW\""),
+            concat!("\"FI", "LE\""),
+            concat!("\"RE", "S\""),
+            concat!("\"RU", "LE\""),
+        ];
+        for literal in removed {
+            assert!(!source.contains(literal), "hardcoded UI literal is back: {literal}");
+        }
+    }
 
-        // Filter by tag "Dev"
-        let filtered_dev: Vec<_> = rules.iter().filter(|r| r.tags.iter().any(|t| t.name.eq_ignore_ascii_case("Dev"))).collect();
-        assert_eq!(filtered_dev.len(), 2);
-        assert_eq!(filtered_dev[0].id, "r2");
-        assert_eq!(filtered_dev[1].id, "r3");
-
-        // Sort by Name Asc
-        let mut sorted_asc = rules.clone();
-        sorted_asc.sort_by_key(|a| a.name.to_lowercase());
-        assert_eq!(sorted_asc[0].name, "Alpha Dev");
-        assert_eq!(sorted_asc[1].name, "Beta Work");
-        assert_eq!(sorted_asc[2].name, "Gamma Work & Dev");
-
-        // Sort by Name Desc
-        let mut sorted_desc = rules.clone();
-        sorted_desc.sort_by_key(|a| std::cmp::Reverse(a.name.to_lowercase()));
-        assert_eq!(sorted_desc[0].name, "Gamma Work & Dev");
-        assert_eq!(sorted_desc[1].name, "Beta Work");
-        assert_eq!(sorted_desc[2].name, "Alpha Dev");
-
-        // Sort by Action Count (most actions first)
-        let mut sorted_actions = rules.clone();
-        sorted_actions.sort_by_key(|r| std::cmp::Reverse(r.actions.len() + r.on_exit_actions.len()));
-        assert_eq!(sorted_actions[0].id, "r2"); // 2 actions
-        assert_eq!(sorted_actions[1].id, "r1"); // 1 action
-        assert_eq!(sorted_actions[2].id, "r3"); // 0 actions
-
-        // Sort by Status (active first)
-        let mut sorted_status = rules;
-        sorted_status.sort_by_key(|r| (!r.is_enabled, r.name.to_lowercase()));
-        assert!(sorted_status[0].is_enabled);
-        assert!(sorted_status[1].is_enabled);
-        assert!(!sorted_status[2].is_enabled);
+    #[test]
+    fn test_action_step_chip_marks_only_the_current_step() {
+        let icon = egui_phosphor::regular::ROCKET;
+        assert_eq!(format_step_chip(icon, "LAUNCH app", false), format!("{} LAUNCH app", icon));
+        assert_eq!(format_step_chip(icon, "LAUNCH app", true), format!("▶ {} LAUNCH app", icon));
     }
 
     #[test]
@@ -1611,6 +2328,7 @@ mod tests {
         crate::gui::theme::install_fonts(&ctx);
         let mut state = GuiState::new();
         let tokens = Tokens::get(&ctx);
+        let loc = i18n::get(Language::English);
 
         let tag_work = crate::models::RuleTag::new("Work").with_color("#3B82F6");
         let rule_with_tags = Rule {
@@ -1618,13 +2336,7 @@ mod tests {
             name: "Rule with Tags".into(),
             is_enabled: true,
             tags: vec![tag_work],
-            actions: vec![Action::Wait {
-                mode: crate::models::WaitMode::Timer,
-                seconds: 1.0,
-                condition: None,
-                timeout_sec: 30.0,
-                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            }],
+            actions: vec![wait_action()],
             ..Default::default()
         };
 
@@ -1632,13 +2344,7 @@ mod tests {
             id: "r_no_tags".into(),
             name: "Rule without Tags".into(),
             is_enabled: false,
-            actions: vec![Action::Wait {
-                mode: crate::models::WaitMode::Timer,
-                seconds: 1.0,
-                condition: None,
-                timeout_sec: 30.0,
-                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            }],
+            actions: vec![wait_action()],
             ..Default::default()
         };
 
@@ -1646,28 +2352,32 @@ mod tests {
             id: "r_manual".into(),
             name: "Manual Rule".into(),
             trigger: Some(Trigger::Manual),
-            actions: vec![Action::Wait {
-                mode: crate::models::WaitMode::Timer,
-                seconds: 1.0,
-                condition: None,
-                timeout_sec: 30.0,
-                timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
-            }],
+            actions: vec![wait_action()],
             ..Default::default()
         };
 
         let mut rect_with_tags = Rect::NOTHING;
         let mut rect_no_tags = Rect::NOTHING;
         let mut rect_manual = Rect::NOTHING;
+        let mut intents: Vec<RuleRowIntent> = Vec::new();
 
         let mut out = ctx.run_ui(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.set_width(1000.0);
-                let (r1, _) = render_track_row(ui, &mut state, &rule_with_tags, 0, false, false, true, false, &tokens);
+                let (r1, _) = render_track_row(
+                    ui, &mut state.icon_cache, loc, &rule_with_tags, false, false, true, false,
+                    None, false, loc.rules_tip_drag_rule, &mut intents, &tokens,
+                );
                 rect_with_tags = r1;
-                let (r2, _) = render_track_row(ui, &mut state, &rule_no_tags, 1, false, false, true, false, &tokens);
+                let (r2, _) = render_track_row(
+                    ui, &mut state.icon_cache, loc, &rule_no_tags, false, false, true, false,
+                    None, false, loc.rules_tip_drag_rule, &mut intents, &tokens,
+                );
                 rect_no_tags = r2;
-                let (r3, _) = render_track_row(ui, &mut state, &rule_manual, 2, false, false, true, false, &tokens);
+                let (r3, _) = render_track_row(
+                    ui, &mut state.icon_cache, loc, &rule_manual, false, false, true, false,
+                    None, false, loc.rules_tip_drag_rule, &mut intents, &tokens,
+                );
                 rect_manual = r3;
             });
         });
@@ -1676,5 +2386,6 @@ mod tests {
         assert_eq!(rect_with_tags.height(), rect_no_tags.height(), "Card height must remain strictly fixed and identical regardless of tags presence");
         assert_eq!(rect_with_tags.height(), rect_manual.height(), "Card height must remain strictly fixed and identical for manual rules");
         assert!(rect_with_tags.height() > 0.0);
+        assert!(intents.is_empty(), "rendering alone must not mutate rule state");
     }
 }

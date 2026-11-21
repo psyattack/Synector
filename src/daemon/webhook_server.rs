@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
@@ -6,6 +7,14 @@ use crate::daemon::engine::DaemonEngine;
 use crate::models::Trigger;
 
 pub const DEFAULT_WEBHOOK_PORT: u16 = 48123;
+/// Upper bound for the bind retry backoff, so a port that stays busy is retried
+/// forever without flooding the log.
+const MAX_BIND_RETRY_DELAY_SECS: u64 = 30;
+
+fn bind_retry_delay(attempt: u32) -> Duration {
+    let exp = attempt.saturating_sub(1).min(5) as u64;
+    Duration::from_secs((1u64 << exp).min(MAX_BIND_RETRY_DELAY_SECS))
+}
 
 pub struct WebhookServer {
     engine: Arc<Mutex<DaemonEngine>>,
@@ -19,14 +28,30 @@ impl WebhookServer {
 
     pub async fn run(&self) {
         let addr = format!("127.0.0.1:{}", self.port);
-        let listener = match TcpListener::bind(&addr).await {
-            Ok(l) => {
-                println!("[DAEMON] Webhook server listening on http://{}", addr);
-                l
-            }
-            Err(e) => {
-                eprintln!("[DAEMON] Failed to bind webhook server on {}: {}", addr, e);
-                return;
+        let mut attempt = 0u32;
+        let listener = loop {
+            match TcpListener::bind(&addr).await {
+                Ok(listener) => {
+                    crate::logging::info(
+                        "WEBHOOK",
+                        &format!("Webhook server listening on http://{addr}"),
+                    );
+                    break listener;
+                }
+                Err(err) => {
+                    attempt = attempt.saturating_add(1);
+                    let delay = bind_retry_delay(attempt);
+                    // The daemon is a GUI-subsystem process with null stderr, so a
+                    // silent `eprintln!` used to hide a busy port completely.
+                    crate::logging::error(
+                        "WEBHOOK",
+                        &format!(
+                            "Failed to bind webhook server on {addr}: {err}; retrying in {}s",
+                            delay.as_secs()
+                        ),
+                    );
+                    tokio::time::sleep(delay).await;
+                }
             }
         };
 
@@ -102,5 +127,20 @@ impl WebhookServer {
                 let _ = socket.write_all(resp.as_bytes()).await;
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_retry_backoff_starts_short_and_is_capped() {
+        assert_eq!(bind_retry_delay(1), Duration::from_secs(1));
+        assert_eq!(bind_retry_delay(2), Duration::from_secs(2));
+        assert_eq!(bind_retry_delay(3), Duration::from_secs(4));
+        assert_eq!(bind_retry_delay(5), Duration::from_secs(16));
+        assert_eq!(bind_retry_delay(6), Duration::from_secs(30));
+        assert_eq!(bind_retry_delay(200), Duration::from_secs(30));
     }
 }

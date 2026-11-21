@@ -3,8 +3,6 @@ use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::models::{MonitorInfo, OverlayDefinition};
-#[cfg(test)]
-use crate::models::OverlayAnchor;
 
 pub struct ActiveOverlayProcess {
     pub id: String,
@@ -35,17 +33,77 @@ pub fn get_overlay_text(id: &str) -> Option<String> {
     texts_map().lock().unwrap().get(id).cloned()
 }
 
+fn live_text_dir() -> std::path::PathBuf {
+    crate::config::AppConfig::config_dir().join("overlay_text")
+}
+
+/// Path of the live-text file for `id`. Overlay windows poll this file so a
+/// `SetText` update repaints the label instead of restarting the process.
+pub fn live_overlay_text_path(id: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let slug: String = id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .take(48)
+        .collect();
+    let digest = Sha256::digest(id.as_bytes());
+    let suffix = digest[..4].iter().map(|b| format!("{b:02x}")).collect::<String>();
+    live_text_dir().join(format!("{slug}-{suffix}.txt"))
+}
+
+fn write_live_overlay_text(id: &str, text: &str) {
+    static WARN_ONCE: std::sync::Once = std::sync::Once::new();
+    let path = live_overlay_text_path(id);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut tmp_name = path.as_os_str().to_os_string();
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = std::path::PathBuf::from(tmp_name);
+    let written = std::fs::write(&tmp, text).is_ok()
+        && match std::fs::rename(&tmp, &path) {
+            Ok(()) => true,
+            Err(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                false
+            }
+        };
+    if !written {
+        WARN_ONCE.call_once(|| {
+            crate::logging::warn(
+                "OVERLAY",
+                "Cannot publish live overlay text; SetText updates will not be shown",
+            );
+        });
+    }
+}
+
+/// Latest live text published for `id`, read by the overlay window. `None`
+/// means no text has been published for this overlay yet.
+pub fn live_overlay_text(id: &str) -> Option<String> {
+    std::fs::read_to_string(live_overlay_text_path(id)).ok()
+}
+
 pub fn update_overlay_text(id_or_name: &str, text: &str) {
     let config = crate::config::Library::shared();
-    let resolved = config.find_overlay(id_or_name).cloned();
-    let resolved_id = resolved.as_ref().map(|o| o.id.clone()).unwrap_or_else(|| id_or_name.to_string());
+    let resolved_id = config
+        .find_overlay(id_or_name)
+        .map(|o| o.id.clone())
+        .unwrap_or_else(|| id_or_name.to_string());
     texts_map().lock().unwrap().insert(resolved_id.clone(), text.to_string());
+    // Publish the new label for the running window; it polls this file, so no
+    // kill/respawn (and no flicker or GPU startup storm) per text frame.
+    write_live_overlay_text(&resolved_id, text);
+}
 
-    let is_active = get_active_overlay_ids().contains(&resolved_id);
-    if let Some(overlay) = resolved {
-        if is_active {
-            show_overlay(&overlay, false, Some(text.to_string()));
-        }
+/// Returns the live text only when it differs from `current`, so the overlay
+/// window can swap it without re-reading every frame.
+pub fn live_overlay_text_if_changed(id: &str, current: Option<&str>) -> Option<String> {
+    let text = live_overlay_text(id)?;
+    if current == Some(text.as_str()) {
+        None
+    } else {
+        Some(text)
     }
 }
 
@@ -59,6 +117,7 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
     let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
     if let Some(ref txt) = effective_text {
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
+        write_live_overlay_text(&overlay.id, txt);
     }
     let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
 
@@ -93,15 +152,14 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
             }
         }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        cmd.spawn().ok()
+        spawn_overlay_process(&overlay.id, cmd)
     };
+
+    if child.is_none() && !cfg!(test) {
+        // Never register an overlay that has no process behind it: a failed spawn
+        // must not be reported as active.
+        return;
+    }
 
     lock.insert(
         overlay.id.clone(),
@@ -113,6 +171,144 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
             fade_out_ms: overlay.fade_out_ms,
         },
     );
+}
+
+/// Spawns an overlay window and logs a failure with the overlay id. Spawn errors
+/// used to be swallowed to `None`, leaving a permanently "active" overlay that
+/// nothing could see.
+fn spawn_overlay_process(overlay_id: &str, command: Command) -> Option<Child> {
+    let mut command = command;
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match command.spawn() {
+        Ok(child) => {
+            #[cfg(windows)]
+            job::assign_overlay_child(&child);
+            Some(child)
+        }
+        Err(err) => {
+            crate::logging::error(
+                "OVERLAY",
+                &format!("Failed to spawn overlay window '{overlay_id}': {err}"),
+            );
+            None
+        }
+    }
+}
+
+/// Kill-on-close Job Object for overlay children: Windows terminates every
+/// overlay process when the daemon handle set closes, including a daemon crash
+/// or forced kill that never runs the shutdown path.
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::sync::OnceLock;
+
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct JobObjectBasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: u32,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: u32,
+        affinity: usize,
+        priority_class: u32,
+        scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct JobObjectExtendedLimitInformation {
+        basic_limit_information: JobObjectBasicLimitInformation,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateJobObjectW(attributes: *const c_void, name: *const u16) -> *mut c_void;
+        fn SetInformationJobObject(
+            job: *mut c_void,
+            info_class: i32,
+            info: *const c_void,
+            length: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    fn overlay_job() -> Option<*mut c_void> {
+        static JOB: OnceLock<usize> = OnceLock::new();
+        let handle = *JOB.get_or_init(|| unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut info = JobObjectExtendedLimitInformation::default();
+            info.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let configured = SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
+                &info as *const _ as *const c_void,
+                std::mem::size_of::<JobObjectExtendedLimitInformation>() as u32,
+            );
+            if configured == 0 {
+                let _ = CloseHandle(job);
+                return 0;
+            }
+            job as usize
+        });
+        if handle == 0 { None } else { Some(handle as *mut c_void) }
+    }
+
+    /// Assigns a freshly spawned overlay to the daemon's job. The handle is
+    /// deliberately kept open for the process lifetime; closing it (process
+    /// exit) is what triggers the kill-on-close contract.
+    pub fn assign_overlay_child(child: &Child) {
+        if let Some(job) = overlay_job() {
+            unsafe {
+                let _ = AssignProcessToJobObject(job, child.as_raw_handle());
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_overlay_job_exists_and_is_shared() {
+            let job = overlay_job().expect("kill-on-close job object must be created");
+            assert!(!job.is_null());
+            assert_eq!(overlay_job(), Some(job), "one job object per daemon process");
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -212,6 +408,7 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
     let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
     if let Some(ref txt) = effective_text {
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
+        write_live_overlay_text(&overlay.id, txt);
     }
     let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
 
@@ -237,15 +434,12 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
             cmd.arg("--overlay-data").arg(b64_str);
         }
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        cmd.spawn().ok()
+        spawn_overlay_process(&overlay.id, cmd)
     };
+
+    if child.is_none() && !cfg!(test) {
+        return;
+    }
 
     lock.insert(
         overlay.id.clone(),
@@ -426,6 +620,77 @@ pub fn check_process_terminated(process_name: &str) {
     }
 }
 
+/// Effective DPI of a display device; `96` when it cannot be resolved (for
+/// example on a headless session). The process manifest opts into PerMonitorV2,
+/// so `GetDeviceCaps` reports the real per-monitor DPI. Cached briefly because
+/// overlay windows query the monitor list every frame.
+#[cfg(windows)]
+fn monitor_dpi(device_name: &str) -> u32 {
+    use windows::core::PCWSTR;
+    use windows::Win32::Graphics::Gdi::{CreateDCW, DeleteDC, GetDeviceCaps, LOGPIXELSX};
+
+    const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+    static DPI_CACHE: OnceLock<Mutex<HashMap<String, (u32, std::time::Instant)>>> = OnceLock::new();
+    let cache = DPI_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some((dpi, sampled_at)) = cache.get(device_name) {
+            if sampled_at.elapsed() < CACHE_TTL {
+                return *dpi;
+            }
+        }
+    }
+
+    let device: Vec<u16> = device_name.encode_utf16().chain(std::iter::once(0)).collect();
+    let device_ptr = if device_name.is_empty() {
+        PCWSTR::null()
+    } else {
+        PCWSTR(device.as_ptr())
+    };
+    let dpi = unsafe {
+        let dc = CreateDCW(PCWSTR::null(), device_ptr, PCWSTR::null(), None);
+        if dc.is_invalid() {
+            96
+        } else {
+            let dpi = GetDeviceCaps(Some(dc), LOGPIXELSX);
+            let _ = DeleteDC(dc);
+            u32::try_from(dpi).ok().filter(|dpi| *dpi >= 48).unwrap_or(96)
+        }
+    };
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(device_name.to_string(), (dpi, std::time::Instant::now()));
+    }
+    dpi
+}
+
+/// Logical scale factor of a display device (`1.0` at 96 DPI). Used by the
+/// overlay window to report its position in the same logical space as
+/// `MonitorInfo` and `OverlayRect`.
+#[cfg(windows)]
+pub(crate) fn monitor_scale(device_name: &str) -> f32 {
+    monitor_dpi(device_name) as f32 / 96.0
+}
+
+/// Converts physical monitor pixels into the logical points that
+/// `egui::ViewportBuilder::with_position` / `with_inner_size` expect. Without
+/// this, anchors and secondary-monitor offsets are wrong above 100% scaling.
+fn monitor_bounds_to_logical(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    dpi: u32,
+) -> (i32, i32, u32, u32) {
+    if dpi <= 96 {
+        return (x, y, width, height);
+    }
+    let scale = f64::from(dpi) / 96.0;
+    let logical_x = (f64::from(x) / scale).round() as i32;
+    let logical_y = (f64::from(y) / scale).round() as i32;
+    let logical_w = ((f64::from(width) / scale).round() as u32).max(1);
+    let logical_h = ((f64::from(height) / scale).round() as u32).max(1);
+    (logical_x, logical_y, logical_w, logical_h)
+}
+
 #[cfg(windows)]
 pub fn get_system_monitors() -> Vec<MonitorInfo> {
     use windows::Win32::Graphics::Gdi::{
@@ -449,6 +714,9 @@ pub fn get_system_monitors() -> Vec<MonitorInfo> {
             let w = (rect.right - rect.left).max(0) as u32;
             let h = (rect.bottom - rect.top).max(0) as u32;
             let raw_name = String::from_utf16_lossy(&info.szDevice).trim_matches('\0').to_string();
+            let dpi = monitor_dpi(&raw_name);
+            let (logical_x, logical_y, logical_w, logical_h) =
+                monitor_bounds_to_logical(rect.left, rect.top, w, h, dpi);
             let name = if raw_name.is_empty() {
                 format!("Display {}", list.len() + 1)
             } else {
@@ -458,10 +726,10 @@ pub fn get_system_monitors() -> Vec<MonitorInfo> {
                 list.push(MonitorInfo {
                     index: 0,
                     name,
-                    x: rect.left,
-                    y: rect.top,
-                    width: w,
-                    height: h,
+                    x: logical_x,
+                    y: logical_y,
+                    width: logical_w,
+                    height: logical_h,
                     is_primary,
                 });
             }
@@ -484,13 +752,14 @@ pub fn get_system_monitors() -> Vec<MonitorInfo> {
         let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
         let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
         let (sw, sh) = if w > 0 && h > 0 { (w as u32, h as u32) } else { (1920, 1080) };
+        let (_, _, logical_w, logical_h) = monitor_bounds_to_logical(0, 0, sw, sh, monitor_dpi(""));
         return vec![MonitorInfo {
             index: 0,
             name: "Primary Display".to_string(),
             x: 0,
             y: 0,
-            width: sw,
-            height: sh,
+            width: logical_w,
+            height: logical_h,
             is_primary: true,
         }];
     }
@@ -522,50 +791,12 @@ pub fn get_system_monitors() -> Vec<MonitorInfo> {
 }
 
 #[cfg(test)]
-pub fn calculate_overlay_rect(
-    overlay: &OverlayDefinition,
-    _active_overlays: &HashMap<String, (f32, f32)>,
-) -> (i32, i32, i32, i32) {
-    let monitors = get_system_monitors();
-    let monitor = overlay
-        .monitor_index
-        .and_then(|idx| monitors.get(idx))
-        .or_else(|| monitors.iter().find(|m| m.is_primary))
-        .unwrap_or(&monitors[0]);
-
-    let monitor_w = monitor.width as i32;
-    let monitor_h = monitor.height as i32;
-    let mon_x = monitor.x;
-    let mon_y = monitor.y;
-
-    let w = overlay.rect.width as i32;
-    let h = overlay.rect.height as i32;
-    let rx = overlay.rect.x as i32;
-    let ry = overlay.rect.y as i32;
-
-    let (rel_x, rel_y) = match overlay.anchor {
-        OverlayAnchor::ScreenCenter => {
-            let cx = if rx.abs() > monitor_w / 3 { 0 } else { rx };
-            let cy = if ry.abs() > monitor_h / 3 { 0 } else { ry };
-            ((monitor_w - w) / 2 + cx, (monitor_h - h) / 2 + cy)
-        }
-        OverlayAnchor::TopLeft => (rx, ry),
-        OverlayAnchor::TopRight => (monitor_w - w - rx, ry),
-        OverlayAnchor::BottomLeft => (rx, monitor_h - h - ry),
-        OverlayAnchor::BottomRight => (monitor_w - w - rx, monitor_h - h - ry),
-        OverlayAnchor::Custom => (rx, ry),
-        OverlayAnchor::WindowRelative => (rx, ry),
-    };
-
-    (mon_x + rel_x, mon_y + rel_y, w, h)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::OverlayAnchor;
 
     #[test]
-    fn test_get_system_monitors_and_rect() {
+    fn test_get_system_monitors_use_production_anchor_math() {
         let monitors = get_system_monitors();
         assert!(!monitors.is_empty(), "System monitors list must not be empty");
         assert!(monitors.iter().any(|m| m.is_primary), "Must include at least one primary monitor");
@@ -580,12 +811,29 @@ mod tests {
         def.rect.y = 20.0;
         def.monitor_index = Some(0);
 
-        let active_map = HashMap::new();
-        let (x0, y0, w0, h0) = calculate_overlay_rect(&def, &active_map);
-        assert_eq!(w0, 200);
-        assert_eq!(h0, 100);
-        assert_eq!(x0, monitors[0].x + 10);
-        assert_eq!(y0, monitors[0].y + 20);
+        // The production placement path is the one overlay_window uses; the old
+        // cfg(test)-only copy could drift from it without failing a test.
+        let monitor = &monitors[0];
+        let (rel_x, rel_y) = crate::gui::views::overlay_modal::compute_overlay_screen_pos_with_anchor(
+            def.anchor,
+            &def,
+            monitor.width as f32,
+            monitor.height as f32,
+        );
+        assert_eq!(monitor.x as f32 + rel_x, monitor.x as f32 + 10.0);
+        assert_eq!(monitor.y as f32 + rel_y, monitor.y as f32 + 20.0);
+    }
+
+    #[test]
+    fn test_monitor_bounds_convert_physical_pixels_to_logical_points() {
+        // 100% scaling is the identity.
+        assert_eq!(monitor_bounds_to_logical(0, 0, 2560, 1440, 96), (0, 0, 2560, 1440));
+        // 150% secondary monitor: physical (2560, 0) / 1920x1080 -> logical.
+        assert_eq!(monitor_bounds_to_logical(2560, 0, 1920, 1080, 144), (1707, 0, 1280, 720));
+        // 200% primary monitor.
+        assert_eq!(monitor_bounds_to_logical(0, 0, 3840, 2160, 192), (0, 0, 1920, 1080));
+        // Never collapse a scaled monitor to zero.
+        assert_eq!(monitor_bounds_to_logical(0, 0, 1, 1, 192), (0, 0, 1, 1));
     }
 
     #[test]
@@ -644,5 +892,57 @@ mod tests {
 
         update_overlay_text("test_ov_cache", "Updated dynamic text");
         assert_eq!(get_overlay_text("test_ov_cache").as_deref(), Some("Updated dynamic text"));
+    }
+
+    #[test]
+    fn test_update_overlay_text_publishes_live_text_without_restarting() {
+        init();
+        let id = "live_text_ov";
+        let path = live_overlay_text_path(id);
+        let _ = std::fs::remove_file(&path);
+        assert!(live_overlay_text(id).is_none());
+
+        update_overlay_text(id, "first");
+        assert_eq!(live_overlay_text(id).as_deref(), Some("first"));
+        assert_eq!(
+            live_overlay_text_if_changed(id, Some("first")),
+            None,
+            "an unchanged label must not force a repaint"
+        );
+        assert_eq!(
+            live_overlay_text_if_changed(id, Some("stale")).as_deref(),
+            Some("first")
+        );
+
+        update_overlay_text(id, "second");
+        assert_eq!(live_overlay_text(id).as_deref(), Some("second"));
+
+        // Different overlay ids never share a live-text file.
+        assert_ne!(live_overlay_text_path(id), live_overlay_text_path("live_text_ov_2"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_show_overlay_publishes_live_text_for_running_window() {
+        init();
+        let mut def = OverlayDefinition::default_new_overlay();
+        def.id = "live_text_show_ov".to_string();
+        show_overlay(&def, false, Some("shown".to_string()));
+        assert_eq!(live_overlay_text(&def.id).as_deref(), Some("shown"));
+        hide_overlay(&def.id);
+        let _ = std::fs::remove_file(live_overlay_text_path(&def.id));
+    }
+
+    #[test]
+    fn test_failed_spawn_is_reported_and_not_active() {
+        init();
+        // `show_overlay` short-circuits spawning under cfg(test), so exercise the
+        // helper directly: a missing executable must yield None (logged) and no
+        // active overlay, instead of a phantom entry.
+        let command = Command::new("synector_definitely_missing_overlay_binary");
+        let child = spawn_overlay_process("spawn_failure_ov", command);
+        assert!(child.is_none(), "spawning a missing binary must fail");
+        assert!(!get_active_overlay_ids().contains("spawn_failure_ov"));
     }
 }

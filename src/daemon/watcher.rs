@@ -2,6 +2,8 @@ use crate::models::ProcessSnapshotItem;
 use std::collections::HashMap;
 
 #[cfg(windows)]
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+#[cfg(windows)]
 use windows::core::BOOL;
 #[cfg(windows)]
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
@@ -66,8 +68,26 @@ const KERNEL_PROCESS_GUID: windows::core::GUID = windows::core::GUID::from_value
     [0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16],
 );
 
+/// Raw event queued by the realtime ETW callback and resolved later on the daemon thread.
+/// The callback must stay brief (ETW guidance), so it carries no process name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RawProcessEvent {
+    pid: u32,
+    is_started: bool,
+}
+
 #[cfg(windows)]
-static ETW_EVENT_QUEUE: std::sync::Mutex<Vec<ProcessEvent>> = std::sync::Mutex::new(Vec::new());
+const ETW_EVENT_QUEUE_CAPACITY: usize = 2000;
+
+#[cfg(windows)]
+static ETW_EVENT_QUEUE: std::sync::Mutex<Vec<RawProcessEvent>> = std::sync::Mutex::new(Vec::new());
+#[cfg(windows)]
+static ETW_DROPPED_EVENTS: AtomicU32 = AtomicU32::new(0);
+/// Set by the trace thread when `ProcessTrace` returns, so the watcher can fall back to polling.
+#[cfg(windows)]
+static ETW_TRACE_STOPPED: AtomicBool = AtomicBool::new(false);
+#[cfg(windows)]
+static ETW_TRACE_EXIT_CODE: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(windows)]
 unsafe extern "system" fn etw_event_record_callback(record: *mut EVENT_RECORD) {
@@ -75,35 +95,26 @@ unsafe extern "system" fn etw_event_record_callback(record: *mut EVENT_RECORD) {
         return;
     }
     let rec = &*record;
-    if rec.EventHeader.ProviderId == KERNEL_PROCESS_GUID {
-        let id = rec.EventHeader.EventDescriptor.Id;
-        if (id == 1 || id == 2) && rec.UserDataLength >= 4 && !rec.UserData.is_null() {
-            let pid = *(rec.UserData as *const u32);
-            if pid != 0 {
-                let is_started = id == 1;
-                let proc_name = if is_started {
-                    ProcessWatcher::get_process_image_path(pid)
-                        .and_then(|p| {
-                            std::path::Path::new(&p)
-                                .file_name()
-                                .and_then(|f| f.to_str())
-                                .map(|s| s.to_lowercase())
-                        })
-                        .unwrap_or_default()
-                } else {
-                    String::new()
-                };
+    if rec.EventHeader.ProviderId != KERNEL_PROCESS_GUID {
+        return;
+    }
+    let id = rec.EventHeader.EventDescriptor.Id;
+    if (id != 1 && id != 2) || rec.UserDataLength < 4 || rec.UserData.is_null() {
+        return;
+    }
+    let pid = *(rec.UserData as *const u32);
+    if pid == 0 {
+        return;
+    }
 
-                if let Ok(mut q) = ETW_EVENT_QUEUE.lock() {
-                    if q.len() < 2000 {
-                        q.push(ProcessEvent {
-                            process_name: proc_name,
-                            pid,
-                            is_started,
-                        });
-                    }
-                }
-            }
+    if let Ok(mut q) = ETW_EVENT_QUEUE.lock() {
+        if q.len() < ETW_EVENT_QUEUE_CAPACITY {
+            q.push(RawProcessEvent {
+                pid,
+                is_started: id == 1,
+            });
+        } else {
+            ETW_DROPPED_EVENTS.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -115,13 +126,29 @@ struct EtwSession {
     session_name_wide: Vec<u16>,
 }
 
+/// The ETW session name is machine-wide while daemons are per Windows session, so the name
+/// carries the session id: a second user's daemon must never stop this session to start its own.
+#[cfg(windows)]
+fn etw_session_name() -> Vec<u16> {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+
+    let mut session_id = 0u32;
+    let name = unsafe {
+        match ProcessIdToSessionId(GetCurrentProcessId(), &mut session_id) {
+            Ok(()) => format!("SynectorKernelProcessTrace-{session_id}"),
+            Err(_) => "SynectorKernelProcessTrace".to_string(),
+        }
+    };
+    name.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 #[cfg(windows)]
 impl EtwSession {
     fn try_start() -> Option<Self> {
         use windows::core::PCWSTR;
 
-        let session_name_str = "SynectorKernelProcessTrace\0";
-        let session_name_wide: Vec<u16> = session_name_str.encode_utf16().collect();
+        let session_name_wide: Vec<u16> = etw_session_name();
 
         unsafe {
             let mut session_handle = CONTROLTRACE_HANDLE::default();
@@ -133,7 +160,8 @@ impl EtwSession {
                 &mut buf.props,
             );
             if err.0 == 183 {
-                // ERROR_ALREADY_EXISTS: close stale session from earlier run and retry
+                // ERROR_ALREADY_EXISTS: close the stale session left by an earlier run of this
+                // same Windows session and retry.
                 let mut stop_buf = EtwPropertiesBuffer::new(&session_name_wide);
                 let _ = ControlTraceW(
                     CONTROLTRACE_HANDLE::default(),
@@ -193,10 +221,15 @@ impl EtwSession {
             }
 
             let th = trace_handle;
+            ETW_TRACE_EXIT_CODE.store(0, Ordering::SeqCst);
+            ETW_TRACE_STOPPED.store(false, Ordering::SeqCst);
+            ETW_DROPPED_EVENTS.store(0, Ordering::Relaxed);
             if std::thread::Builder::new()
                 .name("etw-kernel-process-trace".into())
                 .spawn(move || {
-                    let _ = ProcessTrace(&[th], None, None);
+                    let result = ProcessTrace(&[th], None, None);
+                    ETW_TRACE_EXIT_CODE.store(result.0, Ordering::SeqCst);
+                    ETW_TRACE_STOPPED.store(true, Ordering::SeqCst);
                 })
                 .is_err()
             {
@@ -290,7 +323,10 @@ impl ProcessWatcher {
     pub fn is_etw_active(&self) -> bool {
         #[cfg(windows)]
         {
-            self.etw_session.is_some()
+            etw_session_active(
+                self.etw_session.is_some(),
+                ETW_TRACE_STOPPED.load(Ordering::SeqCst),
+            )
         }
         #[cfg(not(windows))]
         {
@@ -309,80 +345,60 @@ impl ProcessWatcher {
     pub fn poll_changes(&mut self) -> Vec<ProcessEvent> {
         #[cfg(windows)]
         if self.etw_session.is_some() {
-            let mut events = Vec::new();
-            if let Ok(mut q) = ETW_EVENT_QUEUE.lock() {
-                if !q.is_empty() {
-                    events = std::mem::take(&mut *q);
-                }
+            if ETW_TRACE_STOPPED.load(Ordering::SeqCst) {
+                let code = ETW_TRACE_EXIT_CODE.load(Ordering::SeqCst);
+                crate::logging::warn(
+                    "WATCHER",
+                    &format!(
+                        "Kernel ETW trace stopped (code {code}); falling back to Toolhelp32 snapshot polling"
+                    ),
+                );
+                // Dropping the session releases the trace and control handles; the adaptive
+                // polling path below then takes over within this same tick.
+                self.etw_session = None;
+            } else {
+                return self.poll_etw_changes();
             }
-
-            let mut out = Vec::with_capacity(events.len());
-            for mut ev in events {
-                if ev.is_started {
-                    if ev.process_name.is_empty() {
-                        if let Some(path) = Self::get_process_image_path(ev.pid) {
-                            if let Some(name) = std::path::Path::new(&path)
-                                .file_name()
-                                .and_then(|f| f.to_str())
-                            {
-                                ev.process_name = name.to_lowercase();
-                            }
-                        }
-                    }
-                    if !ev.process_name.is_empty() {
-                        self.known_processes.insert(ev.pid, ev.process_name.clone());
-                        out.push(ev);
-                    }
-                } else {
-                    if let Some(known_name) = self.known_processes.remove(&ev.pid) {
-                        ev.process_name = known_name;
-                        out.push(ev);
-                    }
-                }
-            }
-
-            // Periodic background reconciliation every 10 seconds to guarantee no drift
-            if self.last_reconcile.elapsed().as_secs() >= 10 {
-                self.last_reconcile = std::time::Instant::now();
-                let current = Self::snapshot_process_map();
-                for (&pid, name) in &current {
-                    self.known_processes
-                        .entry(pid)
-                        .or_insert_with(|| name.clone());
-                }
-                self.known_processes
-                    .retain(|pid, _| current.contains_key(pid));
-            }
-
-            return out;
         }
 
-        // Fallback: Adaptive Toolhelp32 snapshot differential
+        self.poll_toolhelp_changes()
+    }
+
+    #[cfg(windows)]
+    fn poll_etw_changes(&mut self) -> Vec<ProcessEvent> {
+        let events = ETW_EVENT_QUEUE
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default();
+
+        let dropped = ETW_DROPPED_EVENTS.swap(0, Ordering::Relaxed);
+        if dropped > 0 {
+            crate::logging::warn(
+                "WATCHER",
+                &format!("Kernel ETW event queue overflowed; {dropped} process events were dropped"),
+            );
+        }
+
+        let mut out = apply_etw_events(
+            events,
+            &mut self.known_processes,
+            Self::get_process_image_path,
+            Self::snapshot_process_map,
+        );
+
+        // Periodic background reconciliation every 10 seconds to guarantee no drift
+        if self.last_reconcile.elapsed().as_secs() >= 10 {
+            self.last_reconcile = std::time::Instant::now();
+            let current = Self::snapshot_process_map();
+            out.extend(reconcile_known_processes(&mut self.known_processes, &current));
+        }
+
+        out
+    }
+
+    fn poll_toolhelp_changes(&mut self) -> Vec<ProcessEvent> {
         let current = Self::snapshot_process_map();
-        let mut events = Vec::new();
-
-        // Check for started processes
-        for (&pid, name) in &current {
-            if !self.known_processes.contains_key(&pid) {
-                events.push(ProcessEvent {
-                    process_name: name.clone(),
-                    pid,
-                    is_started: true,
-                });
-            }
-        }
-
-        // Check for stopped processes
-        for (&pid, name) in &self.known_processes {
-            if !current.contains_key(&pid) {
-                events.push(ProcessEvent {
-                    process_name: name.clone(),
-                    pid,
-                    is_started: false,
-                });
-            }
-        }
-
+        let events = diff_process_maps(&self.known_processes, &current);
         self.known_processes = current;
         events
     }
@@ -576,6 +592,149 @@ impl ProcessWatcher {
     }
 }
 
+/// Lowercased executable file name of an image path.
+fn process_name_from_path(path: &str) -> Option<String> {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .map(|s| s.to_lowercase())
+        .filter(|s| !s.is_empty())
+}
+
+/// Turns raw ETW events into the shared process-event surface. The name of a started process is
+/// resolved from the image path first and from a Toolhelp snapshot second, so protected/PPL
+/// processes whose image path cannot be opened still produce the same start event the polling
+/// path produces, and their stop event is not lost. The pid is always recorded.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn apply_etw_events(
+    events: Vec<RawProcessEvent>,
+    known: &mut HashMap<u32, String>,
+    mut image_path: impl FnMut(u32) -> Option<String>,
+    mut snapshot: impl FnMut() -> HashMap<u32, String>,
+) -> Vec<ProcessEvent> {
+    let mut out = Vec::with_capacity(events.len());
+    let mut snapshot_map: Option<HashMap<u32, String>> = None;
+
+    for ev in events {
+        if ev.is_started {
+            let mut name = image_path(ev.pid)
+                .as_deref()
+                .and_then(process_name_from_path);
+            if name.is_none() {
+                let map = snapshot_map.get_or_insert_with(&mut snapshot);
+                name = map.get(&ev.pid).cloned();
+            }
+            let name = name.unwrap_or_default();
+            known.insert(ev.pid, name.clone());
+            if !name.is_empty() {
+                out.push(ProcessEvent {
+                    process_name: name,
+                    pid: ev.pid,
+                    is_started: true,
+                });
+            }
+        } else if let Some(name) = known.remove(&ev.pid) {
+            if !name.is_empty() {
+                out.push(ProcessEvent {
+                    process_name: name,
+                    pid: ev.pid,
+                    is_started: false,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// Reconciles the ETW path's known set with a fresh Toolhelp snapshot.
+///
+/// A start whose image path and Toolhelp fallback both failed is recorded with an empty name and
+/// emits nothing, so the periodic reconcile retries the lookup; when the snapshot resolves the
+/// pid, this emits the start event the polling path would have produced and both paths keep
+/// feeding the same trigger surface. A pid that already exited cannot be named any more: it is
+/// dropped with a debug line (polling would have retried on its next tick, so this is the only
+/// remaining case where the two paths can still differ).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn reconcile_known_processes(
+    known: &mut HashMap<u32, String>,
+    current: &HashMap<u32, String>,
+) -> Vec<ProcessEvent> {
+    let mut out = Vec::new();
+
+    for (&pid, name) in current {
+        match known.get_mut(&pid) {
+            Some(known_name) if known_name.is_empty() => {
+                known_name.clone_from(name);
+                out.push(ProcessEvent {
+                    process_name: name.clone(),
+                    pid,
+                    is_started: true,
+                });
+            }
+            Some(_) => {}
+            None => {
+                // Drift correction only: record a pid the ETW queue never reported so its exit
+                // is paired. The polling path emits no event for a process it already knew.
+                known.insert(pid, name.clone());
+            }
+        }
+    }
+
+    let mut dropped_unresolved = Vec::new();
+    known.retain(|&pid, known_name| {
+        if !current.contains_key(&pid) && known_name.is_empty() {
+            dropped_unresolved.push(pid);
+        }
+        current.contains_key(&pid)
+    });
+    for pid in dropped_unresolved {
+        crate::logging::debug(
+            "WATCHER",
+            &format!(
+                "ETW known process {pid} exited before its name could be resolved; no process event was emitted for it"
+            ),
+        );
+    }
+
+    out
+}
+
+/// Snapshot differential used by the adaptive Toolhelp32 polling path.
+fn diff_process_maps(
+    before: &HashMap<u32, String>,
+    after: &HashMap<u32, String>,
+) -> Vec<ProcessEvent> {
+    let mut events = Vec::new();
+
+    for (&pid, name) in after {
+        if !before.contains_key(&pid) {
+            events.push(ProcessEvent {
+                process_name: name.clone(),
+                pid,
+                is_started: true,
+            });
+        }
+    }
+
+    for (&pid, name) in before {
+        if !after.contains_key(&pid) {
+            events.push(ProcessEvent {
+                process_name: name.clone(),
+                pid,
+                is_started: false,
+            });
+        }
+    }
+
+    events
+}
+
+#[cfg(windows)]
+fn etw_session_active(has_session: bool, trace_stopped: bool) -> bool {
+    has_session && !trace_stopped
+}
+
 #[cfg(windows)]
 pub fn is_elevated() -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -641,5 +800,142 @@ mod tests {
         let mode = watcher.get_mode_name();
         assert!(mode.contains("ETW") || mode.contains("Snapshot"));
         let _ = watcher.poll_changes();
+    }
+
+    #[test]
+    fn test_etw_and_toolhelp_paths_agree_on_unresolved_start() {
+        // A protected/PPL process: OpenProcess fails, but a Toolhelp snapshot still lists it.
+        let before: HashMap<u32, String> = HashMap::new();
+        let after: HashMap<u32, String> =
+            [(4321u32, "protected.exe".to_string())].into_iter().collect();
+
+        let mut known = before.clone();
+        let etw = apply_etw_events(
+            vec![RawProcessEvent {
+                pid: 4321,
+                is_started: true,
+            }],
+            &mut known,
+            |_| None,
+            || after.clone(),
+        );
+        let toolhelp = diff_process_maps(&before, &after);
+        assert_eq!(
+            etw, toolhelp,
+            "ETW and Toolhelp paths must emit the same start event"
+        );
+        assert_eq!(known.get(&4321).map(String::as_str), Some("protected.exe"));
+
+        // The matching stop event must not be dropped just because the image path was unreadable.
+        let etw_stop = apply_etw_events(
+            vec![RawProcessEvent {
+                pid: 4321,
+                is_started: false,
+            }],
+            &mut known,
+            |_| None,
+            HashMap::new,
+        );
+        let toolhelp_stop = diff_process_maps(&after, &HashMap::new());
+        assert_eq!(
+            etw_stop, toolhelp_stop,
+            "ETW and Toolhelp paths must emit the same stop event"
+        );
+        assert!(!known.contains_key(&4321));
+    }
+
+    #[test]
+    fn test_etw_reconcile_fills_a_name_missed_at_start() {
+        // Both the image path and the Toolhelp fallback failed when the start was seen, so the
+        // pid is known with an empty name and no start event was ever emitted.
+        let mut known: HashMap<u32, String> = [
+            (4321u32, String::new()),
+            (1234u32, "known.exe".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let current: HashMap<u32, String> = [
+            (4321u32, "protected.exe".to_string()),
+            (1234u32, "known.exe".to_string()),
+        ]
+        .into_iter()
+        .collect();
+
+        let events = reconcile_known_processes(&mut known, &current);
+        assert_eq!(
+            events,
+            vec![ProcessEvent {
+                process_name: "protected.exe".to_string(),
+                pid: 4321,
+                is_started: true,
+            }],
+            "the reconcile must emit only the start event the polling path would have produced"
+        );
+        assert_eq!(known.get(&4321).map(String::as_str), Some("protected.exe"));
+
+        // The repaired entry now pairs its stop event like any other known process.
+        let stop = apply_etw_events(
+            vec![RawProcessEvent {
+                pid: 4321,
+                is_started: false,
+            }],
+            &mut known,
+            |_| None,
+            HashMap::new,
+        );
+        assert_eq!(
+            stop,
+            vec![ProcessEvent {
+                process_name: "protected.exe".to_string(),
+                pid: 4321,
+                is_started: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_etw_reconcile_keeps_unresolved_pids_silent_when_they_are_gone() {
+        let mut known: HashMap<u32, String> = [(7u32, String::new())].into_iter().collect();
+        let events = reconcile_known_processes(&mut known, &HashMap::new());
+        assert!(
+            events.is_empty(),
+            "a process that exited before it could be named has no event to emit"
+        );
+        assert!(!known.contains_key(&7), "the stale pid must still be reconciled away");
+    }
+
+    #[test]
+    fn test_etw_start_prefers_image_path_name() {
+        let mut known = HashMap::new();
+        let events = apply_etw_events(
+            vec![RawProcessEvent {
+                pid: 77,
+                is_started: true,
+            }],
+            &mut known,
+            |_| Some("C:\\Windows\\System32\\Notepad.EXE".to_string()),
+            HashMap::new,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].process_name, "notepad.exe");
+        assert_eq!(known.get(&77).map(String::as_str), Some("notepad.exe"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_etw_active_tracks_trace_exit() {
+        assert!(etw_session_active(true, false));
+        assert!(!etw_session_active(true, true));
+        assert!(!etw_session_active(false, false));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_etw_session_name_is_wide_and_scoped() {
+        let name = etw_session_name();
+        assert!(name.len() > 1);
+        assert_eq!(name.last(), Some(&0), "the session name must be NUL-terminated");
+        let text = String::from_utf16_lossy(&name[..name.len() - 1]);
+        assert!(text.starts_with("SynectorKernelProcessTrace"));
     }
 }
