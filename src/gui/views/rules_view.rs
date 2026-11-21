@@ -1217,6 +1217,10 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
                 crate::models::OverlayOperation::SetText => "SET OVERLAY TEXT".to_string(),
             }
         }
+        Action::RuleControl { operation, .. } => match operation {
+            crate::models::RuleControlOperation::Call => "CALL RULE".to_string(),
+            crate::models::RuleControlOperation::Stop => "STOP RULE".to_string(),
+        },
     }
 }
 
@@ -1364,6 +1368,7 @@ fn action_icon_glyph(action: &Action) -> &'static str {
         Action::Archive { .. } => egui_phosphor::regular::ARCHIVE,
         Action::FileSystem { .. } => egui_phosphor::regular::FOLDER,
         Action::Overlay { .. } => egui_phosphor::regular::FRAME_CORNERS,
+        Action::RuleControl { .. } => egui_phosphor::regular::FLOW_ARROW,
     }
 }
 

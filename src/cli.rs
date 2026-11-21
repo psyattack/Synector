@@ -1661,7 +1661,7 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
         let id = display_id(rule);
         if rule.trigger.is_none() {
             warnings.push(format!(
-                "rule #{number} ({id}): no trigger, it can only be started manually or with --run-rule"
+                "rule #{number} ({id}): no trigger, it runs only on demand (--run-rule, the GUI, or a rule_control call)"
             ));
         }
         if rule.actions.is_empty() {
@@ -1706,6 +1706,29 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
             Action::StartProcess { file_path, .. } if file_path.trim().is_empty() => warnings.push(
                 format!("rule #{number} ({id}): start_process has an empty file_path"),
             ),
+            Action::RuleControl { rule_id, operation, .. } => {
+                let target = rule_id.trim();
+                if target.is_empty() {
+                    warnings.push(format!(
+                        "rule #{number} ({id}): rule_control has an empty rule_id"
+                    ));
+                } else {
+                    if matches!(operation, crate::models::RuleControlOperation::Call)
+                        && target == rule.id
+                    {
+                        warnings.push(format!(
+                            "rule #{number} ({id}): rule_control calls the rule itself; the engine rejects the cycle"
+                        ));
+                    }
+                    let known = cfg.rules.iter().any(|r| r.id == target)
+                        || rules.iter().any(|r| r.id == target);
+                    if !known {
+                        warnings.push(format!(
+                            "rule #{number} ({id}): rule_control target \"{target}\" does not exist"
+                        ));
+                    }
+                }
+            }
             _ => {}
         };
         walk_actions(&rule.actions, &mut check);
@@ -2449,7 +2472,7 @@ mod tests {
         let triggers = variant_names(&root, "Trigger", "$trigger_type");
         let actions = variant_names(&root, "Action", "$action_type");
         assert_eq!(triggers.len(), 9, "{triggers:?}");
-        assert_eq!(actions.len(), 25, "{actions:?}");
+        assert_eq!(actions.len(), 26, "{actions:?}");
         for trigger in &triggers {
             for action in &actions {
                 let value = template_rule(&root, trigger, action).expect("template");
@@ -2573,6 +2596,80 @@ mod tests {
         assert_eq!(
             share_warning_text_cli(&crate::sharing::ShareWarning::CustomIconDropped),
             "custom icon is not included"
+        );
+    }
+
+    #[test]
+    fn test_rule_control_warnings() {
+        use crate::models::RuleControlOperation;
+
+        let mut config = crate::config::AppConfig::default();
+        config.rules.push(Rule {
+            id: "existing".into(),
+            name: "Existing".into(),
+            ..Default::default()
+        });
+
+        let rules = vec![
+            Rule {
+                id: "caller".into(),
+                name: "Caller".into(),
+                actions: vec![
+                    Action::RuleControl {
+                        rule_id: "missing".into(),
+                        operation: RuleControlOperation::Call,
+                        wait: false,
+                    },
+                    Action::RuleControl {
+                        rule_id: "caller".into(),
+                        operation: RuleControlOperation::Call,
+                        wait: false,
+                    },
+                    Action::RuleControl {
+                        rule_id: String::new(),
+                        operation: RuleControlOperation::Stop,
+                        wait: false,
+                    },
+                    // On-disk and same-batch targets are both resolved.
+                    Action::RuleControl {
+                        rule_id: "existing".into(),
+                        operation: RuleControlOperation::Stop,
+                        wait: false,
+                    },
+                    Action::RuleControl {
+                        rule_id: "batch_target".into(),
+                        operation: RuleControlOperation::Call,
+                        wait: false,
+                    },
+                ],
+                ..Default::default()
+            },
+            Rule {
+                id: "batch_target".into(),
+                name: "Batch Target".into(),
+                ..Default::default()
+            },
+        ];
+
+        let warnings = rule_warnings(&rules, &config);
+        assert!(
+            warnings.iter().any(|warning| warning.contains("\"missing\" does not exist")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|warning| warning.contains("calls the rule itself")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|warning| warning.contains("empty rule_id")),
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|warning| {
+                warning.contains("rule_control target \"existing\"")
+                    || warning.contains("rule_control target \"batch_target\"")
+            }),
+            "valid targets must not be reported: {warnings:?}"
         );
     }
 }

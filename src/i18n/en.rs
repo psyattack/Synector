@@ -883,6 +883,21 @@ pub static STRINGS: Strings = Strings {
     inspector_fs_create_parents: "Create parent directories if missing",
     inspector_fs_overwrite: "Overwrite existing target",
 
+    // Rule Control Action
+    inspector_badge_rule_control: "RULE CONTROL",
+    catalog_title_rule_control: "Rule Control",
+    catalog_desc_rule_control: "Invoke another rule, or stop what it is running",
+    inspector_rule_operation: "OPERATION",
+    inspector_rule_op_call: "CALL",
+    inspector_rule_op_call_desc: "Run the target rule's pipeline now",
+    inspector_rule_op_stop: "STOP",
+    inspector_rule_op_stop_desc: "Abort its running executions, keep it enabled",
+    inspector_rule_target: "TARGET RULE",
+    inspector_rule_wait: "Wait for the rule to finish",
+    inspector_rule_wait_tip: "The caller continues only after the called pipeline ends or is stopped.",
+    inspector_rule_no_targets: "No other rules yet",
+    inspector_rule_missing: "Missing rule",
+
     // Overlay Action & Studio
     inspector_badge_overlay: "OVERLAY",
     catalog_title_overlay: "Overlay",

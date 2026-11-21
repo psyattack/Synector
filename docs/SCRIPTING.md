@@ -36,7 +36,9 @@ The second step shows what the first one returned: a script's return value becom
 Before the chunk is evaluated, Synector substitutes `{...}` tokens in the script text with values from
 the run context — the same tokens other actions accept. The context always has `ProcessName`,
 `ProcessId` and `Timestamp`; process and window triggers add `ProcessPath`, `ProcessDir` and
-`WindowTitle` when they are known. `{Clipboard}`, `{Date}`, `{Time}` and `{Env:NAME}` are resolved too.
+`WindowTitle` when they are known. A pipeline started by `rule_control` adds `CallerRule` and
+`CallerRuleId` and reports `ProcessName` as `Rule Call (from '<caller>')`. `{Clipboard}`, `{Date}`,
+`{Time}` and `{Env:NAME}` are resolved too.
 
 Substitution works on the source text, so a `{...}` fragment inside a string literal is replaced as
 well. Quote values explicitly when they may contain spaces or quotes.

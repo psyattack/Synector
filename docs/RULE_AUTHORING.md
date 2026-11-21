@@ -113,6 +113,49 @@ counter meaningless:
 - enabling `max_executions` where the rule previously had no limit also starts a fresh window;
 - changing only the numeric limit (for example `10` → `20`) keeps the current counter.
 
+## Calling and stopping other rules
+
+`rule_control` lets one rule drive another one. `operation` is required, `rule_id` names the target
+and `wait` only matters for `call`:
+
+```json
+{
+  "id": "rule_session_start",
+  "name": "Start the session",
+  "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+S" },
+  "actions": [
+    { "$action_type": "rule_control", "rule_id": "rule_game_mode", "operation": "call", "wait": true },
+    { "$action_type": "notification", "title": "Session", "message": "Game mode ready" }
+  ]
+}
+```
+
+```json
+{ "$action_type": "rule_control", "rule_id": "rule_game_mode", "operation": "stop" }
+```
+
+- `call` starts the target's pipeline as an ordinary execution. It consumes the target's quota and
+  honours its cooldown, conditions and `is_enabled`; a target that is disabled, cooling down, out of
+  quota or has unmet conditions is skipped with a log entry and the caller keeps going. A skipped
+  call is not an error. Calling a rule that is already running starts a second, parallel execution,
+  so `stop` first when a restart is what you mean.
+- The called pipeline sees `ProcessName` as `Rule Call (from '<caller>')` and gets the `{CallerRule}`
+  and `{CallerRuleId}` tokens described in [SCRIPTING.md](SCRIPTING.md#context-and-tokens).
+- `wait: true` pauses the caller until the called pipeline ends or is stopped; `wait: false` (the
+  default) continues immediately. A skipped, failed or stopped call never blocks the caller forever.
+- `stop` aborts every active execution of the target: running pipelines are cancelled, its overlays
+  are hidden, companion satellites started by it are terminated and simulated input is released. The
+  target stays enabled, so its own triggers keep working; nothing has to re-enable it. Stopping a
+  rule that is not running is a logged no-op.
+- Direct recursion and cycles are rejected before the target starts: a rule cannot call itself, and a
+  call to a rule that is already in the call chain is refused. A chain may contain at most eight
+  rules.
+- A rule called by another rule is not a manual run: it does not tear down the target's companion
+  processes when its pipeline ends.
+
+Share codes carry only the rules you export. A `rule_control` action is never rewritten, so export
+both rules together to keep the reference intact.
+
 ## Webhook trigger
 
 Anything that can make a local HTTP request can start a rule: the daemon listens on
@@ -152,7 +195,8 @@ curl http://127.0.0.1:48123/api/v1/trigger/backup
 
 Non-blocking warnings cover rules that are valid but likely not what the author intended: no trigger,
 an empty action pipeline, `max_executions: 0`, a `quota_period` without `max_executions`, missing
-macro presets or overlays, a wait without a condition, and an empty `start_process` path.
+macro presets or overlays, a wait without a condition, an empty `start_process` path, and a
+`rule_control` step with an empty target, a missing target or a call to the rule itself.
 
 ## Discovering the schema
 
@@ -215,8 +259,8 @@ disabled unless `--enable-imported` is passed. With a running daemon the whole i
 ## Ready-to-use recipes
 
 See [EXAMPLES.md](EXAMPLES.md) for complete rules: companion processes, hotkey actions, webhooks
-with quotas, file watchers and archives, weekday schedules, If/Else branching, sleep/resume audio
-toggles, and launch-wait-tune pipelines.
+with quotas, file watchers and archives, weekday schedules, If/Else branching, rule chaining with
+`rule_control`, sleep/resume audio toggles, and launch-wait-tune pipelines.
 
 ## Console notes
 

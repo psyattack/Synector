@@ -26,7 +26,7 @@ struct CatalogItem {
     constructor: fn() -> Action,
 }
 
-const CATALOG_ITEMS: [CatalogItem; 25] = [
+const CATALOG_ITEMS: [CatalogItem; 26] = [
     // 1. Process Management
     CatalogItem {
         category_idx: 1,
@@ -249,6 +249,24 @@ const CATALOG_ITEMS: [CatalogItem; 25] = [
             then_actions: Vec::new(),
             else_if_branches: Vec::new(),
             else_actions: Vec::new(),
+        },
+    },
+    CatalogItem {
+        category_idx: 3,
+        badge: "RULES",
+        title: |loc| loc.catalog_title_rule_control,
+        description: |loc| loc.catalog_desc_rule_control,
+        glyph: egui_phosphor::regular::FLOW_ARROW,
+        tint: |t| t.accent_ink,
+        keywords: &[
+            "rule", "call", "invoke", "run rule", "chain", "stop rule", "subrule", "pipeline", "wait", "compose",
+            "правило", "вызов", "вызвать", "запустить правило", "остановить правило", "цепочка", "подправило",
+            "пайплайн", "ждать",
+        ],
+        constructor: || Action::RuleControl {
+            rule_id: String::new(),
+            operation: crate::models::RuleControlOperation::Call,
+            wait: false,
         },
     },
     CatalogItem {

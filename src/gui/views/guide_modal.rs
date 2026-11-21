@@ -642,6 +642,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Ожидание (Wait)", "Универсальная пауза: таймер задержки или ожидание событий (окно, процесс, хоткей, файл) с таймаутом и политикой прерывания.", t);
         doc_table_row(ui, "Проверка (Check)", "Валидация условий посередине цепочки с мягким завершением выполнения последующих шагов без ошибок.", t);
         doc_table_row(ui, "Всплывающие Уведомления", "Информационные toast-уведомления Windows с поддержкой токенов контекста.", t);
+        doc_table_row(ui, "Управление Правилами", "Вызов пайплайна другого правила (с ожиданием завершения или без) и остановка его текущих выполнений без выключения самого правила.", t);
         doc_table_row(ui, "Ветвление (Если / Иначе)", "Динамическая проверка условий на лету с выполнением веток Если (THEN), Иначе Если (ELSE IF) и Иначе (ELSE).", t);
 
         ui.add_space(2.0);
@@ -698,6 +699,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Wait Condition", "Universal wait: timer pause or waiting for events (window, process, hotkey, file) with timeout and abort/continue policies.", t);
         doc_table_row(ui, "Check Condition", "Inline condition evaluation mid-pipeline that halts remaining steps cleanly without error.", t);
         doc_table_row(ui, "Desktop Notifications", "Windows toast notifications with execution context tokens.", t);
+        doc_table_row(ui, "Rule Control", "Invoke another rule's pipeline (optionally waiting for it) or stop what it is running without disabling the rule.", t);
         doc_table_row(ui, "Branching (If / Else)", "Evaluate conditions dynamically and branch into Then, Else If, and Else sub-action sequences.", t);
 
         ui.add_space(2.0);
@@ -756,6 +758,11 @@ fn render_tokens_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "{FileDir}", "Директория, где находится отслеживаемый файл", t);
 
         ui.add_space(2.0);
+        doc_section_title(ui, "Токены вызова правила:", t);
+        doc_table_row(ui, "{CallerRule}", "Имя правила, запустившего это выполнение через Rule Control", t);
+        doc_table_row(ui, "{CallerRuleId}", "Стабильный id правила-вызывающего", t);
+
+        ui.add_space(2.0);
         doc_section_title(ui, "Глобальные токены:", t);
         doc_table_row(ui, "{Clipboard}", "Текущий текст из буфера обмена Windows", t);
         doc_table_row(ui, "{Date}", "Сегодняшняя дата (ГГГГ-ММ-ДД)", t);
@@ -777,6 +784,11 @@ fn render_tokens_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "{FilePath}", "Full path to created, modified, or deleted file", t);
         doc_table_row(ui, "{FileName}", "File name including extension", t);
         doc_table_row(ui, "{FileDir}", "Parent folder containing the file", t);
+
+        ui.add_space(2.0);
+        doc_section_title(ui, "Rule Call Tokens:", t);
+        doc_table_row(ui, "{CallerRule}", "Name of the rule that started this execution through Rule Control", t);
+        doc_table_row(ui, "{CallerRuleId}", "Stable id of the calling rule", t);
 
         ui.add_space(2.0);
         doc_section_title(ui, "Global Tokens:", t);

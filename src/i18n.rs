@@ -900,6 +900,21 @@ pub struct Strings {
     pub inspector_fs_create_parents: &'static str,
     pub inspector_fs_overwrite: &'static str,
 
+    // Rule Control Action
+    pub inspector_badge_rule_control: &'static str,
+    pub catalog_title_rule_control: &'static str,
+    pub catalog_desc_rule_control: &'static str,
+    pub inspector_rule_operation: &'static str,
+    pub inspector_rule_op_call: &'static str,
+    pub inspector_rule_op_call_desc: &'static str,
+    pub inspector_rule_op_stop: &'static str,
+    pub inspector_rule_op_stop_desc: &'static str,
+    pub inspector_rule_target: &'static str,
+    pub inspector_rule_wait: &'static str,
+    pub inspector_rule_wait_tip: &'static str,
+    pub inspector_rule_no_targets: &'static str,
+    pub inspector_rule_missing: &'static str,
+
     // Overlay Action & Studio
     pub inspector_badge_overlay: &'static str,
     pub catalog_title_overlay: &'static str,

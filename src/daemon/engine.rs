@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use crate::config::AppConfig;
 use crate::ipc::{DaemonState, IpcRequest, IpcResponse};
 use crate::models::{
@@ -8,7 +8,16 @@ use crate::models::{
     Rule, RuleCondition, RuleConditionItem, ScheduleType, SystemEventType, Trigger,
 };
 use crate::daemon::actions::ActionRunner;
+use crate::daemon::rule_call;
 use crate::daemon::watcher::{ProcessEvent, ProcessWatcher};
+
+/// Monotonic id shared by every kind of pipeline execution (triggered, exit, recurring and
+/// rule-called). Active executions and abort handles are keyed by it, so it must never collide.
+static EXECUTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_execution_id() -> u64 {
+    EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone)]
 pub struct BoundProcess {
@@ -33,6 +42,48 @@ pub struct ActiveExecutionItem {
     pub total_steps: usize,
     pub is_exit: bool,
     pub started_at: Instant,
+    /// Rules that led to this execution, outermost first. Empty for triggered runs; `["a"]`
+    /// for a rule-called run, `["a", "b"]` when `a` called `b` which called this one.
+    pub call_chain: Vec<String>,
+}
+
+/// Why a triggered or called rule was not started. Skipping is not an error, but the reason is
+/// reported to the caller so a rule-to-rule call can log it.
+#[derive(Debug, Clone, PartialEq)]
+enum RuleSkip {
+    Quota,
+    Cooldown { elapsed: f64, cooldown: f64 },
+    Conditions,
+    EmptyPipeline,
+}
+
+impl RuleSkip {
+    fn describe(&self) -> String {
+        match self {
+            Self::Quota => "its execution quota is exhausted".to_string(),
+            Self::Cooldown { elapsed, cooldown } => format!(
+                "its cooldown is still active ({elapsed:.1}s of {cooldown:.1}s)"
+            ),
+            Self::Conditions => "its conditions are not met".to_string(),
+            Self::EmptyPipeline => "its action pipeline is empty".to_string(),
+        }
+    }
+}
+
+/// Outcome of a rule-to-rule call request.
+#[derive(Debug)]
+pub enum RuleCallStart {
+    /// The target pipeline runs; the receiver resolves when it finishes or is aborted.
+    Started(oneshot::Receiver<()>),
+    /// The target exists but was intentionally not started; the engine logged the reason.
+    Skipped,
+}
+
+/// Engine-side data for a pipeline started by another rule.
+struct RuleCallRuntime {
+    /// Rules that led to this execution, outermost first, ending with the target itself.
+    chain: Vec<String>,
+    completion: oneshot::Sender<()>,
 }
 
 #[derive(Debug)]
@@ -59,6 +110,7 @@ pub enum ActionCompletionEvent {
         step_index: usize,
         total_steps: usize,
         is_exit: bool,
+        call_chain: Vec<String>,
     },
     RuleExecutionStep {
         execution_id: u64,
@@ -399,7 +451,9 @@ impl DaemonEngine {
         }
     }
 
-    pub fn stop_rule_execution(&mut self, rule_id: &str) {
+    /// Aborts every active execution of `rule_id` and releases its runtime resources without
+    /// changing `is_enabled`. The user-facing stop and a rule-to-rule stop share this path.
+    fn abort_rule_execution(&mut self, rule_id: &str) {
         // 1. Abort any active recurring test loop
         if let Some((abort_handle, exec_id)) = self.active_test_recurring_rules.remove(rule_id) {
             abort_handle.abort();
@@ -430,31 +484,14 @@ impl DaemonEngine {
             self.active_executions.remove(&id);
         }
 
-        // 3. Pause/disable rule if it was enabled in config so background tick_schedule will not keep firing
-        let mut disabled_in_config = false;
-        if let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == rule_id) {
-            if rule.is_enabled {
-                rule.is_enabled = false;
-                disabled_in_config = true;
-            }
-            Self::hide_rule_overlays(rule);
-        }
-        if disabled_in_config {
-            self.persist_rules();
-            if let Some(h) = &self.hotkey_handle {
-                h.reload(&self.config.rules);
-            }
-            self.log("INFO", "RULE", &format!("Paused rule '{}' upon user stop", rule_id));
-        }
-
-        // 4. Hide any tracked overlays associated with this rule (including draft rules)
+        // 3. Hide any tracked overlays associated with this rule (including draft rules)
         if let Some(ids) = self.rule_overlay_map.remove(rule_id) {
             for id in ids {
                 crate::daemon::overlay_manager::hide_overlay(&id);
             }
         }
 
-        // 5. Hide any active overlays associated with this rule from config
+        // 4. Hide any active overlays associated with this rule from config
         if let Some(rule) = self.config.rules.iter().find(|r| r.id == rule_id) {
             Self::hide_rule_overlays(rule);
         }
@@ -518,6 +555,55 @@ impl DaemonEngine {
         crate::daemon::actions::release_all_simulated_inputs();
     }
 
+    /// User-facing stop: abort the executions and disable the rule so its triggers stay quiet.
+    pub fn stop_rule_execution(&mut self, rule_id: &str) {
+        self.abort_rule_execution(rule_id);
+
+        let mut disabled_in_config = false;
+        if let Some(rule) = self.config.rules.iter_mut().find(|r| r.id == rule_id) {
+            if rule.is_enabled {
+                rule.is_enabled = false;
+                disabled_in_config = true;
+            }
+            Self::hide_rule_overlays(rule);
+        }
+        if disabled_in_config {
+            self.persist_rules();
+            if let Some(h) = &self.hotkey_handle {
+                h.reload(&self.config.rules);
+            }
+            self.log("INFO", "RULE", &format!("Paused rule '{}' upon user stop", rule_id));
+        }
+    }
+
+    /// `rule_control` stop: abort what the target is running right now and keep the rule enabled,
+    /// so a rule that stops another one does not silently disable it for good.
+    pub fn stop_rule_by_call(&mut self, rule_id: &str) -> Result<(), String> {
+        self.drain_action_events();
+        let Some(rule_name) = self
+            .config
+            .rules
+            .iter()
+            .find(|r| r.id == rule_id)
+            .map(|r| r.name.clone())
+        else {
+            return Err(format!("Rule '{rule_id}' does not exist"));
+        };
+
+        let was_running = self.is_rule_executing(rule_id);
+        self.abort_rule_execution(rule_id);
+        if was_running {
+            self.log("INFO", "RULE", &format!("Rule '{}' stopped by a rule call.", rule_name));
+        } else {
+            self.log(
+                "INFO",
+                "RULE",
+                &format!("Stop requested for rule '{}' by a rule call; nothing was running.", rule_name),
+            );
+        }
+        Ok(())
+    }
+
     pub fn drain_action_events(&mut self) {
         while let Ok(event) = self.action_rx.try_recv() {
             match event {
@@ -533,13 +619,14 @@ impl DaemonEngine {
                 ActionCompletionEvent::AddBoundOverlay(bo) => {
                     self.active_bound_overlays.push(bo);
                 }
-                ActionCompletionEvent::RuleExecutionStarted { execution_id, rule_id, step_index, total_steps, is_exit } => {
+                ActionCompletionEvent::RuleExecutionStarted { execution_id, rule_id, step_index, total_steps, is_exit, call_chain } => {
                     self.active_executions.insert(execution_id, ActiveExecutionItem {
                         rule_id,
                         step_index,
                         total_steps,
                         is_exit,
                         started_at: Instant::now(),
+                        call_chain,
                     });
                 }
                 ActionCompletionEvent::RuleExecutionStep { execution_id, step_index, total_steps, is_exit, .. } => {
@@ -1633,31 +1720,56 @@ impl DaemonEngine {
         pid: u32,
         extra_ctx: HashMap<String, String>,
     ) -> Option<tokio::task::JoinHandle<()>> {
+        match self.execute_rule_pipeline(rule, context_name, pid, extra_ctx, None).await {
+            Ok(handle) => handle,
+            Err(RuleSkip::Conditions) => {
+                self.log(
+                    "WARN",
+                    "RULE",
+                    &format!("Rule '{}' triggered by {}, but conditions were not met. Skipping.", rule.name, context_name),
+                );
+                None
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Starts the pipeline of `rule` and returns the abort handle. `call` is set when another
+    /// rule invoked this one: it carries the call chain and the completion notifier.
+    ///
+    /// `Err` means the rule was intentionally not started (quota, cooldown, conditions or an empty
+    /// pipeline); `Ok(None)` means it could not be spawned because there is no Tokio runtime.
+    async fn execute_rule_pipeline(
+        &mut self,
+        rule: &Rule,
+        context_name: &str,
+        pid: u32,
+        extra_ctx: HashMap<String, String>,
+        call: Option<RuleCallRuntime>,
+    ) -> Result<Option<tokio::task::JoinHandle<()>>, RuleSkip> {
         self.drain_action_events();
 
-        let is_manual = pid == 0 || context_name == "Manual Run" || context_name == "MANUAL_TEST";
+        // A rule-called run is not a manual run: it must not kill the target's bound satellites
+        // when it ends, and its cooldown is a real gate.
+        let is_manual = call.is_none() && (pid == 0 || context_name == "Manual Run" || context_name == "MANUAL_TEST");
         if is_manual {
             self.active_bound_processes.retain(|bp| bp.rule_id != rule.id);
             self.active_bound_overlays.retain(|bo| bo.rule_id != rule.id);
         }
 
         if !self.quota_allows_execution(&rule.id, false) {
-            return None;
+            return Err(RuleSkip::Quota);
         }
 
         if let Some(last) = self.rule_last_triggered.get(&rule.id) {
-            if last.elapsed().as_secs_f64() < rule.cooldown_seconds && context_name != "MANUAL_TEST" {
-                return None;
+            let elapsed = last.elapsed().as_secs_f64();
+            if elapsed < rule.cooldown_seconds && context_name != "MANUAL_TEST" {
+                return Err(RuleSkip::Cooldown { elapsed, cooldown: rule.cooldown_seconds });
             }
         }
 
         if !rule.conditions.is_empty() && !Self::evaluate_rule_conditions(&rule.conditions) {
-            self.log(
-                "WARN",
-                "RULE",
-                &format!("Rule '{}' triggered by {}, but conditions were not met. Skipping.", rule.name, context_name),
-            );
-            return None;
+            return Err(RuleSkip::Conditions);
         }
 
         self.rule_last_triggered.insert(rule.id.clone(), Instant::now());
@@ -1678,7 +1790,7 @@ impl DaemonEngine {
         }
 
         if rule.actions.is_empty() {
-            return None;
+            return Err(RuleSkip::EmptyPipeline);
         }
 
         let ov_ids = Self::extract_rule_overlay_ids(rule);
@@ -1723,9 +1835,11 @@ impl DaemonEngine {
         let context_name = context_name.to_string();
         let tx = self.action_tx.clone();
 
-        static EXECUTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let execution_id = EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let execution_id = next_execution_id();
         let total_steps = actions.len();
+        let call_chain = call.as_ref().map(|c| c.chain.clone()).unwrap_or_default();
+        let completion = call.map(|c| c.completion);
+        ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
         let now = chrono::Local::now();
         let mut quota_msg = None;
@@ -1775,30 +1889,48 @@ impl DaemonEngine {
             step_index: 0,
             total_steps,
             is_exit: false,
+            call_chain,
         });
 
         let execution_rule_id = rule_id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let spawn_rule_id = rule_id.clone();
             let is_manual_exec = is_manual;
-            let join_handle = handle.spawn(async move {
-                struct ExecGuard {
-                    id: u64,
-                    r_id: String,
-                    is_manual: bool,
-                    tx: mpsc::UnboundedSender<ActionCompletionEvent>,
-                }
-                impl Drop for ExecGuard {
-                    fn drop(&mut self) {
-                        crate::daemon::actions::release_all_simulated_inputs();
-                        let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
-                            execution_id: self.id,
-                            _rule_id: self.r_id.clone(),
-                            is_manual: self.is_manual,
-                        });
+
+            struct ExecGuard {
+                id: u64,
+                r_id: String,
+                is_manual: bool,
+                tx: mpsc::UnboundedSender<ActionCompletionEvent>,
+                /// Resolves a `wait: true` rule call when the pipeline ends or is aborted.
+                completion: Option<oneshot::Sender<()>>,
+            }
+            impl Drop for ExecGuard {
+                fn drop(&mut self) {
+                    crate::daemon::actions::release_all_simulated_inputs();
+                    let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
+                        execution_id: self.id,
+                        _rule_id: self.r_id.clone(),
+                        is_manual: self.is_manual,
+                    });
+                    if let Some(completion) = self.completion.take() {
+                        let _ = completion.send(());
                     }
                 }
-                let _guard = ExecGuard { id: execution_id, r_id: spawn_rule_id.clone(), is_manual: is_manual_exec, tx: tx.clone() };
+            }
+
+            // Built before the task is spawned and moved into it, so an abort before the first
+            // poll drops the future together with the guard: the caller is always notified.
+            let guard = ExecGuard {
+                id: execution_id,
+                r_id: spawn_rule_id.clone(),
+                is_manual: is_manual_exec,
+                tx: tx.clone(),
+                completion,
+            };
+
+            let join_handle = handle.spawn(async move {
+                let _guard = guard;
                 let mut ctx = ctx;
 
                 for (step_idx, action) in actions.iter().enumerate() {
@@ -1865,14 +1997,119 @@ impl DaemonEngine {
                 }
             });
             self.execution_abort_handles.insert(execution_id, (execution_rule_id, join_handle.abort_handle()));
-            Some(join_handle)
+            Ok(Some(join_handle))
         } else {
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
                 is_manual,
             });
-            None
+            Ok(None)
+        }
+    }
+
+    /// Starts `rule_id` on behalf of another rule. The returned [`RuleCallStart`] either carries
+    /// the completion receiver of the new pipeline or reports why it was skipped.
+    ///
+    /// The call chain comes from the caller's active execution, so `A → B → A` is rejected before a
+    /// pipeline can recurse forever.
+    pub async fn start_called_rule(
+        &mut self,
+        rule_id: &str,
+        caller_execution: u64,
+    ) -> Result<RuleCallStart, String> {
+        if rule_id.trim().is_empty() {
+            return Err("the rule_control action has an empty rule_id".to_string());
+        }
+
+        self.drain_action_events();
+
+        let Some(rule) = self.config.rules.iter().find(|r| r.id == rule_id).cloned() else {
+            return Err(format!("Rule '{rule_id}' does not exist"));
+        };
+        if !rule.is_enabled {
+            self.log(
+                "INFO",
+                "RULE",
+                &format!("Call to rule '{}' skipped: the rule is disabled.", rule.name),
+            );
+            return Ok(RuleCallStart::Skipped);
+        }
+
+        let mut chain = self
+            .active_executions
+            .get(&caller_execution)
+            .map(|execution| execution.call_chain.clone())
+            .unwrap_or_default();
+
+        if self
+            .active_executions
+            .get(&caller_execution)
+            .is_some_and(|execution| execution.rule_id == rule_id)
+        {
+            return Err(format!(
+                "Rule call cycle rejected: rule '{rule_id}' calls itself"
+            ));
+        }
+        if chain.iter().any(|id| id == rule_id) {
+            return Err(format!(
+                "Rule call cycle rejected: {} -> {rule_id}",
+                chain.join(" -> ")
+            ));
+        }
+        if chain.len() >= rule_call::MAX_RULE_CALL_DEPTH {
+            return Err(format!(
+                "Rule call depth limit ({}) reached before calling '{rule_id}'",
+                rule_call::MAX_RULE_CALL_DEPTH
+            ));
+        }
+
+        let caller = self
+            .active_executions
+            .get(&caller_execution)
+            .map(|execution| execution.rule_id.clone())
+            .or_else(|| chain.last().cloned())
+            .and_then(|id| {
+                self.config
+                    .rules
+                    .iter()
+                    .find(|rule| rule.id == id)
+                    .map(|rule| (rule.id.clone(), rule.name.clone()))
+            });
+        let (context_name, extra_ctx) = match caller {
+            Some((caller_id, caller_name)) => {
+                let mut extra = HashMap::new();
+                extra.insert("CallerRule".to_string(), caller_name.clone());
+                extra.insert("CallerRuleId".to_string(), caller_id);
+                (format!("Rule Call (from '{caller_name}')"), extra)
+            }
+            None => ("Rule Call".to_string(), HashMap::new()),
+        };
+
+        let (completion, completion_rx) = oneshot::channel();
+        chain.push(rule_id.to_string());
+        let result = self
+            .execute_rule_pipeline(
+                &rule,
+                &context_name,
+                0,
+                extra_ctx,
+                Some(RuleCallRuntime { chain, completion }),
+            )
+            .await;
+
+        match result {
+            Ok(Some(_)) => Ok(RuleCallStart::Started(completion_rx)),
+            Ok(None) => Ok(RuleCallStart::Skipped),
+            Err(skip) => {
+                let reason = skip.describe();
+                self.log(
+                    "INFO",
+                    "RULE",
+                    &format!("Call to rule '{}' skipped: {reason}.", rule.name),
+                );
+                Ok(RuleCallStart::Skipped)
+            }
         }
     }
 
@@ -1909,9 +2146,9 @@ impl DaemonEngine {
         let stop_on_error = rule.stop_on_error;
         let tx = self.action_tx.clone();
 
-        static EXIT_EXECUTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let execution_id = EXIT_EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let execution_id = next_execution_id();
         let total_steps = actions.len();
+        ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
         let _ = tx.send(ActionCompletionEvent::RuleExecutionStarted {
             execution_id,
@@ -1919,6 +2156,7 @@ impl DaemonEngine {
             step_index: 0,
             total_steps,
             is_exit: true,
+            call_chain: Vec::new(),
         });
 
         let execution_rule_id = rule_id.clone();
@@ -2118,8 +2356,7 @@ impl DaemonEngine {
             None => (rule.max_executions, rule.quota_used(now)),
         };
 
-        static EXECUTION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let execution_id = EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let execution_id = next_execution_id();
         let total_steps = actions.len();
 
         let _ = tx.send(ActionCompletionEvent::RuleExecutionStarted {
@@ -2128,6 +2365,7 @@ impl DaemonEngine {
             step_index: 0,
             total_steps,
             is_exit: false,
+            call_chain: Vec::new(),
         });
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -2163,6 +2401,7 @@ impl DaemonEngine {
                         ctx.insert("ProcessName".into(), context_name.clone());
                         ctx.insert("ProcessId".into(), "0".into());
                         ctx.insert("Timestamp".into(), chrono::Local::now().to_rfc3339());
+                        ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
                         #[cfg(windows)]
                         {
@@ -4642,6 +4881,231 @@ mod tests {
             engine.config.rules[0].last_executed_at.is_some(),
             "schedule deduplication relies on the last-run stamp"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Rule-to-rule control (`Action::RuleControl`)
+    // -----------------------------------------------------------------------
+
+    fn callable_rule(id: &str, name: &str, actions: Vec<Action>) -> Rule {
+        Rule {
+            id: id.into(),
+            name: name.into(),
+            trigger: None,
+            actions,
+            ..Default::default()
+        }
+    }
+
+    fn timer_wait(seconds: f64) -> Action {
+        Action::Wait {
+            mode: crate::models::WaitMode::Timer,
+            seconds,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        }
+    }
+
+    fn started_receiver(start: RuleCallStart) -> oneshot::Receiver<()> {
+        match start {
+            RuleCallStart::Started(completion) => completion,
+            RuleCallStart::Skipped => panic!("the rule should have started"),
+        }
+    }
+
+    fn execution_of(engine: &DaemonEngine, rule_id: &str) -> u64 {
+        engine
+            .active_executions
+            .iter()
+            .find(|(_, execution)| execution.rule_id == rule_id)
+            .map(|(id, _)| *id)
+            .expect("the rule should have an active execution")
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_starts_pipeline_and_signals_completion() {
+        let mut config = AppConfig::default();
+        config.rules.push(callable_rule("target", "Target", vec![timer_wait(0.1)]));
+        let mut engine = DaemonEngine::new(config);
+
+        let completion = started_receiver(
+            engine.start_called_rule("target", 0).await.expect("call accepted"),
+        );
+        engine.drain_action_events();
+
+        assert!(engine.is_rule_executing("target"), "the called pipeline is tracked as active");
+        assert_eq!(
+            engine.config.rules[0].execution_count, 1,
+            "a rule call consumes the target's execution quota"
+        );
+        assert!(
+            engine.logs.iter().any(|log| log.message.contains("triggered by Rule Call")),
+            "the call is logged as a trigger"
+        );
+
+        completion.await.expect("completion signal");
+        engine.drain_action_events();
+        assert!(!engine.is_rule_executing("target"));
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_exposes_the_direct_caller() {
+        let mut config = AppConfig::default();
+        config.rules.push(callable_rule("caller", "Caller", Vec::new()));
+        config.rules.push(callable_rule("target", "Target", vec![timer_wait(0.05)]));
+        let mut engine = DaemonEngine::new(config);
+
+        // The caller's chain is empty (it was triggered, not called): the direct caller must
+        // still reach the callee's context.
+        engine.active_executions.insert(
+            7,
+            ActiveExecutionItem {
+                rule_id: "caller".into(),
+                step_index: 0,
+                total_steps: 1,
+                is_exit: false,
+                started_at: Instant::now(),
+                call_chain: Vec::new(),
+            },
+        );
+        let _completion = started_receiver(engine.start_called_rule("target", 7).await.unwrap());
+
+        assert!(
+            engine
+                .logs
+                .iter()
+                .any(|log| log.message.contains("triggered by Rule Call (from 'Caller')")),
+            "the callee context names the calling rule: {:?}",
+            engine.logs.iter().map(|log| log.message.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_rejects_cycles_and_self_calls() {
+        let mut config = AppConfig::default();
+        config.rules.push(callable_rule("a", "A", vec![timer_wait(5.0)]));
+        config.rules.push(callable_rule("b", "B", vec![timer_wait(5.0)]));
+        let mut engine = DaemonEngine::new(config);
+
+        let _completion = started_receiver(engine.start_called_rule("a", 0).await.unwrap());
+        engine.drain_action_events();
+        let a_execution = execution_of(&engine, "a");
+
+        let err = engine.start_called_rule("a", a_execution).await.unwrap_err();
+        assert!(err.contains("calls itself"), "{err}");
+
+        // A pipeline whose chain already contains the target is rejected before spawning.
+        engine.active_executions.insert(
+            999,
+            ActiveExecutionItem {
+                rule_id: "a".into(),
+                step_index: 0,
+                total_steps: 1,
+                is_exit: false,
+                started_at: Instant::now(),
+                call_chain: vec!["b".into(), "a".into()],
+            },
+        );
+        let err = engine.start_called_rule("b", 999).await.unwrap_err();
+        assert!(err.contains("cycle"), "{err}");
+
+        engine.stop_rule_by_call("a").unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_skips_disabled_targets_and_depth_overflow() {
+        let mut config = AppConfig::default();
+        config.rules.push(callable_rule("deep", "Deep", vec![timer_wait(5.0)]));
+        let mut disabled = callable_rule("off", "Off", vec![timer_wait(5.0)]);
+        disabled.is_enabled = false;
+        config.rules.push(disabled);
+        let mut engine = DaemonEngine::new(config);
+
+        assert!(matches!(
+            engine.start_called_rule("off", 0).await.unwrap(),
+            RuleCallStart::Skipped
+        ));
+
+        engine.active_executions.insert(
+            1000,
+            ActiveExecutionItem {
+                rule_id: "chain".into(),
+                step_index: 0,
+                total_steps: 1,
+                is_exit: false,
+                started_at: Instant::now(),
+                call_chain: (0..rule_call::MAX_RULE_CALL_DEPTH)
+                    .map(|index| format!("r{index}"))
+                    .collect(),
+            },
+        );
+        let err = engine.start_called_rule("deep", 1000).await.unwrap_err();
+        assert!(err.contains("depth limit"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_respects_cooldown_and_conditions() {
+        let mut config = AppConfig::default();
+        let mut cooled = callable_rule("cool", "Cool", vec![timer_wait(0.05)]);
+        cooled.cooldown_seconds = 60.0;
+        config.rules.push(cooled);
+        let mut conditional = callable_rule("cond", "Cond", vec![timer_wait(0.05)]);
+        conditional.conditions = vec![RuleConditionItem::new(RuleCondition::ProcessRunning {
+            process_name: "synector-not-a-real-process.exe".into(),
+            match_mode: ProcessMatchMode::Exact,
+            must_be_running: true,
+        })];
+        config.rules.push(conditional);
+        let mut engine = DaemonEngine::new(config);
+
+        let _first = started_receiver(engine.start_called_rule("cool", 0).await.unwrap());
+        assert!(
+            matches!(
+                engine.start_called_rule("cool", 0).await.unwrap(),
+                RuleCallStart::Skipped
+            ),
+            "the second call inside the cooldown window is skipped"
+        );
+        assert!(engine.logs.iter().any(|log| log.message.contains("cooldown is still active")));
+
+        assert!(matches!(
+            engine.start_called_rule("cond", 0).await.unwrap(),
+            RuleCallStart::Skipped
+        ));
+        assert!(engine.logs.iter().any(|log| log.message.contains("conditions are not met")));
+    }
+
+    #[tokio::test]
+    async fn test_rule_stop_aborts_without_disabling() {
+        let mut config = AppConfig::default();
+        config.rules.push(callable_rule("victim", "Victim", vec![timer_wait(30.0)]));
+        let mut engine = DaemonEngine::new(config);
+
+        let completion = started_receiver(engine.start_called_rule("victim", 0).await.unwrap());
+        engine.drain_action_events();
+        assert!(engine.is_rule_executing("victim"));
+
+        engine.stop_rule_by_call("victim").expect("stop accepted");
+        completion.await.expect("a stopped pipeline still reports completion");
+        assert!(!engine.is_rule_executing("victim"));
+        assert!(
+            engine.config.rules[0].is_enabled,
+            "a rule-to-rule stop must not disable the target"
+        );
+        assert!(engine.logs.iter().any(|log| log.message.contains("stopped by a rule call")));
+
+        // Stopping an unknown rule fails loudly instead of pretending success.
+        assert!(engine.stop_rule_by_call("missing").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rule_call_reports_missing_target() {
+        let mut engine = DaemonEngine::new(AppConfig::default());
+        let err = engine.start_called_rule("missing", 0).await.unwrap_err();
+        assert!(err.contains("does not exist"), "{err}");
+        let err = engine.start_called_rule("   ", 0).await.unwrap_err();
+        assert!(err.contains("empty rule_id"), "{err}");
     }
 }
 

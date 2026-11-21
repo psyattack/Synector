@@ -453,6 +453,15 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         else_actions: Vec<Action>,
     },
+    #[serde(rename = "rule_control")]
+    RuleControl {
+        /// Id of the rule to invoke or stop. Empty means "nothing to do".
+        rule_id: String,
+        operation: RuleControlOperation,
+        /// Wait for the called pipeline to finish before the caller continues. `call` only.
+        #[serde(default)]
+        wait: bool,
+    },
     #[serde(rename = "trim_working_set")]
     TrimWorkingSet {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -714,6 +723,16 @@ pub enum MacroOperation {
     Run,
     Stop,
     Toggle,
+}
+
+/// What `Action::RuleControl` does to the target rule: start its pipeline or abort what it is
+/// running right now.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleControlOperation {
+    #[default]
+    Call,
+    Stop,
 }
 
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1373,6 +1392,7 @@ impl Rule {
                 Action::HttpWebhook { .. } => egui_phosphor::regular::GLOBE,
                 Action::Display { .. } => egui_phosphor::regular::MONITOR,
                 Action::IfElse { .. } => egui_phosphor::regular::GIT_FORK,
+                Action::RuleControl { .. } => egui_phosphor::regular::FLOW_ARROW,
                 Action::TrimWorkingSet { .. } => egui_phosphor::regular::BROOM,
                 Action::DiscordRpcSet { .. } => egui_phosphor::regular::GAME_CONTROLLER,
                 Action::DiscordRpcClear => egui_phosphor::regular::X_CIRCLE,

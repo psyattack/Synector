@@ -225,6 +225,70 @@ One hotkey either restores an existing window or starts the application. Conditi
 
 Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
+## Chain rules: call and stop
+
+A rule without a trigger is a reusable pipeline other rules can run. `wait: true` keeps the caller
+paused until the called pipeline finishes, which is what makes the notification in the next example
+honest.
+
+```json
+[
+  {
+    "id": "rule_prepare_workspace",
+    "name": "Prepare the workspace",
+    "description": "Library rule: called by the start rule, no trigger of its own.",
+    "actions": [
+      { "$action_type": "power_plan", "plan": "high_performance" },
+      { "$action_type": "start_process", "file_path": "C:\\Windows\\System32\\notepad.exe" },
+      { "$action_type": "start_process", "file_path": "C:\\Windows\\System32\\calc.exe" }
+    ]
+  },
+  {
+    "id": "rule_start_workspace",
+    "name": "Start the workspace",
+    "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+W" },
+    "actions": [
+      {
+        "$action_type": "rule_control",
+        "rule_id": "rule_prepare_workspace",
+        "operation": "call",
+        "wait": true
+      },
+      { "$action_type": "notification", "title": "Workspace", "message": "Ready" }
+    ]
+  }
+]
+```
+
+`stop` aborts what the target is running right now without disabling it. Here a hotkey ends a gaming
+companion that is bound to `game.exe`, while the game itself keeps running:
+
+```json
+[
+  {
+    "id": "rule_game_companion",
+    "name": "Helper HUD with the game",
+    "trigger": { "$trigger_type": "process", "process_name": "game.exe" },
+    "actions": [
+      { "$action_type": "start_process", "file_path": "C:\\Tools\\hud.exe", "close_on_exit": true }
+    ]
+  },
+  {
+    "id": "rule_end_session",
+    "name": "End the session",
+    "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+E" },
+    "actions": [
+      { "$action_type": "rule_control", "rule_id": "rule_game_companion", "operation": "stop" },
+      { "$action_type": "notification", "title": "Session", "message": "Companion stopped" }
+    ]
+  }
+]
+```
+
+A call that the target rejects (disabled, cooling down, out of quota or with unmet conditions) is
+logged and does not fail the caller. Direct self-calls and cycles are refused, so apply both rules
+of a pair together.
+
 ## Mute before sleep and unmute after resume
 
 Sleep, resume, display state and device changes are pushed by Windows through a hidden notification
@@ -317,3 +381,6 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
   `runtime.json`; values in a rule file are ignored when an existing rule is updated.
 - **Share codes** (`SYN1:`) bundle the presets and overlays a rule references; imported rules are
   created disabled unless `--enable-imported` is passed.
+- **Rule control** (`rule_control`) chains rules: `operation: "call"` runs another pipeline,
+  `operation: "stop"` aborts its executions without disabling it. Share codes do not rewrite these
+  references, so export a calling rule and its target together.

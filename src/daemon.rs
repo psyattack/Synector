@@ -7,6 +7,7 @@ pub mod ipc_server;
 pub mod lua_runner;
 pub mod overlay_manager;
 pub mod pe_mask;
+pub mod rule_call;
 pub mod system_events;
 pub mod telemetry;
 pub mod tray;
@@ -75,6 +76,21 @@ pub fn run_daemon() {
             return;
         }
     };
+
+    // Rule-to-rule control (`rule_control` actions) asks the daemon to start or abort another
+    // rule. Installed before any trigger loop can fire an action.
+    let (rule_control_tx, mut rule_control_rx) =
+        tokio::sync::mpsc::unbounded_channel::<rule_call::RuleControlRequest>();
+    rule_call::install(rule_control_tx);
+    let engine_control = Arc::clone(&engine);
+    rt.spawn(async move {
+        while let Some(request) = rule_control_rx.recv().await {
+            let engine = Arc::clone(&engine_control);
+            tokio::spawn(async move {
+                rule_call::dispatch(engine, request).await;
+            });
+        }
+    });
 
     // Initialize Global Hotkey Listener
     let (hotkey_tx, mut hotkey_rx) = tokio::sync::mpsc::unbounded_channel::<hotkeys::HotkeyEvent>();

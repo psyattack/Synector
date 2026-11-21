@@ -883,6 +883,21 @@ pub static STRINGS: Strings = Strings {
     inspector_fs_create_parents: "Создавать родительские папки",
     inspector_fs_overwrite: "Перезаписывать существующий объект",
 
+    // Rule Control Action
+    inspector_badge_rule_control: "ПРАВИЛА",
+    catalog_title_rule_control: "Управление правилом",
+    catalog_desc_rule_control: "Запуск другого правила или остановка его текущих выполнений",
+    inspector_rule_operation: "ОПЕРАЦИЯ",
+    inspector_rule_op_call: "ВЫЗВАТЬ",
+    inspector_rule_op_call_desc: "Запустить пайплайн целевого правила сейчас",
+    inspector_rule_op_stop: "ОСТАНОВИТЬ",
+    inspector_rule_op_stop_desc: "Прервать выполнения, не выключая правило",
+    inspector_rule_target: "ЦЕЛЕВОЕ ПРАВИЛО",
+    inspector_rule_wait: "Дождаться завершения правила",
+    inspector_rule_wait_tip: "Вызывающий пайплайн продолжится только после завершения вызванного пайплайна или его остановки.",
+    inspector_rule_no_targets: "Других правил пока нет",
+    inspector_rule_missing: "Правило не найдено",
+
     // Overlay Action & Studio
     inspector_badge_overlay: "ОВЕРЛЕЙ",
     catalog_title_overlay: "Оверлей",

@@ -145,6 +145,12 @@ impl ActionRunner {
         }
     }
 
+    /// Context tokens that scripts may see. Keys starting with `__` are engine internals
+    /// (pipeline execution ids and similar) and are not exported to Lua or PowerShell.
+    fn script_env(context: &HashMap<String, String>) -> impl Iterator<Item = (&String, &String)> {
+        context.iter().filter(|(key, _)| !key.starts_with("__"))
+    }
+
     pub fn run_script_internal(
         interpreter: &crate::models::ScriptType,
         script: &str,
@@ -155,14 +161,17 @@ impl ActionRunner {
             crate::models::ScriptType::Lua => {
                 let script_code = Self::interpolate_tokens(script, context);
                 let outputs = std::sync::Arc::new(std::sync::Mutex::new(HashMap::new()));
-                let res = crate::daemon::lua_runner::LuaRunner::execute(&script_code, context, outputs)?;
+                let lua_ctx: HashMap<String, String> = Self::script_env(context)
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect();
+                let res = crate::daemon::lua_runner::LuaRunner::execute(&script_code, &lua_ctx, outputs)?;
                 Ok(if res.is_empty() { None } else { Some(res) })
             }
             crate::models::ScriptType::PowerShell => {
                 let script_code = Self::interpolate_tokens(script, context);
                 let mut cmd = Command::new("powershell");
                 cmd.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &script_code]);
-                for (k, v) in context {
+                for (k, v) in Self::script_env(context) {
                     cmd.env(format!("PH_{}", k.to_uppercase()), v);
                 }
                 if !run_in_window {
@@ -331,6 +340,20 @@ impl ActionRunner {
                                 ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
                             }
                         }
+                    }
+                }
+                Ok(ActionOutcome::Continue(None))
+            }
+
+            Action::RuleControl { rule_id, operation, wait } => {
+                let target = Self::interpolate_tokens(rule_id, context);
+                let caller = crate::daemon::rule_call::caller_from_context(context);
+                match operation {
+                    crate::models::RuleControlOperation::Call => {
+                        crate::daemon::rule_call::call_rule(&target, *wait, caller).await?
+                    }
+                    crate::models::RuleControlOperation::Stop => {
+                        crate::daemon::rule_call::stop_rule(&target, caller).await?
                     }
                 }
                 Ok(ActionOutcome::Continue(None))

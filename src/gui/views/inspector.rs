@@ -1344,6 +1344,7 @@ fn action_type_badge(action: &Action, loc: &crate::i18n::Strings) -> &'static st
         Action::Archive { .. } => loc.inspector_badge_archive,
         Action::FileSystem { .. } => loc.inspector_badge_file_system,
         Action::Overlay { .. } => loc.inspector_badge_overlay,
+        Action::RuleControl { .. } => loc.inspector_badge_rule_control,
     }
 }
 
@@ -1572,6 +1573,16 @@ fn action_summary_preview(action: &Action) -> String {
                 format!("{} Overlay [{}]", op_str, overlay_id)
             }
         }
+        Action::RuleControl { rule_id, operation, wait } => match operation {
+            crate::models::RuleControlOperation::Call => {
+                if *wait {
+                    format!("Call rule {} and wait", rule_id)
+                } else {
+                    format!("Call rule {}", rule_id)
+                }
+            }
+            crate::models::RuleControlOperation::Stop => format!("Stop rule {}", rule_id),
+        },
     }
 }
 
@@ -2227,6 +2238,62 @@ fn render_action_card(
         card_rect: card_response.response.rect,
         tested_overlay_ids,
     }
+}
+
+/// Target-rule picker shared by both modes of `Action::RuleControl`. The edited rule itself is
+/// hidden: a rule may stop itself, but offering it as a call target is only a trap.
+fn render_rule_target_picker(
+    ui: &mut Ui,
+    state: &GuiState,
+    rule_id: &mut String,
+    idx: usize,
+    is_exit_pipeline: bool,
+    t: &Tokens,
+) {
+    let loc = state.loc();
+    let rules: Vec<Rule> = state
+        .daemon_state
+        .as_ref()
+        .map(|daemon| daemon.config.rules.clone())
+        .unwrap_or_else(|| {
+            crate::config::RulesFile::read_from(&crate::config::AppConfig::config_dir()).rules
+        });
+    let editing_id = state
+        .editing_rule
+        .as_ref()
+        .map(|rule| rule.id.as_str())
+        .unwrap_or_default();
+    let candidates: Vec<&Rule> = rules
+        .iter()
+        .filter(|rule| !rule.id.is_empty() && rule.id != editing_id)
+        .collect();
+
+    if rule_id.is_empty() {
+        if let Some(first) = candidates.first() {
+            *rule_id = first.id.clone();
+        }
+    }
+
+    let selected_label = match candidates.iter().find(|rule| rule.id == *rule_id) {
+        Some(rule) => rule.name.clone(),
+        None if rule_id.is_empty() => loc.inspector_rule_no_targets.to_string(),
+        None => format!("{} ({})", loc.inspector_rule_missing, rule_id),
+    };
+
+    widgets::hud(ui, loc.inspector_rule_target, t.muted);
+    egui::ComboBox::from_id_salt(("rule_control_target", idx, is_exit_pipeline))
+        .selected_text(RichText::new(selected_label).size(12.0))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            if candidates.is_empty() {
+                ui.label(RichText::new(loc.inspector_rule_no_targets).size(12.0).color(t.muted));
+            }
+            for candidate in &candidates {
+                if ui.selectable_label(candidate.id == *rule_id, &candidate.name).clicked() {
+                    *rule_id = candidate.id.clone();
+                }
+            }
+        });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4264,6 +4331,35 @@ fn render_action_parameter_fields(
                 });
             }
         }
+
+        Action::RuleControl { rule_id, operation, wait } => {
+            widgets::hud(ui, loc.inspector_rule_operation, t.muted);
+            let operation_options = [
+                (
+                    crate::models::RuleControlOperation::Call,
+                    widgets::Cell::new(loc.inspector_rule_op_call, loc.inspector_rule_op_call_desc),
+                ),
+                (
+                    crate::models::RuleControlOperation::Stop,
+                    widgets::Cell::new(loc.inspector_rule_op_stop, loc.inspector_rule_op_stop_desc),
+                ),
+            ];
+            widgets::cells(ui, operation, &operation_options);
+
+            ui.add_space(4.0);
+            render_rule_target_picker(ui, state, rule_id, idx, is_exit_pipeline, t);
+
+            if *operation == crate::models::RuleControlOperation::Call {
+                ui.add_space(4.0);
+                widgets::checkbox_group(ui, |ui| {
+                    ui.checkbox(wait, loc.inspector_rule_wait)
+                        .on_hover_text(loc.inspector_rule_wait_tip);
+                });
+            } else {
+                // A stopped rule is never awaited: the mode switch must not leave a stale flag.
+                *wait = false;
+            }
+        }
     }
 
     resp
@@ -6045,5 +6141,69 @@ fn render_inspector_tag_section(
                     }
                 });
             });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gui::state::{GuiState, ProcessPickerTarget};
+    use crate::models::RuleControlOperation;
+
+    #[test]
+    fn test_rule_control_action_editor_renders() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+
+        // The picker lists rules from the daemon snapshot or, when there is none, from disk.
+        let target = Rule {
+            id: "rule_target".into(),
+            name: "Target Rule".into(),
+            ..Default::default()
+        };
+        crate::config::RulesFile::save_rules_to(
+            &crate::config::AppConfig::config_dir(),
+            std::slice::from_ref(&target),
+        )
+        .expect("write the isolated test rules file");
+
+        let state = GuiState::new();
+        let mut action = Action::RuleControl {
+            rule_id: String::new(),
+            operation: RuleControlOperation::Call,
+            wait: true,
+        };
+
+        for operation in [RuleControlOperation::Call, RuleControlOperation::Stop] {
+            if let Action::RuleControl { operation: current, .. } = &mut action {
+                *current = operation;
+            }
+            for _ in 0..3 {
+                let mut out = ctx.run_ui(Default::default(), |ctx| {
+                    let t = Tokens::get(ctx);
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let _ = render_action_parameter_fields(
+                            ui,
+                            &state,
+                            &mut action,
+                            0,
+                            false,
+                            ProcessPickerTarget::Action(0),
+                            &t,
+                            0,
+                        );
+                    });
+                });
+                out.textures_delta.clear();
+            }
+        }
+
+        match action {
+            Action::RuleControl { rule_id, wait, .. } => {
+                assert_eq!(rule_id, "rule_target", "the first available rule is selected");
+                assert!(!wait, "the wait flag is cleared when the operation is stop");
+            }
+            _ => unreachable!(),
+        }
     }
 }

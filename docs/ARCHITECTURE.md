@@ -68,6 +68,7 @@ CLI rule commands run before elevation because they are console tools.
 |---|---|
 | `src/gui/` | egui views, overlay renderer, macro recorder, GUI state and IPC synchronization |
 | `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
+| `src/daemon/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher |
 | `src/ipc/` | Named pipe client and the shared request/response protocol |
 | `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas |
 | `src/cli.rs` | Command-line rule authoring: parsing, validation, upsert/sync, share codes and IPC dispatch |
@@ -192,6 +193,26 @@ Infinite macros (`Action::Macro { infinite: true }`) have no natural end. The CL
 them unless the trigger is a global hotkey, because another trigger offers no manual cancellation
 path; the Rule Builder shows a warning and dims every step after the infinite one, since those steps
 will never run.
+
+### Rule-to-rule control
+
+`Action::RuleControl` runs inside the calling pipeline's task and cannot reach the engine, which
+lives behind the daemon's mutex. The daemon installs a dispatcher (`src/daemon/rule_call.rs`): the
+action submits a `call` or `stop` request and awaits the reply, and a waiting call is resolved
+outside the engine lock so a long pipeline never freezes the daemon.
+
+Every execution records the call chain that created it (`ActiveExecutionItem::call_chain`). The
+chain is how a direct self-call and a call to a rule that is already running in the same chain are
+rejected before the target starts, and how nesting stops at eight rules. A `wait: true` call is
+signalled by the called pipeline's execution guard, so a normal finish, an abort and a `stop` all
+release the caller.
+
+A `call` goes through the same gates as a triggered run: quota, cooldown, conditions and
+`is_enabled`; a skipped call is logged and is not an error for the caller. `stop` aborts the target's
+active executions and releases their resources without touching `is_enabled`, which separates it
+from the user-facing Stop button. Executions are identified by a process-wide monotonic id shared by
+triggered, exit, recurring and called pipelines; active executions, abort handles and call chains
+are keyed by it.
 
 ## Companion mode (bound satellites)
 
