@@ -230,6 +230,19 @@ impl ActionRunner {
                         let has_timeout = *timeout_sec > 0.0;
                         let start = std::time::Instant::now();
 
+                        // "Rule started" is a state check, but a short pipeline can start and
+                        // finish between two polls; remembering the rule's start counter lets the
+                        // wait notice that start even after the pipeline is gone.
+                        let rule_start_baseline = match condition {
+                            Some(crate::models::WaitCondition::RuleStarted { rule_id }) => {
+                                let target = Self::interpolate_tokens(rule_id, context);
+                                let target = target.trim().to_string();
+                                let starts = crate::daemon::rule_activity::snapshot(&target).starts;
+                                Some((target, starts))
+                            }
+                            _ => None,
+                        };
+
                         loop {
                             let satisfied = match condition {
                                 Some(crate::models::WaitCondition::ProcessStarted { process_name, match_mode }) => {
@@ -262,6 +275,27 @@ impl ActionRunner {
                                         crate::models::WaitFileCondition::Exists => std::path::Path::new(&p).exists(),
                                         crate::models::WaitFileCondition::Deleted => !std::path::Path::new(&p).exists(),
                                     }
+                                }
+                                Some(crate::models::WaitCondition::RuleStarted { rule_id }) => {
+                                    let target = Self::interpolate_tokens(rule_id, context);
+                                    let target = target.trim();
+                                    if target.is_empty() {
+                                        false
+                                    } else {
+                                        let snapshot = crate::daemon::rule_activity::snapshot(target);
+                                        snapshot.active > 0
+                                            || rule_start_baseline.as_ref().is_some_and(
+                                                |(baseline_target, starts)| {
+                                                    baseline_target == target && snapshot.starts > *starts
+                                                },
+                                            )
+                                    }
+                                }
+                                Some(crate::models::WaitCondition::RuleStopped { rule_id }) => {
+                                    let target = Self::interpolate_tokens(rule_id, context);
+                                    let target = target.trim();
+                                    !target.is_empty()
+                                        && !crate::daemon::rule_activity::is_running(target)
                                 }
                                 None => true,
                             };
@@ -3385,6 +3419,120 @@ mod tests {
         };
         let res_cont = ActionRunner::execute(&wait_timeout_continue, &ctx).await;
         assert_eq!(res_cont, Ok(ActionOutcome::Continue(None)));
+    }
+
+    #[tokio::test]
+    async fn test_wait_and_check_rule_activity() {
+        use crate::daemon::rule_activity;
+
+        let target = "rule_activity_test_wait_target";
+        let ctx = HashMap::new();
+
+        // "Rule stopped" is satisfied while the target has no running pipeline.
+        let wait_stopped = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStopped {
+                rule_id: target.into(),
+            }),
+            timeout_sec: 1.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert_eq!(
+            ActionRunner::execute(&wait_stopped, &ctx).await,
+            Ok(ActionOutcome::Continue(None))
+        );
+
+        // "Rule started" does not pass while the target is idle and honours the timeout policy.
+        let wait_started_idle = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStarted {
+                rule_id: target.into(),
+            }),
+            timeout_sec: 0.05,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert!(matches!(
+            ActionRunner::execute(&wait_started_idle, &ctx).await,
+            Ok(ActionOutcome::AbortPipeline { .. })
+        ));
+
+        // A running target satisfies both the wait and the inline check.
+        rule_activity::mark_started(target);
+        let wait_started_running = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStarted {
+                rule_id: target.into(),
+            }),
+            timeout_sec: 1.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert_eq!(
+            ActionRunner::execute(&wait_started_running, &ctx).await,
+            Ok(ActionOutcome::Continue(None))
+        );
+
+        let check_running = Action::Check {
+            condition: crate::models::RuleCondition::RuleRunning {
+                rule_id: target.into(),
+                must_be_running: true,
+            },
+        };
+        assert_eq!(
+            ActionRunner::execute(&check_running, &ctx).await,
+            Ok(ActionOutcome::Continue(None))
+        );
+
+        let check_stopped = Action::Check {
+            condition: crate::models::RuleCondition::RuleRunning {
+                rule_id: target.into(),
+                must_be_running: false,
+            },
+        };
+        assert!(matches!(
+            ActionRunner::execute(&check_stopped, &ctx).await,
+            Ok(ActionOutcome::AbortPipeline { .. })
+        ));
+
+        // A start that happens after the wait began is still observed even when the pipeline has
+        // already finished by the next poll.
+        rule_activity::mark_finished(target);
+        let starter = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            rule_activity::mark_started(target);
+            rule_activity::mark_finished(target);
+        });
+        let wait_started_after = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStarted {
+                rule_id: target.into(),
+            }),
+            timeout_sec: 2.0,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert_eq!(
+            ActionRunner::execute(&wait_started_after, &ctx).await,
+            Ok(ActionOutcome::Continue(None))
+        );
+        starter.await.unwrap();
+
+        // An empty target is invalid: it never satisfies either wait and runs into the timeout.
+        let wait_empty = Action::Wait {
+            mode: crate::models::WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStopped {
+                rule_id: String::new(),
+            }),
+            timeout_sec: 0.05,
+            timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+        };
+        assert!(matches!(
+            ActionRunner::execute(&wait_empty, &ctx).await,
+            Ok(ActionOutcome::AbortPipeline { .. })
+        ));
     }
 
     #[tokio::test]

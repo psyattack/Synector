@@ -43,6 +43,7 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Domain types, serde tags, JSON schema | `src/models.rs` |
 | Scheduling, quotas, cooldowns, active executions | `src/daemon/engine.rs` |
 | Rule-to-rule calls and stops | `src/daemon/rule_call.rs` |
+| Rule-activity snapshot behind wait/check conditions | `src/daemon/rule_activity.rs` |
 | Action execution handlers | `src/daemon/actions.rs` |
 | Process detection | `src/daemon/watcher.rs` |
 | File and directory watching | `src/daemon/file_watcher.rs` |

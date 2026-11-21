@@ -987,6 +987,10 @@ fn format_single_condition_brief(cond: &RuleCondition) -> String {
                 format!("RES:{}({})", name, limits.join(","))
             }
         }
+        RuleCondition::RuleRunning { rule_id, must_be_running } => {
+            let name = if rule_id.is_empty() { "RULE" } else { rule_id.as_str() };
+            if *must_be_running { format!("RULE:{}", name) } else { format!("!RULE:{}", name) }
+        }
     }
 }
 
@@ -1024,6 +1028,14 @@ fn format_single_condition_tooltip(cond: &RuleCondition, idx: usize, loc: &crate
         RuleCondition::ResourceThreshold { process_name, cpu_percent, ram_mb, .. } => {
             let p = if process_name.is_empty() { "?" } else { process_name.as_str() };
             format!("Resource threshold on '{}': CPU={:?}, RAM={:?}", p, cpu_percent, ram_mb)
+        }
+        RuleCondition::RuleRunning { rule_id, must_be_running } => {
+            let p = if rule_id.is_empty() { "?" } else { rule_id.as_str() };
+            if *must_be_running {
+                format!("Rule '{}' is running", p)
+            } else {
+                format!("Rule '{}' is not running", p)
+            }
         }
     };
     format!("{} [{}] {}", loc.inspector_conditions_badge, idx, desc)
@@ -1130,6 +1142,8 @@ fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
                             crate::models::WaitFileCondition::Deleted => format!("FILE -{}", fname),
                         }
                     }
+                    Some(crate::models::WaitCondition::RuleStarted { rule_id }) => format!("RULE START {}", rule_id),
+                    Some(crate::models::WaitCondition::RuleStopped { rule_id }) => format!("RULE STOP {}", rule_id),
                     None => "UNTIL".to_string(),
                 };
                 format!("{} [{}]", loc.summary_action_wait, desc)

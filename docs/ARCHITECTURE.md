@@ -69,6 +69,7 @@ CLI rule commands run before elevation because they are console tools.
 | `src/gui/` | egui views, overlay renderer, macro recorder, GUI state and IPC synchronization |
 | `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
 | `src/daemon/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher |
+| `src/daemon/rule_activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions |
 | `src/ipc/` | Named pipe client and the shared request/response protocol |
 | `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas |
 | `src/cli.rs` | Command-line rule authoring: parsing, validation, upsert/sync, share codes and IPC dispatch |
@@ -177,10 +178,11 @@ enforces quotas and cooldowns, tracks active executions and reports analytics.
 Pipelines support waits, inline checks and branching:
 
 - `Action::Wait` delays by timer or by a system condition (window opened/closed, process
-  started/exited, hotkey pressed, file created/deleted) with a timeout and an abort-or-continue
-  timeout policy.
+  started/exited, hotkey pressed, file created/deleted, another rule starting or stopping) with a
+  timeout and an abort-or-continue timeout policy.
 - `Action::Check` evaluates environmental criteria mid-pipeline and halts the remaining steps
-  cleanly when unsatisfied, without raising an error.
+  cleanly when unsatisfied, without raising an error. `RuleCondition::RuleRunning` observes another
+  rule's pipeline activity here, in `IfElse` and in rule pre-conditions.
 - `Action::IfElse` evaluates conditions at runtime and runs the Then, Else If or Else action list.
 - Toggle actions: firewall `Toggle`, window `ToggleMinimizeRestore` and `ToggleShowHide`.
 
@@ -213,6 +215,25 @@ active executions and releases their resources without touching `is_enabled`, wh
 from the user-facing Stop button. Executions are identified by a process-wide monotonic id shared by
 triggered, exit, recurring and called pipelines; active executions, abort handles and call chains
 are keyed by it.
+
+### Rule activity conditions
+
+`RuleCondition::RuleRunning`, `WaitCondition::RuleStarted` and `WaitCondition::RuleStopped` observe
+another rule instead of the machine. The engine publishes every pipeline start and finish into
+`src/daemon/rule_activity.rs`, a process-wide map guarded by a short lock: a start is recorded where
+the pipeline task is created, and the finish sits in the same execution guard that reports the
+completion event, so a normal finish, an abort, a user stop and a `rule_control stop` all decrement
+the counter through one path. Readers (wait polling, check, if/else and pre-conditions) take that
+lock directly and never touch the engine mutex, so a condition cannot freeze the daemon or deadlock
+against the pipeline it observes.
+
+`active` is the number of pipelines of the rule that run right now. That is the same state
+`rule_control stop` acts on: a rule whose pipeline ended but whose companion process or overlay is
+still alive reports stopped. Waits poll the snapshot every 100 ms like the other wait conditions;
+`RuleStarted` additionally remembers the rule's monotonic `starts` counter when the wait begins, so
+a start that already finished between two polls still satisfies it. An empty target never satisfies
+a rule-activity condition; a target that does not exist is simply never running, and the CLI
+validator warns about both.
 
 ## Companion mode (bound satellites)
 

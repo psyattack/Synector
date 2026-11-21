@@ -979,6 +979,11 @@ impl DaemonEngine {
                     }
                 }
             }
+            RuleCondition::RuleRunning { rule_id, must_be_running } => {
+                let target = rule_id.trim();
+                !target.is_empty()
+                    && crate::daemon::rule_activity::is_running(target) == *must_be_running
+            }
             RuleCondition::FileWatcher { path, filter_extension, must_exist } => {
                 let p = std::path::Path::new(path);
                 let exists = if p.is_dir() {
@@ -1883,6 +1888,7 @@ impl DaemonEngine {
 
         self.analytics.total_executions += 1;
 
+        crate::daemon::rule_activity::mark_started(&rule_id);
         let _ = tx.send(ActionCompletionEvent::RuleExecutionStarted {
             execution_id,
             rule_id: rule_id.clone(),
@@ -1908,6 +1914,7 @@ impl DaemonEngine {
             impl Drop for ExecGuard {
                 fn drop(&mut self) {
                     crate::daemon::actions::release_all_simulated_inputs();
+                    crate::daemon::rule_activity::mark_finished(&self.r_id);
                     let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                         execution_id: self.id,
                         _rule_id: self.r_id.clone(),
@@ -1999,6 +2006,7 @@ impl DaemonEngine {
             self.execution_abort_handles.insert(execution_id, (execution_rule_id, join_handle.abort_handle()));
             Ok(Some(join_handle))
         } else {
+            crate::daemon::rule_activity::mark_finished(&rule_id);
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
@@ -2150,6 +2158,7 @@ impl DaemonEngine {
         let total_steps = actions.len();
         ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
+        crate::daemon::rule_activity::mark_started(&rule_id);
         let _ = tx.send(ActionCompletionEvent::RuleExecutionStarted {
             execution_id,
             rule_id: rule_id.clone(),
@@ -2171,6 +2180,7 @@ impl DaemonEngine {
                 impl Drop for ExecGuard {
                     fn drop(&mut self) {
                         crate::daemon::actions::release_all_simulated_inputs();
+                        crate::daemon::rule_activity::mark_finished(&self.r_id);
                         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                             execution_id: self.id,
                             _rule_id: self.r_id.clone(),
@@ -2225,6 +2235,7 @@ impl DaemonEngine {
             self.execution_abort_handles.insert(execution_id, (execution_rule_id, join_handle.abort_handle()));
             Some(join_handle)
         } else {
+            crate::daemon::rule_activity::mark_finished(&rule_id);
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
@@ -2359,6 +2370,7 @@ impl DaemonEngine {
         let execution_id = next_execution_id();
         let total_steps = actions.len();
 
+        crate::daemon::rule_activity::mark_started(&rule_id);
         let _ = tx.send(ActionCompletionEvent::RuleExecutionStarted {
             execution_id,
             rule_id: rule_id.clone(),
@@ -2379,6 +2391,7 @@ impl DaemonEngine {
                 impl Drop for ExecGuard {
                     fn drop(&mut self) {
                         crate::daemon::actions::release_all_simulated_inputs();
+                        crate::daemon::rule_activity::mark_finished(&self.r_id);
                         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
                             execution_id: self.id,
                             _rule_id: self.r_id.clone(),
@@ -2491,6 +2504,7 @@ impl DaemonEngine {
             self.active_test_recurring_rules.insert(rule_id.clone(), (join_handle.abort_handle(), execution_id));
             Some(join_handle)
         } else {
+            crate::daemon::rule_activity::mark_finished(&rule_id);
             let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
                 execution_id,
                 _rule_id: rule_id,
@@ -4057,6 +4071,86 @@ mod tests {
         // Join handle should return error (cancelled)
         let res = h.await;
         assert!(res.is_err(), "Aborted task must return join error");
+    }
+
+    #[tokio::test]
+    async fn test_rule_activity_registry_tracks_executions() {
+        use crate::daemon::rule_activity;
+
+        let rule_id = "rule_activity_registry_rule";
+        let rule = Rule {
+            id: rule_id.into(),
+            name: "Activity Rule".into(),
+            description: String::new(),
+            is_enabled: true,
+            cooldown_seconds: 0.0,
+            trigger: None,
+            actions: vec![
+                Action::Wait {
+                    mode: crate::models::WaitMode::Timer,
+                    seconds: 5.0,
+                    condition: None,
+                    timeout_sec: 30.0,
+                    timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut engine = DaemonEngine::new(AppConfig::default());
+        assert!(!rule_activity::is_running(rule_id));
+
+        let handle = engine.try_execute_rule(&rule, "MANUAL_TEST", 0).await.unwrap();
+        assert!(
+            rule_activity::is_running(rule_id),
+            "a started pipeline must be observable as running"
+        );
+        assert!(DaemonEngine::evaluate_condition(&RuleCondition::RuleRunning {
+            rule_id: rule_id.into(),
+            must_be_running: true,
+        }));
+
+        engine.stop_rule_execution(rule_id);
+        let _ = handle.await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            !rule_activity::is_running(rule_id),
+            "an aborted pipeline must drop out of the registry"
+        );
+    }
+
+    #[test]
+    fn test_rule_running_condition_evaluation() {
+        use crate::daemon::rule_activity;
+
+        let target = "rule_activity_test_condition_target";
+        let running = RuleCondition::RuleRunning {
+            rule_id: target.into(),
+            must_be_running: true,
+        };
+        let stopped = RuleCondition::RuleRunning {
+            rule_id: target.into(),
+            must_be_running: false,
+        };
+
+        assert!(!DaemonEngine::evaluate_condition(&running));
+        assert!(DaemonEngine::evaluate_condition(&stopped));
+
+        rule_activity::mark_started(target);
+        assert!(DaemonEngine::evaluate_condition(&running));
+        assert!(!DaemonEngine::evaluate_condition(&stopped));
+
+        rule_activity::mark_finished(target);
+        assert!(!DaemonEngine::evaluate_condition(&running));
+        assert!(DaemonEngine::evaluate_condition(&stopped));
+
+        // An empty target is invalid and never satisfies the condition, in either direction.
+        for must_be_running in [true, false] {
+            assert!(!DaemonEngine::evaluate_condition(&RuleCondition::RuleRunning {
+                rule_id: String::new(),
+                must_be_running,
+            }));
+        }
     }
 
     #[tokio::test]

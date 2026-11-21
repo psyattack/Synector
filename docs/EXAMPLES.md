@@ -289,6 +289,59 @@ A call that the target rejects (disabled, cooling down, out of quota or with unm
 logged and does not fail the caller. Direct self-calls and cycles are refused, so apply both rules
 of a pair together.
 
+A rule's pipeline can also be observed without calling it. `rule_started` and `rule_stopped` are wait
+conditions; "running" means the target's action pipeline is executing right now, not that a companion
+process or overlay it launched is still alive. Here a watcher waits for a long-running mode to begin
+and then for it to end:
+
+```json
+[
+  {
+    "id": "rule_night_shift",
+    "name": "Night shift",
+    "description": "Long-running mode that another rule observes.",
+    "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+N" },
+    "actions": [
+      { "$action_type": "power_plan", "plan": "power_saver" },
+      { "$action_type": "wait", "mode": "timer", "seconds": 3600 }
+    ]
+  },
+  {
+    "id": "rule_night_shift_watcher",
+    "name": "Announce the end of the night shift",
+    "trigger": { "$trigger_type": "hotkey", "key_combination": "CTRL+ALT+W" },
+    "actions": [
+      {
+        "$action_type": "wait",
+        "mode": "until_condition",
+        "condition": { "type": "rule_started", "rule_id": "rule_night_shift" },
+        "timeout_sec": 600,
+        "timeout_policy": "abort"
+      },
+      {
+        "$action_type": "wait",
+        "mode": "until_condition",
+        "condition": { "type": "rule_stopped", "rule_id": "rule_night_shift" },
+        "timeout_sec": 0,
+        "timeout_policy": "abort"
+      },
+      { "$action_type": "notification", "title": "Shift", "message": "Night shift is over" }
+    ]
+  }
+]
+```
+
+`rule_running` is the same idea as a regular condition and fits pre-conditions, `if_else` and
+`check`. This pre-condition keeps a maintenance rule from overlapping with another rule:
+
+```json
+{
+  "$condition_type": "rule_running",
+  "rule_id": "rule_backup",
+  "must_be_running": false
+}
+```
+
 ## Mute before sleep and unmute after resume
 
 Sleep, resume, display state and device changes are pushed by Windows through a hidden notification
@@ -384,3 +437,6 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
 - **Rule control** (`rule_control`) chains rules: `operation: "call"` runs another pipeline,
   `operation: "stop"` aborts its executions without disabling it. Share codes do not rewrite these
   references, so export a calling rule and its target together.
+- **Rule activity** (`rule_running`, wait `rule_started`/`rule_stopped`) observes another rule's
+  pipeline; it reports stopped once the pipeline ends, even if a bound companion process is still
+  alive.

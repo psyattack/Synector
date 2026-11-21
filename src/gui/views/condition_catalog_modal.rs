@@ -194,6 +194,24 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
+
+    // 5. Rules
+    ConditionCatalogItem {
+        category_idx: 5,
+        badge: "RULE",
+        title: |loc| loc.catalog_cond_rule_title,
+        description: |loc| loc.catalog_cond_rule_desc,
+        glyph: egui_phosphor::regular::PLAY,
+        tint: |t| t.accent_ink,
+        keywords: &[
+            "rule", "running", "started", "stopped", "pipeline", "activity", "правило", "запущено",
+            "остановлено", "выполняется", "пайплайн",
+        ],
+        constructor: || RuleCondition::RuleRunning {
+            rule_id: String::new(),
+            must_be_running: true,
+        },
+    },
 ];
 
 pub fn render_condition_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
@@ -276,6 +294,7 @@ pub fn render_condition_catalog_modal(ctx: &egui::Context, state: &mut GuiState)
                                 (2, loc.catalog_cat_system, egui_phosphor::regular::HARD_DRIVE, count_for(2)),
                                 (3, loc.catalog_cat_time, egui_phosphor::regular::CLOCK, count_for(3)),
                                 (4, loc.catalog_cat_events, egui_phosphor::regular::LIGHTNING, count_for(4)),
+                                (5, loc.catalog_cat_rules, egui_phosphor::regular::PLAY, count_for(5)),
                             ];
 
                             for (cat_idx, cat_name, icon, count) in categories {
@@ -491,6 +510,11 @@ mod tests {
         let cat4_items: Vec<_> = CONDITION_CATALOG_ITEMS.iter().filter(|i| i.category_idx == 4).collect();
         assert_eq!(cat4_items.len(), 7, "Category 4 should have 7 system events");
 
+        // Category 5: Rules (other rule's pipeline activity)
+        let cat5_items: Vec<_> = CONDITION_CATALOG_ITEMS.iter().filter(|i| i.category_idx == 5).collect();
+        assert_eq!(cat5_items.len(), 1, "Category 5 should have the rule activity condition");
+        assert_eq!(cat5_items[0].badge, "RULE");
+
         // Test constructor outputs
         for item in CONDITION_CATALOG_ITEMS {
             let cond = (item.constructor)();
@@ -502,6 +526,7 @@ mod tests {
                 }
                 RuleCondition::TimeRange { .. } => assert_eq!(item.category_idx, 3),
                 RuleCondition::Event { .. } => assert_eq!(item.category_idx, 4),
+                RuleCondition::RuleRunning { .. } => assert_eq!(item.category_idx, 5),
             }
         }
     }

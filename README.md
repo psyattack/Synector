@@ -71,7 +71,7 @@ pretending otherwise.
 
 * **Dual-tier, pure Rust** — the tray daemon owns rules, triggers and monitoring; close the GUI and automation keeps running with near-zero CPU.
 * **Hybrid event detection** — kernel ETW process tracing when elevated, adaptive Toolhelp32 snapshot polling otherwise; both feed the same trigger surface. Global hotkeys, window focus, file watcher, HTTP webhook, sleep/resume, display on/off, device connect/disconnect, session lock/unlock, AC/battery power, user idle/active and network state.
-* **Visual rule pipelines** — drag-and-drop actions with undo/redo, wait steps with timeout policies, mid-pipeline checks, If/Else branching, rule-to-rule calls and stops, toggle actions, per-rule cooldowns and lifetime or periodic execution quotas.
+* **Visual rule pipelines** — drag-and-drop actions with undo/redo, wait steps with timeout policies, mid-pipeline checks, If/Else branching, rule-to-rule calls and stops, waits and checks that observe another rule's pipeline, toggle actions, per-rule cooldowns and lifetime or periodic execution quotas.
 * **Companion process mode** — bind helper tools, HUDs or recorders to a primary game or app: they start with it, are supervised while it runs, and are terminated when it exits.
 * **Overlay Studio (HUD)** — WYSIWYG GPU-accelerated overlays: crosshairs, telemetry badges, graphs, timers, media widgets, interactive controls, multi-monitor placement and `WDA_EXCLUDEFROMCAPTURE` anti-capture protection.
 * **Macro Studio** — keyboard and mouse recording through low-level Windows hooks, DirectInput-compatible scan-code playback, humanized motion, Raw Input camera turns, Run/Stop/Toggle operations and reusable presets.

@@ -7,6 +7,7 @@ pub mod ipc_server;
 pub mod lua_runner;
 pub mod overlay_manager;
 pub mod pe_mask;
+pub mod rule_activity;
 pub mod rule_call;
 pub mod system_events;
 pub mod telemetry;

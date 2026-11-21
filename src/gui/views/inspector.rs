@@ -1382,6 +1382,8 @@ fn action_summary_preview(action: &Action) -> String {
                     crate::models::WaitFileCondition::Exists => format!("Wait file exists: {}", path),
                     crate::models::WaitFileCondition::Deleted => format!("Wait file deleted: {}", path),
                 },
+                Some(crate::models::WaitCondition::RuleStarted { rule_id }) => format!("Wait rule start: {}", rule_id),
+                Some(crate::models::WaitCondition::RuleStopped { rule_id }) => format!("Wait rule stop: {}", rule_id),
                 None => format!("Wait until condition (timeout {:.0}s)", timeout_sec),
             },
         },
@@ -1392,6 +1394,9 @@ fn action_summary_preview(action: &Action) -> String {
             crate::models::RuleCondition::WindowFocused { process_name, .. } => format!("Check window: {}", process_name),
             crate::models::RuleCondition::FileWatcher { path, must_exist, .. } => {
                 if *must_exist { format!("Check file exists: {}", path) } else { format!("Check file deleted: {}", path) }
+            }
+            crate::models::RuleCondition::RuleRunning { rule_id, must_be_running } => {
+                if *must_be_running { format!("Check rule running: {}", rule_id) } else { format!("Check rule stopped: {}", rule_id) }
             }
             _ => "Check condition".to_string(),
         },
@@ -2240,6 +2245,68 @@ fn render_action_card(
     }
 }
 
+#[derive(Clone)]
+struct RuleChoice {
+    id: String,
+    name: String,
+}
+
+/// Rules offered as targets in the editor, including the rule being edited: a pre-condition
+/// "this rule is not running" is a valid way to keep a rule single-instance.
+fn rule_choices(state: &GuiState) -> Vec<RuleChoice> {
+    let rules: Vec<Rule> = state
+        .daemon_state
+        .as_ref()
+        .map(|daemon| daemon.config.rules.clone())
+        .unwrap_or_else(|| {
+            crate::config::RulesFile::read_from(&crate::config::AppConfig::config_dir()).rules
+        });
+    rules
+        .into_iter()
+        .filter(|rule| !rule.id.is_empty())
+        .map(|rule| RuleChoice {
+            id: rule.id,
+            name: rule.name,
+        })
+        .collect()
+}
+
+fn render_rule_choice_combo(
+    ui: &mut Ui,
+    choices: &[RuleChoice],
+    rule_id: &mut String,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    loc: &crate::i18n::Strings,
+    t: &Tokens,
+) {
+    if rule_id.is_empty() {
+        if let Some(first) = choices.first() {
+            *rule_id = first.id.clone();
+        }
+    }
+
+    let selected_label = match choices.iter().find(|choice| choice.id == *rule_id) {
+        Some(choice) => choice.name.clone(),
+        None if rule_id.is_empty() => loc.inspector_rule_no_targets.to_string(),
+        None => format!("{} ({})", loc.inspector_rule_missing, rule_id),
+    };
+
+    widgets::hud(ui, loc.inspector_rule_target, t.muted);
+    egui::ComboBox::from_id_salt(id_salt)
+        .selected_text(RichText::new(selected_label).size(12.0))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            if choices.is_empty() {
+                ui.label(RichText::new(loc.inspector_rule_no_targets).size(12.0).color(t.muted));
+            }
+            for choice in choices {
+                if ui.selectable_label(choice.id == *rule_id, &choice.name).clicked() {
+                    *rule_id = choice.id.clone();
+                }
+            }
+        });
+}
+
 /// Target-rule picker shared by both modes of `Action::RuleControl`. The edited rule itself is
 /// hidden: a rule may stop itself, but offering it as a call target is only a trap.
 fn render_rule_target_picker(
@@ -2250,50 +2317,23 @@ fn render_rule_target_picker(
     is_exit_pipeline: bool,
     t: &Tokens,
 ) {
-    let loc = state.loc();
-    let rules: Vec<Rule> = state
-        .daemon_state
-        .as_ref()
-        .map(|daemon| daemon.config.rules.clone())
-        .unwrap_or_else(|| {
-            crate::config::RulesFile::read_from(&crate::config::AppConfig::config_dir()).rules
-        });
     let editing_id = state
         .editing_rule
         .as_ref()
         .map(|rule| rule.id.as_str())
         .unwrap_or_default();
-    let candidates: Vec<&Rule> = rules
-        .iter()
-        .filter(|rule| !rule.id.is_empty() && rule.id != editing_id)
+    let choices: Vec<RuleChoice> = rule_choices(state)
+        .into_iter()
+        .filter(|choice| choice.id != editing_id)
         .collect();
-
-    if rule_id.is_empty() {
-        if let Some(first) = candidates.first() {
-            *rule_id = first.id.clone();
-        }
-    }
-
-    let selected_label = match candidates.iter().find(|rule| rule.id == *rule_id) {
-        Some(rule) => rule.name.clone(),
-        None if rule_id.is_empty() => loc.inspector_rule_no_targets.to_string(),
-        None => format!("{} ({})", loc.inspector_rule_missing, rule_id),
-    };
-
-    widgets::hud(ui, loc.inspector_rule_target, t.muted);
-    egui::ComboBox::from_id_salt(("rule_control_target", idx, is_exit_pipeline))
-        .selected_text(RichText::new(selected_label).size(12.0))
-        .width(ui.available_width())
-        .show_ui(ui, |ui| {
-            if candidates.is_empty() {
-                ui.label(RichText::new(loc.inspector_rule_no_targets).size(12.0).color(t.muted));
-            }
-            for candidate in &candidates {
-                if ui.selectable_label(candidate.id == *rule_id, &candidate.name).clicked() {
-                    *rule_id = candidate.id.clone();
-                }
-            }
-        });
+    render_rule_choice_combo(
+        ui,
+        &choices,
+        rule_id,
+        ("rule_control_target", idx, is_exit_pipeline),
+        state.loc(),
+        t,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2485,6 +2525,8 @@ fn render_action_parameter_fields(
                                     ProcessExited,
                                     Hotkey,
                                     File,
+                                    RuleStarted,
+                                    RuleStopped,
                                 }
 
                                 let mut current_kind = match condition {
@@ -2494,6 +2536,8 @@ fn render_action_parameter_fields(
                                     Some(crate::models::WaitCondition::ProcessExited { .. }) => WaitCondKind::ProcessExited,
                                     Some(crate::models::WaitCondition::Hotkey { .. }) => WaitCondKind::Hotkey,
                                     Some(crate::models::WaitCondition::File { .. }) => WaitCondKind::File,
+                                    Some(crate::models::WaitCondition::RuleStarted { .. }) => WaitCondKind::RuleStarted,
+                                    Some(crate::models::WaitCondition::RuleStopped { .. }) => WaitCondKind::RuleStopped,
                                     None => WaitCondKind::WindowOpened,
                                 };
 
@@ -2505,6 +2549,8 @@ fn render_action_parameter_fields(
                                     WaitCondKind::ProcessExited => loc.inspector_wait_process_exited,
                                     WaitCondKind::Hotkey => loc.inspector_wait_hotkey,
                                     WaitCondKind::File => loc.inspector_wait_file,
+                                    WaitCondKind::RuleStarted => loc.inspector_wait_rule_started,
+                                    WaitCondKind::RuleStopped => loc.inspector_wait_rule_stopped,
                                 };
 
                                 let mut changed_kind = false;
@@ -2518,6 +2564,8 @@ fn render_action_parameter_fields(
                                         if ui.selectable_value(&mut current_kind, WaitCondKind::ProcessExited, loc.inspector_wait_process_exited).clicked() { changed_kind = true; }
                                         if ui.selectable_value(&mut current_kind, WaitCondKind::Hotkey, loc.inspector_wait_hotkey).clicked() { changed_kind = true; }
                                         if ui.selectable_value(&mut current_kind, WaitCondKind::File, loc.inspector_wait_file).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::RuleStarted, loc.inspector_wait_rule_started).clicked() { changed_kind = true; }
+                                        if ui.selectable_value(&mut current_kind, WaitCondKind::RuleStopped, loc.inspector_wait_rule_stopped).clicked() { changed_kind = true; }
                                     });
 
                                 if changed_kind || condition.is_none() {
@@ -2528,6 +2576,8 @@ fn render_action_parameter_fields(
                                         WaitCondKind::ProcessExited => crate::models::WaitCondition::ProcessExited { process_name: String::new(), match_mode: crate::models::ProcessMatchMode::Exact },
                                         WaitCondKind::Hotkey => crate::models::WaitCondition::Hotkey { key_combination: "Ctrl+Shift+W".into() },
                                         WaitCondKind::File => crate::models::WaitCondition::File { path: String::new(), condition: crate::models::WaitFileCondition::Exists },
+                                        WaitCondKind::RuleStarted => crate::models::WaitCondition::RuleStarted { rule_id: String::new() },
+                                        WaitCondKind::RuleStopped => crate::models::WaitCondition::RuleStopped { rule_id: String::new() },
                                     });
                                 }
 
@@ -2605,6 +2655,22 @@ fn render_action_parameter_fields(
                                             ];
                                             widgets::cells(ui, file_cond, &file_opts);
                                         }
+                                        crate::models::WaitCondition::RuleStarted { rule_id }
+                                        | crate::models::WaitCondition::RuleStopped { rule_id } => {
+                                            // A wait cannot observe its own pipeline start or stop:
+                                            // "started" is already true and "stopped" cannot happen
+                                            // before the pipeline itself ends.
+                                            let editing_id = state
+                                                .editing_rule
+                                                .as_ref()
+                                                .map(|rule| rule.id.as_str())
+                                                .unwrap_or_default();
+                                            let choices: Vec<RuleChoice> = rule_choices(state)
+                                                .into_iter()
+                                                .filter(|choice| choice.id != editing_id)
+                                                .collect();
+                                            render_rule_choice_combo(ui, &choices, rule_id, ("wait_rule_target", idx), loc, t);
+                                        }
                                     }
                                 }
 
@@ -2651,6 +2717,7 @@ fn render_action_parameter_fields(
                                     ConditionKind::Event,
                                     ConditionKind::Resource,
                                     ConditionKind::FileWatcher,
+                                    ConditionKind::Rule,
                                 ] {
                                     if ui.selectable_value(&mut kind, k, k.label(loc)).clicked() {
                                         changed_kind = true;
@@ -2666,13 +2733,14 @@ fn render_action_parameter_fields(
                                 ConditionKind::Event => RuleCondition::Event { event_type: SystemEventType::SessionLock, idle_duration_sec: 300 },
                                 ConditionKind::Resource => RuleCondition::ResourceThreshold { process_name: String::new(), cpu_percent: Some(80.0), ram_mb: None, duration_sec: 5 },
                                 ConditionKind::FileWatcher => RuleCondition::FileWatcher { path: String::new(), filter_extension: None, must_exist: true },
+                                ConditionKind::Rule => RuleCondition::RuleRunning { rule_id: String::new(), must_be_running: true },
                             };
                         }
 
                         ui.add_space(4.0);
                         render_single_condition_editor(ui, loc, condition, idx, || {
                             resp.pick_target = Some(default_picker_target);
-                        }, t);
+                        }, t, state);
                     }
 
                     Action::HttpWebhook { url, method, payload, .. } => {
@@ -3391,6 +3459,7 @@ fn render_action_parameter_fields(
                                 is_exit: is_exit_pipeline,
                             });
                         },
+                        state,
                     );
                     if remove_clicked && can_remove {
                         remove_if_cond_idx = Some(c_idx);
@@ -3488,6 +3557,7 @@ fn render_action_parameter_fields(
                                     is_exit: is_exit_pipeline,
                                 });
                             },
+                            state,
                         );
                         if remove_clicked && can_remove {
                             remove_elif_cond_idx = Some(c_idx);
@@ -4374,6 +4444,7 @@ enum ConditionKind {
     Event,
     Resource,
     FileWatcher,
+    Rule,
 }
 
 impl ConditionKind {
@@ -4385,6 +4456,7 @@ impl ConditionKind {
             RuleCondition::Event { .. } => ConditionKind::Event,
             RuleCondition::ResourceThreshold { .. } => ConditionKind::Resource,
             RuleCondition::FileWatcher { .. } => ConditionKind::FileWatcher,
+            RuleCondition::RuleRunning { .. } => ConditionKind::Rule,
         }
     }
 
@@ -4396,6 +4468,7 @@ impl ConditionKind {
             ConditionKind::Event => loc.inspector_cond_type_event,
             ConditionKind::Resource => loc.inspector_cond_type_resource,
             ConditionKind::FileWatcher => loc.inspector_cond_type_file,
+            ConditionKind::Rule => loc.inspector_cond_type_rule,
         }
     }
 }
@@ -4411,6 +4484,7 @@ fn render_condition_card(
     can_remove: bool,
     show_change: bool,
     on_pick_process: impl FnMut(),
+    state: &GuiState,
 ) -> (bool, bool) {
     let mut remove_clicked = false;
     let mut change_clicked = false;
@@ -4451,7 +4525,7 @@ fn render_condition_card(
                 widgets::hrule(ui);
 
                 // 2. Condition Parameter Fields
-                render_single_condition_editor(ui, loc, &mut item.condition, idx, on_pick_process, t);
+                render_single_condition_editor(ui, loc, &mut item.condition, idx, on_pick_process, t, state);
             });
         });
 
@@ -4526,6 +4600,7 @@ fn render_single_condition_editor(
     idx: usize,
     mut on_pick_process: impl FnMut(),
     t: &Tokens,
+    state: &GuiState,
 ) {
     match cond {
         RuleCondition::ProcessRunning { process_name, match_mode, must_be_running } => {
@@ -4838,6 +4913,18 @@ fn render_single_condition_editor(
             ];
             widgets::cells(ui, must_exist, &file_options);
         }
+        RuleCondition::RuleRunning { rule_id, must_be_running } => {
+            let choices = rule_choices(state);
+            render_rule_choice_combo(ui, &choices, rule_id, ("cond_rule_target", idx), loc, t);
+
+            ui.add_space(2.0);
+            widgets::hud(ui, loc.inspector_cond_rule_state_label, t.muted);
+            let state_options = [
+                (true, Cell::new(loc.inspector_cond_rule_running, "")),
+                (false, Cell::new(loc.inspector_cond_rule_not_running, "")),
+            ];
+            widgets::cells(ui, must_be_running, &state_options);
+        }
     }
 }
 
@@ -4867,6 +4954,7 @@ fn render_conditions_section(
             true,
             true,
             || { pick_cond_idx = Some(idx); },
+            state,
         );
         if remove_clicked {
             remove_idx = Some(idx);

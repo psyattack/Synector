@@ -153,8 +153,43 @@ and `wait` only matters for `call`:
 - A rule called by another rule is not a manual run: it does not tear down the target's companion
   processes when its pipeline ends.
 
-Share codes carry only the rules you export. A `rule_control` action is never rewritten, so export
-both rules together to keep the reference intact.
+Share codes carry only the rules you export. Rule references — `rule_control` actions and
+rule-activity conditions — are never rewritten, so export both rules together to keep the reference
+intact.
+
+### Observing rule activity
+
+Wait and check steps can observe a rule instead of a system event:
+
+```json
+{ "$condition_type": "rule_running", "rule_id": "rule_game_mode", "must_be_running": false }
+```
+
+```json
+{
+  "$action_type": "wait",
+  "mode": "until_condition",
+  "condition": { "type": "rule_started", "rule_id": "rule_game_mode" },
+  "timeout_sec": 30,
+  "timeout_policy": "abort"
+}
+```
+
+- `rule_running` is an ordinary condition: it works in `conditions`, `if_else` and `check`.
+  `rule_started` and `rule_stopped` are wait conditions.
+- "Running" means the target has an action pipeline executing right now — the same state a
+  `rule_control` stop ends. A rule that started a companion process but already finished its
+  pipeline reports stopped.
+- Waits poll every 100 ms. `rule_started` also completes when the target started at any point since
+  the wait began, even if it finished before the next poll; `rule_stopped` completes as soon as no
+  pipeline of the target is running. `rule_stopped` passes immediately when the target has not
+  started, so it waits for the current run to end, not for the next one to begin.
+- An empty `rule_id` never satisfies the condition. A `rule_id` that does not match a configured
+  rule is simply never running (`rule_stopped` and `rule_running` with `must_be_running: false`
+  pass); `--rules-validate` warns about both.
+- A pipeline cannot observe its own stop: while it runs, `rule_started` is true and `rule_stopped`
+  stays false until the pipeline ends. To keep a rule from running twice, gate it with
+  `rule_running` on its own id and `must_be_running: false` in its pre-conditions.
 
 ## Webhook trigger
 
@@ -195,8 +230,9 @@ curl http://127.0.0.1:48123/api/v1/trigger/backup
 
 Non-blocking warnings cover rules that are valid but likely not what the author intended: no trigger,
 an empty action pipeline, `max_executions: 0`, a `quota_period` without `max_executions`, missing
-macro presets or overlays, a wait without a condition, an empty `start_process` path, and a
-`rule_control` step with an empty target, a missing target or a call to the rule itself.
+macro presets or overlays, a wait without a condition, an empty `start_process` path, a
+`rule_control` step with an empty target, a missing target or a call to the rule itself, and a wait
+or check that observes an empty or unknown rule.
 
 ## Discovering the schema
 

@@ -1680,6 +1680,9 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
             ));
         }
 
+        let rule_exists = |target: &str| {
+            cfg.rules.iter().any(|r| r.id == target) || rules.iter().any(|r| r.id == target)
+        };
         let mut check = |action: &Action| match action {
             Action::Macro {
                 preset_id: Some(preset_id),
@@ -1703,6 +1706,39 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
             } => warnings.push(format!(
                 "rule #{number} ({id}): wait has no condition and will block until its timeout"
             )),
+            Action::Wait {
+                mode: crate::models::WaitMode::UntilCondition,
+                condition: Some(
+                    crate::models::WaitCondition::RuleStarted { rule_id }
+                    | crate::models::WaitCondition::RuleStopped { rule_id },
+                ),
+                ..
+            } => {
+                let target = rule_id.trim();
+                if target.is_empty() {
+                    warnings.push(format!(
+                        "rule #{number} ({id}): wait for a rule has an empty rule_id"
+                    ));
+                } else if !rule_exists(target) {
+                    warnings.push(format!(
+                        "rule #{number} ({id}): wait target \"{target}\" does not exist"
+                    ));
+                }
+            }
+            Action::Check {
+                condition: crate::models::RuleCondition::RuleRunning { rule_id, .. },
+            } => {
+                let target = rule_id.trim();
+                if target.is_empty() {
+                    warnings.push(format!(
+                        "rule #{number} ({id}): check has an empty rule_id"
+                    ));
+                } else if !rule_exists(target) {
+                    warnings.push(format!(
+                        "rule #{number} ({id}): check target \"{target}\" does not exist"
+                    ));
+                }
+            }
             Action::StartProcess { file_path, .. } if file_path.trim().is_empty() => warnings.push(
                 format!("rule #{number} ({id}): start_process has an empty file_path"),
             ),
@@ -1720,9 +1756,7 @@ pub fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
                             "rule #{number} ({id}): rule_control calls the rule itself; the engine rejects the cycle"
                         ));
                     }
-                    let known = cfg.rules.iter().any(|r| r.id == target)
-                        || rules.iter().any(|r| r.id == target);
-                    if !known {
+                    if !rule_exists(target) {
                         warnings.push(format!(
                             "rule #{number} ({id}): rule_control target \"{target}\" does not exist"
                         ));
@@ -2374,6 +2408,56 @@ mod tests {
         );
         assert!(
             warnings.iter().any(|w| w.contains("wait has no condition")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_warnings_for_rule_activity_targets() {
+        let cfg = AppConfig::default();
+        let mut rule = rule_with_notification("activity_rule");
+        rule.actions.push(Action::Wait {
+            mode: WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStarted {
+                rule_id: String::new(),
+            }),
+            timeout_sec: 5.0,
+            timeout_policy: Default::default(),
+        });
+        rule.actions.push(Action::Wait {
+            mode: WaitMode::UntilCondition,
+            seconds: 0.0,
+            condition: Some(crate::models::WaitCondition::RuleStopped {
+                rule_id: "ghost_rule".to_string(),
+            }),
+            timeout_sec: 5.0,
+            timeout_policy: Default::default(),
+        });
+        rule.actions.push(Action::Check {
+            condition: crate::models::RuleCondition::RuleRunning {
+                rule_id: "ghost_rule".to_string(),
+                must_be_running: true,
+            },
+        });
+
+        let warnings = rule_warnings(&[rule], &cfg);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("wait for a rule has an empty rule_id")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("wait target \"ghost_rule\" does not exist")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("check target \"ghost_rule\" does not exist")),
             "{warnings:?}"
         );
     }

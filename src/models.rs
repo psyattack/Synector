@@ -241,6 +241,14 @@ pub enum RuleCondition {
         #[serde(default = "default_true")]
         must_exist: bool,
     },
+    /// Whether another rule has a running action pipeline right now.
+    #[serde(rename = "rule_running")]
+    RuleRunning {
+        /// Id of the observed rule. An empty id never satisfies the condition.
+        rule_id: String,
+        #[serde(default = "default_true")]
+        must_be_running: bool,
+    },
 }
 
 impl RuleCondition {
@@ -260,6 +268,7 @@ impl RuleCondition {
             Self::Event { .. } => egui_phosphor::regular::BELL,
             Self::ResourceThreshold { .. } => egui_phosphor::regular::CHART_LINE,
             Self::FileWatcher { .. } => egui_phosphor::regular::FILE,
+            Self::RuleRunning { .. } => egui_phosphor::regular::PLAY,
         }
     }
 }
@@ -897,6 +906,16 @@ pub enum WaitCondition {
         path: String,
         #[serde(default)]
         condition: WaitFileCondition,
+    },
+    /// Another rule currently has a running action pipeline.
+    RuleStarted {
+        #[serde(default)]
+        rule_id: String,
+    },
+    /// Another rule has no running action pipeline.
+    RuleStopped {
+        #[serde(default)]
+        rule_id: String,
     },
 }
 
@@ -3007,6 +3026,49 @@ mod tests {
         let serialized = serde_json::to_string(&file_cond).unwrap();
         let deserialized: RuleCondition = serde_json::from_str(&serialized).unwrap();
         assert_eq!(file_cond, deserialized);
+    }
+
+    #[test]
+    fn test_rule_activity_condition_and_wait_serde() {
+        let condition = RuleCondition::RuleRunning {
+            rule_id: "rule_game_mode".to_string(),
+            must_be_running: false,
+        };
+        let json = serde_json::to_string(&condition).unwrap();
+        assert!(json.contains("\"$condition_type\":\"rule_running\""), "{json}");
+        let decoded: RuleCondition = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, condition);
+
+        // Omitted must_be_running defaults to true, matching the other state conditions.
+        let defaulted: RuleCondition =
+            serde_json::from_str(r#"{"$condition_type":"rule_running","rule_id":"rule_a"}"#).unwrap();
+        assert_eq!(
+            defaulted,
+            RuleCondition::RuleRunning {
+                rule_id: "rule_a".to_string(),
+                must_be_running: true,
+            }
+        );
+
+        for wait in [
+            WaitCondition::RuleStarted {
+                rule_id: "rule_game_mode".into(),
+            },
+            WaitCondition::RuleStopped {
+                rule_id: "rule_game_mode".into(),
+            },
+        ] {
+            let action = Action::Wait {
+                mode: WaitMode::UntilCondition,
+                seconds: 0.0,
+                condition: Some(wait),
+                timeout_sec: 30.0,
+                timeout_policy: WaitTimeoutPolicy::Abort,
+            };
+            let json = serde_json::to_string(&action).unwrap();
+            let decoded: Action = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, action);
+        }
     }
 
     #[test]

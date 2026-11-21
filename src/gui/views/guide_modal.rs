@@ -344,7 +344,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Анатомия Правила",
             "1. Триггер (Trigger) — единственный источник события (запуск процесса, фокус окна, таймер, горячая клавиша, файл или вебхук).\n\
-             2. Предварительные Условия (Pre-conditions) — опциональная цепочка проверок (процесс, окно, время и дни недели, системные события, нагрузка CPU/RAM, файл или папка) с логикой И / ИЛИ. Если условия не выполнены, запуск правила пропускается.\n\
+             2. Предварительные Условия (Pre-conditions) — опциональная цепочка проверок (процесс, окно, время и дни недели, системные события, нагрузка CPU/RAM, файл или папка, активность другого правила) с логикой И / ИЛИ. Если условия не выполнены, запуск правила пропускается.\n\
              3. Actions Pipeline — последовательная цепочка основных шагов, исполняемых сверху вниз.\n\
              4. Exit Actions — завершающие шаги, исполняемые при закрытии отслеживаемого процесса.",
             t,
@@ -381,7 +381,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Rule Anatomy",
             "1. Trigger — the single origin event (process start, window focus, schedule, hotkey, file, or webhook).\n\
-             2. Pre-conditions — optional gating criteria (process running, active window focus, time range & days, system events, sustained CPU/RAM load, file or folder presence) chained with AND / OR operators. If not met, execution is skipped.\n\
+             2. Pre-conditions — optional gating criteria (process running, active window focus, time range & days, system events, sustained CPU/RAM load, file or folder presence, another rule's activity) chained with AND / OR operators. If not met, execution is skipped.\n\
              3. Actions Pipeline — ordered sequential pipeline of steps executed top-to-bottom.\n\
              4. Exit Actions — optional clean-up actions executed when the tracked process terminates.",
             t,
@@ -512,7 +512,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Предварительные Условия (Каталог Условий)",
             "• Интерактивный каталог: быстрый выбор условий через библиотеку с категориями и полнотекстовым поиском.\n\
-             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон/пробуждение, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, а также слежение за папкой или файлом.\n\
+             • Доступные проверки: состояние процесса (запущен/закрыт), активность окна (в фокусе/в фоне), диапазон времени и дни недели, системные события (блокировка экрана, сон/пробуждение, питание от сети/аккумулятора, простой пользователя, состояние монитора, подключение оборудования, доступность сети), пороги нагрузки CPU/RAM, слежение за папкой или файлом, а также активность другого правила (выполняется ли его пайплайн прямо сейчас).\n\
              • Логика связывания: объединение операторами И (AND) и ИЛИ (OR) в любых сочетаниях.\n\
              • Тихий пропуск: при невыполнении условий запуск правила мягко пропускается без ошибок.",
             t,
@@ -569,7 +569,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             ui,
             "Rule Pre-conditions (Condition Catalog)",
             "• Interactive Catalog: browse and select pre-conditions from an organized catalog with instant keyword search.\n\
-             • Environmental Checks: process state (running/closed), active window focus, time windows with days of week, system events (screen lock, sleep/wake, AC/battery, idle duration, display power, device plug & play, network connectivity), sustained CPU/RAM load thresholds, and folder or file presence with extension filters.\n\
+             • Environmental Checks: process state (running/closed), active window focus, time windows with days of week, system events (screen lock, sleep/wake, AC/battery, idle duration, display power, device plug & play, network connectivity), sustained CPU/RAM load thresholds, folder or file presence with extension filters, and another rule's pipeline activity.\n\
              • Flexible Logic: chain checks with AND / OR operators in any sequence.\n\
              • Silent Skip: when preconditions are not met, the rule quietly skips without errors.",
             t,
@@ -639,8 +639,8 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Отправка исходящих REST-запросов (GET, POST, PUT, DELETE) с заголовками и телом.", t);
         doc_table_row(ui, "Power & System", "Схемы питания Windows; сон, выключение экрана, перезагрузка, выключение и блокировка рабочей станции.", t);
         doc_table_row(ui, "Экранный Оверлей (HUD)", "Автономный GPU-оверлей поверх окон и игр: прицелы, текст с токенами, интерактивные кнопки/слайдеры, графики, телеметрия (CPU/RAM/сеть/микрофон), таймеры и медиаплеер с защитой от захвата.", t);
-        doc_table_row(ui, "Ожидание (Wait)", "Универсальная пауза: таймер задержки или ожидание событий (окно, процесс, хоткей, файл) с таймаутом и политикой прерывания.", t);
-        doc_table_row(ui, "Проверка (Check)", "Валидация условий посередине цепочки с мягким завершением выполнения последующих шагов без ошибок.", t);
+        doc_table_row(ui, "Ожидание (Wait)", "Универсальная пауза: таймер задержки или ожидание событий (окно, процесс, хоткей, файл, запуск или остановка другого правила) с таймаутом и политикой прерывания.", t);
+        doc_table_row(ui, "Проверка (Check)", "Валидация условий посередине цепочки (включая активность другого правила) с мягким завершением выполнения последующих шагов без ошибок.", t);
         doc_table_row(ui, "Всплывающие Уведомления", "Информационные toast-уведомления Windows с поддержкой токенов контекста.", t);
         doc_table_row(ui, "Управление Правилами", "Вызов пайплайна другого правила (с ожиданием завершения или без) и остановка его текущих выполнений без выключения самого правила.", t);
         doc_table_row(ui, "Ветвление (Если / Иначе)", "Динамическая проверка условий на лету с выполнением веток Если (THEN), Иначе Если (ELSE IF) и Иначе (ELSE).", t);
@@ -696,8 +696,8 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "HTTP Webhook (Outbound)", "Send outbound HTTP requests (GET, POST, PUT, DELETE) with custom headers and body.", t);
         doc_table_row(ui, "Power & System", "Windows power plans; sleep, turn the display off, restart, shut down, and lock the workstation.", t);
         doc_table_row(ui, "Screen Overlay (HUD)", "Standalone GPU overlay over apps and games: reticles, text with tokens, interactive buttons/sliders, live graphs, telemetry (CPU/RAM/net/mic), timers, and media player with anti-capture protection.", t);
-        doc_table_row(ui, "Wait Condition", "Universal wait: timer pause or waiting for events (window, process, hotkey, file) with timeout and abort/continue policies.", t);
-        doc_table_row(ui, "Check Condition", "Inline condition evaluation mid-pipeline that halts remaining steps cleanly without error.", t);
+        doc_table_row(ui, "Wait Condition", "Universal wait: timer pause or waiting for events (window, process, hotkey, file, another rule starting or stopping) with timeout and abort/continue policies.", t);
+        doc_table_row(ui, "Check Condition", "Inline condition evaluation mid-pipeline (including another rule's activity) that halts remaining steps cleanly without error.", t);
         doc_table_row(ui, "Desktop Notifications", "Windows toast notifications with execution context tokens.", t);
         doc_table_row(ui, "Rule Control", "Invoke another rule's pipeline (optionally waiting for it) or stop what it is running without disabling the rule.", t);
         doc_table_row(ui, "Branching (If / Else)", "Evaluate conditions dynamically and branch into Then, Else If, and Else sub-action sequences.", t);
