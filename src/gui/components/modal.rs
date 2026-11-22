@@ -141,6 +141,8 @@ pub fn render_modal_header(
 /// - **Asymmetric timing**: smooth 240ms open deceleration, fast 160ms close response.
 /// - **Consistent theming**: automatic depth shadow, background fills, border strokes, hairline dividers,
 ///   and optional signature top accent stripe.
+/// - **Nested dialogs**: a modal opened over another modal dims the card below it instead of
+///   stacking under it; its own scrim and popups stay ordered around its card.
 /// - **Safe keyboard and backdrop interaction**: Escape key & backdrop click handling with optional inhibition.
 pub struct Modal {
     id_str: &'static str,
@@ -279,6 +281,12 @@ impl Modal {
             egui::emath::easing::cubic_out,
         );
 
+        // Track the open transition ourselves: egui only raises layers it did not see on the
+        // previous pass, which misses a reopen while the close animation still runs.
+        let open_id = Id::unique(self.id_str).with("was_open");
+        let was_open = ctx.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+        ctx.data_mut(|d| d.insert_temp(open_id, self.is_open));
+
         if anim <= 0.001 && !self.is_open {
             // Once fully closed, remove initialization marker so subsequent opens are always guaranteed
             // to prime from 0.0 even if egui clears animation memory during idle.
@@ -293,15 +301,26 @@ impl Modal {
 
         let full = ctx.content_rect();
 
-        // 1. Scrim overlay with quadratic opacity ease
+        // 1. Scrim overlay with quadratic opacity ease.
+        // The scrim shares `Order::Foreground` with the card: a modal opened on top of another
+        // modal must dim the card below it, so its scrim cannot live in a lower order than
+        // every card. The two layers are re-linked as a parent/child pair at the end of this
+        // function, which keeps the scrim under its own card and under the popups opened from it.
+        let scrim_layer = egui::LayerId::new(Order::Foreground, Id::unique(self.id_str).with("scrim"));
+        let window_layer = egui::LayerId::new(Order::Foreground, Id::unique(self.id_str).with("window"));
+
+        // A dialog that opens rises above every dialog already open, scrim and card together.
+        if self.is_open && !was_open {
+            ctx.move_to_top(scrim_layer);
+            ctx.move_to_top(window_layer);
+        }
+
         let mut close_requested = false;
         let scrim_alpha = (anim.powf(0.85) * (self.scrim_max_alpha as f32)).round() as u8;
 
         if scrim_alpha > 0 {
-            let scrim_id = Id::unique(self.id_str).with("scrim");
-            ctx.move_to_top(egui::LayerId::new(Order::Middle, scrim_id));
-            egui::Area::new(scrim_id)
-                .order(Order::Middle)
+            egui::Area::new(scrim_layer.id)
+                .order(scrim_layer.order)
                 .fixed_pos(full.min)
                 .show(ctx, |ui| {
                     let (rect, resp) = ui.allocate_exact_size(full.size(), Sense::click());
@@ -380,9 +399,8 @@ impl Modal {
         );
 
         // 4. Modal Surface Window (Foreground order ensures child ComboBox & popups render on top)
-        let window_id = Id::unique(self.id_str).with("window");
-        egui::Area::new(window_id)
-            .order(Order::Foreground)
+        egui::Area::new(window_layer.id)
+            .order(window_layer.order)
             .fixed_pos(modal_rect.min)
             .show(ctx, |ui| {
                 ui.set_width(modal_rect.width());
@@ -488,6 +506,14 @@ impl Modal {
                 }
             });
 
+        // 5. Pin the card directly above its own scrim. egui consumes sublayer relations at the
+        // end of every pass, so the pair is re-linked each frame; `set_sublayer` keeps the two
+        // layers adjacent even when egui raises one of them on a click, so a click on the scrim
+        // can never park it over the card and a card raise can never bury its own popups.
+        if scrim_alpha > 0 {
+            ctx.set_sublayer(scrim_layer, window_layer);
+        }
+
         Some(ModalResponse {
             close_requested,
             #[cfg(test)]
@@ -583,6 +609,174 @@ mod tests {
             );
         });
         out.textures_delta.clear();
+    }
+
+    /// Nested modals: the scrim of a modal opened on top must dim the card of the modal below it.
+    /// The frame sequence mirrors the real UI — the upper dialog is opened from a control inside
+    /// the lower card, which also raises that card — and the assertion reads the painted shapes,
+    /// so it proves the visual order and not just the layer bookkeeping.
+    #[test]
+    fn test_nested_modal_scrim_dims_the_card_below_it() {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
+        // 0.9 x 0.9 and 0.4 x 0.4 of the screen, positioned the way `Modal::show` does.
+        let lower_card = Rect::from_min_size(pos2(64.0, 40.0), vec2(1152.0, 720.0));
+        let upper_card = Rect::from_min_size(pos2(350.0, 210.0), vec2(580.0, 380.0));
+
+        fn run_frame(
+            ctx: &egui::Context,
+            screen: Rect,
+            time: f64,
+            upper_open: bool,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    Modal::new("test-nested-lower", true)
+                        .width_fraction(0.9)
+                        .height_fraction(0.9)
+                        .show(ui.ctx(), &Tokens::DARK, |_frame| {});
+                    Modal::new("test-nested-upper", upper_open)
+                        .width_fraction(0.4)
+                        .height_fraction(0.4)
+                        .show(ui.ctx(), &Tokens::DARK, |_frame| {});
+                },
+            );
+            out.textures_delta.clear();
+            out
+        }
+
+        // The lower modal is open and settled.
+        run_frame(&ctx, screen, 0.0, false, Vec::new());
+        run_frame(&ctx, screen, 0.4, false, Vec::new());
+
+        // A press inside the lower card opens the upper dialog in the same frame, exactly like the
+        // studio's PRESETS button does; that press also raises the lower card.
+        run_frame(
+            &ctx,
+            screen,
+            0.5,
+            true,
+            vec![egui::Event::PointerButton {
+                pos: pos2(100.0, 400.0),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        run_frame(&ctx, screen, 0.6, true, Vec::new());
+        let out = run_frame(&ctx, screen, 0.8, true, Vec::new());
+
+        let layer = |id: &str, salt: &str| {
+            egui::LayerId::new(Order::Foreground, Id::unique(id).with(salt))
+        };
+        let upper_scrim = layer("test-nested-upper", "scrim");
+        let upper_layer = layer("test-nested-upper", "window");
+        let lower_layer = layer("test-nested-lower", "window");
+
+        // Inside the (larger) lower card but outside the upper card: the upper scrim owns it, so
+        // the dim lands above the card below instead of sliding under it. Inside the upper card
+        // its own scrim must stay underneath.
+        assert_eq!(ctx.layer_id_at(pos2(100.0, 400.0)), Some(upper_scrim));
+        assert_ne!(ctx.layer_id_at(pos2(100.0, 400.0)), Some(lower_layer));
+        assert_eq!(ctx.layer_id_at(pos2(640.0, 400.0)), Some(upper_layer));
+
+        // Same order in the painted output: lower card, then the upper scrim, then the upper card.
+        let scrim_fill = Color32::from_black_alpha(215);
+        let card_fill = Tokens::DARK.bg;
+        let (mut lower_bg, mut scrim_idx, mut upper_bg) = (None, None, None);
+        for (index, clipped) in out.shapes.iter().enumerate() {
+            let egui::Shape::Rect(rect) = &clipped.shape else { continue };
+            if rect.rect == screen && rect.fill == scrim_fill {
+                // Both scrims match; keep the last one painted, which is the upper scrim.
+                scrim_idx = Some(index);
+            } else if rect.rect == lower_card && rect.fill == card_fill {
+                lower_bg = Some(index);
+            } else if rect.rect == upper_card && rect.fill == card_fill {
+                upper_bg = Some(index);
+            }
+        }
+        let lower_bg = lower_bg.expect("the lower card background is painted");
+        let scrim_idx = scrim_idx.expect("the upper scrim is painted");
+        let upper_bg = upper_bg.expect("the upper card background is painted");
+        assert!(
+            lower_bg < scrim_idx,
+            "the upper scrim must be painted over the lower card (card {lower_bg}, scrim {scrim_idx})"
+        );
+        assert!(
+            scrim_idx < upper_bg,
+            "the upper card must be painted over its own scrim (scrim {scrim_idx}, card {upper_bg})"
+        );
+    }
+
+    /// A dialog reopened while its close animation still runs is still on screen, so egui sees its
+    /// layers as visible and raises nothing. The open transition tracked by `Modal::show` has to
+    /// put the pair back above a card that was raised in the meantime.
+    #[test]
+    fn test_reopen_during_close_animation_returns_to_the_top() {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
+        let lower_layer =
+            egui::LayerId::new(Order::Foreground, Id::unique("test-reopen-lower").with("window"));
+        let lower_scrim =
+            egui::LayerId::new(Order::Foreground, Id::unique("test-reopen-lower").with("scrim"));
+        let upper_scrim =
+            egui::LayerId::new(Order::Foreground, Id::unique("test-reopen-upper").with("scrim"));
+
+        fn run_frame(
+            ctx: &egui::Context,
+            screen: Rect,
+            time: f64,
+            upper_open: bool,
+        ) -> Option<super::ModalResponse> {
+            let mut seen = None;
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    Modal::new("test-reopen-lower", true)
+                        .width_fraction(0.9)
+                        .height_fraction(0.9)
+                        .show(ui.ctx(), &Tokens::DARK, |_frame| {});
+                    seen = Modal::new("test-reopen-upper", upper_open)
+                        .width_fraction(0.4)
+                        .height_fraction(0.4)
+                        .show(ui.ctx(), &Tokens::DARK, |_frame| {});
+                },
+            );
+            out.textures_delta.clear();
+            seen
+        }
+
+        run_frame(&ctx, screen, 0.0, false);
+        run_frame(&ctx, screen, 0.4, false);
+        run_frame(&ctx, screen, 0.7, true);
+        run_frame(&ctx, screen, 0.9, true);
+        assert_eq!(run_frame(&ctx, screen, 1.0, true).map(|r| r.anim), Some(1.0));
+
+        // Start closing, then raise the whole lower pair the way a click does: the card alone
+        // stays pinned under its own scrim, so both layers travel together.
+        let closing = run_frame(&ctx, screen, 1.05, false).expect("the close animation started");
+        assert!(closing.anim > 0.2, "the upper modal must still be visible, got {}", closing.anim);
+        ctx.move_to_top(lower_scrim);
+        ctx.move_to_top(lower_layer);
+        let still_closing = run_frame(&ctx, screen, 1.07, false).expect("the frame is still painted");
+        assert!(still_closing.anim > 0.0, "the upper modal must still be painted");
+        assert_eq!(ctx.layer_id_at(pos2(100.0, 400.0)), Some(lower_layer));
+
+        // Reopen before the fade ends: the pair must come back above the raised lower card.
+        let reopened = run_frame(&ctx, screen, 1.1, true).expect("the reopened modal is visible");
+        assert!(reopened.anim > 0.0, "the reopened modal animates in");
+        assert_eq!(ctx.layer_id_at(pos2(100.0, 400.0)), Some(upper_scrim));
     }
 
     #[test]
