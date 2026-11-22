@@ -16,11 +16,11 @@ const EXECUTION_TIME_LIMIT: Duration = Duration::from_secs(3);
 const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 /// Largest value a script may return (it is retained by the pipeline).
 const MAX_RETURNED_STRING_BYTES: usize = 64 * 1024;
-/// Limits for the output map filled through `ph.set`.
+/// Limits for the output map filled through `syn.set`.
 const MAX_OUTPUT_VARS: usize = 64;
 const MAX_OUTPUT_KEY_BYTES: usize = 256;
 const MAX_OUTPUT_VALUE_BYTES: usize = 16 * 1024;
-/// `ph.run_cmd` deadline and captured output caps. The stdout cap is the shared runner's
+/// `syn.run_cmd` deadline and captured output caps. The stdout cap is the shared runner's
 /// per-stream cap, so the `[output truncated]` marker keeps its exact meaning.
 const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_CMD_OUTPUT_BYTES: usize = crate::command::MAX_CAPTURED_OUTPUT;
@@ -37,62 +37,62 @@ impl LuaRunner {
         let lua = Lua::new();
         Self::install_limits(&lua)?;
 
-        // 1. Create `ph` global table
-        let ph_table = lua.create_table().map_err(|e| e.to_string())?;
+        // 1. Create `syn` global table
+        let syn_table = lua.create_table().map_err(|e| e.to_string())?;
 
-        // 2. Populate ph.context
+        // 2. Populate syn.context
         let ctx_table = lua.create_table().map_err(|e| e.to_string())?;
         for (k, v) in context {
             ctx_table.set(k.as_str(), v.as_str()).map_err(|e| e.to_string())?;
         }
-        ph_table.set("context", ctx_table).map_err(|e| e.to_string())?;
+        syn_table.set("context", ctx_table).map_err(|e| e.to_string())?;
 
-        // 3. ph.get(key)
+        // 3. syn.get(key)
         let ctx_clone = context.clone();
         let get_fn = lua.create_function(move |_, key: String| {
             Ok(ctx_clone.get(&key).cloned().unwrap_or_default())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("get", get_fn).map_err(|e| e.to_string())?;
+        syn_table.set("get", get_fn).map_err(|e| e.to_string())?;
 
-        // 4. ph.set(key, value)
+        // 4. syn.set(key, value)
         let out_vars_clone = Arc::clone(&output_vars);
         let set_fn = lua.create_function(move |_, (key, val): (String, String)| {
             if key.len() > MAX_OUTPUT_KEY_BYTES {
                 return Err(LuaError::runtime(format!(
-                    "ph.set: key exceeds the {MAX_OUTPUT_KEY_BYTES} byte limit"
+                    "syn.set: key exceeds the {MAX_OUTPUT_KEY_BYTES} byte limit"
                 )));
             }
             if val.len() > MAX_OUTPUT_VALUE_BYTES {
                 return Err(LuaError::runtime(format!(
-                    "ph.set: value for '{key}' exceeds the {MAX_OUTPUT_VALUE_BYTES} byte limit"
+                    "syn.set: value for '{key}' exceeds the {MAX_OUTPUT_VALUE_BYTES} byte limit"
                 )));
             }
             if let Ok(mut map) = out_vars_clone.lock() {
                 if !map.contains_key(&key) && map.len() >= MAX_OUTPUT_VARS {
                     return Err(LuaError::runtime(format!(
-                        "ph.set: more than {MAX_OUTPUT_VARS} output variables"
+                        "syn.set: more than {MAX_OUTPUT_VARS} output variables"
                     )));
                 }
                 map.insert(key, val);
             }
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("set", set_fn).map_err(|e| e.to_string())?;
+        syn_table.set("set", set_fn).map_err(|e| e.to_string())?;
 
-        // 5. ph.log(msg)
+        // 5. syn.log(msg)
         let log_fn = lua.create_function(|_, msg: String| {
             println!("[LUA] {}", msg);
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("log", log_fn).map_err(|e| e.to_string())?;
+        syn_table.set("log", log_fn).map_err(|e| e.to_string())?;
 
-        // 6. ph.run_cmd(cmd)
+        // 6. syn.run_cmd(cmd)
         let cmd_fn = lua.create_function(|_, cmd: String| {
             Ok(run_shell_command(&cmd, RUN_CMD_TIMEOUT))
         }).map_err(|e| e.to_string())?;
-        ph_table.set("run_cmd", cmd_fn).map_err(|e| e.to_string())?;
+        syn_table.set("run_cmd", cmd_fn).map_err(|e| e.to_string())?;
 
-        // 7. ph.overlay_show(id)
+        // 7. syn.overlay_show(id)
         let ov_show = lua.create_function(|_, id: String| {
             let config = crate::config::Library::shared();
             let overlay = config.find_overlay(&id).cloned().unwrap_or_else(|| match id.as_str() {
@@ -104,18 +104,18 @@ impl LuaRunner {
             crate::daemon::overlay_manager::show_overlay(&overlay, false, None);
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("overlay_show", ov_show).map_err(|e| e.to_string())?;
+        syn_table.set("overlay_show", ov_show).map_err(|e| e.to_string())?;
 
-        // 8. ph.overlay_hide(id)
+        // 8. syn.overlay_hide(id)
         let ov_hide = lua.create_function(|_, id: String| {
             let config = crate::config::Library::shared();
             let target_id = config.find_overlay(&id).map(|o| o.id.as_str()).unwrap_or(&id);
             crate::daemon::overlay_manager::hide_overlay(target_id);
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("overlay_hide", ov_hide).map_err(|e| e.to_string())?;
+        syn_table.set("overlay_hide", ov_hide).map_err(|e| e.to_string())?;
 
-        // 9. ph.overlay_toggle(id)
+        // 9. syn.overlay_toggle(id)
         let ov_toggle = lua.create_function(|_, id: String| {
             let config = crate::config::Library::shared();
             let overlay = config.find_overlay(&id).cloned().unwrap_or_else(|| match id.as_str() {
@@ -127,16 +127,16 @@ impl LuaRunner {
             crate::daemon::overlay_manager::toggle_overlay(&overlay, None);
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("overlay_toggle", ov_toggle).map_err(|e| e.to_string())?;
+        syn_table.set("overlay_toggle", ov_toggle).map_err(|e| e.to_string())?;
 
-        // 10. ph.overlay_set_text(id, text)
+        // 10. syn.overlay_set_text(id, text)
         let ov_set_text = lua.create_function(|_, (id, text): (String, String)| {
             crate::daemon::overlay_manager::update_overlay_text(&id, &text);
             Ok(())
         }).map_err(|e| e.to_string())?;
-        ph_table.set("overlay_set_text", ov_set_text).map_err(|e| e.to_string())?;
+        syn_table.set("overlay_set_text", ov_set_text).map_err(|e| e.to_string())?;
 
-        lua.globals().set("ph", ph_table).map_err(|e| e.to_string())?;
+        lua.globals().set("syn", syn_table).map_err(|e| e.to_string())?;
 
         // Execute chunk and capture return value if any
         let result: Value = lua
@@ -169,7 +169,7 @@ impl LuaRunner {
     }
 
     /// Installs the instruction/time hook and the Lua heap cap. They stay active
-    /// for the whole script, including callbacks such as `ph.run_cmd`.
+    /// for the whole script, including callbacks such as `syn.run_cmd`.
     fn install_limits(lua: &Lua) -> Result<(), String> {
         lua.set_memory_limit(MEMORY_LIMIT_BYTES)
             .map_err(|e| format!("Lua memory limit is unavailable: {e}"))?;
@@ -203,7 +203,7 @@ impl LuaRunner {
 
 /// Runs a shell command through the shared bounded runner with a wall-clock deadline, a capped
 /// capture of stdout/stderr, the documented `Error: ...` string for every failure mode, and the
-/// process-tree kill on timeout or wait error. Blocking on purpose: `ph.run_cmd` is synchronous
+/// process-tree kill on timeout or wait error. Blocking on purpose: `syn.run_cmd` is synchronous
 /// in the Lua VM.
 fn run_shell_command(cmd: &str, timeout: Duration) -> String {
     let mut command = Command::new("cmd");
@@ -267,9 +267,9 @@ mod tests {
         let outputs = Arc::new(Mutex::new(HashMap::new()));
 
         let script = r#"
-            local name = ph.get("ProcessName")
-            ph.set("Result", "Hello " .. name)
-            ph.log("Running in lua for " .. name)
+            local name = syn.get("ProcessName")
+            syn.set("Result", "Hello " .. name)
+            syn.log("Running in lua for " .. name)
             return 42
         "#;
 
@@ -317,19 +317,19 @@ mod tests {
 
     #[test]
     fn test_lua_runner_caps_output_variable_value() {
-        let err = run(&format!("ph.set('k', string.rep('v', {}))", MAX_OUTPUT_VALUE_BYTES + 1))
+        let err = run(&format!("syn.set('k', string.rep('v', {}))", MAX_OUTPUT_VALUE_BYTES + 1))
             .expect_err("an oversized output variable must be rejected");
-        assert!(err.contains("ph.set"), "unexpected abort reason: {err}");
+        assert!(err.contains("syn.set"), "unexpected abort reason: {err}");
     }
 
     #[test]
     fn test_lua_runner_caps_output_variable_count() {
         let err = run(&format!(
-            "for i = 1, {} do ph.set('k' .. i, 'v') end",
+            "for i = 1, {} do syn.set('k' .. i, 'v') end",
             MAX_OUTPUT_VARS + 1
         ))
         .expect_err("too many output variables must be rejected");
-        assert!(err.contains("ph.set"), "unexpected abort reason: {err}");
+        assert!(err.contains("syn.set"), "unexpected abort reason: {err}");
     }
 
     #[cfg(windows)]
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_lua_runner_run_cmd_exposes_error_string() {
-        let res = run("return ph.run_cmd('exit /b 7')").expect("run_cmd itself must not raise");
+        let res = run("return syn.run_cmd('exit /b 7')").expect("run_cmd itself must not raise");
         assert_eq!(res, "Error: exit code 7");
     }
 }

@@ -61,7 +61,7 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Tray icon, menu and notifications | `src/daemon/tray/` (facade `src/daemon/tray.rs`) |
 | Overlay process lifecycle and placement | `src/daemon/overlay_manager/` (facade `src/daemon/overlay_manager.rs`), `src/gui/overlay_window.rs`; placement math in `src/models/overlay/geometry.rs` |
 | Webhook trigger server | `src/daemon/webhook_server.rs` |
-| Lua runtime and the `ph` API | `src/daemon/lua_runner.rs` |
+| Lua runtime and the `syn` API | `src/daemon/lua_runner.rs` |
 | Discord Rich Presence | `src/daemon/discord_rpc.rs` |
 | Named-pipe server | `src/daemon/ipc_server.rs` |
 | GUI state, drafts, undo, IPC calls | `src/gui/state/` (facade `src/gui/state.rs`) |

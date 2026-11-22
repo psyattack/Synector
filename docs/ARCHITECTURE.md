@@ -108,7 +108,7 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/daemon/` services | Process watcher, hotkeys, system events, telemetry (`src/daemon/telemetry/`), tray (`src/daemon/tray/`), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC |
 | `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
 | `src/win_args.rs` | One Windows command-line helper set: UTF-16-equivalent argument splitting/quoting/joining, PowerShell single-quoted literal escaping and the no-window spawn flag shared by the daemon, the app tier, updater, autorun and shortcuts |
-| `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `ph.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling) |
+| `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `syn.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling) |
 | `src/win_com.rs` | One COM apartment guard (MTA or STA, infallible or fallible) shared by action audio, telemetry audio and shortcut creation; it uninitialises only when `CoInitializeEx` returned `S_OK`, so a thread another component already initialised is never decremented |
 | `src/daemon/engine/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher; the historical `crate::daemon::rule_call` module path is kept as a re-export |
 | `src/daemon/engine/activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions; the historical `crate::daemon::rule_activity` module path is kept as a re-export |
@@ -207,7 +207,7 @@ offline share import commits `library.json` before `rules.json`, so imported rul
 missing preset or overlay.
 
 Hot sections are read through a process-local cache (`settings.json`, `library.json`) that validates
-the cached value against the file's size and modification time: action steps, Lua `ph.overlay_*`
+the cached value against the file's size and modification time: action steps, Lua `syn.overlay_*`
 calls and overlay windows avoid re-reading and re-parsing the file, while an externally written file
 is still picked up immediately. A cached stamp is trusted only after the file's timestamp is at
 least two seconds old, so a coarse filesystem timestamp cannot hide an equal-length rewrite, and a
@@ -335,7 +335,7 @@ Action handlers are asynchronous. Each action family lives in its own module und
 exhaustively, so a new `Action` variant cannot silently no-op. Helper subprocesses — scripts, archive
 tools, audio/device helpers and elevated launches — run through the one bounded runner in
 `src/command.rs` on a blocking thread that enforces a timeout and caps captured output at 64 KiB
-per stream; the Lua `ph.run_cmd` bridge uses the same runner (with a process-tree kill on timeout),
+per stream; the Lua `syn.run_cmd` bridge uses the same runner (with a process-tree kill on timeout),
 and the updater's external extraction tools run through it with a 600 s ceiling. The Windows
 argument quoter, PowerShell literal escaper and no-window spawn flag live in `src/win_args.rs`; the
 COM apartment guard lives in `src/win_com.rs`. The budgets are 300 s for PowerShell/Batch scripts,
@@ -435,7 +435,7 @@ orientation awareness. The supervisor is split by owner under `src/daemon/overla
 notification overlays); `src/daemon/overlay_manager.rs` re-exports the same public surface.
 Optional `WDA_EXCLUDEFROMCAPTURE` keeps overlays out of screen capture.
 Running overlay children are assigned to a kill-on-close Job Object, so they cannot outlive the
-daemon. `SetText` and `ph.overlay_set_text` publish a label to
+daemon. `SetText` and `syn.overlay_set_text` publish a label to
 `%LOCALAPPDATA%\Synector\overlay_text\<slug>-<hash>.txt` by atomic replace; the overlay window polls
 that file every 150 ms, so text updates repaint without restarting the process. Positions reported
 by `WM_MOVE`/`WM_EXITSIZEMOVE` while the overlay is being dragged are throttled, coalesced into one

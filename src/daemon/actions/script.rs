@@ -40,14 +40,14 @@ pub(super) async fn run_script_internal(
             if run_in_window {
                 let mut cmd = powershell_command(&script_code);
                 for (k, v) in script_env(context) {
-                    cmd.env(format!("PH_{}", k.to_uppercase()), v);
+                    cmd.env(format!("SYN_{}", k.to_uppercase()), v);
                 }
                 let _ = cmd.spawn().map_err(|e| format!("PowerShell spawn error: {e}"))?;
                 Ok(None)
             } else {
                 let mut cmd = powershell_command(&script_code);
                 for (k, v) in script_env(context) {
-                    cmd.env(format!("PH_{}", k.to_uppercase()), v);
+                    cmd.env(format!("SYN_{}", k.to_uppercase()), v);
                 }
                 let out = run_command_bounded_async(cmd, SCRIPT_TIMEOUT).await?;
                 if out.timed_out {

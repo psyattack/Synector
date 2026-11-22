@@ -18,7 +18,7 @@ Rule format, quotas and the action pipeline are documented in
     {
       "$action_type": "execute_script",
       "interpreter": "lua",
-      "script": "local name = ph.get(\"ProcessName\")\nif name == \"\" then\n  name = \"manual run\"\nend\nph.log(\"process: \" .. name)\nreturn \"hello from \" .. name"
+      "script": "local name = syn.get(\"ProcessName\")\nif name == \"\" then\n  name = \"manual run\"\nend\nsyn.log(\"process: \" .. name)\nreturn \"hello from \" .. name"
     },
     {
       "$action_type": "notification",
@@ -45,19 +45,19 @@ well. Quote values explicitly when they may contain spaces or quotes.
 
 ## API
 
-The `ph` table is the only global Synector adds.
+The `syn` table is the only global Synector adds.
 
 | Function | Returns | Notes |
 |---|---|---|
-| `ph.context` | table | Copy of the run context; keys as described above |
-| `ph.get(key)` | string | `""` when the key is missing |
-| `ph.set(key, value)` | — | Writes to a run-local table; return a value instead (see Output) |
-| `ph.log(text)` | — | Writes `[LUA] text` to the daemon's standard output |
-| `ph.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure or timeout comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
-| `ph.overlay_show(id)` | — | Shows a saved overlay |
-| `ph.overlay_hide(id)` | — | Hides it |
-| `ph.overlay_toggle(id)` | — | Shows or hides it |
-| `ph.overlay_set_text(id, text)` | — | Replaces the runtime text of an overlay |
+| `syn.context` | table | Copy of the run context; keys as described above |
+| `syn.get(key)` | string | `""` when the key is missing |
+| `syn.set(key, value)` | — | Writes to a run-local table; return a value instead (see Output) |
+| `syn.log(text)` | — | Writes `[LUA] text` to the daemon's standard output |
+| `syn.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure or timeout comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
+| `syn.overlay_show(id)` | — | Shows a saved overlay |
+| `syn.overlay_hide(id)` | — | Hides it |
+| `syn.overlay_toggle(id)` | — | Shows or hides it |
+| `syn.overlay_set_text(id, text)` | — | Replaces the runtime text of an overlay |
 
 Overlay lookups accept the overlay id or its name (case-insensitive). When `overlay_show` or
 `overlay_toggle` gets an unknown id, it falls back to a default overlay instead of failing.
@@ -66,13 +66,13 @@ Overlay lookups accept the overlay id or its name (case-insensitive). When `over
 
 Every execution is bounded so a runaway script cannot pin a daemon worker: 5,000,000 Lua
 instructions and 3 seconds of wall-clock time enforced by the VM hook, and a 64 MiB Lua heap. The
-hook is reached only between Lua instructions, so a native call such as `ph.run_cmd` is not
+hook is reached only between Lua instructions, so a native call such as `syn.run_cmd` is not
 interrupted by it and is bounded separately by its own 5 s deadline; one execution can therefore
 hold a daemon worker for roughly the 3 s budget plus such a call. A returned string longer than
-64 KiB fails the step. `ph.set` stores at most 64 output variables, 256-byte keys and 16 KiB values;
+64 KiB fails the step. `syn.set` stores at most 64 output variables, 256-byte keys and 16 KiB values;
 exceeding a cap raises a Lua error.
 
-`ph.run_cmd` captures at most 64 KiB of stdout — cut output ends with `[output truncated]` — and
+`syn.run_cmd` captures at most 64 KiB of stdout — cut output ends with `[output truncated]` — and
 2 KiB of stderr, and kills the child process after 5 seconds (`Error: command timed out after 5s`).
 A non-zero exit returns `Error: exit code <code>`, followed by the trimmed stderr when it is not
 empty.
@@ -84,7 +84,7 @@ converted, booleans become `true`/`false`, and anything else (tables, functions,
 empty. The engine stores a non-empty result in the run context as `PrevOutput` and `StepN.Output`
 (`Step1.Output` for the first step), so later actions can use `{PrevOutput}` or `{Step1.Output}`.
 An If/Else step passes on the output of the last output-bearing action in the branch it took, so a
-script nested in a branch feeds the parent pipeline's tokens like a top-level step. `ph.set` writes
+script nested in a branch feeds the parent pipeline's tokens like a top-level step. `syn.set` writes
 into a run-local table that nothing reads back today — return the value instead.
 
 ## Errors
@@ -96,7 +96,7 @@ records only that the step failed.
 
 ## Security
 
-The interpreter is not a sandbox: `ph.run_cmd` runs through `cmd /C` with the daemon's rights, which
+The interpreter is not a sandbox: `syn.run_cmd` runs through `cmd /C` with the daemon's rights, which
 are administrator rights unless Synector was started with `--no-elevate`. Run only rules and share
-codes you trust, and keep secrets out of `ph.log` — it writes to standard output rather than the log
+codes you trust, and keep secrets out of `syn.log` — it writes to standard output rather than the log
 file.

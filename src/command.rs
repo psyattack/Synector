@@ -1,6 +1,6 @@
 //! One bounded subprocess runner and one outcome type for short-lived helper processes.
 //!
-//! Action helpers, the Lua `ph.run_cmd` bridge and the updater's external tools all spawn a
+//! Action helpers, the Lua `syn.run_cmd` bridge and the updater's external tools all spawn a
 //! helper program with the same requirements: a wall-clock deadline, captured output that cannot
 //! grow the daemon's heap without bound, and a result the caller can turn into its own message.
 //! The runner keeps draining a pipe after the capture cap so the child never blocks on a full
@@ -75,7 +75,7 @@ impl From<CommandError> for String {
 /// Result of a bounded helper subprocess: exit status, capped streams and timeout/truncation
 /// flags. `stdout`/`stderr` are the trimmed lossy strings the action handlers consume;
 /// [`CommandOutcome::stdout_bytes`]/[`CommandOutcome::stderr_bytes`] expose the untrimmed capture
-/// for callers whose output contract is byte-exact (the Lua `ph.run_cmd` bridge).
+/// for callers whose output contract is byte-exact (the Lua `syn.run_cmd` bridge).
 pub(crate) struct CommandOutcome {
     pub(crate) status: Option<ExitStatus>,
     pub(crate) stdout: String,

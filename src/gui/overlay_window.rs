@@ -416,7 +416,7 @@ pub struct OverlayWindowApp {
     /// Cached `HWND` of the tracked target window (raw pointer value).
     pub target_window: Option<isize>,
     pub frame_count: u32,
-    /// Throttle for the live-text channel (`ph.overlay_set_text` / `SetText`).
+    /// Throttle for the live-text channel (`syn.overlay_set_text` / `SetText`).
     pub last_text_poll: Instant,
     /// UI language resolved once at window startup: overlay windows are short-lived and
     /// must not re-read settings every frame.

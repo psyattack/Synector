@@ -463,7 +463,7 @@ const LUA_KEYWORDS: &[&str] = &[
 ];
 
 const LUA_GLOBALS: &[&str] = &[
-    "ph", "log", "run_cmd", "get", "set", "print", "assert", "error", "ipairs",
+    "syn", "log", "run_cmd", "get", "set", "print", "assert", "error", "ipairs",
     "pairs", "pcall", "xpcall", "select", "tonumber", "tostring", "type", "string",
     "table", "math", "io", "os", "coroutine", "package", "utf8", "debug",
 ];
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn test_lua_highlighter_preserves_text() {
         let t = Tokens::DARK;
-        let script = "-- Lua script\n--[[ block ]]\nlocal target = \"notepad.exe\"\nph.log(\"info\", \"Starting: \" .. target)\nif ph.get(\"status\") == nil then\n    ph.set(\"status\", 1)\nend";
+        let script = "-- Lua script\n--[[ block ]]\nlocal target = \"notepad.exe\"\nsyn.log(\"info\", \"Starting: \" .. target)\nif syn.get(\"status\") == nil then\n    syn.set(\"status\", 1)\nend";
         let job = highlight_script(script, ScriptLanguage::Lua, &t, 12.0);
         assert!(!job.sections.is_empty());
         assert_eq!(job.text, script);

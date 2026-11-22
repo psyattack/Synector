@@ -46,7 +46,7 @@ pub(super) struct CachedSection<T> {
 }
 
 /// `settings.json` and `library.json` are read from hot paths (every action step, every
-/// Lua `ph.overlay_*` call, overlay windows). The cache turns those reads into one
+/// Lua `syn.overlay_*` call, overlay windows). The cache turns those reads into one
 /// `stat` per call; a miss re-reads and re-parses the file.
 pub(super) static SETTINGS_CACHE: LazyLock<RwLock<Option<CachedSection<Settings>>>> =
     LazyLock::new(|| RwLock::new(None));

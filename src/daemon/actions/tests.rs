@@ -647,6 +647,21 @@ async fn test_if_else_propagates_nested_script_output() {
     );
 }
 
+#[tokio::test]
+async fn test_powershell_script_sees_syn_prefixed_context() {
+    let mut context = HashMap::new();
+    context.insert("ProcessName".to_string(), "probe.exe".to_string());
+    let out = super::script::run_script_internal(
+        &crate::models::ScriptType::PowerShell,
+        "Write-Output $env:SYN_PROCESSNAME",
+        false,
+        &context,
+    )
+    .await
+    .expect("the script should run");
+    assert_eq!(out.as_deref(), Some("probe.exe"));
+}
+
 #[test]
 fn test_macro_plan_resolution_prefers_preset_defaults() {
     let inline_event = crate::models::MacroEvent::Delay {

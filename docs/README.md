@@ -13,7 +13,7 @@ keeping their own list.
 | [../README.md](../README.md) | Overview, features, installation, quick-start build commands and configuration. [Русская версия](../README.ru.md). |
 | [FAQ.md](FAQ.md) | Common questions and troubleshooting: elevation, updates, logs, rules, overlays, macros and configuration recovery. |
 | [RULE_AUTHORING.md](RULE_AUTHORING.md) | Command-line rule authoring: commands, JSON format, quotas, webhook contract, validation, share codes. |
-| [SCRIPTING.md](SCRIPTING.md) | Lua runtime, the `ph` API, context tokens, output and error handling. |
+| [SCRIPTING.md](SCRIPTING.md) | Lua runtime, the `syn` API, context tokens, output and error handling. |
 | [EXAMPLES.md](EXAMPLES.md) | Complete, ready-to-apply rule recipes. |
 
 ## Developers

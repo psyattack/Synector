@@ -662,7 +662,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Графики и Таймеры: графики истории (линейные, с заливкой, гистограммы) и таймеры (часы, секундомер, обратный отсчет, аптайм).\n\
              • Гейминг и Медиа: кастомные прицелы (Crosshair), визуализаторы нажатий клавиш (WASD, стрелки), медиаплеер и векторные фигуры.\n\
              • Защита от захвата (Anti-Capture): режим WDA_EXCLUDEFROMCAPTURE гарантирует полную невидимость оверлея в OBS Studio, Discord стримах и скриншотах.\n\
-             • Автономное окно и калибровка: отдельное легковесное окно с DWM-стилизацией, сквозным кликом, калибровкой из Студии (в этом режиме оверлей можно перетаскивать) и Lua API (ph.overlay_*).",
+             • Автономное окно и калибровка: отдельное легковесное окно с DWM-стилизацией, сквозным кликом, калибровкой из Студии (в этом режиме оверлей можно перетаскивать) и Lua API (syn.overlay_*).",
             t,
             false,
         );
@@ -719,7 +719,7 @@ fn render_actions_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
              • Graphs & Timers: history charts (line, filled area, histogram) and versatile timers (system clock, stopwatch, countdown, uptime).\n\
              • Gaming & Media: custom crosshairs, key visualizer layouts (WASD, Arrows, 6-Key), media player widgets, and vector shapes.\n\
              • Anti-Capture Mode: WDA_EXCLUDEFROMCAPTURE flag keeps the overlay completely invisible to OBS Studio, Discord screen sharing, and screenshot captures.\n\
-             • Standalone Window & Calibration: dedicated lightweight borderless window with DWM styling, click-through mode, studio-driven calibration (the overlay becomes draggable), and Lua scripting API (ph.overlay_*).",
+             • Standalone Window & Calibration: dedicated lightweight borderless window with DWM styling, click-through mode, studio-driven calibration (the overlay becomes draggable), and Lua scripting API (syn.overlay_*).",
             t,
             false,
         );
@@ -837,9 +837,9 @@ fn render_output_piping_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         );
 
         ui.add_space(2.0);
-        doc_paragraph(ui, "В PowerShell все переменные контекста также доступны как переменные окружения с префиксом `$env:PH_...` (например `$env:PH_PROCESSNAME`, `$env:PH_PREVOUTPUT`).", t);
+        doc_paragraph(ui, "В PowerShell все переменные контекста также доступны как переменные окружения с префиксом `$env:SYN_...` (например `$env:SYN_PROCESSNAME`, `$env:SYN_PREVOUTPUT`).", t);
         ui.add_space(2.0);
-        doc_paragraph(ui, "В скриптах Lua достаточно вернуть строку через `return \"результат\"`, чтобы движок передал её в {PrevOutput}. Прочитать её из скрипта можно через `ph.get(\"PrevOutput\")` или `ph.context.PrevOutput`.", t);
+        doc_paragraph(ui, "В скриптах Lua достаточно вернуть строку через `return \"результат\"`, чтобы движок передал её в {PrevOutput}. Прочитать её из скрипта можно через `syn.get(\"PrevOutput\")` или `syn.context.PrevOutput`.", t);
     } else {
         doc_header(ui, "Output Piping & Data Flow", t);
         doc_paragraph(ui, "Output Piping allows passing output between actions without intermediate files.", t);
@@ -867,9 +867,9 @@ fn render_output_piping_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         );
 
         ui.add_space(2.0);
-        doc_paragraph(ui, "In PowerShell, all context variables are also accessible as environment variables prefixed with `$env:PH_...` (e.g. `$env:PH_PROCESSNAME`, `$env:PH_PREVOUTPUT`).", t);
+        doc_paragraph(ui, "In PowerShell, all context variables are also accessible as environment variables prefixed with `$env:SYN_...` (e.g. `$env:SYN_PROCESSNAME`, `$env:SYN_PREVOUTPUT`).", t);
         ui.add_space(2.0);
-        doc_paragraph(ui, "In Lua scripts, returning a string via `return \"result\"` captures it into {PrevOutput}. Read it from inside a script with `ph.get(\"PrevOutput\")` or `ph.context.PrevOutput`.", t);
+        doc_paragraph(ui, "In Lua scripts, returning a string via `return \"result\"` captures it into {PrevOutput}. Read it from inside a script with `syn.get(\"PrevOutput\")` or `syn.context.PrevOutput`.", t);
     }
 }
 

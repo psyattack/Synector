@@ -136,7 +136,7 @@ fn test_new_actions_and_conditions_serde() {
             },
             Action::ExecuteScript {
                 interpreter: ScriptType::Lua,
-                script: "ph.log('info', 'Workstation setup complete!')".into(),
+                script: "syn.log('info', 'Workstation setup complete!')".into(),
                 run_in_window: false,
             },
             Action::Firewall {
