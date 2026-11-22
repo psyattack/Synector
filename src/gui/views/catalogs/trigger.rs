@@ -5,64 +5,17 @@
 //! The layout, filtering and card rendering live in the shared catalog primitives
 //! (`render_catalog_body`), so this file only owns the trigger table and the commit path.
 
-use egui::{vec2, Color32};
-use crate::gui::components::modal::Modal;
+use egui::vec2;
+use crate::gui::components::catalog_modal::{
+    CatalogCategory, CatalogChrome, CatalogEntryDef, CatalogModal,
+};
 use crate::gui::state::GuiState;
 use crate::gui::theme::Tokens;
-use crate::i18n::Strings;
 use crate::models::{
     ProcessMatchMode, ScheduleType, SystemEventType, Trigger,
 };
-use super::action_catalog_modal::{
-    catalog_commit_allowed, render_catalog_body, render_catalog_header, CatalogCategory,
-    CatalogEntry, CatalogView,
-};
 
-struct TriggerCatalogItem {
-    category_idx: usize, // 1: Processes, 2: Schedule, 3: System, 4: Events
-    badge: &'static str,
-    title: fn(&Strings) -> &'static str,
-    description: fn(&Strings) -> &'static str,
-    glyph: &'static str,
-    tint: fn(&Tokens) -> Color32,
-    keywords: &'static [&'static str],
-    constructor: fn() -> Option<Trigger>,
-}
-
-impl CatalogEntry for TriggerCatalogItem {
-    fn category(&self) -> usize {
-        self.category_idx
-    }
-
-    fn badge(&self) -> &'static str {
-        self.badge
-    }
-
-    fn title(&self, loc: &Strings) -> &'static str {
-        (self.title)(loc)
-    }
-
-    fn description(&self, loc: &Strings) -> &'static str {
-        (self.description)(loc)
-    }
-
-    fn glyph(&self) -> &'static str {
-        self.glyph
-    }
-
-    fn tint(&self, t: &Tokens) -> Color32 {
-        (self.tint)(t)
-    }
-
-    fn keywords(&self) -> &'static [&'static str] {
-        self.keywords
-    }
-
-    fn nestable(&self) -> bool {
-        // Triggers are never offered as branch actions, so the catalog has no nesting mode.
-        true
-    }
-}
+type TriggerEntry = CatalogEntryDef<fn() -> Option<Trigger>>;
 
 /// Default `target_datetime` of a freshly added OneShot trigger: tomorrow at noon in the model's
 /// wire format. `Trigger::schedule_errors` rejects an unset timestamp, so the rule must carry a
@@ -74,11 +27,12 @@ fn default_oneshot_target() -> String {
     format!("{} 12:00:00", day.format("%Y-%m-%d"))
 }
 
-const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
+const TRIGGER_CATALOG_ITEMS: &[TriggerEntry] = &[
     // 0. Manual mode (On Demand)
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "MANUAL",
+        nestable: true,
         title: |loc| loc.catalog_trigger_manual_title,
         description: |loc| loc.catalog_trigger_manual_desc,
         glyph: egui_phosphor::regular::PLAY_CIRCLE,
@@ -88,9 +42,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
     },
 
     // 1. Process Management
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "PROCESS",
+        nestable: true,
         title: |loc| loc.catalog_trigger_process_title,
         description: |loc| loc.catalog_trigger_process_desc,
         glyph: egui_phosphor::regular::CPU,
@@ -102,9 +57,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             single_instance: false,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "WINDOW",
+        nestable: true,
         title: |loc| loc.catalog_trigger_window_title,
         description: |loc| loc.catalog_trigger_window_desc,
         glyph: egui_phosphor::regular::EYE,
@@ -118,9 +74,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
     },
 
     // 2. Schedule & Time
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "TIMER",
+        nestable: true,
         title: |loc| loc.catalog_trigger_interval_title,
         description: |loc| loc.catalog_trigger_interval_desc,
         glyph: egui_phosphor::regular::TIMER,
@@ -135,9 +92,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             target_datetime: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "SCHEDULE",
+        nestable: true,
         title: |loc| loc.catalog_trigger_daily_title,
         description: |loc| loc.catalog_trigger_daily_desc,
         glyph: egui_phosphor::regular::CALENDAR,
@@ -152,9 +110,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             target_datetime: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "ONE-SHOT",
+        nestable: true,
         title: |loc| loc.catalog_trigger_oneshot_title,
         description: |loc| loc.catalog_trigger_oneshot_desc,
         glyph: egui_phosphor::regular::CALENDAR_CHECK,
@@ -169,9 +128,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             target_datetime: Some(default_oneshot_target()),
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "MONTHLY",
+        nestable: true,
         title: |loc| loc.catalog_trigger_monthly_title,
         description: |loc| loc.catalog_trigger_monthly_desc,
         glyph: egui_phosphor::regular::CALENDAR_BLANK,
@@ -188,9 +148,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
     },
 
     // 3. Hardware & System
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "HOTKEY",
+        nestable: true,
         title: |loc| loc.catalog_trigger_hotkey_title,
         description: |loc| loc.catalog_trigger_hotkey_desc,
         glyph: egui_phosphor::regular::COMMAND,
@@ -202,9 +163,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             repeat_while_held: false,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "RESOURCE",
+        nestable: true,
         title: |loc| loc.catalog_trigger_resource_title,
         description: |loc| loc.catalog_trigger_resource_desc,
         glyph: egui_phosphor::regular::CHART_LINE,
@@ -217,9 +179,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             duration_sec: 5,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "FILES",
+        nestable: true,
         title: |loc| loc.catalog_trigger_file_title,
         description: |loc| loc.catalog_trigger_file_desc,
         glyph: egui_phosphor::regular::FOLDER_NOTCH_OPEN,
@@ -233,9 +196,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             on_deleted: false,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "WEBHOOK",
+        nestable: true,
         title: |loc| loc.catalog_trigger_webhook_title,
         description: |loc| loc.catalog_trigger_webhook_desc,
         glyph: egui_phosphor::regular::GLOBE_HEMISPHERE_WEST,
@@ -247,9 +211,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
     },
 
     // 4. Lifecycle & System Events
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "LIFECYCLE",
+        nestable: true,
         title: |loc| loc.catalog_trigger_lifecycle_title,
         description: |loc| loc.catalog_trigger_lifecycle_desc,
         glyph: egui_phosphor::regular::ROCKET_LAUNCH,
@@ -264,9 +229,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             target_datetime: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "EVENT",
+        nestable: true,
         title: |loc| loc.catalog_trigger_lock_title,
         description: |loc| loc.catalog_trigger_lock_desc,
         glyph: egui_phosphor::regular::LOCK,
@@ -277,9 +243,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "POWER",
+        nestable: true,
         title: |loc| loc.catalog_trigger_sleep_title,
         description: |loc| loc.catalog_trigger_sleep_desc,
         glyph: egui_phosphor::regular::MOON,
@@ -290,9 +257,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "POWER",
+        nestable: true,
         title: |loc| loc.catalog_trigger_power_title,
         description: |loc| loc.catalog_trigger_power_desc,
         glyph: egui_phosphor::regular::PLUG,
@@ -303,9 +271,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "IDLE",
+        nestable: true,
         title: |loc| loc.catalog_trigger_idle_title,
         description: |loc| loc.catalog_trigger_idle_desc,
         glyph: egui_phosphor::regular::HOURGLASS,
@@ -316,9 +285,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "DEVICE",
+        nestable: true,
         title: |loc| loc.catalog_trigger_device_title,
         description: |loc| loc.catalog_trigger_device_desc,
         glyph: egui_phosphor::regular::HARD_DRIVES,
@@ -329,9 +299,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "DISPLAY",
+        nestable: true,
         title: |loc| loc.catalog_trigger_display_title,
         description: |loc| loc.catalog_trigger_display_desc,
         glyph: egui_phosphor::regular::DESKTOP,
@@ -342,9 +313,10 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerCatalogItem] = &[
             device_id_filter: None,
         }),
     },
-    TriggerCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "NETWORK",
+        nestable: true,
         title: |loc| loc.catalog_trigger_network_title,
         description: |loc| loc.catalog_trigger_network_desc,
         glyph: egui_phosphor::regular::WIFI_HIGH,
@@ -365,63 +337,50 @@ const TRIGGER_CATEGORIES: [CatalogCategory; 5] = [
     CatalogCategory { index: 4, glyph: egui_phosphor::regular::BELL, label: |loc| loc.catalog_cat_events },
 ];
 
+pub(crate) const TRIGGER_CHROME: CatalogChrome = CatalogChrome {
+    modal_id: "trigger-catalog-modal",
+    eyebrow: |loc| loc.catalog_trigger_modal_title,
+    close_tip: |loc| loc.inspector_btn_cancel,
+    search_hint: |loc| loc.catalog_trigger_search_hint,
+    scroll_id: "trigger_catalog_cards_scroll",
+    width_fraction: 0.74,
+    height_fraction: 0.76,
+    min_size: vec2(720.0, 500.0),
+    max_size: vec2(840.0, 640.0),
+};
+
 pub fn render_trigger_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
     let is_open = state.trigger_catalog.is_some();
-    let active_modal = state
+    let Some(mut modal_state) = state
         .trigger_catalog
-        .as_ref()
-        .or(state.last_trigger_catalog.as_ref())
-        .cloned();
-
-    let Some(mut modal_state) = active_modal else { return };
-    let loc = state.loc();
-    let mut chosen_trigger: Option<Option<Trigger>> = None;
-
-    let modal_res = Modal::new("trigger-catalog-modal", is_open)
-        .width_fraction(0.74)
-        .height_fraction(0.76)
-        .min_size(vec2(720.0, 500.0))
-        .max_size(vec2(840.0, 640.0))
-        .header_height(46.0)
-        .show(ctx, &t, |frame| {
-            render_catalog_header(frame, &t, loc.catalog_trigger_modal_title, loc.inspector_btn_cancel);
-
-            frame.body(|ui| {
-                let mut view = CatalogView {
-                    items: TRIGGER_CATALOG_ITEMS,
-                    categories: &TRIGGER_CATEGORIES,
-                    selected_category: &mut modal_state.selected_category,
-                    search_query: &mut modal_state.search_query,
-                    nesting: false,
-                    scroll_id: "trigger_catalog_cards_scroll",
-                    search_hint: loc.catalog_trigger_search_hint,
-                };
-                if let Some(idx) = render_catalog_body(ui, &t, loc, &mut view) {
-                    chosen_trigger = Some((TRIGGER_CATALOG_ITEMS[idx].constructor)());
-                }
-            });
-        });
-
-    // `Modal` keeps its card grid clickable through the close animation; only a click on the
-    // still open dialog may commit (U04-002).
-    if !catalog_commit_allowed(is_open) {
-        if modal_res.is_none() {
-            state.last_trigger_catalog = None;
-        }
+        .clone()
+        .or_else(|| state.last_trigger_catalog.clone())
+    else {
         return;
-    }
+    };
+    let loc = state.loc();
 
-    if let Some(res) = modal_res {
-        if res.close_requested {
-            state.close_trigger_catalog();
-        } else if let Some(trigger_opt) = chosen_trigger {
-            state.set_trigger_from_catalog(trigger_opt);
-        } else if is_open {
-            state.trigger_catalog = Some(modal_state.clone());
-            state.last_trigger_catalog = Some(modal_state);
-        }
-    } else if !is_open {
+    let outcome = CatalogModal::new(TRIGGER_CHROME, TRIGGER_CATALOG_ITEMS, &TRIGGER_CATEGORIES)
+        .show(
+            ctx,
+            &t,
+            loc,
+            &mut modal_state.selected_category,
+            &mut modal_state.search_query,
+            is_open,
+        );
+
+    // Trigger keeps its close-before-commit ordering: a close request wins over a card click that
+    // arrives in the same frame.
+    if outcome.close_requested {
+        state.close_trigger_catalog();
+    } else if let Some(idx) = outcome.chosen {
+        state.set_trigger_from_catalog((TRIGGER_CATALOG_ITEMS[idx].constructor)());
+    } else if is_open {
+        state.trigger_catalog = Some(modal_state.clone());
+        state.last_trigger_catalog = Some(modal_state);
+    } else if outcome.fully_closed {
         state.last_trigger_catalog = None;
     }
 }
@@ -429,7 +388,7 @@ pub fn render_trigger_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::views::action_catalog_modal::filter_catalog_entries;
+    use crate::gui::components::catalog_modal::{filter_catalog_entries, CatalogEntry};
     use crate::i18n::{self, Language};
 
     /// A rule shaped like the GUI's new-rule draft, carrying only the catalog construct.
@@ -653,27 +612,5 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-    }
-
-    /// U04-002 (CATALOG-FOLLOWUP): `Modal` keeps the card grid clickable through the 160 ms
-    /// close animation, so the trigger commit must be behind the same gate the action catalog
-    /// uses. The test module itself names these symbols, so the scan stops at `#[cfg(test)]`.
-    #[test]
-    fn test_trigger_catalog_commit_is_gated_while_the_modal_closes() {
-        let source = include_str!("trigger_catalog_modal.rs");
-        let production = source
-            .split_once("#[cfg(test)]")
-            .map(|(production, _)| production)
-            .unwrap_or(source);
-        let gate = production
-            .find("catalog_commit_allowed(is_open)")
-            .expect("the trigger commit path must use the shared close-animation gate");
-        let commit = production
-            .find("state.set_trigger_from_catalog")
-            .expect("the trigger commit call must stay in the commit path");
-        assert!(
-            gate < commit,
-            "the gate must run before the chosen trigger is applied (U04-002)"
-        );
     }
 }

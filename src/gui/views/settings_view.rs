@@ -20,10 +20,14 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
         }
     };
 
-    // A failed write leaves the edited draft in egui's temporary data. Render it again next
-    // frame so an unreachable daemon does not silently revert the user's toggles or path.
-    if let Some(draft) = ui.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())) {
-        cfg = draft;
+    // A pending write keeps its draft in egui's temporary data: a failure re-renders the edit so
+    // an unreachable daemon cannot silently revert it, and a confirmation drops the draft.
+    if let Some(draft) = ui.data(|d| d.get_temp::<PendingSettingsDraft>(pending_settings_id())) {
+        if state.settings_write_confirmed(draft.revision) {
+            ui.data_mut(|d| d.remove_temp::<PendingSettingsDraft>(pending_settings_id()));
+        } else {
+            cfg = draft.settings;
+        }
     }
 
     let mut changes = SettingsChanges::default();
@@ -106,25 +110,18 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
         });
 
     if changes.config {
-        match finish_settings_commit(save_settings(&cfg), changes.mask) {
-            SettingsCommit::Saved { restart_required } => {
-                ui.data_mut(|d| d.remove_temp::<crate::config::Settings>(pending_settings_id()));
-                if restart_required {
-                    state.set_toast(loc.settings_mask_restart_required);
-                } else {
-                    state.set_toast(loc.toast_config_saved);
-                }
-                state.sync_with_daemon();
-            }
-            SettingsCommit::Failed(detail) => {
-                // Keep the draft so the edit is not lost, and never claim success.
-                ui.data_mut(|d| {
-                    d.insert_temp(pending_settings_id(), cfg.clone());
-                });
-                crate::logging::error("CONFIG", &format!("Failed to save settings: {detail}"));
-                state.set_toast(loc.toast_settings_save_failed.replace("{}", &detail));
-            }
-        }
+        // The write runs on the IPC worker; the draft survives until the daemon confirms the
+        // exact revision, so a failed or slow write never loses the edit or claims success.
+        let revision = state.request_save_settings(cfg.clone(), changes.mask);
+        ui.data_mut(|d| {
+            d.insert_temp(
+                pending_settings_id(),
+                PendingSettingsDraft {
+                    revision,
+                    settings: cfg,
+                },
+            );
+        });
     }
 }
 
@@ -142,46 +139,12 @@ struct SettingsChanges {
     mask: bool,
 }
 
-/// Outcome of committing the settings draft at the end of a frame.
-#[derive(Debug, PartialEq, Eq)]
-enum SettingsCommit {
-    /// The preference was written; `restart_required` marks the daemon-masking change, which
-    /// only takes effect on the next daemon start.
-    Saved { restart_required: bool },
-    /// Neither the daemon nor the direct-file fallback accepted the write. The draft is kept.
-    Failed(String),
-}
-
-fn finish_settings_commit(result: Result<(), String>, mask_changed: bool) -> SettingsCommit {
-    match result {
-        Ok(()) => SettingsCommit::Saved {
-            restart_required: mask_changed,
-        },
-        Err(detail) => SettingsCommit::Failed(detail),
-    }
-}
-
-/// The daemon is the only writer of settings.json while it is reachable; a direct write is the
-/// offline fallback so the GUI cannot race the daemon on a read-modify-write of the same file.
-/// Both failures are reported instead of being discarded.
-fn save_settings(cfg: &crate::config::Settings) -> Result<(), String> {
-    let daemon_error = match crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveSettings(cfg.clone())) {
-        Ok(crate::ipc::IpcResponse::Ok) => return Ok(()),
-        Ok(crate::ipc::IpcResponse::Error(error)) => error,
-        Ok(_) => "the daemon did not confirm the settings write".to_string(),
-        Err(error) => error,
-    };
-    persist_settings_fallback(cfg).map_err(|error| format!("{daemon_error}; {error}"))
-}
-
-/// Offline fallback for settings persistence. Window geometry is preserved from the file
-/// because the settings view never edits it and the GUI owns it through `UpdateWindowState`.
-fn persist_settings_fallback(cfg: &crate::config::Settings) -> Result<(), String> {
-    let mut current = crate::config::Settings::read();
-    let window = current.window.clone();
-    current = cfg.clone();
-    current.window = window;
-    current.save().map_err(|err| err.to_string())
+/// One settings write awaiting its result. The revision lets a confirmation drop exactly the
+/// draft it was written from, even if the user edited again while the write was in flight.
+#[derive(Clone, Default)]
+struct PendingSettingsDraft {
+    revision: u64,
+    settings: crate::config::Settings,
 }
 
 fn render_sidebar(ui: &mut Ui, state: &mut GuiState, loc: &crate::i18n::Strings, t: &Tokens, w: f32) {
@@ -771,29 +734,6 @@ mod tests {
         assert!(general_height > 250.0, "Settings content card should not be clipped; was {general_height}");
     }
 
-    /// U03-NEW-01 regression: a mask-preference change is persisted and reported as
-    /// "restart required"; it never turns into a plain save notice for a change the running
-    /// daemon has not applied. The toggle path does not request `ShutdownDaemon` (that request
-    /// also closes this GUI window, losing unsaved rule drafts), so the only notice it can
-    /// produce after a successful write is the restart one.
-    #[test]
-    fn test_mask_toggle_requests_restart_without_stopping_the_daemon() {
-        assert_eq!(
-            finish_settings_commit(Ok(()), true),
-            SettingsCommit::Saved { restart_required: true }
-        );
-        assert_eq!(
-            finish_settings_commit(Ok(()), false),
-            SettingsCommit::Saved { restart_required: false }
-        );
-        // A failed write is reported as a failure even when masking changed: no success notice.
-        assert_eq!(
-            finish_settings_commit(Err("daemon unreachable".to_string()), true),
-            SettingsCommit::Failed("daemon unreachable".to_string())
-        );
-        let en = crate::i18n::get(crate::i18n::Language::English);
-        assert_ne!(en.settings_mask_restart_required, en.toast_config_saved);
-    }
 
     /// U03-004: the updates-row subtitle is the catalog template with the real product name
     /// ("Synector", not "Process Handler"), and the language-picker descriptions come from
@@ -819,32 +759,6 @@ mod tests {
         assert_ne!(en.settings_language_ru_desc, ru.settings_language_ru_desc);
     }
 
-    /// U03-006: a failed settings write keeps the edited draft for the next frame instead of
-    /// silently reverting to the daemon snapshot.
-    #[test]
-    fn test_settings_commit_keeps_the_draft_when_the_write_fails() {
-        assert_eq!(
-            finish_settings_commit(Err("disk full".to_string()), false),
-            SettingsCommit::Failed("disk full".to_string())
-        );
-
-        let ctx = egui::Context::default();
-        let draft = crate::config::Settings {
-            hide_tray_icon: true,
-            ..Default::default()
-        };
-        ctx.data_mut(|d| d.insert_temp(pending_settings_id(), draft.clone()));
-        assert_eq!(
-            ctx.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())),
-            Some(draft)
-        );
-        ctx.data_mut(|d| d.remove_temp::<crate::config::Settings>(pending_settings_id()));
-        assert_eq!(
-            ctx.data(|d| d.get_temp::<crate::config::Settings>(pending_settings_id())),
-            None,
-            "a confirmed write clears the draft"
-        );
-    }
 
     /// U03-007: typing is not persisted; only an existing icon file with a supported extension
     /// is accepted on commit.

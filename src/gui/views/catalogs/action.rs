@@ -2,426 +2,30 @@
 //! Studio modal for browsing and selecting rule actions
 //! with categorized tabs, instant fuzzy keyword search, and rich capability cards.
 //!
-//! This file also hosts the shared catalog primitives (`CatalogEntry`, `CatalogCategory`,
-//! `CatalogView`, `render_catalog_header`, `render_catalog_body`) that the element catalog
-//! reuses. Their intended home is `src/gui/components/catalog_modal.rs`; registering that module
-//! would edit `src/gui/components.rs`, which this package does not own, so the shared code stays
-//! here for now. The trigger and condition catalogs still carry their own copies and should adopt
-//! the same renderer.
+//! The shared shell (`CatalogModal`, filtering, header and card grid) lives in
+//! `src/gui/components/catalog_modal.rs`; this file owns the action table, its categories,
+//! chrome and the pipeline commit adapter.
 
-use egui::{
-    Color32, CornerRadius, FontId, Margin, Rect, RichText, Sense, Stroke,
-    pos2, vec2,
+use egui::vec2;
+use crate::gui::components::catalog_modal::{
+    CatalogCategory, CatalogChrome, CatalogEntryDef, CatalogModal,
 };
-use crate::gui::components::modal::{Modal, ModalFrame};
-use crate::gui::components::widgets::{self, Glyph};
 use crate::gui::state::GuiState;
-use crate::gui::theme::{self, Tokens};
-use crate::i18n::Strings;
+use crate::gui::theme::Tokens;
 use crate::models::{
     Action, PowerPlanType,
     SystemPowerType, WindowActionType,
 };
 
-// ============================================================================
-// Shared catalog primitives
-// ============================================================================
-
-/// Presentation metadata every catalog card exposes to the shared renderer.
-///
-/// `nestable` is the explicit "can live inside an If/Else branch" flag (U04-010): the badge stays
-/// purely presentational, so entries that happen to share a badge no longer share nesting
-/// behaviour.
-pub(crate) trait CatalogEntry {
-    fn category(&self) -> usize;
-    fn badge(&self) -> &'static str;
-    fn title(&self, loc: &Strings) -> &'static str;
-    fn description(&self, loc: &Strings) -> &'static str;
-    fn glyph(&self) -> &'static str;
-    fn tint(&self, t: &Tokens) -> Color32;
-    fn keywords(&self) -> &'static [&'static str];
-    fn nestable(&self) -> bool;
-}
-
-/// One sidebar row. Index `0` is the "all" bucket; every other index matches `CatalogEntry::category`.
-pub(crate) struct CatalogCategory {
-    pub index: usize,
-    pub glyph: &'static str,
-    pub label: fn(&Strings) -> &'static str,
-}
-
-/// One catalog dialog's view state: the item table, its categories and the live filter inputs.
-pub(crate) struct CatalogView<'a, T: CatalogEntry> {
-    pub items: &'a [T],
-    pub categories: &'a [CatalogCategory],
-    pub selected_category: &'a mut usize,
-    pub search_query: &'a mut String,
-    /// True while picking a branch action: entries with `nestable == false` are hidden.
-    pub nesting: bool,
-    pub scroll_id: &'static str,
-    pub search_hint: &'a str,
-}
-
-/// Case-insensitive match of one entry against an already-lowercased query.
-fn catalog_entry_matches(
-    entry: &impl CatalogEntry,
-    query_lower: &str,
-    loc: &Strings,
-    nesting: bool,
-) -> bool {
-    if nesting && !entry.nestable() {
-        return false;
-    }
-    if query_lower.is_empty() {
-        return true;
-    }
-    entry.title(loc).to_lowercase().contains(query_lower)
-        || entry.description(loc).to_lowercase().contains(query_lower)
-        || entry.badge().to_lowercase().contains(query_lower)
-        || entry.keywords().iter().any(|keyword| keyword.to_lowercase().contains(query_lower))
-}
-
-/// Indices of the visible entries, in table order. Category and query always apply together, so
-/// "type to search" behaves the same in every catalog (U04-005).
-pub(crate) fn filter_catalog_entries<T: CatalogEntry>(
-    items: &[T],
-    selected_category: usize,
-    search_query: &str,
-    loc: &Strings,
-    nesting: bool,
-) -> Vec<usize> {
-    let query_lower = search_query.trim().to_lowercase();
-    items
-        .iter()
-        .enumerate()
-        .filter(|(_, item)| {
-            (selected_category == 0 || item.category() == selected_category)
-                && catalog_entry_matches(*item, &query_lower, loc, nesting)
-        })
-        .map(|(idx, _)| idx)
-        .collect()
-}
-
-/// A catalog click only commits while its modal is open. `Modal` keeps painting (and accepting
-/// pointer input on) its contents through the 160 ms close animation, so an unguarded commit
-/// inserted the same action twice on a double click (U04-002).
-pub(crate) fn catalog_commit_allowed(is_open: bool) -> bool {
-    is_open
-}
-
-/// Header slice shared by the catalog dialogs: eyebrow label on the left, close button on the right.
-pub(crate) fn render_catalog_header(
-    frame: &mut ModalFrame<'_>,
-    t: &Tokens,
-    eyebrow: &str,
-    close_tip: &str,
-) {
-    frame.header(|ui, close_req| {
-        ui.horizontal_centered(|ui| {
-            ui.add_space(18.0);
-            widgets::hud(ui, eyebrow, t.ink);
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(16.0);
-                if widgets::glyph_button(ui, Glyph::Close, close_tip).clicked() {
-                    *close_req = true;
-                }
-            });
-        });
-    });
-}
-
-/// Shared catalog body: category sidebar, search row, two-column card grid and empty state.
-///
-/// Returns the index into `view.items` of the card clicked on this frame.
-pub(crate) fn render_catalog_body<T: CatalogEntry>(
-    ui: &mut egui::Ui,
-    t: &Tokens,
-    loc: &Strings,
-    view: &mut CatalogView<'_, T>,
-) -> Option<usize> {
-    let body_rect = ui.max_rect();
-    let sidebar_w = 195.0;
-    let sidebar_rect = Rect::from_min_size(
-        pos2(body_rect.min.x, body_rect.top() + 1.0),
-        vec2(sidebar_w, body_rect.height() - 2.0),
-    );
-    let cards_rect = Rect::from_min_max(
-        pos2(sidebar_rect.right() + 1.0, body_rect.top() + 1.0),
-        pos2(body_rect.right() - 1.0, body_rect.bottom() - 1.0),
-    );
-
-    // Body background surfaces & divider
-    let p = ui.painter();
-    p.rect_filled(sidebar_rect, CornerRadius::ZERO, t.bg);
-    p.rect_filled(cards_rect, CornerRadius::ZERO, t.sunken);
-
-    // Seamless 1px geometric vertical divider without line-cap protrusion (DPI-independent)
-    let v_divider = Rect::from_min_max(
-        pos2(sidebar_rect.right(), body_rect.top() + 1.0),
-        pos2(sidebar_rect.right() + 1.0, body_rect.bottom() - 1.0),
-    );
-    p.rect_filled(v_divider, CornerRadius::ZERO, t.hairline().color);
-
-    // Left: Categories List
-    ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
-        egui::Frame::new()
-            .inner_margin(Margin::symmetric(10, 10))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-
-                let count_for = |cat_idx: usize| -> usize {
-                    view.items
-                        .iter()
-                        .filter(|item| {
-                            (item.nestable() || !view.nesting)
-                                && (cat_idx == 0 || item.category() == cat_idx)
-                        })
-                        .count()
-                };
-
-                let categories: Vec<(usize, &'static str, &'static str, usize)> = view
-                    .categories
-                    .iter()
-                    .map(|category| {
-                        (
-                            category.index,
-                            category.glyph,
-                            (category.label)(loc),
-                            count_for(category.index),
-                        )
-                    })
-                    .collect();
-
-                for (cat_idx, icon, cat_name, count) in categories {
-                    let is_active = *view.selected_category == cat_idx;
-                    let bg = if is_active { t.accent_ink.gamma_multiply(0.12) } else { Color32::TRANSPARENT };
-                    let fg = if is_active { t.accent_ink } else { t.muted };
-
-                    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
-                    if resp.hovered() && !is_active {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), t.sunken);
-                    }
-                    if is_active {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
-                    }
-
-                    ui.painter().text(
-                        pos2(rect.left() + 10.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        icon,
-                        FontId::new(14.0, theme::phosphor()),
-                        fg,
-                    );
-
-                    ui.painter().text(
-                        pos2(rect.left() + 32.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        cat_name,
-                        FontId::new(12.5, theme::semibold()),
-                        fg,
-                    );
-
-                    ui.painter().text(
-                        pos2(rect.right() - 8.0, rect.center().y),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("{count}"),
-                        FontId::new(11.0, theme::mono()),
-                        t.faint,
-                    );
-
-                    if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                        *view.selected_category = cat_idx;
-                    }
-                }
-            });
-    });
-
-    let filtered = filter_catalog_entries(
-        view.items,
-        *view.selected_category,
-        view.search_query.as_str(),
-        loc,
-        view.nesting,
-    );
-
-    let mut clicked = None;
-
-    // Right: Cards Grid in a ScrollArea with the Search Bar above
-    ui.scope_builder(egui::UiBuilder::new().max_rect(cards_rect), |ui| {
-        ui.add_space(10.0);
-
-        // Search box placed directly above cards scroll area
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_space(10.0);
-            let search_w = (ui.available_width() - 10.0).max(60.0);
-            ui.allocate_ui_with_layout(
-                vec2(search_w, 32.0),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    widgets::catalog_search_box(ui, view.search_query, view.search_hint);
-                },
-            );
-        });
-        ui.add_space(6.0);
-
-        egui::ScrollArea::vertical()
-            .id_salt(view.scroll_id)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if filtered.is_empty() {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(60.0);
-                        ui.label(
-                            RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
-                                .family(theme::phosphor())
-                                .size(32.0)
-                                .color(t.faint),
-                        );
-                        ui.add_space(8.0);
-                        ui.label(
-                            RichText::new(loc.catalog_no_matches)
-                                .family(theme::medium())
-                                .size(13.0)
-                                .color(t.muted),
-                        );
-                    });
-                } else {
-                    let total_w = ui.available_width() - 20.0;
-                    let col_count = 2;
-                    let gap = 10.0;
-                    let card_w = ((total_w - gap) / (col_count as f32)).max(160.0);
-                    let card_h = 68.0;
-
-                    for chunk in filtered.chunks(col_count) {
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 0.0;
-                            ui.add_space(10.0);
-                            for (idx, &item_idx) in chunk.iter().enumerate() {
-                                if idx > 0 {
-                                    ui.add_space(gap);
-                                }
-                                let item = &view.items[item_idx];
-                                let (rect, resp) = ui.allocate_exact_size(vec2(card_w, card_h), Sense::click());
-                                let is_hovered = resp.hovered();
-
-                                let bg_col = if is_hovered { t.sunken } else { t.bg };
-                                let stroke_col = if is_hovered { t.accent_ink } else { t.line };
-
-                                ui.painter().rect_filled(rect, CornerRadius::same(6), bg_col);
-                                ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, stroke_col), egui::StrokeKind::Inside);
-
-                                // Icon Chip on Left
-                                let chip_rect = Rect::from_center_size(
-                                    pos2(rect.left() + 26.0, rect.center().y),
-                                    vec2(34.0, 34.0),
-                                );
-                                let item_tint = item.tint(t);
-                                ui.painter().rect_filled(chip_rect, CornerRadius::same(6), item_tint.gamma_multiply(0.18));
-                                ui.painter().text(
-                                    chip_rect.center(),
-                                    egui::Align2::CENTER_CENTER,
-                                    item.glyph(),
-                                    FontId::new(18.0, theme::phosphor()),
-                                    item_tint,
-                                );
-
-                                // Text content on Right (vertically centered relative to card & icon chip)
-                                let text_left = rect.left() + 52.0;
-                                let title_text = item.title(loc);
-                                let desc_text = item.description(loc);
-                                let desc_w = (rect.right() - text_left - 10.0).max(40.0);
-
-                                let title_galley = ui.painter().layout_no_wrap(
-                                    title_text.to_string(),
-                                    FontId::new(13.0, theme::semibold()),
-                                    t.ink,
-                                );
-                                let desc_galley = ui.painter().layout(
-                                    desc_text.to_string(),
-                                    FontId::new(11.0, theme::medium()),
-                                    t.muted,
-                                    desc_w,
-                                );
-
-                                let title_h = title_galley.size().y;
-                                let desc_h = desc_galley.size().y;
-                                let text_spacing = 3.0;
-                                let total_text_h = title_h + text_spacing + desc_h;
-                                let text_start_y = (rect.center().y - total_text_h * 0.5).round();
-
-                                ui.painter().galley(pos2(text_left, text_start_y), title_galley, t.ink);
-                                ui.painter().galley(pos2(text_left, text_start_y + title_h + text_spacing), desc_galley, t.muted);
-
-                                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                                    clicked = Some(item_idx);
-                                }
-                            }
-                        });
-                        ui.add_space(6.0);
-                    }
-                }
-                ui.add_space(10.0);
-            });
-    });
-
-    clicked
-}
+type ActionEntry = CatalogEntryDef<fn() -> Action>;
 
 // ============================================================================
 // Action catalog table
 // ============================================================================
 
-struct CatalogItem {
-    category_idx: usize, // 1: Process, 2: Audio, 3: Automation, 4: System
-    badge: &'static str,
-    title: fn(&crate::i18n::Strings) -> &'static str,
-    description: fn(&crate::i18n::Strings) -> &'static str,
-    glyph: &'static str,
-    tint: fn(&Tokens) -> Color32,
-    keywords: &'static [&'static str],
-    /// False only for actions that cannot be nested inside an If/Else branch.
-    nestable: bool,
-    constructor: fn() -> Action,
-}
-
-impl CatalogEntry for CatalogItem {
-    fn category(&self) -> usize {
-        self.category_idx
-    }
-
-    fn badge(&self) -> &'static str {
-        self.badge
-    }
-
-    fn title(&self, loc: &Strings) -> &'static str {
-        (self.title)(loc)
-    }
-
-    fn description(&self, loc: &Strings) -> &'static str {
-        (self.description)(loc)
-    }
-
-    fn glyph(&self) -> &'static str {
-        self.glyph
-    }
-
-    fn tint(&self, t: &Tokens) -> Color32 {
-        (self.tint)(t)
-    }
-
-    fn keywords(&self) -> &'static [&'static str] {
-        self.keywords
-    }
-
-    fn nestable(&self) -> bool {
-        self.nestable
-    }
-}
-const CATALOG_ITEMS: [CatalogItem; 26] = [
+const CATALOG_ITEMS: [ActionEntry; 26] = [
     // 1. Process Management
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "PROCESS",
         nestable: true,
@@ -443,7 +47,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             close_on_exit: false,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "PROCESS",
         nestable: true,
@@ -461,7 +65,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             force: true,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "WINDOW",
         nestable: true,
@@ -483,7 +87,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             transparency: None,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "TUNING",
         nestable: true,
@@ -502,7 +106,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             trim_memory: false,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "RAM",
         nestable: true,
@@ -522,7 +126,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
     },
 
     // 2. Audio & Media
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "AUDIO",
         nestable: true,
@@ -543,7 +147,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             right_volume: None,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "AUDIO",
         nestable: true,
@@ -560,7 +164,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             device_name: String::new(),
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "AUDIO",
         nestable: true,
@@ -580,7 +184,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             channels: 2,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "AUDIO",
         nestable: true,
@@ -601,7 +205,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
     },
 
     // 3. Automation & Logic
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "FLOW",
         nestable: true,
@@ -621,7 +225,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "LOGIC",
         nestable: true,
@@ -637,7 +241,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             condition: crate::models::RuleCondition::default_process(),
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "LOGIC",
         nestable: false,
@@ -656,7 +260,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             else_actions: Vec::new(),
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "RULES",
         nestable: true,
@@ -675,7 +279,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             wait: false,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "MACRO",
         nestable: true,
@@ -696,7 +300,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             infinite: false,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "SCRIPT",
         nestable: true,
@@ -714,7 +318,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             run_in_window: false,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "NOTIFY",
         nestable: true,
@@ -731,7 +335,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             message: String::new(),
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "OVERLAY",
         nestable: true,
@@ -761,7 +365,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             }
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "NETWORK",
         nestable: true,
@@ -780,7 +384,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             payload: None,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "DISCORD",
         nestable: true,
@@ -805,7 +409,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             auto_clear_on_process_exit: true,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "DISCORD",
         nestable: true,
@@ -821,7 +425,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
     },
 
     // 4. System & Files
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "SYSTEM",
         nestable: true,
@@ -837,7 +441,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             power_type: SystemPowerType::Lock,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "POWER",
         nestable: true,
@@ -853,7 +457,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             plan: PowerPlanType::HighPerformance,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "DISPLAY",
         nestable: true,
@@ -872,7 +476,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             monitor_index: None,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "SECURITY",
         nestable: true,
@@ -889,7 +493,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             action: crate::models::FirewallAction::Block,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "FILES",
         nestable: true,
@@ -910,7 +514,7 @@ const CATALOG_ITEMS: [CatalogItem; 26] = [
             overwrite: true,
         },
     },
-    CatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "ARCHIVE",
         nestable: true,
@@ -941,64 +545,57 @@ const ACTION_CATEGORIES: [CatalogCategory; 5] = [
     CatalogCategory { index: 4, glyph: egui_phosphor::regular::GEAR, label: |loc| loc.catalog_cat_system },
 ];
 
+pub(crate) const ACTION_CHROME: CatalogChrome = CatalogChrome {
+    modal_id: "action-catalog-modal",
+    eyebrow: |loc| loc.catalog_modal_eyebrow,
+    close_tip: |loc| loc.inspector_btn_cancel,
+    search_hint: |loc| loc.catalog_search_hint,
+    scroll_id: "action_catalog_cards_scroll",
+    width_fraction: 0.74,
+    height_fraction: 0.76,
+    min_size: vec2(720.0, 500.0),
+    max_size: vec2(840.0, 640.0),
+};
+
 pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
     let is_open = state.action_catalog.is_some();
-
-    let active_modal = state
+    let Some(mut modal_state) = state
         .action_catalog
-        .as_ref()
-        .or(state.last_action_catalog.as_ref())
-        .cloned();
-
-    let Some(mut modal_state) = active_modal else { return };
-
-    let loc = state.loc();
-    let mut chosen_action = None;
-
-    let modal_res = Modal::new("action-catalog-modal", is_open)
-        .width_fraction(0.74)
-        .height_fraction(0.76)
-        .min_size(vec2(720.0, 500.0))
-        .max_size(vec2(840.0, 640.0))
-        .header_height(46.0)
-        .show(ctx, &t, |frame| {
-            render_catalog_header(frame, &t, loc.catalog_modal_eyebrow, loc.inspector_btn_cancel);
-
-            frame.body(|ui| {
-                let mut view = CatalogView {
-                    items: &CATALOG_ITEMS,
-                    categories: &ACTION_CATEGORIES,
-                    selected_category: &mut modal_state.selected_category,
-                    search_query: &mut modal_state.search_query,
-                    nesting: modal_state.ifelse_target.is_some(),
-                    scroll_id: "action_catalog_cards_scroll",
-                    search_hint: loc.catalog_search_hint,
-                };
-                chosen_action = render_catalog_body(ui, &t, loc, &mut view);
-            });
-        });
-
-    // `Modal` keeps its card grid clickable through the close animation; only a click on the still
-    // open dialog may commit (U04-002).
-    if !catalog_commit_allowed(is_open) {
-        if modal_res.is_none() {
-            state.last_action_catalog = None;
-        }
+        .clone()
+        .or_else(|| state.last_action_catalog.clone())
+    else {
         return;
-    }
+    };
+    let loc = state.loc();
 
-    if let Some(idx) = chosen_action {
+    let outcome = CatalogModal::new(ACTION_CHROME, &CATALOG_ITEMS, &ACTION_CATEGORIES)
+        .nesting(modal_state.ifelse_target.is_some())
+        .show(
+            ctx,
+            &t,
+            loc,
+            &mut modal_state.selected_category,
+            &mut modal_state.search_query,
+            is_open,
+        );
+
+    // Action keeps its chosen-before-close ordering: a card click wins over a close request that
+    // arrives in the same frame, and every commit goes through `push_undo_snapshot`.
+    if let Some(idx) = outcome.chosen {
         let action = (CATALOG_ITEMS[idx].constructor)();
-        state.add_action_from_catalog(action, modal_state.is_exit_pipeline, modal_state.insert_idx, modal_state.ifelse_target);
-    } else if let Some(res) = modal_res {
-        if res.close_requested {
-            state.close_action_catalog();
-        } else if is_open {
-            state.action_catalog = Some(modal_state.clone());
-            state.last_action_catalog = Some(modal_state);
-        }
-    } else if !is_open {
+        state.add_action_from_catalog(
+            action,
+            modal_state.is_exit_pipeline,
+            modal_state.insert_idx,
+            modal_state.ifelse_target,
+        );
+    } else if outcome.close_requested {
+        state.close_action_catalog();
+    } else if is_open {
+        state.action_catalog = Some(modal_state.clone());
+        state.last_action_catalog = Some(modal_state);
+    } else if outcome.fully_closed {
         state.last_action_catalog = None;
     }
 }
@@ -1006,6 +603,9 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::components::catalog_modal::{
+        catalog_commit_allowed, filter_catalog_entries, CatalogEntry,
+    };
     use crate::i18n::{self, Language};
 
     #[test]
@@ -1090,5 +690,29 @@ mod tests {
             !catalog_commit_allowed(false),
             "a click during the close animation must not re-insert the chosen entry (U04-002)"
         );
+    }
+
+    #[test]
+    fn test_render_action_catalog_modal_no_crash() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::install_fonts(&ctx);
+
+        let mut state = GuiState::new();
+        state.open_action_catalog(false, None);
+
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(Default::default(), |ctx| {
+                render_action_catalog_modal(ctx, &mut state);
+            });
+            out.textures_delta.clear();
+        }
+
+        state.close_action_catalog();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(Default::default(), |ctx| {
+                render_action_catalog_modal(ctx, &mut state);
+            });
+            out.textures_delta.clear();
+        }
     }
 }

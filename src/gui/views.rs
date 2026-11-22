@@ -1,8 +1,6 @@
-pub mod action_catalog_modal;
 pub mod analytics_view;
+pub mod catalogs;
 pub mod changelog_modal;
-pub mod condition_catalog_modal;
-pub mod element_catalog_modal;
 pub mod guide_modal;
 pub mod header_bar;
 pub mod inspector;
@@ -12,4 +10,3 @@ pub mod process_picker_modal;
 pub mod rules_view;
 pub mod script_modal;
 pub mod settings_view;
-pub mod trigger_catalog_modal;

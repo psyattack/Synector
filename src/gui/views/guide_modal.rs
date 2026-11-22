@@ -3,8 +3,8 @@
 //! trigger/action deep-dive, token reference, output piping, and recipes.
 
 use egui::{pos2, vec2, CornerRadius, Rect, RichText, Sense, Stroke, Ui};
-use crate::gui::components::modal::Modal;
-use crate::gui::components::widgets::{self, Glyph};
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
+use crate::gui::components::widgets;
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 use crate::i18n::Language;
@@ -86,23 +86,22 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // --- 1. HEADER ZONE ---
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(20.0);
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::BOOK_OPEN)
-                            .font(egui::FontId::new(18.0, theme::phosphor()))
-                            .color(t.accent_ink),
-                    );
-                    ui.add_space(8.0);
-                    widgets::eyebrow(ui, loc.guide_eyebrow, loc.guide_eyebrow_sub);
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        if widgets::glyph_button(ui, Glyph::Close, loc.macro_studio_close_tip).clicked() {
-                            *close_req = true;
-                        }
-                    });
-                });
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::BOOK_OPEN),
+                        glyph_size: 18.0,
+                        close_tip: loc.macro_studio_close_tip,
+                        left_pad: 20.0,
+                        glyph_pad: 8.0,
+                        right_pad: 16.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| { widgets::eyebrow(ui, loc.guide_eyebrow, loc.guide_eyebrow_sub); },
+                    |_| {},
+                );
             });
 
             // --- 2. DUAL-PANE BODY ZONE ---

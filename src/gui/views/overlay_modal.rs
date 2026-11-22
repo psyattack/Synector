@@ -1,5 +1,7 @@
 use egui::{pos2, vec2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
-use crate::gui::components::modal::Modal;
+use crate::gui::components::dnd;
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
+use crate::gui::components::text::fill;
 use crate::gui::components::widgets::{self, Glyph, Kind};
 use crate::gui::state::{ColorPickerTarget, GuiState, OverlayStudioState};
 use crate::gui::theme::{self, Tokens};
@@ -57,25 +59,6 @@ fn text_size_estimate(text: &str, font_size: f32) -> (f32, f32) {
     let est_w = (char_len * (font_size * 0.6).max(8.0) + 12.0).max(30.0);
     let est_h = (font_size + 6.0).max(18.0);
     (est_w, est_h)
-}
-
-/// Fills the positional `{}` placeholders of a catalog value left to right. `str::replace` would
-/// fill every occurrence with the first argument, so multi-placeholder canvas labels need this.
-fn fill(template: &str, args: &[&str]) -> String {
-    let mut out = String::new();
-    let mut rest = template;
-    for arg in args {
-        match rest.find("{}") {
-            Some(at) => {
-                out.push_str(&rest[..at]);
-                out.push_str(arg);
-                rest = &rest[at + 2..];
-            }
-            None => break,
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Card/element geometry that [`clamp_elements_to_canvas`] actually operates on.
@@ -507,19 +490,20 @@ fn handle_studio_element_shortcuts(
 }
 
 /// Synchronizes live on-screen calibration coordinates from the daemon. Polls only while the
-/// pointer is idle so an in-progress drag is never overwritten. Returns `true` when the overlay
+/// pointer is idle so an in-progress drag is never overwritten, and never blocks the frame: the
+/// request is queued and the answer is applied on a later frame. Returns `true` when the overlay
 /// position changed.
 fn sync_calibration_position(
     ctx: &egui::Context,
+    state: &mut GuiState,
     studio: &mut OverlayStudioState,
     active_mon: &crate::models::MonitorInfo,
 ) -> bool {
     if !studio.is_calibrating || ctx.input(|i| i.pointer.any_down()) {
         return false;
     }
-    let Ok(crate::ipc::IpcResponse::OverlayPosition(Some((abs_x, abs_y)))) =
-        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::GetOverlayPosition(studio.overlay.id.clone()))
-    else {
+    state.request_overlay_position(&studio.overlay.id);
+    let Some((abs_x, abs_y)) = state.overlay_position_for(&studio.overlay.id) else {
         return false;
     };
 
@@ -539,26 +523,29 @@ fn sync_calibration_position(
     true
 }
 
-/// Shows or hides the live calibration window that mirrors the studio card on screen.
-fn apply_calibration_toggle(studio: &mut OverlayStudioState, active_mon: &crate::models::MonitorInfo) {
+/// Shows or hides the live calibration window that mirrors the studio card on screen. The
+/// preview requests are fire-and-forget: the studio's own copy renders immediately.
+fn apply_calibration_toggle(
+    state: &mut GuiState,
+    studio: &mut OverlayStudioState,
+    active_mon: &crate::models::MonitorInfo,
+) {
     studio.is_calibrating = !studio.is_calibrating;
     if studio.is_calibrating {
         let (csx, csy) = compute_overlay_screen_pos(&studio.overlay, active_mon.width as f32, active_mon.height as f32);
         let abs_x = active_mon.x as f32 + csx;
         let abs_y = active_mon.y as f32 + csy;
         studio.last_synced_pos = Some((abs_x, abs_y));
-        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
-            overlay: studio.overlay.clone(),
-            calibration_mode: true,
-        });
+        state.request_show_overlay_preview(studio.overlay.clone(), true);
     } else {
         studio.last_synced_pos = None;
-        let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::HideOverlayPreview(studio.overlay.id.clone()));
+        state.request_hide_overlay_preview(&studio.overlay.id);
     }
 }
 
 /// Re-sends the edited overlay to the calibration window after a visible change.
 fn push_calibration_preview(
+    state: &mut GuiState,
     studio: &mut OverlayStudioState,
     initial_overlay: &OverlayDefinition,
     active_mon: &crate::models::MonitorInfo,
@@ -570,10 +557,7 @@ fn push_calibration_preview(
     let abs_x = active_mon.x as f32 + csx;
     let abs_y = active_mon.y as f32 + csy;
     studio.last_synced_pos = Some((abs_x, abs_y));
-    let _ = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ShowOverlayPreview {
-        overlay: studio.overlay.clone(),
-        calibration_mode: true,
-    });
+    state.request_show_overlay_preview(studio.overlay.clone(), true);
 }
 
 /// Real-time auto-save of the studio overlay into the rule action being edited.
@@ -623,14 +607,7 @@ fn push_overlay_undo(
     redo_stack: &mut Vec<OverlayDefinition>,
     snapshot: &OverlayDefinition,
 ) {
-    if undo_stack.last() == Some(snapshot) {
-        return;
-    }
-    if undo_stack.len() >= 50 {
-        undo_stack.remove(0);
-    }
-    undo_stack.push(snapshot.clone());
-    redo_stack.clear();
+    crate::gui::state::push_if_new(undo_stack, redo_stack, snapshot);
 }
 
 /// Renders the inspector and records one undo snapshot for the edit session it started
@@ -681,7 +658,7 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
     let monitors = crate::daemon::overlay_manager::get_system_monitors();
     let active_mon = resolve_overlay_monitor(&studio.overlay, &monitors);
 
-    if sync_calibration_position(ctx, &mut studio, &active_mon) {
+    if sync_calibration_position(ctx, state, &mut studio, &active_mon) {
         initial_overlay = studio.overlay.clone();
     }
 
@@ -715,23 +692,21 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // ---------------- 1. HEADER ----------------
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(18.0);
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::FRAME_CORNERS)
-                            .family(theme::phosphor())
-                            .size(16.0)
-                            .color(t.accent_ink),
-                    );
-                    ui.add_space(6.0);
-                    widgets::hud(ui, loc.overlay_studio_title, t.ink);
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(16.0);
-                        if widgets::glyph_button(ui, Glyph::Close, loc.modal_tip_close).clicked() {
-                            *close_req = true;
-                        }
-
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::FRAME_CORNERS),
+                        glyph_size: 16.0,
+                        close_tip: loc.modal_tip_close,
+                        left_pad: 18.0,
+                        glyph_pad: 6.0,
+                        right_pad: 16.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| { widgets::hud(ui, loc.overlay_studio_title, t.ink); },
+                    |ui| {
                         // Calibrate Position on Screen Button
                         ui.add_space(8.0);
                         let cal_text = if studio.is_calibrating {
@@ -753,8 +728,8 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 studio.preset_save_name = studio.overlay.name.clone();
                             }
                         }
-                    });
-                });
+                    },
+                );
             });
 
             // ---------------- 2. BODY: SPLIT LAYOUT ----------------
@@ -826,10 +801,10 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
             state.close_overlay_studio();
         } else if is_open {
             if toggle_calibration {
-                apply_calibration_toggle(&mut studio, &active_mon);
+                apply_calibration_toggle(state, &mut studio, &active_mon);
             }
 
-            push_calibration_preview(&mut studio, &initial_overlay, &active_mon);
+            push_calibration_preview(state, &mut studio, &initial_overlay, &active_mon);
 
             persist_studio_into_rule(state, &studio);
 
@@ -881,87 +856,6 @@ fn unique_preset_id(base: &str, name: &str, existing: &[(&str, &str)]) -> String
     format!("{base}_{}", existing.len() + 2)
 }
 
-/// Result of one overlay-library mutation attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LibraryWriteOutcome {
-    /// The daemon, or a confirmed-offline direct write, persisted the change.
-    Persisted,
-    /// Nothing was persisted. The string is a log-safe reason (identifiers only, no payloads).
-    Failed(String),
-}
-
-/// Whether a failed IPC call may be retried as a direct write of `library.json`. The daemon
-/// owns the section while it is reachable, so only a confirmed-unreachable daemon may be
-/// bypassed: a reachable daemon that rejected the write (or answered unexpectedly) must be
-/// reported instead, or the next daemon persist overwrites our entry (U02-008).
-fn direct_library_write_allowed(daemon_reachable: bool) -> bool {
-    !daemon_reachable
-}
-
-/// Interprets one IPC result and, when the daemon is confirmed gone, applies the change
-/// directly through `apply_directly`.
-fn finish_library_write(
-    result: Result<crate::ipc::IpcResponse, String>,
-    daemon_reachable: bool,
-    apply_directly: impl FnOnce() -> std::io::Result<()>,
-) -> LibraryWriteOutcome {
-    match result {
-        Ok(crate::ipc::IpcResponse::Ok) => LibraryWriteOutcome::Persisted,
-        Ok(crate::ipc::IpcResponse::Error(reason)) => {
-            LibraryWriteOutcome::Failed(format!("the daemon rejected the change: {reason}"))
-        }
-        Ok(_) => LibraryWriteOutcome::Failed("the daemon returned an unexpected response".to_string()),
-        Err(error) => {
-            if !direct_library_write_allowed(daemon_reachable) {
-                return LibraryWriteOutcome::Failed(format!("the daemon is reachable but the change failed: {error}"));
-            }
-            match apply_directly() {
-                Ok(()) => {
-                    crate::logging::info("CONFIG", "Daemon unreachable; overlay library written directly");
-                    LibraryWriteOutcome::Persisted
-                }
-                Err(write_error) => LibraryWriteOutcome::Failed(format!("direct library write failed: {write_error}")),
-            }
-        }
-    }
-}
-
-/// Deletes one preset, keeping the daemon authoritative while it is reachable (U02-008).
-fn delete_overlay_preset(id: &str) -> LibraryWriteOutcome {
-    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteOverlay(id.to_string()));
-    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
-    let outcome = finish_library_write(result, daemon_reachable, || {
-        let mut library = crate::config::Library::read();
-        library.overlays.retain(|o| o.id != id);
-        library.save()
-    });
-    if let LibraryWriteOutcome::Failed(reason) = &outcome {
-        crate::logging::error("CONFIG", &format!("Overlay preset '{id}' was not deleted: {reason}"));
-    }
-    outcome
-}
-
-/// Saves one preset definition, keeping the daemon authoritative while it is reachable
-/// (U02-008). The daemon persists synchronously before answering `Ok`, so no fallback write is
-/// attempted while it is alive.
-fn persist_overlay_preset(def: &OverlayDefinition) -> LibraryWriteOutcome {
-    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveOverlay(def.clone()));
-    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
-    let outcome = finish_library_write(result, daemon_reachable, || {
-        let mut library = crate::config::Library::read();
-        if let Some(existing) = library.overlays.iter_mut().find(|o| o.id == def.id) {
-            *existing = def.clone();
-        } else {
-            library.overlays.push(def.clone());
-        }
-        library.save()
-    });
-    if let LibraryWriteOutcome::Failed(reason) = &outcome {
-        crate::logging::error("CONFIG", &format!("Overlay preset '{}' was not saved: {reason}", def.id));
-    }
-    outcome
-}
-
 /// Saves the studio overlay as a new library preset. The id is derived from the typed name, but
 /// an existing id or name gets a numeric suffix instead of being silently replaced, and a name
 /// without alphanumerics is rejected with a toast (U02-006).
@@ -997,21 +891,7 @@ fn save_studio_overlay_preset(state: &mut GuiState, loc: &crate::i18n::Strings) 
     saved_def.id = fresh_id;
     saved_def.name = name.clone();
 
-    match persist_overlay_preset(&saved_def) {
-        LibraryWriteOutcome::Persisted => {
-            if let Some(ds) = &mut state.daemon_state {
-                ds.config.overlays.retain(|o| o.id != saved_def.id);
-                ds.config.overlays.push(saved_def.clone());
-            }
-            state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
-        }
-        LibraryWriteOutcome::Failed(_) => {
-            state.toast = Some((
-                loc.presets_save_failed.to_string(),
-                std::time::Instant::now(),
-            ));
-        }
-    }
+    state.request_save_overlay_preset(saved_def, name);
 }
 
 pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
@@ -1019,6 +899,7 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
     let is_open = state.overlay_studio.as_ref().is_some_and(|s| s.show_presets_popover);
     let loc = state.loc();
     let mut save_requested = false;
+    let mut delete_requested = None;
 
     let modal_res = Modal::new("overlay-presets-modal", is_open)
         .width_fraction(0.55)
@@ -1030,24 +911,22 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // Header: Title on left, Close on right
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
-                            .family(theme::phosphor())
-                            .size(16.0)
-                            .color(t.accent_ink),
-                    );
-                    ui.add_space(8.0);
-                    widgets::hud(ui, loc.overlay_studio_presets_title, t.ink_strong);
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
-                        if widgets::glyph_button(ui, Glyph::Close, loc.modal_tip_close).clicked() {
-                            *close_req = true;
-                        }
-                    });
-                });
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::BOOKMARK_SIMPLE),
+                        glyph_size: 16.0,
+                        close_tip: loc.modal_tip_close,
+                        left_pad: 16.0,
+                        glyph_pad: 8.0,
+                        right_pad: 14.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| { widgets::hud(ui, loc.overlay_studio_presets_title, t.ink_strong); },
+                    |_| {},
+                );
             });
 
             // Body
@@ -1159,19 +1038,7 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    match delete_overlay_preset(&del_id) {
-                                        LibraryWriteOutcome::Persisted => {
-                                            if let Some(ds) = &mut state.daemon_state {
-                                                ds.config.overlays.retain(|o| o.id != del_id);
-                                            }
-                                        }
-                                        LibraryWriteOutcome::Failed(_) => {
-                                            state.toast = Some((
-                                                loc.presets_delete_failed.to_string(),
-                                                std::time::Instant::now(),
-                                            ));
-                                        }
-                                    }
+                                    delete_requested = Some(del_id);
                                 }
                             });
                     }
@@ -1181,6 +1048,10 @@ pub fn render_overlay_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     if save_requested {
         save_studio_overlay_preset(state, loc);
+    }
+
+    if let Some(del_id) = delete_requested {
+        state.request_delete_overlay_preset(&del_id);
     }
 
     if modal_res.is_some_and(|r| r.close_requested) {
@@ -1512,6 +1383,29 @@ struct ElementDndSession {
     target_idx: usize,
 }
 
+/// Overlay element list drop line: 20 px, 0.16 s, rail inset 20/8 and a plain 10 px bead.
+const ELEM_DROP_LINE_STYLE: dnd::DropLineStyle = dnd::DropLineStyle {
+    height: 20.0,
+    anim_secs: 0.16,
+    corner: CornerRadius::same(2),
+    fill_alpha: 0.08,
+    line_width: 2.0,
+    line_left: 20.0,
+    line_right: 8.0,
+    bead: Some(dnd::DropBead {
+        left: 10.0,
+        radius: 3.5,
+        halo_radius: None,
+    }),
+};
+
+/// Element drag preview chrome: a flat card with a 1 px accent stroke.
+const ELEM_PREVIEW_STYLE: dnd::FloatingPreviewStyle = dnd::FloatingPreviewStyle {
+    corner: CornerRadius::same(4),
+    stroke_width: 1.0,
+    shadow: false,
+};
+
 fn render_elem_drop_slot(
     ui: &mut Ui,
     slot_idx: usize,
@@ -1531,16 +1425,7 @@ fn render_elem_drop_slot(
     };
 
     let anim_id = ui.scope_id().with(("elem_drop_anim", slot_idx));
-    let anim = ui.ctx().animate_bool_with_time_and_easing(anim_id, is_targeted, 0.16, egui::emath::easing::cubic_out);
-    if anim > 0.001 {
-        let slot_h = 20.0 * anim;
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), slot_h), Sense::hover());
-        let p = ui.painter();
-        let mid_y = rect.center().y;
-        p.rect_filled(rect, CornerRadius::same(2), t.accent_ink.gamma_multiply(0.08 * anim));
-        p.hline(rect.left() + 20.0..=rect.right() - 8.0, mid_y, Stroke::new(2.0 * anim, t.accent_ink.gamma_multiply(anim)));
-        p.circle_filled(pos2(rect.left() + 10.0, mid_y), 3.5 * anim, t.accent_ink.gamma_multiply(anim));
-    }
+    dnd::drop_line(ui, anim_id, is_targeted, &ELEM_DROP_LINE_STYLE, t);
 }
 
 // ----------------- OVERLAY INSPECTOR PANEL -----------------
@@ -1993,29 +1878,10 @@ fn render_overlay_element_list(
 
     // Edge auto-scrolling while dragging elements
     if dnd_session.is_some() {
-        let wheel_delta_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if wheel_delta_y != 0.0 {
-            ui.scroll_with_delta(vec2(0.0, wheel_delta_y * 1.5));
-            ui.ctx().request_repaint();
-        }
+        dnd::wheel_scroll(ui);
 
         if let Some(pointer) = pointer_pos {
-            let viewport = ui.clip_rect();
-            let edge_zone = 70.0;
-            let view_top = viewport.top();
-            let view_bottom = viewport.bottom();
-
-            if pointer.y < view_top + edge_zone {
-                let factor = ((view_top + edge_zone - pointer.y) / edge_zone).clamp(0.1, 3.0);
-                let scroll_speed = 8.0 + 26.0 * factor;
-                ui.scroll_with_delta(vec2(0.0, scroll_speed));
-                ui.ctx().request_repaint();
-            } else if pointer.y > view_bottom - edge_zone {
-                let factor = ((pointer.y - (view_bottom - edge_zone)) / edge_zone).clamp(0.1, 3.0);
-                let scroll_speed = 8.0 + 26.0 * factor;
-                ui.scroll_with_delta(vec2(0.0, -scroll_speed));
-                ui.ctx().request_repaint();
-            }
+            dnd::edge_autoscroll(ui, pointer, 70.0);
         }
     }
 
@@ -2110,20 +1976,8 @@ fn render_overlay_element_list(
 
     // Determine target slot while dragging using fresh centers from this frame
     if let (Some(session), Some(pointer)) = (&mut dnd_session, pointer_pos) {
-        let n = card_centers.len();
-        if n > 0 {
-            if pointer.y < card_centers[0] {
-                session.target_idx = 0;
-            } else if pointer.y >= *card_centers.last().unwrap() {
-                session.target_idx = n;
-            } else {
-                for i in 0..n - 1 {
-                    if pointer.y >= card_centers[i] && pointer.y < card_centers[i + 1] {
-                        session.target_idx = i + 1;
-                        break;
-                    }
-                }
-            }
+        if !card_centers.is_empty() {
+            session.target_idx = dnd::slot_from_pointer(&card_centers, pointer.y);
         }
     }
 
@@ -2179,17 +2033,23 @@ fn render_overlay_element_list(
         // Floating drag preview badge following the pointer
         if let Some(pointer) = pointer_pos {
             if session.source_idx < overlay.elements.len() {
-                let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("elem_drag_float")));
                 let (badge_text, _) = element_badge(&overlay.elements[session.source_idx], t, loc);
                 let float_rect = Rect::from_min_size(pointer + vec2(12.0, 10.0), vec2(110.0, 26.0));
-                p.rect_filled(float_rect, CornerRadius::same(4), t.bg);
-                p.rect_stroke(float_rect, CornerRadius::same(4), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
-                p.text(
-                    float_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    badge_text,
-                    FontId::new(11.0, theme::semibold()),
-                    t.ink,
+                dnd::floating_preview(
+                    ui,
+                    egui::Id::unique("elem_drag_float"),
+                    float_rect,
+                    &ELEM_PREVIEW_STYLE,
+                    t,
+                    |p| {
+                        p.text(
+                            float_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            badge_text,
+                            FontId::new(11.0, theme::semibold()),
+                            t.ink,
+                        );
+                    },
                 );
             }
         }
@@ -5122,63 +4982,6 @@ mod tests {
         ));
     }
 
-    // ---------------- U02-008: library write failure path ----------------
-
-    #[test]
-    fn test_library_write_outcome_keeps_a_reachable_daemon_authoritative() {
-        use std::cell::Cell;
-
-        let applied = Cell::new(0usize);
-
-        // Daemon applied the change: no direct write.
-        assert_eq!(
-            finish_library_write(Ok(crate::ipc::IpcResponse::Ok), true, || {
-                applied.set(applied.get() + 1);
-                Ok(())
-            }),
-            LibraryWriteOutcome::Persisted
-        );
-        assert_eq!(applied.get(), 0);
-
-        // Daemon rejected the change: reported, never written behind its back.
-        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Error("denied".to_string())), true, || {
-            applied.set(applied.get() + 1);
-            Ok(())
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(applied.get(), 0);
-
-        // Unexpected response: same treatment.
-        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Pong), true, || {
-            applied.set(applied.get() + 1);
-            Ok(())
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(applied.get(), 0);
-
-        // Transport error but the daemon is still alive: reported, no second writer.
-        let outcome = finish_library_write(Err("pipe closed".to_string()), true, || {
-            applied.set(applied.get() + 1);
-            Ok(())
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(applied.get(), 0);
-
-        // Confirmed-offline daemon: the direct write is allowed and counted.
-        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
-            applied.set(applied.get() + 1);
-            Ok(())
-        });
-        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
-        assert_eq!(applied.get(), 1);
-
-        // A failing direct write is surfaced instead of a success toast.
-        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
-            Err(std::io::Error::other("disk full"))
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-    }
-
     // ---------------- U02-010: shared size limits ----------------
 
     #[test]
@@ -5495,16 +5298,6 @@ mod tests {
     // ---------------- U02-012: studio strings come from the catalog ----------------
 
     #[test]
-    fn test_fill_replaces_each_placeholder_once() {
-        assert_eq!(fill("{} {} {}", &["a", "b", "c"]), "a b c");
-        assert_eq!(fill("{} {}", &["left", "right"]), "left right");
-        assert_eq!(fill("{}", &[]), "{}");
-        assert_eq!(fill("no placeholders", &["ignored"]), "no placeholders");
-        // Positional, not all-occurrences: two placeholders get two different values.
-        assert_eq!(fill("{}{}", &["b", "a"]), "ba");
-    }
-
-    #[test]
     fn test_studio_catalog_values_drive_the_rendered_labels() {
         let en = crate::i18n::get(crate::i18n::Language::English);
         let ru = crate::i18n::get(crate::i18n::Language::Russian);
@@ -5566,21 +5359,30 @@ mod tests {
         );
     }
 
+    /// The production part of one studio source file: everything before its `#[cfg(test)]`
+    /// module, with comment lines dropped.
+    fn production_part(source: &'static str) -> String {
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map(|(production, _)| production)
+            .unwrap_or(source);
+        production
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Guards the conversion: the English studio literals replaced by `Strings` fields must not
     /// come back into production code. The test module itself contains these strings, so the
     /// scan stops at `#[cfg(test)]` and ignores comment lines.
     #[test]
     fn test_no_hardcoded_studio_english_literals_remain() {
-        let source = include_str!("overlay_modal.rs");
-        let production = source
-            .split_once("#[cfg(test)]")
-            .map(|(production, _)| production)
-            .unwrap_or(source);
-        let production = production
-            .lines()
-            .filter(|line| !line.trim_start().starts_with("//"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let production = [
+            production_part(include_str!("overlay_modal.rs")),
+            production_part(include_str!("../state/library_write.rs")),
+        ]
+        .join("\n");
 
         let denied = [
             // field prefixes / units

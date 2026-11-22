@@ -57,9 +57,12 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Lua runtime and the `ph` API | `src/daemon/lua_runner.rs` |
 | Discord Rich Presence | `src/daemon/discord_rpc.rs` |
 | Named-pipe server | `src/daemon/ipc_server.rs` |
-| GUI state, drafts, IPC calls | `src/gui/state.rs` |
-| Views and inspectors | `src/gui/views/` |
+| GUI state, drafts, undo, IPC calls | `src/gui/state/` (facade `src/gui/state.rs`) |
+| Preset library writes shared by the overlay and macro studios | `src/gui/state/library_write.rs` |
+| Views and inspectors | `src/gui/views/`; the inspector tree is `src/gui/views/inspector/` (facade `src/gui/views/inspector.rs`) |
 | Shared widgets and renderers | `src/gui/components/` |
+| Catalog modal shell (entry definition, chrome, filtering, lifecycle) | `src/gui/components/catalog_modal.rs`; per-kind tables and commit adapters stay in `src/gui/views/catalogs/` |
+| Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs` |
 | Localization | `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |
 | CLI rule authoring | `src/cli/` (facade `src/cli.rs`) |

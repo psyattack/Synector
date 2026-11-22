@@ -3,7 +3,9 @@
 //! uppercase mono badges, and inverted action buttons.
 
 use egui::{CornerRadius, pos2, Rect, Sense, Stroke, Ui, vec2};
+use crate::gui::components::dnd;
 use crate::gui::components::icons::ProcessIconCache;
+use crate::gui::components::text::fill;
 use crate::gui::components::widgets::{self, Glyph, Kind};
 use crate::gui::state::{GuiState, RuleSortMode};
 use crate::gui::theme::{self, Tokens};
@@ -308,11 +310,7 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
         // Mouse wheel scrolling while dragging items vertically
         if dnd_session.is_some() {
-            let wheel_delta_y = ui.input(|i| i.smooth_scroll_delta.y);
-            if wheel_delta_y != 0.0 {
-                ui.scroll_with_delta(vec2(0.0, wheel_delta_y * 1.5));
-                ui.ctx().request_repaint();
-            }
+            dnd::wheel_scroll(ui);
         }
 
         let is_dnd_active = dnd_session.is_some();
@@ -388,20 +386,8 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
             // Update target_idx using fresh current_centers
             if let (Some(session), Some(pointer)) = (&mut dnd_session, pointer_pos) {
-                let n = current_centers.len();
-                if n > 0 {
-                    if pointer.y < current_centers[0] {
-                        session.target_idx = 0;
-                    } else if pointer.y >= current_centers[n - 1] {
-                        session.target_idx = n;
-                    } else {
-                        for i in 0..(n - 1) {
-                            if pointer.y >= current_centers[i] && pointer.y < current_centers[i + 1] {
-                                session.target_idx = i + 1;
-                                break;
-                            }
-                        }
-                    }
+                if !current_centers.is_empty() {
+                    session.target_idx = dnd::slot_from_pointer(&current_centers, pointer.y);
                 }
             }
 
@@ -438,18 +424,23 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
                 if let (Some(pointer), Some(src_pos)) = (pointer_pos, dnd_source_index(session, &rule_ids)) {
                     let dragged_rule = &rules[order[src_pos]];
-                    let p = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::unique("rule_drag_preview")));
                     let float_rect = Rect::from_min_size(pointer + vec2(14.0, 10.0), vec2(180.0, 26.0));
-                    p.rect_filled(float_rect, CornerRadius::same(2), t.bg);
-                    p.rect_stroke(float_rect, CornerRadius::same(2), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
-
-                    let preview_text = format!("{} {}", default_icon_glyph(dragged_rule), dragged_rule.name);
-                    p.text(
-                        float_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        preview_text,
-                        egui::FontId::new(11.5, theme::semibold()),
-                        t.ink_strong,
+                    dnd::floating_preview(
+                        ui,
+                        egui::Id::unique("rule_drag_preview"),
+                        float_rect,
+                        &RULE_PREVIEW_STYLE,
+                        &t,
+                        |p| {
+                            let preview_text = format!("{} {}", default_icon_glyph(dragged_rule), dragged_rule.name);
+                            p.text(
+                                float_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                preview_text,
+                                egui::FontId::new(11.5, theme::semibold()),
+                                t.ink_strong,
+                            );
+                        },
                     );
                 }
             }
@@ -474,6 +465,29 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
     });
 }
 
+/// Rules list drop line: 16 px, 0.16 s, rail inset 16/16 and a plain 20 px bead.
+const RULE_DROP_LINE_STYLE: dnd::DropLineStyle = dnd::DropLineStyle {
+    height: 16.0,
+    anim_secs: 0.16,
+    corner: CornerRadius::ZERO,
+    fill_alpha: 0.08,
+    line_width: 2.0,
+    line_left: 16.0,
+    line_right: 16.0,
+    bead: Some(dnd::DropBead {
+        left: 20.0,
+        radius: 3.0,
+        halo_radius: None,
+    }),
+};
+
+/// Rule drag preview chrome: a flat card with a 1 px accent stroke.
+const RULE_PREVIEW_STYLE: dnd::FloatingPreviewStyle = dnd::FloatingPreviewStyle {
+    corner: CornerRadius::same(2),
+    stroke_width: 1.0,
+    shadow: false,
+};
+
 fn render_rule_drop_slot(
     ui: &mut Ui,
     slot_idx: usize,
@@ -488,26 +502,7 @@ fn render_rule_drop_slot(
     };
 
     let anim_id = ui.scope_id().with(("rule_slot_anim", slot_idx));
-    let anim = ui.ctx().animate_bool_with_time_and_easing(anim_id, is_targeted, 0.16, egui::emath::easing::cubic_out);
-
-    if anim > 0.001 {
-        let slot_h = 16.0 * anim;
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), slot_h), Sense::hover());
-        let p = ui.painter();
-        let mid_y = rect.center().y;
-
-        p.rect_filled(
-            rect,
-            CornerRadius::ZERO,
-            t.accent_ink.gamma_multiply(0.08 * anim),
-        );
-
-        let line_stroke = Stroke::new(2.0 * anim, t.accent_ink.gamma_multiply(anim));
-        p.hline(rect.left() + 16.0..=rect.right() - 16.0, mid_y, line_stroke);
-
-        let bead_pos = pos2(rect.left() + 20.0, mid_y);
-        p.circle_filled(bead_pos, 3.0 * anim, t.accent_ink.gamma_multiply(anim));
-    }
+    dnd::drop_line(ui, anim_id, is_targeted, &RULE_DROP_LINE_STYLE, t);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1066,26 +1061,6 @@ fn trigger_sort_key(trig: &Option<crate::models::Trigger>) -> usize {
         Some(crate::models::Trigger::SystemEvent { .. }) => 7,
         Some(crate::models::Trigger::Manual) | None => 8,
     }
-}
-
-/// Fills the positional `{}` placeholders of a catalog value left to right. Catalog
-/// placeholders are plain braces, not format specs, and `str::replace` would overwrite a
-/// repeated one, so a multi-placeholder value must go through this helper.
-fn fill(template: &str, args: &[&str]) -> String {
-    let mut out = String::new();
-    let mut rest = template;
-    for arg in args {
-        match rest.find("{}") {
-            Some(at) => {
-                out.push_str(&rest[..at]);
-                out.push_str(arg);
-                rest = &rest[at + 2..];
-            }
-            None => break,
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Localized label of a system event. Every surface that used to `{:?}`-format the enum

@@ -5,8 +5,8 @@
 use egui::{
     CornerRadius, RichText, Ui, vec2,
 };
-use crate::gui::components::modal::Modal;
-use crate::gui::components::widgets::{self, Glyph, Kind};
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
+use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 
@@ -29,29 +29,34 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // --- 1. HEADER ZONE ---
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.spacing_mut().item_spacing.x = 10.0;
-                    ui.add_space(20.0);
-
-                    ui.vertical(|ui| {
-                        let top_space = ((ui.available_height() - 35.0).max(0.0) / 2.0).round();
-                        ui.add_space(top_space);
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        widgets::hud(ui, loc.changelog_eyebrow, t.muted);
-                        ui.label(
-                            RichText::new(&info.name)
-                                .family(theme::semibold())
-                                .size(16.0)
-                                .color(t.ink_strong),
-                        );
-                    });
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(20.0);
-                        if widgets::glyph_button(ui, Glyph::Close, loc.changelog_btn_close).clicked() {
-                            *close_req = true;
-                        }
-
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: None,
+                        glyph_size: 16.0,
+                        close_tip: loc.changelog_btn_close,
+                        left_pad: 20.0,
+                        glyph_pad: 0.0,
+                        right_pad: 20.0,
+                        item_spacing_x: Some(10.0),
+                    },
+                    |ui| {
+                        ui.vertical(|ui| {
+                            let top_space = ((ui.available_height() - 35.0).max(0.0) / 2.0).round();
+                            ui.add_space(top_space);
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            widgets::hud(ui, loc.changelog_eyebrow, t.muted);
+                            ui.label(
+                                RichText::new(&info.name)
+                                    .family(theme::semibold())
+                                    .size(16.0)
+                                    .color(t.ink_strong),
+                            );
+                        });
+                    },
+                    |ui| {
                         ui.add_space(8.0);
 
                         // Update Now Button
@@ -75,8 +80,8 @@ pub fn render_changelog_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 ui.ctx().open_url(egui::OpenUrl::same_tab(&info.html_url));
                             }
                         }
-                    });
-                });
+                    },
+                );
             });
 
             // --- 2. BODY ZONE (Rich HTML & Markdown) ---

@@ -96,7 +96,7 @@ runtime counters and overlay positions flushed.
 
 | Area | Responsibility |
 |---|---|
-| `src/gui/` | egui views, overlay renderer, macro recorder, GUI state and IPC synchronization |
+| `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the catalog modals (`src/gui/views/catalogs/`), the shared catalog shell and GUI primitives (`src/gui/components/`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
 | `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
 | `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
 | `src/daemon/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher |
@@ -120,7 +120,10 @@ runtime counters and overlay positions flushed.
    validates them, applies them to its in-memory `AppConfig` aggregate and persists only the
    affected config section under `%LOCALAPPDATA%\Synector\`. The editable draft is discarded only
    after the daemon confirms the mutation; a rejected or failed mutation keeps the draft open and
-   reports the error.
+   reports the error. Every other GUI round-trip goes through the same worker too — clearing the
+   log buffer, testing a step, terminating a process, saving settings, preset-library writes,
+   overlay-preview show/hide and the calibration position poll — so the render loop never blocks on
+   the named pipe; the frame thread only enqueues and applies results, and the latest result wins.
 3. The daemon executes rules and streams status, telemetry and execution snapshots back, so the GUI
    reflects engine state without owning it. A sustained daemon outage (three failed polls plus a
    one-second quiet period) is logged and shown as an offline toast instead of being collapsed into
@@ -385,7 +388,8 @@ synthetic release so the timeline never ends with an unmatched press. Relative m
 (`MouseCoordMode::Relative`) is captured through Raw Input and replayed as short delta pulses for
 in-game camera turns. Named presets are saved and deleted through the daemon; the modal writes
 `library.json` directly only after a failed liveness probe and reports a daemon rejection instead
-of retrying silently.
+of retrying silently. The Macro Studio and the Overlay Studio share that one library-write path
+(`src/gui/state/library_write.rs`).
 
 ## Overlay Studio
 
@@ -416,7 +420,8 @@ Calibration is started from the studio and makes the overlay draggable; there is
 calibration hotkey. Saving a preset always creates a new id: a derived id or typed name that already
 exists gets `_2`, `_3`, …, a name without letters or digits is refused, and built-in presets are
 never replaced. Preset writes go through the daemon; the GUI writes `library.json` directly only
-after a failed liveness probe and reports a daemon rejection instead of retrying silently.
+after a failed liveness probe and reports a daemon rejection instead of retrying silently, on the
+same shared write path the Macro Studio uses.
 
 Timers run in the overlay process: a Stopwatch adds, and a Countdown subtracts, the real frame
 delta, so a paused or minimized process catches up instead of drifting; Clock and Uptime are
@@ -509,7 +514,8 @@ active search, cards are reordered by drag handle and the new order is committed
 persisted through IPC; filtered, searched or sorted modes disable reordering with an explanatory
 tooltip.
 
-The GUI keeps an undo/redo draft per edited rule and per overlay definition (up to 50 snapshots), so
+The GUI keeps an undo/redo draft per edited rule and per overlay definition (up to 50 snapshots),
+through one bounded-history implementation shared by the two drafts (`src/gui/state/undo.rs`), so
 editing, testing and saving a rule never mutates daemon-owned counters before the user commits. An
 edit gesture is one undo step — a drag or a slider commits the pre-gesture state once instead of one
 snapshot per frame. Opening a rule only renders its stored values: the inspector writes no defaults

@@ -2,7 +2,8 @@ use eframe::emath::vec2;
 use egui::{
     pos2, Color32, CornerRadius, Id, Rect, RichText, Sense, Stroke, Ui,
 };
-use crate::gui::components::modal::Modal;
+use crate::gui::components::dnd;
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets::{self, Cell, Kind};
 use crate::gui::macro_recorder::{egui_key_to_string, run_macro_test_safe, MacroRecorder};
 use crate::gui::state::GuiState;
@@ -242,26 +243,27 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // --- HEADER ---
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::GAME_CONTROLLER)
-                            .font(egui::FontId::new(18.0, theme::phosphor()))
-                            .color(t.accent_ink),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(loc.macro_studio_title)
-                            .font(egui::FontId::new(14.0, theme::semibold()))
-                            .color(t.ink_strong),
-                    );
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
-                        if widgets::glyph_button(ui, widgets::Glyph::Close, loc.macro_studio_close_tip).clicked() {
-                            *close_req = true;
-                        }
-
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::GAME_CONTROLLER),
+                        glyph_size: 18.0,
+                        close_tip: loc.macro_studio_close_tip,
+                        left_pad: 16.0,
+                        glyph_pad: 8.0,
+                        right_pad: 14.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| {
+                        ui.label(
+                            RichText::new(loc.macro_studio_title)
+                                .font(egui::FontId::new(14.0, theme::semibold()))
+                                .color(t.ink_strong),
+                        );
+                    },
+                    |ui| {
                         if widgets::glyph_button(ui, widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
@@ -305,8 +307,8 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 run_macro_test_safe(events.clone(), *speed);
                             }
                         }
-                    });
-                });
+                    },
+                );
             });
 
             // --- TOOLBAR: CLEAN, REORGANIZED WITH DISTINCT FUNCTIONAL ZONES ---
@@ -456,30 +458,11 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                             ui.ctx().request_repaint();
 
                             // 1. Mouse wheel scrolling while dragging
-                            let wheel_delta_y = ui.input(|i| i.smooth_scroll_delta.y);
-                            if wheel_delta_y != 0.0 {
-                                ui.scroll_with_delta(vec2(0.0, wheel_delta_y * 1.5));
-                            }
+                            dnd::wheel_scroll(ui);
 
                             // 2. Edge auto-scrolling when pointer is near top or bottom of scroll area
                             if let Some(pointer) = pointer_pos {
-                                let viewport = ui.clip_rect();
-                                let edge_zone = 70.0;
-                                let view_top = viewport.top();
-                                let view_bottom = viewport.bottom();
-
-                                // Near top edge: auto-scroll up
-                                if pointer.y < view_top + edge_zone {
-                                    let factor = ((view_top + edge_zone - pointer.y) / edge_zone).clamp(0.1, 3.0);
-                                    let scroll_speed = 8.0 + 26.0 * factor;
-                                    ui.scroll_with_delta(vec2(0.0, scroll_speed));
-                                }
-                                // Near bottom edge: auto-scroll down
-                                else if pointer.y > view_bottom - edge_zone {
-                                    let factor = ((pointer.y - (view_bottom - edge_zone)) / edge_zone).clamp(0.1, 3.0);
-                                    let scroll_speed = 8.0 + 26.0 * factor;
-                                    ui.scroll_with_delta(vec2(0.0, -scroll_speed));
-                                }
+                                dnd::edge_autoscroll(ui, pointer, 70.0);
                             }
                         }
 
@@ -777,26 +760,12 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                         // Calculate target drop index across continuous vertical space
                         let mut target_idx = None;
                         if let (Some(_src), Some(ptr)) = (active_src, pointer_pos) {
-                            let n = row_centers.len();
-                            if n > 0 {
-                                let t_idx = if ptr.y < row_centers[0] {
-                                    0
-                                } else if ptr.y >= row_centers[n - 1] {
-                                    n
-                                } else {
-                                    let mut found = n;
-                                    for i in 0..(n - 1) {
-                                        if ptr.y >= row_centers[i] && ptr.y < row_centers[i + 1] {
-                                            found = i + 1;
-                                            break;
-                                        }
-                                    }
-                                    found
-                                };
+                            if !row_centers.is_empty() {
+                                let t_idx = dnd::slot_from_pointer(&row_centers, ptr.y);
                                 target_idx = Some(t_idx);
 
                                 // Draw glowing insertion line with endpoints
-                                if t_idx < n {
+                                if t_idx < row_centers.len() {
                                     let rect = row_rects[t_idx];
                                     let y = rect.top() - 2.0;
                                     ui.painter().hline(rect.x_range(), y, Stroke::new(2.5, t.accent_ink));
@@ -1512,99 +1481,6 @@ fn allocate_macro_preset_id(
     }
 }
 
-/// Result of one macro-library mutation attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum LibraryWriteOutcome {
-    /// The daemon, or a confirmed-offline direct write, persisted the change.
-    Persisted,
-    /// Nothing was persisted. The string is a log-safe reason (identifiers only, no payloads).
-    Failed(String),
-}
-
-/// Whether a failed IPC call may be retried as a direct write of `library.json`. The daemon owns
-/// the section while it is reachable, so only a confirmed-unreachable daemon may be bypassed: a
-/// reachable daemon that rejected the write (or answered unexpectedly) must be reported instead,
-/// or its next persist overwrites the entry. Same rule as the overlay library (U02-008).
-fn direct_library_write_allowed(daemon_reachable: bool) -> bool {
-    !daemon_reachable
-}
-
-/// Interprets one IPC result and, when the daemon is confirmed gone, applies the change directly
-/// through `apply_directly`. Mirrors the overlay studio's `finish_library_write`.
-fn finish_library_write(
-    result: Result<crate::ipc::IpcResponse, String>,
-    daemon_reachable: bool,
-    apply_directly: impl FnOnce() -> std::io::Result<()>,
-) -> LibraryWriteOutcome {
-    match result {
-        Ok(crate::ipc::IpcResponse::Ok) => LibraryWriteOutcome::Persisted,
-        Ok(crate::ipc::IpcResponse::Error(reason)) => {
-            LibraryWriteOutcome::Failed(format!("the daemon rejected the change: {reason}"))
-        }
-        Ok(_) => LibraryWriteOutcome::Failed("the daemon returned an unexpected response".to_string()),
-        Err(error) => {
-            if !direct_library_write_allowed(daemon_reachable) {
-                return LibraryWriteOutcome::Failed(format!(
-                    "the daemon is reachable but the change failed: {error}"
-                ));
-            }
-            match apply_directly() {
-                Ok(()) => {
-                    crate::logging::info(
-                        "CONFIG",
-                        "Daemon unreachable; macro library written directly",
-                    );
-                    LibraryWriteOutcome::Persisted
-                }
-                Err(write_error) => {
-                    LibraryWriteOutcome::Failed(format!("direct library write failed: {write_error}"))
-                }
-            }
-        }
-    }
-}
-
-/// Deletes one macro preset, keeping the daemon authoritative while it is reachable.
-fn delete_macro_preset(id: &str) -> LibraryWriteOutcome {
-    let result = crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::DeleteMacroPreset(id.to_string()));
-    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
-    let outcome = finish_library_write(result, daemon_reachable, || {
-        let mut library = crate::config::Library::read();
-        library.macro_presets.retain(|preset| preset.id != id);
-        library.save()
-    });
-    if let LibraryWriteOutcome::Failed(reason) = &outcome {
-        crate::logging::error(
-            "CONFIG",
-            &format!("Macro preset '{id}' was not deleted: {reason}"),
-        );
-    }
-    outcome
-}
-
-/// Saves one macro preset, keeping the daemon authoritative while it is reachable. The daemon
-/// persists synchronously before answering `Ok`, so no fallback write is attempted while it lives.
-fn persist_macro_preset(preset: &crate::models::MacroPreset) -> LibraryWriteOutcome {
-    let result =
-        crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::SaveMacroPreset(preset.clone()));
-    let daemon_reachable = result.is_err() && crate::ipc::IpcClient::is_daemon_running();
-    let outcome = finish_library_write(result, daemon_reachable, || {
-        let mut library = crate::config::Library::read();
-        if let Some(existing) = library.macro_presets.iter_mut().find(|p| p.id == preset.id) {
-            *existing = preset.clone();
-        } else {
-            library.macro_presets.push(preset.clone());
-        }
-        library.save()
-    });
-    if let LibraryWriteOutcome::Failed(reason) = &outcome {
-        crate::logging::error(
-            "CONFIG",
-            &format!("Macro preset '{}' was not saved: {reason}", preset.id),
-        );
-    }
-    outcome
-}
 
 pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
@@ -1622,24 +1498,22 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, &t, |frame| {
             // Header: Title on left, Close on right
             frame.header(|ui, close_req| {
-                ui.horizontal_centered(|ui| {
-                    ui.add_space(16.0);
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::BOOKMARK_SIMPLE)
-                            .family(theme::phosphor())
-                            .size(16.0)
-                            .color(t.accent_ink),
-                    );
-                    ui.add_space(8.0);
-                    widgets::hud(ui, loc.macro_studio_presets_title, t.ink_strong);
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(14.0);
-                        if widgets::glyph_button(ui, widgets::Glyph::Close, loc.modal_tip_close).clicked() {
-                            *close_req = true;
-                        }
-                    });
-                });
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::BOOKMARK_SIMPLE),
+                        glyph_size: 16.0,
+                        close_tip: loc.modal_tip_close,
+                        left_pad: 16.0,
+                        glyph_pad: 8.0,
+                        right_pad: 14.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| { widgets::hud(ui, loc.macro_studio_presets_title, t.ink_strong); },
+                    |_| {},
+                );
             });
 
             // Body
@@ -1764,19 +1638,7 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if let Some(del_id) = to_delete {
-                                    match delete_macro_preset(&del_id) {
-                                        LibraryWriteOutcome::Persisted => {
-                                            if let Some(ds) = &mut state.daemon_state {
-                                                ds.config.macro_presets.retain(|p| p.id != del_id);
-                                            }
-                                        }
-                                        LibraryWriteOutcome::Failed(_) => {
-                                            state.toast = Some((
-                                                loc.presets_delete_failed.to_string(),
-                                                std::time::Instant::now(),
-                                            ));
-                                        }
-                                    }
+                                    state.request_delete_macro_preset(&del_id);
                                 }
                             });
                     }
@@ -1818,24 +1680,7 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                 infinite,
             };
 
-            match persist_macro_preset(&saved_preset) {
-                LibraryWriteOutcome::Persisted => {
-                    if let Some(ds) = &mut state.daemon_state {
-                        if let Some(existing) = ds.config.macro_presets.iter_mut().find(|p| p.id == saved_preset.id) {
-                            *existing = saved_preset.clone();
-                        } else {
-                            ds.config.macro_presets.push(saved_preset.clone());
-                        }
-                    }
-                    state.toast = Some((loc.presets_saved_toast.replace("{}", &name), std::time::Instant::now()));
-                }
-                LibraryWriteOutcome::Failed(_) => {
-                    state.toast = Some((
-                        loc.presets_save_failed.to_string(),
-                        std::time::Instant::now(),
-                    ));
-                }
-            }
+            state.request_save_macro_preset(saved_preset, name);
         }
     }
 
@@ -1952,75 +1797,4 @@ mod tests {
         assert_eq!(allocate_macro_preset_id("Fresh", None, &existing), "macro_fresh");
     }
 
-    #[test]
-    fn test_direct_macro_library_write_is_allowed_only_when_the_daemon_is_unreachable() {
-        assert!(
-            !direct_library_write_allowed(true),
-            "a reachable daemon owns library.json"
-        );
-        assert!(direct_library_write_allowed(false));
-    }
-
-    /// The Macro Studio delete/save paths must keep the daemon authoritative: an `Ok` is final, a
-    /// rejection or unexpected answer is reported instead of writing `library.json` behind it, and
-    /// only a confirmed-offline daemon falls back to a direct write (U02-008, same rule as the
-    /// overlay studio).
-    #[test]
-    fn test_macro_library_write_keeps_a_reachable_daemon_authoritative() {
-        let mut direct_writes = 0;
-
-        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Ok), true, || {
-            direct_writes += 1;
-            Ok(())
-        });
-        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
-        assert_eq!(direct_writes, 0, "a daemon Ok is final");
-
-        let outcome = finish_library_write(
-            Ok(crate::ipc::IpcResponse::Error("denied".to_string())),
-            true,
-            || {
-                direct_writes += 1;
-                Ok(())
-            },
-        );
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(direct_writes, 0, "a rejection must not be overwritten directly");
-
-        let outcome = finish_library_write(Ok(crate::ipc::IpcResponse::Pong), true, || {
-            direct_writes += 1;
-            Ok(())
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(direct_writes, 0, "an unexpected answer is not a success");
-
-        let outcome = finish_library_write(Err("pipe busy".to_string()), true, || {
-            direct_writes += 1;
-            Ok(())
-        });
-        assert!(matches!(outcome, LibraryWriteOutcome::Failed(_)));
-        assert_eq!(direct_writes, 0, "a reachable daemon that failed is reported");
-
-        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
-            direct_writes += 1;
-            Ok(())
-        });
-        assert_eq!(outcome, LibraryWriteOutcome::Persisted);
-        assert_eq!(direct_writes, 1, "a confirmed-offline daemon allows the fallback");
-
-        let outcome = finish_library_write(Err("pipe closed".to_string()), false, || {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "locked",
-            ))
-        });
-        match outcome {
-            LibraryWriteOutcome::Failed(reason) => {
-                assert!(reason.contains("direct library write failed"));
-            }
-            LibraryWriteOutcome::Persisted => {
-                panic!("a failed direct write must not be reported as success")
-            }
-        }
-    }
 }

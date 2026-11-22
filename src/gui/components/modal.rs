@@ -2,6 +2,7 @@ use eframe::emath::vec2;
 use egui::{
     pos2, Color32, CornerRadius, Id, Order, Rect, Sense, Stroke, Ui, Vec2,
 };
+use crate::gui::components::widgets::{self, Glyph};
 use crate::gui::theme::{self, Tokens};
 
 /// Response returned from `Modal::show`.
@@ -71,6 +72,65 @@ fn scoped_slice<R>(ui: &mut Ui, rect: Rect, add_contents: impl FnOnce(&mut Ui) -
         add_contents(ui)
     })
     .inner
+}
+
+/// Chrome and spacing of one [`render_modal_header`] call.
+///
+/// The paddings stay per call site because the overlay main header uses 18/6/16, the
+/// overlay/macro presets dialogs 16/8/14 and the guide 20/8/16; the widget sequence itself is
+/// shared. The title and any extra actions are closures, so a two-line title (guide, changelog)
+/// or a header with controls (studio, script canvas) keeps its exact position.
+pub struct ModalHeader<'a> {
+    /// Optional phosphor glyph shown before the title in the accent ink.
+    pub glyph: Option<&'a str>,
+    /// Glyph size in points: 16 for the standard dialogs, 18 for the studio and guide headers.
+    pub glyph_size: f32,
+    pub close_tip: &'a str,
+    pub left_pad: f32,
+    pub glyph_pad: f32,
+    pub right_pad: f32,
+    /// Horizontal item spacing applied before the left padding; `None` keeps the `Ui` default.
+    pub item_spacing_x: Option<f32>,
+}
+
+/// The repeated modal header: an optional glyph, the dialog title, and a right-to-left close glyph.
+///
+/// `title` renders in the left part of the header (the standard call sites pass `widgets::hud`);
+/// `trailing` renders after the close glyph inside the same right-to-left layout, so a header with
+/// extra actions keeps its order. Callers pass this straight into `ModalFrame::header`.
+pub fn render_modal_header(
+    ui: &mut Ui,
+    close_requested: &mut bool,
+    t: &Tokens,
+    header: ModalHeader<'_>,
+    title: impl FnOnce(&mut Ui),
+    trailing: impl FnOnce(&mut Ui),
+) {
+    ui.horizontal_centered(|ui| {
+        if let Some(spacing_x) = header.item_spacing_x {
+            ui.spacing_mut().item_spacing.x = spacing_x;
+        }
+        ui.add_space(header.left_pad);
+
+        if let Some(glyph) = header.glyph {
+            ui.label(
+                egui::RichText::new(glyph)
+                    .font(egui::FontId::new(header.glyph_size, theme::phosphor()))
+                    .color(t.accent_ink),
+            );
+            ui.add_space(header.glyph_pad);
+        }
+
+        title(ui);
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(header.right_pad);
+            if widgets::glyph_button(ui, Glyph::Close, header.close_tip).clicked() {
+                *close_requested = true;
+            }
+            trailing(ui);
+        });
+    });
 }
 
 /// Unified, high-performance base modal dialog builder.

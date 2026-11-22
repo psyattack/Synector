@@ -1,6 +1,9 @@
+pub mod catalog_modal;
+pub mod dnd;
 pub mod duration;
 pub mod icons;
 pub mod modal;
 pub mod overlay_renderer;
 pub mod script_highlighter;
+pub mod text;
 pub mod widgets;

@@ -19,13 +19,6 @@ enum LogFilter {
 
 /// Clear Logs failure toast: the catalog template with the IPC error substituted. An unexpected
 /// response shape has no error detail, so the generic localized failure line is shown instead.
-fn clear_logs_failure_toast(loc: &crate::i18n::Strings, error: Option<&str>) -> String {
-    match error {
-        Some(error) => loc.toast_clear_logs_failed.replace("{}", error),
-        None => loc.toast_request_failed_unexpected.to_string(),
-    }
-}
-
 pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
     let t = Tokens::get(ui.ctx());
     let loc = state.loc();
@@ -102,29 +95,11 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Clear Logs Action. The local snapshot is cleared only after the daemon
-                // confirmed the request: on failure the daemon keeps its ring buffer, and
-                // reporting success would be undone by the next state sync.
+                // Clear Logs Action. The request goes through the IPC worker; the local snapshot
+                // is cleared when the daemon confirms, so a failure cannot be silently undone by
+                // the next state sync.
                 if widgets::button(ui, loc.logs_btn_clear, Kind::Secondary, 0.0).clicked() {
-                    match crate::ipc::IpcClient::call(&crate::ipc::IpcRequest::ClearLogs) {
-                        Ok(crate::ipc::IpcResponse::Ok) => {
-                            if let Some(ds) = &mut state.daemon_state {
-                                ds.logs.clear();
-                            }
-                            state.set_toast(loc.toast_stream_cleared);
-                        }
-                        Ok(crate::ipc::IpcResponse::Error(error)) | Err(error) => {
-                            crate::logging::warn("GUI", &format!("ClearLogs was not applied: {error}"));
-                            state.set_toast(clear_logs_failure_toast(loc, Some(&error)));
-                        }
-                        Ok(_) => {
-                            crate::logging::warn(
-                                "GUI",
-                                "ClearLogs was not applied: unexpected response",
-                            );
-                            state.set_toast(clear_logs_failure_toast(loc, None));
-                        }
-                    }
+                    state.clear_logs();
                 }
 
                 ui.add_space(8.0);
@@ -334,36 +309,5 @@ fn format_uptime(uptime_secs: u64) -> String {
         format!("{:02}h {:02}m {:02}s", hours, mins, secs)
     } else {
         format!("{:02}m {:02}s", mins, secs)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::i18n::{self, Language};
-
-    #[test]
-    fn test_clear_logs_failure_toast_substitutes_the_error() {
-        let en = i18n::get(Language::English);
-        let en_toast = clear_logs_failure_toast(en, Some("pipe is busy"));
-        assert!(en_toast.contains("pipe is busy"), "toast: {en_toast}");
-        assert!(!en_toast.contains("{}"), "placeholder must be filled: {en_toast}");
-
-        let ru = i18n::get(Language::Russian);
-        let ru_toast = clear_logs_failure_toast(ru, Some("pipe is busy"));
-        assert!(ru_toast.contains("pipe is busy"), "toast: {ru_toast}");
-        assert_ne!(en_toast, ru_toast, "the wrapper text must be localized");
-    }
-
-    #[test]
-    fn test_clear_logs_unexpected_response_uses_the_localized_generic_line() {
-        let en = i18n::get(Language::English);
-        let ru = i18n::get(Language::Russian);
-        assert_eq!(clear_logs_failure_toast(en, None), en.toast_request_failed_unexpected);
-        assert_eq!(clear_logs_failure_toast(ru, None), ru.toast_request_failed_unexpected);
-        assert_ne!(
-            clear_logs_failure_toast(en, None),
-            clear_logs_failure_toast(ru, None)
-        );
     }
 }

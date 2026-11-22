@@ -10,11 +10,12 @@ use egui::{Color32, CornerRadius, Stroke, Ui, vec2};
 use components::widgets;
 use state::{ActiveView, GuiState};
 use theme::{Tokens, apply_theme};
-use views::action_catalog_modal::render_action_catalog_modal;
 use views::analytics_view::render_analytics_view;
+use views::catalogs::action::render_action_catalog_modal;
+use views::catalogs::condition::render_condition_catalog_modal;
+use views::catalogs::element::render_element_catalog_modal;
+use views::catalogs::trigger::render_trigger_catalog_modal;
 use views::changelog_modal::render_changelog_modal;
-use views::condition_catalog_modal::render_condition_catalog_modal;
-use views::element_catalog_modal::render_element_catalog_modal;
 use views::guide_modal::render_guide_modal;
 use views::header_bar::render_header_bar;
 use views::inspector::render_inspector_drawer;
@@ -24,7 +25,6 @@ use views::process_picker_modal::render_process_picker_modal;
 use views::rules_view::render_rules_view;
 use views::script_modal::render_script_editor_canvas;
 use views::settings_view::render_settings_view;
-use views::trigger_catalog_modal::render_trigger_catalog_modal;
 use crate::config::{Settings, WindowState};
 
 /// Window geometry is streamed by every frame of a drag/resize; writing it that often would

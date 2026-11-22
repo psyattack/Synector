@@ -38,7 +38,7 @@ pub fn render_process_picker_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     // A pick only commits while the picker is still open: the fully clickable table is painted
     // through the close animation, so an unguarded click re-applied the selection (U04-002).
-    if !crate::gui::views::action_catalog_modal::catalog_commit_allowed(is_open) {
+    if !crate::gui::components::catalog_modal::catalog_commit_allowed(is_open) {
         if modal_res.is_none() {
             state.last_picker_target = None;
         }

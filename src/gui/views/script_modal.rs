@@ -3,9 +3,9 @@
 //! with syntax highlighting, line metrics, clipboard copy, and smooth animations.
 
 use egui::{pos2, vec2, Stroke};
-use crate::gui::components::modal::Modal;
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::script_highlighter::create_script_layouter;
-use crate::gui::components::widgets::{self, Glyph, Kind};
+use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 use crate::models::Action;
@@ -56,25 +56,32 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
 
             // 1. Header slice
             frame.header(|ui, close_req| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add_space(20.0);
-                    let prefix = if modal.is_exit_pipeline { loc.inspector_exit_prefix } else { loc.inspector_step_prefix };
-                    widgets::hud(ui, &format!("{} {:02}", prefix, modal.step_idx + 1), t.accent_ink);
-                    ui.add_space(8.0);
-                    widgets::badge(ui, modal.language.badge_name(loc), t.accent_ink);
-
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.add_space(20.0);
-                        if widgets::glyph_button(ui, Glyph::Close, loc.modal_tip_close).clicked() {
-                            *close_req = true;
-                        }
-
+                render_modal_header(
+                    ui,
+                    close_req,
+                    &t,
+                    ModalHeader {
+                        glyph: None,
+                        glyph_size: 16.0,
+                        close_tip: loc.modal_tip_close,
+                        left_pad: 20.0,
+                        glyph_pad: 0.0,
+                        right_pad: 20.0,
+                        item_spacing_x: None,
+                    },
+                    |ui| {
+                        let prefix = if modal.is_exit_pipeline { loc.inspector_exit_prefix } else { loc.inspector_step_prefix };
+                        widgets::hud(ui, &format!("{} {:02}", prefix, modal.step_idx + 1), t.accent_ink);
+                        ui.add_space(8.0);
+                        widgets::badge(ui, modal.language.badge_name(loc), t.accent_ink);
+                    },
+                    |ui| {
                         ui.add_space(8.0);
                         if widgets::button(ui, loc.modal_btn_copy_script, Kind::Secondary, 0.0).clicked() {
                             copy_clicked = true;
                         }
-                    });
-                });
+                    },
+                );
             });
 
             // 2. Editor body slice

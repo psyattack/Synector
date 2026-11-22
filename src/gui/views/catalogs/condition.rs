@@ -5,70 +5,24 @@
 //! The layout, filtering and card rendering live in the shared catalog primitives
 //! (`render_catalog_body`), so this file only owns the condition table and the commit path.
 
-use egui::{vec2, Color32};
-use crate::gui::components::modal::Modal;
+use egui::vec2;
+use crate::gui::components::catalog_modal::{
+    CatalogCategory, CatalogChrome, CatalogEntryDef, CatalogModal,
+};
 use crate::gui::state::GuiState;
 use crate::gui::theme::Tokens;
-use crate::i18n::Strings;
 use crate::models::{
     ProcessMatchMode, RuleCondition, SystemEventType,
 };
-use super::action_catalog_modal::{
-    catalog_commit_allowed, render_catalog_body, render_catalog_header, CatalogCategory,
-    CatalogEntry, CatalogView,
-};
 
-struct ConditionCatalogItem {
-    category_idx: usize, // 1: Processes, 2: System, 3: Time, 4: Events, 5: Rules
-    badge: &'static str,
-    title: fn(&Strings) -> &'static str,
-    description: fn(&Strings) -> &'static str,
-    glyph: &'static str,
-    tint: fn(&Tokens) -> Color32,
-    keywords: &'static [&'static str],
-    constructor: fn() -> RuleCondition,
-}
+type ConditionEntry = CatalogEntryDef<fn() -> RuleCondition>;
 
-impl CatalogEntry for ConditionCatalogItem {
-    fn category(&self) -> usize {
-        self.category_idx
-    }
-
-    fn badge(&self) -> &'static str {
-        self.badge
-    }
-
-    fn title(&self, loc: &Strings) -> &'static str {
-        (self.title)(loc)
-    }
-
-    fn description(&self, loc: &Strings) -> &'static str {
-        (self.description)(loc)
-    }
-
-    fn glyph(&self) -> &'static str {
-        self.glyph
-    }
-
-    fn tint(&self, t: &Tokens) -> Color32 {
-        (self.tint)(t)
-    }
-
-    fn keywords(&self) -> &'static [&'static str] {
-        self.keywords
-    }
-
-    fn nestable(&self) -> bool {
-        // Conditions are not branch actions, so the catalog has no nesting mode.
-        true
-    }
-}
-
-const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
+const CONDITION_CATALOG_ITEMS: &[ConditionEntry] = &[
     // 1. Process & Window
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "PROCESS",
+        nestable: true,
         title: |loc| loc.catalog_cond_process_title,
         description: |loc| loc.catalog_cond_process_desc,
         glyph: egui_phosphor::regular::CPU,
@@ -80,9 +34,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             must_be_running: true,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 1,
         badge: "WINDOW",
+        nestable: true,
         title: |loc| loc.catalog_cond_window_title,
         description: |loc| loc.catalog_cond_window_desc,
         glyph: egui_phosphor::regular::EYE,
@@ -96,9 +51,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
     },
 
     // 2. Hardware & Resource
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "RESOURCE",
+        nestable: true,
         title: |loc| loc.catalog_cond_resource_title,
         description: |loc| loc.catalog_cond_resource_desc,
         glyph: egui_phosphor::regular::CHART_LINE,
@@ -114,9 +70,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             ram_mb: None,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 2,
         badge: "FILES",
+        nestable: true,
         title: |loc| loc.catalog_cond_file_title,
         description: |loc| loc.catalog_cond_file_desc,
         glyph: egui_phosphor::regular::FOLDER_NOTCH_OPEN,
@@ -130,9 +87,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
     },
 
     // 3. Time & Schedule
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 3,
         badge: "TIME",
+        nestable: true,
         title: |loc| loc.catalog_cond_time_title,
         description: |loc| loc.catalog_cond_time_desc,
         glyph: egui_phosphor::regular::CLOCK,
@@ -146,9 +104,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
     },
 
     // 4. System Events & States
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "EVENT",
+        nestable: true,
         title: |loc| loc.catalog_cond_lock_title,
         description: |loc| loc.catalog_cond_lock_desc,
         glyph: egui_phosphor::regular::LOCK,
@@ -159,9 +118,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "POWER",
+        nestable: true,
         title: |loc| loc.catalog_cond_sleep_title,
         description: |loc| loc.catalog_cond_sleep_desc,
         glyph: egui_phosphor::regular::MOON,
@@ -172,9 +132,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "POWER",
+        nestable: true,
         title: |loc| loc.catalog_cond_power_title,
         description: |loc| loc.catalog_cond_power_desc,
         glyph: egui_phosphor::regular::PLUG,
@@ -185,9 +146,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "IDLE",
+        nestable: true,
         title: |loc| loc.catalog_cond_idle_title,
         description: |loc| loc.catalog_cond_idle_desc,
         glyph: egui_phosphor::regular::HOURGLASS,
@@ -198,9 +160,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 300,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "DISPLAY",
+        nestable: true,
         title: |loc| loc.catalog_cond_display_title,
         description: |loc| loc.catalog_cond_display_desc,
         glyph: egui_phosphor::regular::DESKTOP,
@@ -211,9 +174,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "DEVICE",
+        nestable: true,
         title: |loc| loc.catalog_cond_device_title,
         description: |loc| loc.catalog_cond_device_desc,
         glyph: egui_phosphor::regular::HARD_DRIVES,
@@ -224,9 +188,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
             idle_duration_sec: 0,
         },
     },
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 4,
         badge: "NETWORK",
+        nestable: true,
         title: |loc| loc.catalog_cond_network_title,
         description: |loc| loc.catalog_cond_network_desc,
         glyph: egui_phosphor::regular::WIFI_HIGH,
@@ -239,9 +204,10 @@ const CONDITION_CATALOG_ITEMS: &[ConditionCatalogItem] = &[
     },
 
     // 5. Rules
-    ConditionCatalogItem {
+    CatalogEntryDef {
         category_idx: 5,
         badge: "RULE",
+        nestable: true,
         title: |loc| loc.catalog_cond_rule_title,
         description: |loc| loc.catalog_cond_rule_desc,
         glyph: egui_phosphor::regular::PLAY,
@@ -266,63 +232,50 @@ const CONDITION_CATEGORIES: [CatalogCategory; 6] = [
     CatalogCategory { index: 5, glyph: egui_phosphor::regular::PLAY, label: |loc| loc.catalog_cat_rules },
 ];
 
+pub(crate) const CONDITION_CHROME: CatalogChrome = CatalogChrome {
+    modal_id: "condition-catalog-modal",
+    eyebrow: |loc| loc.catalog_condition_modal_title,
+    close_tip: |loc| loc.inspector_btn_cancel,
+    search_hint: |loc| loc.catalog_condition_search_hint,
+    scroll_id: "condition_catalog_cards_scroll",
+    width_fraction: 0.74,
+    height_fraction: 0.76,
+    min_size: vec2(720.0, 500.0),
+    max_size: vec2(840.0, 640.0),
+};
+
 pub fn render_condition_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
     let is_open = state.condition_catalog.is_some();
-    let active_modal = state
+    let Some(mut modal_state) = state
         .condition_catalog
-        .as_ref()
-        .or(state.last_condition_catalog.as_ref())
-        .cloned();
-
-    let Some(mut modal_state) = active_modal else { return };
-    let loc = state.loc();
-    let mut chosen_condition: Option<RuleCondition> = None;
-
-    let modal_res = Modal::new("condition-catalog-modal", is_open)
-        .width_fraction(0.74)
-        .height_fraction(0.76)
-        .min_size(vec2(720.0, 500.0))
-        .max_size(vec2(840.0, 640.0))
-        .header_height(46.0)
-        .show(ctx, &t, |frame| {
-            render_catalog_header(frame, &t, loc.catalog_condition_modal_title, loc.inspector_btn_cancel);
-
-            frame.body(|ui| {
-                let mut view = CatalogView {
-                    items: CONDITION_CATALOG_ITEMS,
-                    categories: &CONDITION_CATEGORIES,
-                    selected_category: &mut modal_state.selected_category,
-                    search_query: &mut modal_state.search_query,
-                    nesting: false,
-                    scroll_id: "condition_catalog_cards_scroll",
-                    search_hint: loc.catalog_condition_search_hint,
-                };
-                if let Some(idx) = render_catalog_body(ui, &t, loc, &mut view) {
-                    chosen_condition = Some((CONDITION_CATALOG_ITEMS[idx].constructor)());
-                }
-            });
-        });
-
-    // `Modal` keeps its card grid clickable through the close animation; only a click on the
-    // still open dialog may commit (U04-002).
-    if !catalog_commit_allowed(is_open) {
-        if modal_res.is_none() {
-            state.last_condition_catalog = None;
-        }
+        .clone()
+        .or_else(|| state.last_condition_catalog.clone())
+    else {
         return;
-    }
+    };
+    let loc = state.loc();
 
-    if let Some(cond) = chosen_condition {
-        state.apply_condition_from_catalog(cond);
-    } else if let Some(res) = modal_res {
-        if res.close_requested {
-            state.close_condition_catalog();
-        } else if is_open {
-            state.condition_catalog = Some(modal_state.clone());
-            state.last_condition_catalog = Some(modal_state);
-        }
-    } else if !is_open {
+    let outcome = CatalogModal::new(CONDITION_CHROME, CONDITION_CATALOG_ITEMS, &CONDITION_CATEGORIES)
+        .show(
+            ctx,
+            &t,
+            loc,
+            &mut modal_state.selected_category,
+            &mut modal_state.search_query,
+            is_open,
+        );
+
+    // Condition keeps its chosen-before-close ordering. `apply_condition_from_catalog` reads the
+    // target from `state.condition_catalog`, not from this cloned modal state.
+    if let Some(idx) = outcome.chosen {
+        state.apply_condition_from_catalog((CONDITION_CATALOG_ITEMS[idx].constructor)());
+    } else if outcome.close_requested {
+        state.close_condition_catalog();
+    } else if is_open {
+        state.condition_catalog = Some(modal_state.clone());
+        state.last_condition_catalog = Some(modal_state);
+    } else if outcome.fully_closed {
         state.last_condition_catalog = None;
     }
 }
@@ -330,7 +283,7 @@ pub fn render_condition_catalog_modal(ctx: &egui::Context, state: &mut GuiState)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::views::action_catalog_modal::filter_catalog_entries;
+    use crate::gui::components::catalog_modal::{filter_catalog_entries, CatalogEntry};
     use crate::i18n::{self, Language};
     use crate::models::RuleConditionItem;
 
@@ -503,27 +456,5 @@ mod tests {
             });
             out.textures_delta.clear();
         }
-    }
-
-    /// U04-002 (CATALOG-FOLLOWUP): `Modal` keeps the card grid clickable through the 160 ms
-    /// close animation, so the condition commit must be behind the same gate the action catalog
-    /// uses. The test module itself names these symbols, so the scan stops at `#[cfg(test)]`.
-    #[test]
-    fn test_condition_catalog_commit_is_gated_while_the_modal_closes() {
-        let source = include_str!("condition_catalog_modal.rs");
-        let production = source
-            .split_once("#[cfg(test)]")
-            .map(|(production, _)| production)
-            .unwrap_or(source);
-        let gate = production
-            .find("catalog_commit_allowed(is_open)")
-            .expect("the condition commit path must use the shared close-animation gate");
-        let commit = production
-            .find("state.apply_condition_from_catalog")
-            .expect("the condition commit call must stay in the commit path");
-        assert!(
-            gate < commit,
-            "the gate must run before the chosen condition is applied (U04-002)"
-        );
     }
 }
