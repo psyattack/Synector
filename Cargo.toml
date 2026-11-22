@@ -1,6 +1,6 @@
 [package]
 name = "Synector"
-version = "2.9.2"
+version = "3.0.0"
 edition = "2021"
 authors = ["psyattack"]
 description = "Native Windows automation suite and process supervisor in pure Rust"

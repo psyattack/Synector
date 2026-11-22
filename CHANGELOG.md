@@ -1,5 +1,54 @@
 # Changelog
 
+## [3.0.0](https://github.com/psyattack/Synector/compare/v2.9.2...v3.0.0) - 2026-11-22
+
+### Added
+- Linked Rules: one rule can call another rule and stop a running one. A call starts the target's pipeline immediately or waits for it to finish, respects the target's enabled state, conditions, cooldown and quota, refuses direct self-calls and cycles, and tells the called pipeline which rule called it.
+- Rule Activity Conditions: conditions, If/Else branches, waits and checks can observe another rule, for example "wait until Game Mode starts" or "run only while Recording is active". A wait for a start also succeeds when the rule started and finished between two polls.
+- Legal Files: the installer and the portable archive now include `LICENSE` and `NOTICES.md` next to the executable.
+
+### Changed
+- Rule File Validation: a rule with an unknown key or an invalid value is rejected with the rule id and the offending keys instead of being silently accepted, and fields removed from the format (`schedule.delay_sec`, the system trigger's `idle_duration_sec`, the resource condition's `duration_sec`) are no longer migrated. Loading a rule file skips only the bad rule instead of the whole file.
+- Protected Configuration: a configuration file written by a newer Synector version is read but never overwritten, so an older build cannot silently downgrade it.
+- Responsive Interface: clearing logs, testing a step, terminating a process, saving settings or presets and refreshing overlay previews no longer freeze the window while the daemon answers.
+- Safer Webhooks and Shortcuts: webhook steps send their headers and body from the app itself and rule shortcuts are written through the Windows shortcut API, so neither passes rule data to a shell; invalid methods and headers are reported as clear errors.
+- Verified Updates: an update whose release does not publish a SHA-256 digest is refused instead of installed, and a portable update with process masking targets the executable that launched the daemon and restores the previous one when applying fails.
+- Strict Command Line: an unknown flag or a value flag without a value now prints usage and exits with code 2 instead of starting the interface.
+
+### Fixed
+- Scheduled Rules: a daily or interval rule that also has a cooldown now fires instead of silently skipping every scheduled time.
+- Resource Rules: rules that watch a single metric such as CPU now trigger; a missing companion metric no longer keeps them idle.
+- Cancel Versus Stop: cancelling a test run, releasing a held hotkey or stopping a rule from another rule now aborts only the current run and leaves the rule enabled; only the Stop button pauses it.
+- Overlay Timers: stopwatch and countdown elements advance with real time, a countdown fires its finish action once per run, and Reset Timer and Toggle Timer act on the overlay's own timers.
+- Recorded Input: recorded presses replay in pairs with the 30-35 ms hold that games register, and stopping a recording releases every key and button still held.
+- Dialog Dimming: a dialog opened over another one now dims the card below it instead of only darkening the previous scrim.
+- Interface Language: labels that stayed in English regardless of the selected language now follow it.
+- Share Codes: imported codes re-point bundled overlay buttons at the imported rules, carry none of the sender's local file paths, and oversized codes are rejected cleanly.
+- Daemon Writes: a failed save reports an error instead of claiming success, deleted rules disappear after a sync, and shutdown flushes runtime counters and overlay positions.
+- Offline `--run-rule` now applies the rule's conditions and quota, so a test without the daemon behaves like a real run.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **rules:** add rule activity conditions to wait and check (by @psyattack in f39e67c)
+- **rules:** add rule-to-rule calls and stops (by @psyattack in 848c73e)
+
+### Changed
+- **arch:** finish the module split and remove dead surface (by @psyattack in af93009)
+- **daemon:** split the daemon core into owned module trees (by @psyattack in 05d5c98)
+- **gui:** split the GUI core into owned modules (by @psyattack in a5ae521)
+- **arch:** split the foundation modules into owned module trees (by @psyattack in 4b985d2)
+- **release:** ship LICENSE and NOTICES.md with the app (by @psyattack in 6b61712)
+- consolidate the documentation set and align it with the code (by @psyattack in 828219b)
+
+### Fixed
+- **gui:** keep a nested modal's scrim above the card below (by @psyattack in 6e21e3a)
+- **cli:** keep the executable path out of the argument parser (by @psyattack in fdfde6d)
+- **audit:** resolve all findings from the 2.9.2 code audit (by @psyattack in 9ae2249)
+
+</details>
+
+
 ## [2.9.2](https://github.com/psyattack/Synector/compare/v2.9.1...v2.9.2) - 2026-11-20
 
 ### Changed
