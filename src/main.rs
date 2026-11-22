@@ -104,6 +104,14 @@ const RUNTIME_USAGE: &str = "Usage: Synector.exe [--gui | --daemon] [--status] [
 ///
 /// [U13-001]: without this check a bare unknown flag fell through update-file cleanup, UAC
 /// self-elevation and a daemon/GUI start, so a typo launched the elevated GUI instead of failing.
+/// Program arguments for the strict CLI parser.
+///
+/// `env::args()` starts with the executable path; `cli::run` consumes only real arguments, so the
+/// parser must never see argv[0] (it would be rejected as an unexpected argument).
+fn cli_arguments(argv: &[String]) -> &[String] {
+    argv.get(1..).unwrap_or(&[])
+}
+
 fn validate_runtime_arguments(args: &[String]) -> Result<(), RuntimeArgumentError> {
     let mut position = 1;
     while let Some(argument) = args.get(position) {
@@ -236,7 +244,7 @@ fn main() {
     }
 
     // 2. Rule authoring commands are console tools: run them before elevation and update cleanup
-    if cli::run(&args) {
+    if cli::run(cli_arguments(&args)) {
         return;
     }
 
@@ -597,6 +605,13 @@ mod tests {
             parse_run_rule_argument(&args(&["Synector.exe", "--run-rule", "   "])),
             RunRuleArgument::MissingValue
         );
+    }
+
+    #[test]
+    fn test_cli_arguments_drop_the_executable_path() {
+        let argv = args(&["Synector.exe", "--rules-list", "--json"]);
+        assert_eq!(cli_arguments(&argv), &["--rules-list", "--json"]);
+        assert!(cli_arguments(&args(&["Synector.exe"])).is_empty());
     }
 
     #[test]
