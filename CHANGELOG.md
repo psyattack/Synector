@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.0.1](https://github.com/psyattack/Synector/compare/v3.0.0...v3.0.1) - 2026-11-22
+
+### Changed
+- Scripting API: Lua scripts reach every helper through `syn` (`syn.get`, `syn.set`, `syn.log`, `syn.run_cmd`, `syn.overlay_*`) instead of `ph`, and PowerShell scripts read the run context from `SYN_*` environment variables instead of `PH_*`. The old names are removed rather than aliased, so a script that still uses `ph` needs updating; the script editor and the in-app guide already show the new names.
+
+<details><summary>Detailed Changelog</summary>
+
+### Changed
+- **scripting:** rename the ph scripting API to syn (by @psyattack in a9d614e)
+
+</details>
+
+
 ## [3.0.0](https://github.com/psyattack/Synector/compare/v2.9.2...v3.0.0) - 2026-11-22
 
 ### Added
