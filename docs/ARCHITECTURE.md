@@ -76,8 +76,11 @@ to the daemon as `--gui-exe <path>` so a portable update with process masking ta
 executable after the window is closed (see
 [Installation forms and updates](#installation-forms-and-updates)).
 
-`main.rs` dispatches in a fixed order: standalone overlay windows → CLI rule commands → update-file
-cleanup → `--status`/`--run-rule` → self-elevation → daemon or GUI. Overlay windows are separate
+`src/app/` (entered from `src/main.rs`) dispatches in a fixed order: standalone overlay windows →
+CLI rule commands → update-file cleanup → `--status`/`--run-rule` → self-elevation → daemon or GUI.
+Runtime flags, overlay companions and CLI command spellings come from one vocabulary table in
+`src/app/args.rs`; the CLI keeps its own parser but a gate test pins that the two spellings sets
+agree. Overlay windows are separate
 processes and must stay on the fast path; they never touch update files or single-instance mutexes.
 CLI rule commands run before elevation because they are console tools.
 
@@ -95,15 +98,17 @@ runtime counters and overlay positions flushed.
 |---|---|
 | `src/gui/` | egui views, overlay renderer, macro recorder, GUI state and IPC synchronization |
 | `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
+| `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
 | `src/daemon/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher |
 | `src/daemon/rule_activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions |
-| `src/ipc/` | Named pipe client and the shared request/response protocol |
-| `src/models.rs` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas |
-| `src/cli.rs` | Command-line rule authoring: parsing, validation, upsert/sync, share codes and IPC dispatch |
-| `src/config.rs` | Split configuration persistence: settings, rules, presets and runtime counters |
-| `src/i18n.rs`, `src/i18n/` | Locale registry and the English/Russian string catalogs |
+| `src/ipc/` | Named-pipe client, the shared request/response protocol, the one framing implementation both sides use, and the overlay wire encoding |
+| `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation and the generated rule schema (`src/models.rs` is the facade) |
+| `src/validation.rs` | Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path |
+| `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection (`src/cli.rs` is the facade) |
+| `src/config/` | Split configuration persistence: storage policy, caches and the four section modules (`src/config.rs` is the facade) |
+| `src/i18n/` | Locale registry, the flat `Strings` declaration (`src/i18n/strings.rs`) and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
-| `src/updater.rs` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement and silent installer updates |
+| `src/updater.rs` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/`.old` executable cleanup |
 | `src/sharing.rs` | `SYN1:` Brotli + Base64 share codes: SHA-256 prefix, library dependency bundling, bounded decode |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch, written through `IShellLink`; a same-named foreign shortcut is never overwritten (a rule-id-suffixed name is used instead) |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
@@ -133,6 +138,10 @@ accumulate threads; the next call opens a fresh instance. During GUI exit the ro
 instead of waiting out another timeout. The typed transport error separates `Unavailable` (the pipe
 does not exist) from `Busy`/`Timeout` (the daemon is alive but not answering); only `Unavailable`
 is proof that the daemon is offline, so a slow or busy daemon never triggers an offline fallback.
+Frames are capped at 16 MiB in both directions: the client rejects an over-cap response length
+before reading the body, and the daemon replaces an oversized response (an implausibly large state
+snapshot) with a small `Error` response so the caller reports an error instead of losing the
+connection.
 
 ## Configuration storage
 
@@ -511,7 +520,7 @@ the daemon validates again when it applies the mutation.
 
 ## Logging and localization
 
-Every user-visible string lives in the `Strings` catalog (`src/i18n.rs`, `src/i18n/en.rs`,
+Every user-visible string lives in the `Strings` catalog (`src/i18n/strings.rs`, `src/i18n/en.rs`,
 `src/i18n/ru.rs`). The in-app guide is the deliberate exception: its long prose is written as
 Russian/English `if lang == Language::Russian { ... } else { ... }` branches inside
 `src/gui/views/guide_modal.rs`, while its chrome labels come from `Strings`. Both language branches
@@ -522,7 +531,7 @@ level comes from `SYNECTOR_LOG` (`off|error|warn|info|debug|trace`, default `inf
 and outcomes only — never script bodies, webhook payloads, rule JSON or other user secrets. Action
 errors that may embed script output are routed through the engine's `SensitiveLog` event. The logger
 primes today's file at start-up, so an unwritable logs directory is reported once on stderr and
-returned from `init()`; `main` prints that returned failure as an explicit diagnostic because a
+returned from `init()`; the process entry prints that returned failure as an explicit diagnostic because a
 release build has no console, and the open is not retried until the next day. Every append and
 compaction is serialized across processes with a named mutex, so the daemon, the GUI and a CLI
 command cannot interleave a write.

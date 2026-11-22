@@ -1308,26 +1308,6 @@ impl eframe::App for OverlayWindowApp {
     }
 }
 
-pub fn decode_overlay_b64(b64: &str) -> Option<OverlayDefinition> {
-    use base64::Engine;
-    use std::io::Read;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
-    let mut decoder = flate2::read::DeflateDecoder::new(&bytes[..]);
-    let mut json_str = String::new();
-    decoder.read_to_string(&mut json_str).ok()?;
-    serde_json::from_str(&json_str).ok()
-}
-
-pub fn encode_overlay_b64(def: &OverlayDefinition) -> Option<String> {
-    use base64::Engine;
-    use std::io::Write;
-    let json = serde_json::to_string(def).ok()?;
-    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
-    encoder.write_all(json.as_bytes()).ok()?;
-    let compressed = encoder.finish().ok()?;
-    Some(base64::engine::general_purpose::STANDARD.encode(compressed))
-}
-
 pub fn run_overlay_window(
     overlay_id: String,
     calibration: bool,
@@ -1337,7 +1317,8 @@ pub fn run_overlay_window(
 ) -> eframe::Result<()> {
     // 1. Resolve overlay definition
     let overlay: OverlayDefinition = if let Some(b64) = overlay_data_b64 {
-        decode_overlay_b64(&b64).unwrap_or_else(OverlayDefinition::default_new_overlay)
+        crate::ipc::overlay_wire::decode_overlay_b64(&b64)
+            .unwrap_or_else(OverlayDefinition::default_new_overlay)
     } else {
         let library = Library::shared();
         library
@@ -1362,7 +1343,7 @@ pub fn run_overlay_window(
         (1920.0, 1080.0, 0.0, 0.0)
     };
 
-    let (rel_x, rel_y) = crate::gui::views::overlay_modal::compute_overlay_screen_pos_with_anchor(
+    let (rel_x, rel_y) = crate::models::compute_overlay_screen_pos_with_anchor(
         overlay.anchor,
         &overlay,
         screen_w,
@@ -1568,23 +1549,6 @@ mod tests {
         def3.auto_hide_seconds = None;
         let app3 = OverlayWindowApp::new(def3, false, None, None, &ctx);
         assert_eq!(app3.duration, None);
-    }
-
-    #[test]
-    fn test_overlay_window_encode_decode_b64() {
-        let mut def = OverlayDefinition::default_new_overlay();
-        def.id = "b64_test".to_string();
-        def.name = "Test B64 Overlay".to_string();
-        def.fade_in_ms = Some(200);
-        def.fade_out_ms = Some(350);
-
-        let encoded = encode_overlay_b64(&def).expect("Encoding failed");
-        let decoded = decode_overlay_b64(&encoded).expect("Decoding failed");
-
-        assert_eq!(decoded.id, "b64_test");
-        assert_eq!(decoded.name, "Test B64 Overlay");
-        assert_eq!(decoded.fade_in_ms, Some(200));
-        assert_eq!(decoded.fade_out_ms, Some(350));
     }
 
     fn timer_element(

@@ -62,7 +62,11 @@ pub fn create_rule_shortcut(rule: &Rule, destination_folder: &Path) -> Result<Pa
 
 /// The arguments a rule shortcut launches Synector with.
 fn shortcut_arguments(rule_id: &str) -> String {
-    format!("--run-rule {}", crate::quote_windows_argument(rule_id))
+    format!(
+        "{} {}",
+        crate::arg_spellings::RUN_RULE,
+        crate::app::args::quote_windows_argument(rule_id)
+    )
 }
 
 fn sanitize_file_stem(raw: &str, max_chars: usize) -> String {

@@ -119,7 +119,7 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
         write_live_overlay_text(&overlay.id, txt);
     }
-    let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
+    let b64 = crate::ipc::overlay_wire::encode_overlay_b64(overlay);
 
     let mut lock = active_map().lock().unwrap();
     if let Some(mut existing) = lock.remove(&overlay.id) {
@@ -133,21 +133,22 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
     } else {
         let exe = std::env::current_exe().unwrap_or_default();
         let mut cmd = Command::new(&exe);
-        cmd.arg("--overlay-window").arg(&overlay.id);
+        cmd.arg(crate::arg_spellings::OVERLAY_WINDOW).arg(&overlay.id);
 
         if calibration {
-            cmd.arg("--calibration");
+            cmd.arg(crate::arg_spellings::CALIBRATION);
         }
         if let Some(txt) = effective_text {
-            cmd.arg("--override-text").arg(txt);
+            cmd.arg(crate::arg_spellings::OVERRIDE_TEXT).arg(txt);
         }
         if let Some(b64_str) = b64 {
-            cmd.arg("--overlay-data").arg(b64_str);
+            cmd.arg(crate::arg_spellings::OVERLAY_DATA).arg(b64_str);
         }
         if !calibration {
             if let Some(s) = overlay.auto_hide_seconds {
                 if s > 0.0 {
-                    cmd.arg("--duration").arg(((s * 1000.0).round() as u32).to_string());
+                    cmd.arg(crate::arg_spellings::DURATION)
+                        .arg(((s * 1000.0).round() as u32).to_string());
                 }
             }
         }
@@ -410,7 +411,7 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
         write_live_overlay_text(&overlay.id, txt);
     }
-    let b64 = crate::gui::overlay_window::encode_overlay_b64(overlay);
+    let b64 = crate::ipc::overlay_wire::encode_overlay_b64(overlay);
 
     let mut lock = active_map().lock().unwrap();
     if let Some(mut existing) = lock.remove(&overlay.id) {
@@ -424,14 +425,15 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
     } else {
         let exe = std::env::current_exe().unwrap_or_default();
         let mut cmd = Command::new(&exe);
-        cmd.arg("--overlay-window").arg(&overlay.id);
-        cmd.arg("--duration").arg(duration_ms.to_string());
+        cmd.arg(crate::arg_spellings::OVERLAY_WINDOW).arg(&overlay.id);
+        cmd.arg(crate::arg_spellings::DURATION)
+            .arg(duration_ms.to_string());
 
         if let Some(txt) = effective_text {
-            cmd.arg("--override-text").arg(txt);
+            cmd.arg(crate::arg_spellings::OVERRIDE_TEXT).arg(txt);
         }
         if let Some(b64_str) = b64 {
-            cmd.arg("--overlay-data").arg(b64_str);
+            cmd.arg(crate::arg_spellings::OVERLAY_DATA).arg(b64_str);
         }
 
         spawn_overlay_process(&overlay.id, cmd)
@@ -814,7 +816,7 @@ mod tests {
         // The production placement path is the one overlay_window uses; the old
         // cfg(test)-only copy could drift from it without failing a test.
         let monitor = &monitors[0];
-        let (rel_x, rel_y) = crate::gui::views::overlay_modal::compute_overlay_screen_pos_with_anchor(
+        let (rel_x, rel_y) = crate::models::compute_overlay_screen_pos_with_anchor(
             def.anchor,
             &def,
             monitor.width as f32,

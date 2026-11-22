@@ -1,10 +1,11 @@
 use std::cell::Cell;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use crate::ipc::framing;
 use crate::ipc::{IpcRequest, IpcResponse, MAX_PAYLOAD_BYTES, PIPE_NAME};
 
 /// Bound for a liveness probe. A daemon that owns the pipe but does not answer within this
@@ -140,7 +141,7 @@ impl IpcClient {
     ) -> Result<IpcResponse, IpcError> {
         let payload = serde_json::to_vec(req)
             .map_err(|error| IpcError::Io(format!("Cannot encode the IPC request: {error}")))?;
-        if payload.len() > MAX_PAYLOAD_BYTES {
+        if framing::exceeds_payload_cap(payload.len()) {
             return Err(IpcError::TooLarge(payload.len()));
         }
         let Some(timeout) = cap_to_shutdown_budget(timeout, shutdown_remaining()) else {
@@ -343,29 +344,26 @@ fn round_trip(
 ) -> Result<IpcResponse, IpcError> {
     let mut pipe = connect(pipe_name, cancelled)?;
 
-    let length = (payload.len() as u32).to_le_bytes();
     round_trip_cancelled(cancelled)?;
-    pipe.write_all(&length)
+    framing::write_length(&mut pipe, payload.len())
         .map_err(|error| IpcError::Io(format!("Cannot write the IPC request length: {error}")))?;
     round_trip_cancelled(cancelled)?;
-    pipe.write_all(payload)
+    framing::write_payload(&mut pipe, payload)
         .map_err(|error| IpcError::Io(format!("Cannot write the IPC request: {error}")))?;
     round_trip_cancelled(cancelled)?;
     pipe.flush()
         .map_err(|error| IpcError::Io(format!("Cannot flush the IPC request: {error}")))?;
 
-    let mut length_buf = [0u8; 4];
     round_trip_cancelled(cancelled)?;
-    pipe.read_exact(&mut length_buf)
+    let response_length = framing::read_length(&mut pipe)
         .map_err(|error| IpcError::Io(format!("Cannot read the IPC response length: {error}")))?;
-    let response_length = u32::from_le_bytes(length_buf) as usize;
-    if response_length > MAX_PAYLOAD_BYTES {
+    if framing::exceeds_payload_cap(response_length) {
         return Err(IpcError::TooLarge(response_length));
     }
 
     let mut response_buf = vec![0u8; response_length];
     round_trip_cancelled(cancelled)?;
-    pipe.read_exact(&mut response_buf)
+    framing::read_payload(&mut pipe, &mut response_buf)
         .map_err(|error| IpcError::Io(format!("Cannot read the IPC response: {error}")))?;
     serde_json::from_slice(&response_buf)
         .map_err(|error| IpcError::Io(format!("Cannot decode the IPC response: {error}")))

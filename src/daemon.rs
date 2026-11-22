@@ -94,7 +94,9 @@ static LAUNCHING_GUI_EXE: StdMutex<Option<PathBuf>> = StdMutex::new(None);
 /// Parses the `--gui-exe <path>` argument. An absent flag or an empty value means "unknown" and
 /// leaves the updater with its GUI-window lookup.
 pub(crate) fn parse_gui_exe_argument(args: &[String]) -> Option<PathBuf> {
-    let position = args.iter().position(|arg| arg == "--gui-exe")?;
+    let position = args
+        .iter()
+        .position(|arg| arg == crate::arg_spellings::GUI_EXE)?;
     let path = PathBuf::from(args.get(position + 1)?);
     (!path.as_os_str().is_empty()).then_some(path)
 }
@@ -606,8 +608,9 @@ pub fn run_daemon() {
     // Background update check on daemon startup
     if config.check_updates_on_startup {
         let engine_update = Arc::clone(&engine);
-        let is_daemon_cli = std::env::args().any(|a| a == "--daemon" || a == "-d" || a == "--service" || a == "-s")
-            && !std::env::args().any(|a| a == "--spawned-by-gui");
+        let is_daemon_cli = std::env::args()
+            .any(|a| crate::arg_spellings::DAEMON_MODE.contains(&a.as_str()))
+            && !std::env::args().any(|a| a == crate::arg_spellings::SPAWNED_BY_GUI);
         let auto_install = config.auto_install_updates;
 
         rt.spawn(async move {

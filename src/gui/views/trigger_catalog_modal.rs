@@ -528,7 +528,7 @@ mod tests {
             );
 
             // Same validator the inspector's Save button runs.
-            let errors = crate::cli::validate_rules(std::slice::from_ref(&catalog_rule(Some(trigger.clone()))));
+            let errors = crate::validation::validate_rules(std::slice::from_ref(&catalog_rule(Some(trigger.clone()))));
             if matches!(trigger, Trigger::Schedule { .. }) {
                 assert!(
                     errors.is_empty(),

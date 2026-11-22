@@ -420,7 +420,7 @@ mod tests {
             );
 
             // Same validator the inspector's Save button runs; it walks the rule conditions.
-            let errors = crate::cli::validate_rules(std::slice::from_ref(&catalog_rule(vec![condition])));
+            let errors = crate::validation::validate_rules(std::slice::from_ref(&catalog_rule(vec![condition])));
             assert!(
                 errors.is_empty(),
                 "entry {idx} must be saveable as constructed: {errors:?}"

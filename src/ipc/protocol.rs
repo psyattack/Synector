@@ -2,12 +2,6 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AppConfig, Settings};
 use crate::models::{Action, AnalyticsSummary, LogItem, ProcessSnapshotItem, Rule};
 
-/// Upper bound on one framed IPC message (request or response), excluding the 4-byte length
-/// prefix. The client rejects a larger response length before reading the body; the daemon
-/// must apply the same cap to a response so an oversized state snapshot is an `Error`
-/// response instead of a connection failure.
-pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum IpcRequest {

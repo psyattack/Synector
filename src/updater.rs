@@ -967,6 +967,26 @@ pub fn clean_temp_update_files() {
     }
 }
 
+/// Removes the previous executable left behind by a portable update (`<exe>.old`).
+///
+/// This gate is unconditional and independent of daemon liveness: a stale `.old` must not survive
+/// a launch just because a daemon happens to be running. It is deliberately separate from
+/// [`clean_temp_update_files`], which may only run while the daemon is offline.
+pub fn remove_old_executable() {
+    if let Ok(exe_path) = std::env::current_exe() {
+        remove_old_executable_beside(&exe_path);
+    }
+}
+
+/// The testable half of [`remove_old_executable`]: the stale file is derived from the given
+/// executable path.
+fn remove_old_executable_beside(exe_path: &Path) {
+    let old = exe_path.with_extension("old");
+    if old.exists() {
+        let _ = std::fs::remove_file(old);
+    }
+}
+
 static GUI_CLOSED_DURING_UPDATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn set_gui_closed_during_update(closed: bool) {
@@ -1143,6 +1163,35 @@ mod tests {
     #[test]
     fn test_clean_temp_update_files_no_panic() {
         clean_temp_update_files();
+    }
+
+    /// The `.old` gate is unconditional and independent of daemon liveness: the file next to the
+    /// executable is removed, while the executable itself and unrelated suffixes stay untouched.
+    #[test]
+    fn test_remove_old_executable_beside_the_running_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "synector-old-exe-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+
+        let exe = dir.join("Synector.exe");
+        std::fs::write(&exe, b"current").expect("write executable");
+        let old = exe.with_extension("old");
+        std::fs::write(&old, b"previous").expect("write stale executable");
+        let unrelated = dir.join("Synector.old.txt");
+        std::fs::write(&unrelated, b"keep").expect("write unrelated file");
+
+        remove_old_executable_beside(&exe);
+
+        assert!(!old.exists(), "the stale .old executable must be removed");
+        assert!(exe.exists(), "the current executable must stay untouched");
+        assert!(unrelated.exists(), "unrelated suffixes must stay untouched");
+
+        // A second run without a stale file is a no-op.
+        remove_old_executable_beside(&exe);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

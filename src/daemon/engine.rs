@@ -3670,7 +3670,7 @@ impl DaemonEngine {
     /// definition may not keep an old recurring test loop running. The shared validator runs
     /// before anything is applied, so a rejected draft leaves the stored set untouched.
     fn ipc_save_rule(&mut self, mut rule: Rule) -> IpcResponse {
-        let errors = crate::cli::validate_rules(std::slice::from_ref(&rule));
+        let errors = crate::validation::validate_rules(std::slice::from_ref(&rule));
         if !errors.is_empty() {
             return IpcResponse::Error(format!(
                 "rejected invalid rule: {}",
@@ -3705,7 +3705,7 @@ impl DaemonEngine {
 
     /// Merges a validated import file into the rule set.
     fn ipc_import_rules(&mut self, imported: Vec<Rule>) -> IpcResponse {
-        let errors = crate::cli::validate_rules(&imported);
+        let errors = crate::validation::validate_rules(&imported);
         if !errors.is_empty() {
             return IpcResponse::Error(format!(
                 "rejected invalid rules: {}",
@@ -3757,7 +3757,7 @@ impl DaemonEngine {
             Ok(prepared) => prepared,
             Err(err) => return IpcResponse::Error(crate::sharing::error_text(&err).to_string()),
         };
-        let errors = crate::cli::validate_rules(&prepared.rules);
+        let errors = crate::validation::validate_rules(&prepared.rules);
         if !errors.is_empty() {
             return IpcResponse::Error(format!(
                 "share import rejected: {}",
@@ -3817,7 +3817,7 @@ impl DaemonEngine {
     fn ipc_sync_rules(&mut self, incoming: Vec<Rule>) -> IpcResponse {
         // The file is the whole desired set, so every rule and the duplicate-id check are
         // validated together; a rejected sync leaves the stored rules untouched.
-        let errors = crate::cli::validate_rules(&incoming);
+        let errors = crate::validation::validate_rules(&incoming);
         if !errors.is_empty() {
             return IpcResponse::Error(format!(
                 "rejected invalid rule set: {}",

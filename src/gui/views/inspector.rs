@@ -450,7 +450,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                                     if candidate.name.trim().is_empty() {
                                         candidate.name = loc.rules_default_new_name.to_string();
                                     }
-                                    let errors = crate::cli::validate_rules(std::slice::from_ref(&candidate));
+                                    let errors = crate::validation::validate_rules(std::slice::from_ref(&candidate));
                                     if errors.is_empty() {
                                         store_save_errors(ui.ctx(), &rule.id, Vec::new());
                                         state.save_rule(candidate);
@@ -1713,7 +1713,7 @@ fn action_summary_preview(action: &Action, loc: &crate::i18n::Strings) -> String
             }
         }
         Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
-            let glyph = conditions.first().map(|c| c.condition.icon_glyph()).unwrap_or("❓");
+            let glyph = conditions.first().map(|c| crate::gui::views::rules_view::condition_icon_glyph(&c.condition)).unwrap_or("❓");
             let count_txt = conditions.len().to_string();
             let then_txt = then_actions.len().to_string();
             let else_txt = else_actions.len().to_string();
@@ -6373,7 +6373,7 @@ fn render_inspector_tag_section(
 
         let mut remove_idx = None;
         for (idx, tag) in rule.tags.iter().enumerate() {
-            let color = tag.parse_color(t.accent_ink);
+            let color = theme::tag_color(tag, t.accent_ink);
             let has_icon = tag.icon.as_ref().is_some_and(|i| !i.is_empty());
             let name_galley = widgets::caps(ui, &tag.name, 10.0, theme::medium(), 0.0, color);
             let icon_w = if has_icon { 16.0 } else { 0.0 };
@@ -6474,7 +6474,7 @@ fn render_inspector_tag_section(
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.spacing_mut().item_spacing.y = 4.0;
                         for ext in available {
-                            let c = ext.parse_color(t.accent_ink);
+                            let c = theme::tag_color(&ext, t.accent_ink);
                             let has_ico = ext.icon.as_ref().is_some_and(|i| !i.is_empty());
                             let name_galley = widgets::caps(ui, &ext.name, 9.5, theme::medium(), 0.0, c);
                             let pill_w = name_galley.size().x + if has_ico { 14.0 } else { 0.0 } + 14.0;
@@ -6532,7 +6532,7 @@ fn render_inspector_tag_section(
                     ];
                     ui.add_space(2.0);
                     for hex in palette {
-                        let c = crate::models::RuleTag::new("").with_color(hex).parse_color(t.accent_ink);
+                        let c = theme::tag_color(&crate::models::RuleTag::new("").with_color(hex), t.accent_ink);
                         let is_active = state.new_tag_color.as_deref() == Some(hex);
                         let (swatch, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
                         ui.painter().rect_filled(swatch, CornerRadius::same(3), c);

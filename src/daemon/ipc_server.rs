@@ -1,8 +1,8 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::sync::Mutex;
+use crate::ipc::framing;
 use crate::ipc::{IpcRequest, IpcResponse, PIPE_NAME};
 use crate::daemon::engine::DaemonEngine;
 
@@ -61,10 +61,8 @@ impl IpcServer {
 
 async fn handle_client(mut server: NamedPipeServer, engine: Arc<Mutex<DaemonEngine>>) {
     // Read 4-byte length prefix, then JSON payload
-    let mut len_buf = [0u8; 4];
-    while server.read_exact(&mut len_buf).await.is_ok() {
-        let length = u32::from_le_bytes(len_buf) as usize;
-        if length == 0 || length > 16 * 1024 * 1024 {
+    while let Ok(length) = framing::read_length_async(&mut server).await {
+        if length == 0 || framing::exceeds_payload_cap(length) {
             crate::logging::warn(
                 "IPC",
                 &format!("Dropped IPC connection with invalid payload length: {length}"),
@@ -73,7 +71,7 @@ async fn handle_client(mut server: NamedPipeServer, engine: Arc<Mutex<DaemonEngi
         }
 
         let mut payload_buf = vec![0u8; length];
-        if let Err(e) = server.read_exact(&mut payload_buf).await {
+        if let Err(e) = framing::read_payload_async(&mut server, &mut payload_buf).await {
             crate::logging::warn("IPC", &format!("Failed to read an IPC payload: {e}"));
             break;
         }
@@ -86,19 +84,48 @@ async fn handle_client(mut server: NamedPipeServer, engine: Arc<Mutex<DaemonEngi
             }
         };
 
-        let resp_bytes = match serde_json::to_vec(&response) {
-            Ok(b) => b,
-            Err(e) => serde_json::to_vec(&IpcResponse::Error(e.to_string())).unwrap_or_default(),
-        };
+        let resp_bytes = serialized_response(&response);
 
-        let resp_len = (resp_bytes.len() as u32).to_le_bytes();
-        if server.write_all(&resp_len).await.is_err() {
+        if framing::write_length_async(&mut server, resp_bytes.len())
+            .await
+            .is_err()
+        {
             break;
         }
-        if server.write_all(&resp_bytes).await.is_err() {
+        if framing::write_payload_async(&mut server, &resp_bytes)
+            .await
+            .is_err()
+        {
             break;
         }
     }
+}
+
+/// Serializes one response frame.
+///
+/// A response larger than [`framing::MAX_PAYLOAD_BYTES`] cannot be written as a frame the client
+/// would accept: the client rejects an over-cap length prefix with `TooLarge` and the caller loses
+/// the daemon's actual answer. The daemon therefore applies the same cap it enforces on requests
+/// and turns an oversized state snapshot into a small `Error` response, which is what the framing
+/// contract promises.
+fn serialized_response(response: &IpcResponse) -> Vec<u8> {
+    let bytes = match serde_json::to_vec(response) {
+        Ok(bytes) => bytes,
+        Err(error) => serde_json::to_vec(&IpcResponse::Error(error.to_string())).unwrap_or_default(),
+    };
+    cap_response_bytes(bytes, framing::MAX_PAYLOAD_BYTES)
+}
+
+/// Replaces an over-cap serialized response with an `Error` frame that itself fits the cap.
+fn cap_response_bytes(bytes: Vec<u8>, limit: usize) -> Vec<u8> {
+    if bytes.len() <= limit {
+        return bytes;
+    }
+    let error = IpcResponse::Error(format!(
+        "IPC response is {} bytes, over the {limit} byte limit",
+        bytes.len()
+    ));
+    serde_json::to_vec(&error).unwrap_or_default()
 }
 
 /// Routes one request to the engine.
@@ -180,6 +207,28 @@ mod tests {
                 assert_eq!(status.as_deref(), Some("30%"));
             }
             other => panic!("the narrow update query must answer with UpdateProgress: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_response_within_the_cap_is_written_unchanged() {
+        let payload = serde_json::to_vec(&IpcResponse::Pong).expect("serialize the response");
+        assert_eq!(cap_response_bytes(payload.clone(), 1024), payload);
+    }
+
+    #[test]
+    fn test_oversized_response_becomes_a_small_error() {
+        let oversized = vec![b'x'; 4096];
+        let capped = cap_response_bytes(oversized, 1024);
+
+        assert!(capped.len() <= 1024, "the replacement must fit the cap");
+        match serde_json::from_slice::<IpcResponse>(&capped).expect("the replacement is valid IPC JSON")
+        {
+            IpcResponse::Error(message) => {
+                assert!(message.contains("4096 bytes"), "{message}");
+                assert!(message.contains("1024 byte limit"), "{message}");
+            }
+            other => panic!("an over-cap response must become Error, got {other:?}"),
         }
     }
 }

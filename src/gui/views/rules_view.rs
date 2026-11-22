@@ -976,7 +976,7 @@ fn render_card_tags_at(
     let mut shown_count = 0;
 
     for (i, tag) in tags.iter().enumerate() {
-        let tag_color = tag.parse_color(t.accent_ink);
+        let tag_color = theme::tag_color(tag, t.accent_ink);
         let has_ico = tag.icon.as_ref().is_some_and(|ico| !ico.is_empty());
 
         let text_galley = ui.painter().layout_no_wrap(tag.name.clone(), font_text.clone(), tag_color);
@@ -1603,6 +1603,19 @@ fn format_trigger_display(
             egui_phosphor::regular::HAND_TAP,
             loc.rules_badge_manual.to_string(),
         ),
+    }
+}
+
+/// Icon shown for one condition row. Presentation lives in the GUI, not in the model.
+pub(crate) fn condition_icon_glyph(condition: &RuleCondition) -> &'static str {
+    match condition {
+        RuleCondition::ProcessRunning { .. } => egui_phosphor::regular::CPU,
+        RuleCondition::WindowFocused { .. } => egui_phosphor::regular::APP_WINDOW,
+        RuleCondition::TimeRange { .. } => egui_phosphor::regular::CLOCK,
+        RuleCondition::Event { .. } => egui_phosphor::regular::BELL,
+        RuleCondition::ResourceThreshold { .. } => egui_phosphor::regular::CHART_LINE,
+        RuleCondition::FileWatcher { .. } => egui_phosphor::regular::FILE,
+        RuleCondition::RuleRunning { .. } => egui_phosphor::regular::PLAY,
     }
 }
 

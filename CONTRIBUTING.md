@@ -40,7 +40,8 @@ cargo run -- --status        # print daemon status over IPC and exit
 
 | Area | Files |
 |---|---|
-| Domain types, serde tags, JSON schema | `src/models.rs` |
+| Domain types, serde tags, JSON schema | `src/models/` (facade `src/models.rs`) |
+| Structural rule validation and warnings shared by CLI/config/engine/GUI | `src/validation.rs` |
 | Scheduling, quotas, cooldowns, active executions | `src/daemon/engine.rs` |
 | Rule-to-rule calls and stops | `src/daemon/rule_call.rs` |
 | Rule-activity snapshot behind wait/check conditions | `src/daemon/rule_activity.rs` |
@@ -51,7 +52,7 @@ cargo run -- --status        # print daemon status over IPC and exit
 | System events and state | `src/daemon/system_events.rs` |
 | System telemetry, media and key visualizer | `src/daemon/telemetry.rs` |
 | Tray icon, menu and notifications | `src/daemon/tray.rs` |
-| Overlay process lifecycle and placement | `src/daemon/overlay_manager.rs`, `src/gui/overlay_window.rs` |
+| Overlay process lifecycle and placement | `src/daemon/overlay_manager.rs`, `src/gui/overlay_window.rs`; placement math in `src/models/overlay/geometry.rs` |
 | Webhook trigger server | `src/daemon/webhook_server.rs` |
 | Lua runtime and the `ph` API | `src/daemon/lua_runner.rs` |
 | Discord Rich Presence | `src/daemon/discord_rpc.rs` |
@@ -59,21 +60,24 @@ cargo run -- --status        # print daemon status over IPC and exit
 | GUI state, drafts, IPC calls | `src/gui/state.rs` |
 | Views and inspectors | `src/gui/views/` |
 | Shared widgets and renderers | `src/gui/components/` |
-| Localization | `src/i18n.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
+| Localization | `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |
-| CLI rule authoring | `src/cli.rs` |
+| CLI rule authoring | `src/cli/` (facade `src/cli.rs`) |
+| Process entry, runtime dispatch and argv vocabulary | `src/app/` (facade `src/app.rs`); cross-process flag spellings in `src/arg_spellings.rs` |
 | IPC protocol | `src/ipc/protocol.rs` |
-| Configuration persistence | `src/config.rs` |
+| IPC framing shared by client and server | `src/ipc/framing.rs` |
+| Overlay wire encoding | `src/ipc/overlay_wire.rs` |
+| Configuration persistence | `src/config/` (facade `src/config.rs`) |
 | Share codes | `src/sharing.rs` |
 | Autostart registration | `src/autorun.rs` |
 | Updates and self-replacement | `src/updater.rs` |
 | Logging | `src/logging.rs` |
 | Single-instance guards | `src/single_instance.rs` |
 
-Adding or changing a trigger, action or condition touches `models.rs`, the engine and action
-handlers, the catalog/inspector GUI views, and both i18n catalogs. Treat `models.rs` as the single
-source of truth: the JSON schema printed by `--rules-schema` is generated from it with `schemars`,
-so the CLI format cannot drift from the real types.
+Adding or changing a trigger, action or condition touches `src/models/`, the engine and action
+handlers, the catalog/inspector GUI views, and both i18n catalogs. Treat `src/models/` (facade
+`src/models.rs`) as the single source of truth: the JSON schema printed by `--rules-schema` is
+generated from it with `schemars`, so the CLI format cannot drift from the real types.
 
 ## Code conventions
 
@@ -102,7 +106,7 @@ Documentation has one owner per topic. The document set and its owners are liste
 [docs/README.md](docs/README.md); update the owning file and link to it instead of copying its content
 elsewhere.
 
-User-visible GUI strings belong to `Strings` in `src/i18n.rs`, with values in `src/i18n/en.rs` and
+User-visible GUI strings belong to `Strings` in `src/i18n/strings.rs`, with values in `src/i18n/en.rs` and
 `src/i18n/ru.rs`; views must not embed literals. The same `{...}` placeholders must appear in the
 English and Russian value of a field — `test_catalog_placeholder_parity` fails the test suite when
 they differ. The in-app guide is the documented exception: its long prose uses Russian/English

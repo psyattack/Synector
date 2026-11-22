@@ -171,6 +171,16 @@ pub fn scrim(t: &Tokens, amount: f32) -> Color32 {
     Color32::from_black_alpha(alpha.round() as u8)
 }
 
+/// Resolves a rule tag colour (`#RRGGBB`, parsed by the model) against a palette fallback.
+/// The model owns the parser; this is the GUI-side presentation of a tag colour.
+pub(crate) fn tag_color(tag: &crate::models::RuleTag, fallback: Color32) -> Color32 {
+    tag.color
+        .as_deref()
+        .and_then(crate::models::parse_hex_color)
+        .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+        .unwrap_or(fallback)
+}
+
 /// Archivo 620 display font for headings and branding.
 pub fn display() -> FontFamily {
     FontFamily::Name("display".into())
@@ -423,5 +433,31 @@ mod tests {
         apply_theme(&ctx, AppTheme::Dark);
         assert_eq!(Tokens::get(&ctx), Tokens::DARK);
         assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::DARK.bg);
+    }
+
+    #[test]
+    fn test_rule_tag_serde_and_color_parsing() {
+        use crate::models::RuleTag;
+
+        let tag = RuleTag::new("Productivity")
+            .with_color("#10B981")
+            .with_icon("⚡");
+
+        let json = serde_json::to_string(&tag).unwrap();
+        let decoded: RuleTag = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.name, "Productivity");
+        assert_eq!(decoded.color.as_deref(), Some("#10B981"));
+        assert_eq!(decoded.icon.as_deref(), Some("⚡"));
+
+        let color = tag_color(&decoded, Color32::WHITE);
+        assert_eq!(color, Color32::from_rgb(0x10, 0xB9, 0x81));
+
+        let invalid_color_tag = RuleTag::new("Bad").with_color("not_a_color");
+        let fallback = Color32::from_rgb(1, 2, 3);
+        assert_eq!(tag_color(&invalid_color_tag, fallback), fallback);
+
+        // A non-ASCII colour is rejected by the model parser and keeps the fallback.
+        let broken = RuleTag::new("Broken").with_color("a\u{e9}\u{20ac}");
+        assert_eq!(tag_color(&broken, fallback), fallback);
     }
 }
