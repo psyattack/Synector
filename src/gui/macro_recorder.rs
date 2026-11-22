@@ -31,32 +31,45 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 #[cfg(windows)]
 use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 
+/// One of the recorder's capture filters, as toggled by the Macro Studio filter chips.
+///
+/// The flags stay atomics because the low-level hooks and the polling thread read them without a
+/// lock; [`MacroRecorder::capture`] is the only way other modules reach them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureChannel {
+    Keyboard,
+    MouseClicks,
+    MouseMoves,
+    MouseWheel,
+    Delays,
+}
+
 #[derive(Clone)]
 pub struct MacroRecorder {
-    pub is_recording: Arc<AtomicBool>,
-    pub capture_keyboard: Arc<AtomicBool>,
-    pub capture_mouse_clicks: Arc<AtomicBool>,
-    pub capture_mouse_moves: Arc<AtomicBool>,
-    pub capture_mouse_wheel: Arc<AtomicBool>,
-    pub capture_delays: Arc<AtomicBool>,
-    pub min_move_dist: Arc<AtomicU32>,
-    pub last_was_mouse_move: Arc<AtomicBool>,
-    pub events: Arc<Mutex<Vec<MacroEvent>>>,
-    pub last_event_time: Arc<Mutex<Option<Instant>>>,
+    is_recording: Arc<AtomicBool>,
+    capture_keyboard: Arc<AtomicBool>,
+    capture_mouse_clicks: Arc<AtomicBool>,
+    capture_mouse_moves: Arc<AtomicBool>,
+    capture_mouse_wheel: Arc<AtomicBool>,
+    capture_delays: Arc<AtomicBool>,
+    min_move_dist: Arc<AtomicU32>,
+    last_was_mouse_move: Arc<AtomicBool>,
+    events: Arc<Mutex<Vec<MacroEvent>>>,
+    last_event_time: Arc<Mutex<Option<Instant>>>,
     /// Recording start on the shared process clock (`process_elapsed_ms`), so the
     /// low-level hook reads it without a mutex (U06-009). Only meaningful while
     /// `is_recording` is set.
-    pub recording_started_ms: Arc<AtomicU64>,
-    pub last_mouse_pos: Arc<Mutex<Option<(i32, i32, Instant)>>>,
+    recording_started_ms: Arc<AtomicU64>,
+    last_mouse_pos: Arc<Mutex<Option<(i32, i32, Instant)>>>,
     /// Keys currently recorded as held down; closed with a synthetic `KeyUp` on
     /// stop and read by the replay-hold floor (U06-011).
-    pub held_keys: Arc<Mutex<std::collections::HashSet<String>>>,
+    held_keys: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Mouse buttons currently recorded as held down, closed on stop (U06-011).
-    pub held_mouse_buttons: Arc<Mutex<std::collections::HashSet<MouseButton>>>,
+    held_mouse_buttons: Arc<Mutex<std::collections::HashSet<MouseButton>>>,
     /// Lock-free dedup state shared by the hook, the polling fallback and the GUI
     /// capture path, indexed by a name hash: `(hash << 40) | (ms << 1) | down`
     /// (U06-009).
-    pub key_gate: Arc<Vec<AtomicU64>>,
+    key_gate: Arc<Vec<AtomicU64>>,
 }
 
 static RECORDER_INSTANCE: OnceLock<MacroRecorder> = OnceLock::new();
@@ -107,6 +120,17 @@ impl MacroRecorder {
 
     pub fn is_active(&self) -> bool {
         self.is_recording.load(Ordering::SeqCst)
+    }
+
+    /// The atomic capture flag for `channel`, so the Macro Studio can read and toggle it.
+    pub fn capture(&self, channel: CaptureChannel) -> &AtomicBool {
+        match channel {
+            CaptureChannel::Keyboard => &self.capture_keyboard,
+            CaptureChannel::MouseClicks => &self.capture_mouse_clicks,
+            CaptureChannel::MouseMoves => &self.capture_mouse_moves,
+            CaptureChannel::MouseWheel => &self.capture_mouse_wheel,
+            CaptureChannel::Delays => &self.capture_delays,
+        }
     }
 
     /// Milliseconds since the current recording started, or `None` when nothing is
@@ -1763,29 +1787,6 @@ mod tests {
         // Stopping again must not synthesise duplicate releases.
         rec.stop_recording();
         assert!(rec.drain_events().is_empty());
-    }
-
-    #[test]
-    fn test_dnd_reordering_math() {
-        // Test move down: from index 0 to target 2
-        let mut items = vec!["A", "B", "C", "D"];
-        let src = 0;
-        let dst = 2;
-        if dst > src + 1 {
-            let item = items.remove(src);
-            items.insert(dst - 1, item);
-        }
-        assert_eq!(items, vec!["B", "A", "C", "D"]);
-
-        // Test move up: from index 3 to target 1
-        let mut items2 = vec!["A", "B", "C", "D"];
-        let src2 = 3;
-        let dst2 = 1;
-        if dst2 < src2 {
-            let item = items2.remove(src2);
-            items2.insert(dst2, item);
-        }
-        assert_eq!(items2, vec!["A", "D", "B", "C"]);
     }
 
     #[test]

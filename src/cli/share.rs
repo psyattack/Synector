@@ -3,13 +3,12 @@
 use serde_json::json;
 
 use crate::config::RulesFile;
-use crate::ipc::IpcClient;
 use crate::validation::validate_rules;
 
 use super::commands::target_name;
 use super::json::{emit_json, fail_validation, fail_with, log_errors};
 use super::rules_io::{import_share_offline, read_input};
-use super::target::{current_config, import_share_via_daemon};
+use super::target::{current_config, daemon_took_over_after_snapshot, import_share_via_daemon};
 
 /// Prints a `SYN1:` share code for one rule (by id or name) or for every rule.
 pub(super) fn cmd_share(selector: Option<&str>, json_output: bool) -> i32 {
@@ -127,9 +126,7 @@ pub(super) fn cmd_import_share(raw_argument: &str, json_output: bool, enable: bo
             Ok(summary) => summary,
             Err(exit_code) => return exit_code,
         }
-    } else if IpcClient::is_daemon_running() {
-        // The daemon became reachable after the snapshot: one IPC request gets the import right
-        // instead of writing the sections under it ([U13-003]).
+    } else if daemon_took_over_after_snapshot() {
         target = "daemon";
         match import_share_via_daemon(&payload, enable, json_output) {
             Ok(summary) => summary,

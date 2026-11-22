@@ -43,11 +43,6 @@ pub fn get_total_network_octets() -> Option<u64> {
     }
 }
 
-#[cfg(not(windows))]
-pub fn get_total_network_octets() -> Option<u64> {
-    None
-}
-
 struct NetworkSamplerState {
     last_sample: Instant,
     last_total_octets: u64,
@@ -185,10 +180,6 @@ pub fn sample_system_cpu() -> f32 {
             12.0
         }
     }
-    #[cfg(not(windows))]
-    {
-        20.0
-    }
 }
 
 // ---------------- SYSTEM METRICS SNAPSHOT CACHE ----------------
@@ -278,23 +269,6 @@ fn sample_system_metrics(target_process: Option<&str>) -> SystemTelemetryData {
             target_process_ram_mb,
             target_process_cpu_pct,
         }
-    }
-}
-
-#[cfg(not(windows))]
-fn sample_system_metrics(_target_process: Option<&str>) -> SystemTelemetryData {
-    SystemTelemetryData {
-        cpu_usage_pct: 0.0,
-        ram_usage_pct: 0.0,
-        ram_used_mb: 0,
-        ram_total_mb: 0,
-        battery_pct: None,
-        is_ac_online: false,
-        uptime_secs: 0,
-        master_volume: None,
-        is_muted: None,
-        target_process_ram_mb: None,
-        target_process_cpu_pct: None,
     }
 }
 

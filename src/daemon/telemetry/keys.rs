@@ -14,12 +14,6 @@ pub fn is_vk_pressed(vk: i32) -> bool {
     unsafe { GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
 }
 
-#[cfg(not(windows))]
-#[inline]
-pub fn is_vk_pressed(_vk: i32) -> bool {
-    false
-}
-
 pub fn get_active_or_recent_keys(max_keys: usize, decay_sec: f32) -> String {
     #[cfg(windows)]
     {
@@ -67,11 +61,6 @@ pub fn get_active_or_recent_keys(max_keys: usize, decay_sec: f32) -> String {
             }
         }
 
-        "[KEYS IDLE]".to_string()
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (max_keys, decay_sec);
         "[KEYS IDLE]".to_string()
     }
 }

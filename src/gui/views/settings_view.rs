@@ -506,10 +506,6 @@ fn render_general_content(
             {
                 let _ = std::process::Command::new("explorer").arg(&dir).spawn();
             }
-            #[cfg(not(windows))]
-            {
-                let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
-            }
         }
     });
 }

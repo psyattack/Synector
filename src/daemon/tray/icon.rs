@@ -313,9 +313,6 @@ impl TrayManager {
 
             Ok(Self { _hwnd: hwnd, nid })
         }
-
-        #[cfg(not(windows))]
-        Ok(Self {})
     }
 
     pub fn run_message_loop(&self) {

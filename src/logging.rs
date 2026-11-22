@@ -535,13 +535,6 @@ pub fn level() -> Level {
     GLOBAL.get().map_or(Level::Off, Logger::max_level)
 }
 
-/// Whether an event of `level` would be written; use it to skip expensive message formatting.
-pub fn enabled(level: Level) -> bool {
-    GLOBAL
-        .get()
-        .is_some_and(|logger| logger.max_level().allows(level))
-}
-
 /// Writes one event through the process-wide logger; a no-op before [`init`].
 pub fn log(level: Level, category: &str, message: &str) {
     if let Some(logger) = GLOBAL.get() {

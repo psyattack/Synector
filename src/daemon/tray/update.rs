@@ -29,7 +29,7 @@ pub fn is_updating() -> bool {
     IS_UPDATING.load(Ordering::SeqCst)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn get_update_progress_pct() -> u32 {
     UPDATE_PROGRESS_PCT.load(Ordering::SeqCst)
 }

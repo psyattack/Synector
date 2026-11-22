@@ -22,11 +22,6 @@ pub(super) fn get_master_volume_state() -> Option<(u8, bool)> {
     Some((volume, muted))
 }
 
-#[cfg(not(windows))]
-pub(super) fn get_master_volume_state() -> Option<(u8, bool)> {
-    None
-}
-
 // ---------------- MEDIA HELPER ----------------
 
 /// Volume and media keys are E0-prefixed; they need the extended flag in addition to the scan
@@ -75,10 +70,6 @@ pub fn simulate_media_key(vk: u8) {
         std::thread::sleep(Duration::from_millis(35));
         let _ = SendInput(&[up], std::mem::size_of::<INPUT>() as i32);
     }
-    #[cfg(not(windows))]
-    {
-        let _ = vk;
-    }
 }
 
 pub fn is_system_audio_playing() -> bool {
@@ -103,6 +94,4 @@ pub fn is_system_audio_playing() -> bool {
         }
         peak > 0.0005
     }
-    #[cfg(not(windows))]
-    false
 }

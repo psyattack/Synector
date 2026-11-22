@@ -4,6 +4,7 @@ mod app;
 mod arg_spellings;
 pub mod autorun;
 mod cli;
+mod clipboard;
 mod command;
 pub mod config;
 mod daemon;

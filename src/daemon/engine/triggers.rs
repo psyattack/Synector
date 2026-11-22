@@ -20,12 +20,6 @@ impl DaemonEngine {
         had_events
     }
 
-    #[allow(dead_code)] // Facade kept for callers and tests; production paths use `conditions`.
-    #[inline]
-    pub fn strip_exe_suffix(name: &str) -> &str {
-        crate::daemon::conditions::strip_exe_suffix(name)
-    }
-
     /// Matches an optional device filter against the interface path reported by Windows.
     /// An empty filter accepts any device; otherwise the filter is a case-insensitive
     /// substring, which works for IDs (`VID_1234`), interface paths and drive letters.
@@ -492,9 +486,6 @@ impl DaemonEngine {
             }
         }
     }
-
-    #[cfg(not(windows))]
-    pub async fn tick_window_focus(&mut self) {}
 
     pub async fn tick_resource_threshold(&mut self) {
         let rules = self.config.rules.clone();

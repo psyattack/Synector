@@ -391,4 +391,102 @@ mod tests {
         assert_eq!(invocation.command, Command::List);
         assert_eq!(invocation.value, None);
     }
+
+    /// The complete user-visible help text. It is a frozen contract ([U13-001][U13-014]): scripts,
+    /// docs and users read it, so changing it must be a deliberate edit of this golden too.
+    const GOLDEN_USAGE: &str = r#"Synector - rule authoring from the command line
+
+  --rules-validate <file|->   Parse and validate a JSON rule file; no changes are made
+  --rules-apply <file|->      Create or update rules from a JSON rule file (upsert by id)
+  --rules-list [--json]       List configured rules and their triggers
+  --rules-export [<file>]     Print all rules as JSON, optionally to a file
+  --rules-share [<id>]        Print a compact SYN1: share code for one rule or all rules
+  --rules-import-share <code|file|->  Import automation(s) from a SYN1: share code
+  --rules-delete <id>         Delete one rule by id
+  --rules-sync <file|->       Make the configured rules match the file exactly (upsert and delete missing)
+  --rules-enable <id>         Enable one rule
+  --rules-disable <id>        Disable one rule
+  --rules-reset <id>          Reset a rule's execution counter and re-enable it
+  --rules-example             Print an example rule file
+  --rules-schema              Print the draft-07 JSON Schema for one rule object
+  --rules-reference           Print a human-readable reference of every trigger, action and condition
+  --rules-template <t[:a]>    Print a ready-to-edit rule skeleton for a trigger and action
+  --json                      Machine-readable output for validate/apply/sync/list/export/
+                              share/import-share/delete/enable/disable/reset
+  --dry-run                   With --rules-apply or --rules-sync: report changes without writing
+  --enable-imported           With --rules-import-share: enable the imported rules (default: disabled)
+  --help                      Print this help
+
+A rule file is one rule object, an array of rules, or {"rules": [...]}. Every rule
+needs an "id" (the upsert key) and a "name". Rules are applied to the running daemon
+over IPC; without a daemon the same upsert is written to rules.json and takes effect
+on the next daemon start. Runtime counters (execution_count, last_executed_at) live in
+runtime.json and are preserved when an existing rule is updated.
+
+Share codes are compact SYN1: strings that also carry the macro presets and overlays
+the rules reference. Imported automations are disabled by default; pass
+--enable-imported to activate them immediately. Codes are imported from the argument
+itself, from a file, or from stdin with "-".
+
+Use --rules-schema for machine-readable discovery (AI agents, IDE, validators) and
+--rules-reference for a compact human-readable catalogue.
+"#;
+
+    #[test]
+    fn test_usage_text_is_frozen() {
+        assert_eq!(USAGE, GOLDEN_USAGE);
+    }
+
+    #[test]
+    fn test_missing_value_is_a_usage_exit() {
+        // The messages are pinned by `test_command_values_are_validated_per_command`; exit code 2
+        // is the contract scripts see, and it must be returned before any command runs.
+        assert_eq!(
+            resolve_invocation(&cli_args(&["--rules-delete"]), false),
+            Err(2)
+        );
+        assert_eq!(
+            resolve_invocation(&cli_args(&["--rules-apply", "--json"]), false),
+            Err(2)
+        );
+    }
+
+    /// Every command spelling the parser accepts, with the value its arity requires (`None` for a
+    /// switch). `-h` is the accepted short alias that `USAGE` deliberately does not advertise.
+    #[test]
+    fn test_accepted_command_spellings_parse_with_their_arity() {
+        let cases: &[(&str, Command, Option<&str>)] = &[
+            ("--help", Command::Help, None),
+            ("-h", Command::Help, None),
+            ("--rules-example", Command::Example, None),
+            ("--rules-schema", Command::Schema, None),
+            ("--rules-reference", Command::Reference, None),
+            ("--rules-list", Command::List, None),
+            (
+                "--rules-template",
+                Command::Template,
+                Some("hotkey:start_process"),
+            ),
+            ("--rules-validate", Command::Validate, Some("rules.json")),
+            ("--rules-apply", Command::Apply, Some("rules.json")),
+            ("--rules-sync", Command::Sync, Some("rules.json")),
+            ("--rules-export", Command::Export, Some("rules.json")),
+            ("--rules-share", Command::Share, Some("rule_id")),
+            ("--rules-import-share", Command::ImportShare, Some("SYN1:abc")),
+            ("--rules-delete", Command::Delete, Some("rule_id")),
+            ("--rules-enable", Command::Enable, Some("rule_id")),
+            ("--rules-disable", Command::Disable, Some("rule_id")),
+            ("--rules-reset", Command::Reset, Some("rule_id")),
+        ];
+        for (flag, command, value) in cases {
+            let mut argv = cli_args(&[*flag]);
+            if let Some(value) = value {
+                argv.push((*value).to_string());
+            }
+            let invocation =
+                parse_invocation(&argv).unwrap_or_else(|err| panic!("{flag} must parse: {err}"));
+            assert_eq!(invocation.command, *command, "{flag}");
+            assert_eq!(invocation.value.as_deref(), *value, "{flag}");
+        }
+    }
 }

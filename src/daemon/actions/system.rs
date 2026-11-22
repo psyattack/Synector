@@ -296,10 +296,6 @@ fn play_sound_file(path: &str) -> Result<(), String> {
             }
         }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-    }
     Ok(())
 }
 

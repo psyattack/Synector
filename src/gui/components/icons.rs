@@ -201,11 +201,6 @@ fn load_process_image(pid: u32, name: &str) -> Option<ColorImage> {
     {
         extract_process_icon(pid, name)
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (pid, name);
-        None
-    }
 }
 
 /// Executables, libraries and shortcuts are binary containers: their icons come from
@@ -236,12 +231,6 @@ fn load_path_image(path: &str) -> Option<ColorImage> {
             if shell_only {
                 return None;
             }
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        if shell_only {
-            return None;
         }
     }
 

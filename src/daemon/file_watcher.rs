@@ -260,7 +260,7 @@ mod tests {
     }
 
     fn triggered_rules(engine: &DaemonEngine) -> HashSet<String> {
-        engine.rule_last_triggered.keys().cloned().collect()
+        engine.triggered_rule_ids().into_iter().collect()
     }
 
     async fn poll(service: &mut FileWatcherService) {

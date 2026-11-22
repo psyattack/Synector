@@ -214,13 +214,4 @@ pub fn get_system_media_status() -> SystemMediaStatus {
         }
         status
     }
-    #[cfg(not(windows))]
-    {
-        SystemMediaStatus {
-            is_playing: false,
-            title: "No Track Playing".to_string(),
-            artist: "Synector Media".to_string(),
-            player_name: "Media".to_string(),
-        }
-    }
 }

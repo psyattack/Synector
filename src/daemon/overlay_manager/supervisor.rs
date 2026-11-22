@@ -184,9 +184,6 @@ pub fn hide_overlay(id: &str) {
             false
         };
 
-        #[cfg(not(windows))]
-        let signaled = false;
-
         if let Some(mut ch) = proc.child.take() {
             if signaled && fade_ms > 0 {
                 std::thread::spawn(move || {
@@ -295,9 +292,6 @@ pub fn hide_overlay_sync(id: &str) {
         } else {
             false
         };
-
-        #[cfg(not(windows))]
-        let signaled = false;
 
         if let Some(mut ch) = proc.child.take() {
             if signaled && fade_ms > 0 {

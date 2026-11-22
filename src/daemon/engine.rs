@@ -36,17 +36,17 @@ pub struct DaemonEngine {
     pub config: AppConfig,
     start_time: Instant,
     logs: Vec<LogItem>,
-    pub watcher: ProcessWatcher,
+    watcher: ProcessWatcher,
     /// Active pipelines, abort handles, recurring test loops, bound processes and bound overlays.
     executions: ExecutionTracker,
-    pub rule_last_triggered: HashMap<String, Instant>,
+    rule_last_triggered: HashMap<String, Instant>,
     /// Latest rule definitions plus their runtime counters, shared with recurring executions so a
     /// running loop re-reads its rule instead of executing a stale captured pipeline.
     live_rules: std::sync::Arc<std::sync::RwLock<Vec<Rule>>>,
     active_rule_pids: HashMap<String, HashSet<u32>>,
     analytics: AnalyticsSummary,
     last_foreground_pid: Option<u32>,
-    pub hotkey_handle: Option<crate::daemon::hotkeys::HotkeyHandle>,
+    hotkey_handle: Option<crate::daemon::hotkeys::HotkeyHandle>,
     /// Updater display state shared by the tray download task and the state projection.
     update: UpdateStatus,
     /// Scheduler admission clocks (attempt throttle and resource-threshold dwell).
@@ -100,5 +100,22 @@ impl DaemonEngine {
             #[cfg(test)]
             forced_persist_failure: false,
         }
+    }
+
+    pub(crate) fn watcher(&self) -> &ProcessWatcher {
+        &self.watcher
+    }
+
+    pub(crate) fn set_hotkey_handle(&mut self, handle: crate::daemon::hotkeys::HotkeyHandle) {
+        self.hotkey_handle = Some(handle);
+    }
+
+    pub(crate) fn mark_rule_triggered(&mut self, rule_id: &str) {
+        self.rule_last_triggered.insert(rule_id.to_string(), Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn triggered_rule_ids(&self) -> Vec<String> {
+        self.rule_last_triggered.keys().cloned().collect()
     }
 }

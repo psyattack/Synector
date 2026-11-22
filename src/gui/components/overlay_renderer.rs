@@ -789,8 +789,6 @@ pub fn render_element(ctx: &mut RenderContext, elem: &mut OverlayElement) -> Opt
                 TimerMode::Uptime => {
                     #[cfg(windows)]
                     let sec = unsafe { windows::Win32::System::SystemInformation::GetTickCount64() } / 1000;
-                    #[cfg(not(windows))]
-                    let sec = 7200;
                     let d = sec / 86400;
                     let h = (sec % 86400) / 3600;
                     let m = (sec % 3600) / 60;

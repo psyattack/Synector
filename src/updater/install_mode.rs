@@ -38,11 +38,6 @@ fn installer_install_location() -> Option<PathBuf> {
     (!location.trim().is_empty()).then(|| PathBuf::from(location))
 }
 
-#[cfg(not(windows))]
-fn installer_install_location() -> Option<PathBuf> {
-    None
-}
-
 /// Directory holding the masked daemon copy (`WindowsServiceHost.exe`).
 pub(super) fn masked_daemon_dir() -> PathBuf {
     crate::config::AppConfig::config_dir().join("bin")

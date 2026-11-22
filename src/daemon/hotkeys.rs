@@ -48,11 +48,6 @@ pub fn is_hotkey_combination_pressed(vkeys: &[i32]) -> bool {
             (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
         })
     }
-    #[cfg(not(windows))]
-    {
-        let _ = vkeys;
-        false
-    }
 }
 
 /// Matches one parsed key combination against the current key state. `VK_LWIN` stands for the
@@ -124,11 +119,6 @@ pub fn start_hotkey_listener(event_tx: tokio::sync::mpsc::UnboundedSender<Hotkey
                 run_hotkey_poll_loop(event_tx);
             })
             .expect("Failed to spawn global hotkey thread");
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = event_tx;
     }
 
     HotkeyHandle { _private: () }

@@ -610,17 +610,12 @@ fn paint_font_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, c
 
 /// Small outlined square button with a drawn glyph (X, Clone, Expand, More, Reset); inverts on hover.
 pub fn glyph_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
-    glyph_button_active(ui, glyph, false, tip)
-}
-
-/// Small outlined square button with a drawn glyph; supports active state.
-pub fn glyph_button_active(ui: &mut Ui, glyph: Glyph, active: bool, tip: &str) -> Response {
     let size = if ui.spacing().interact_size.y < theme::CONTROL_H {
         ui.spacing().interact_size.y
     } else {
         theme::CONTROL_H
     };
-    glyph_button_custom(ui, glyph, size, active, tip)
+    glyph_button_custom(ui, glyph, size, false, tip)
 }
 
 /// Small outlined square button with custom size and active state.

@@ -172,7 +172,7 @@ fn install_hotkeys(
         let h_handle = hotkey_handle.clone();
         rt.block_on(async {
             let mut eng = engine_clone.lock().await;
-            eng.hotkey_handle = Some(h_handle);
+            eng.set_hotkey_handle(h_handle);
         });
     }
 
@@ -190,7 +190,7 @@ fn log_initialized(rt: &tokio::runtime::Runtime, engine: Arc<Mutex<DaemonEngine>
         let engine_clone = Arc::clone(&engine);
         rt.block_on(async {
             let mut eng = engine_clone.lock().await;
-            let mode = eng.watcher.get_mode_name();
+            let mode = eng.watcher().get_mode_name();
             eng.log(
                 "INFO",
                 "DAEMON",

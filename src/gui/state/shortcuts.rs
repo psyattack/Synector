@@ -28,8 +28,4 @@ fn dirs_desktop() -> Option<std::path::PathBuf> {
     {
         std::env::var_os("USERPROFILE").map(|u| std::path::PathBuf::from(u).join("Desktop"))
     }
-    #[cfg(not(windows))]
-    {
-        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Desktop"))
-    }
 }

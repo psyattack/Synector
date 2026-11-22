@@ -27,8 +27,7 @@ pub(super) async fn spawn_hotkey_loop(
                 if eng.is_rule_executing(&rule_id) || was_looping {
                     eng.stop_rule_execution(&rule_id);
                     crate::daemon::actions::release_all_simulated_inputs();
-                    eng.rule_last_triggered
-                        .insert(rule_id.clone(), std::time::Instant::now());
+                    eng.mark_rule_triggered(&rule_id);
                 } else if let Some(rule) =
                     eng.config.rules.iter().find(|r| r.id == rule_id).cloned()
                 {
@@ -205,7 +204,7 @@ pub(super) async fn spawn_process_loop(engine_process: Arc<Mutex<DaemonEngine>>)
                     )
             }) || !eng.has_active_bound_companions();
 
-            if eng.watcher.is_etw_active() {
+            if eng.watcher().is_etw_active() {
                 if has_proc_rules {
                     50
                 } else {

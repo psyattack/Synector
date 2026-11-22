@@ -99,7 +99,7 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 
 | Area | Responsibility |
 |---|---|
-| `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the catalog modals (`src/gui/views/catalogs/`), the shared catalog shell and GUI primitives (`src/gui/components/`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
+| `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the rules view (`src/gui/views/rules_view/` behind `src/gui/views/rules_view.rs`), the overlay studio (`src/gui/views/overlay_modal/` behind `src/gui/views/overlay_modal.rs`) and macro studio (`src/gui/views/macro_modal/` behind `src/gui/views/macro_modal.rs`) module trees, the catalog modals (`src/gui/views/catalogs/`), the preset-picker body shared by both studios (`src/gui/views/presets.rs`), the shared catalog shell and GUI primitives (`src/gui/components/`, including the colour editor in `src/gui/components/color_picker.rs` and tag pills in `src/gui/components/chips.rs`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
 | `src/daemon.rs`, `src/daemon/runtime/` | Daemon tier entry: the module list and `run_daemon`, with the start-up/loop/shutdown wiring split into `bootstrap` (runtime creation and fixed install/spawn order), `loops` (process, window, system-event, schedule, hotkey, file, webhook, coalesced-flush and update-check loops), `shutdown` (the signal and the coordinated sequence) and `launch` (the `--gui-exe` path) |
 | `src/daemon/engine/` | Rule runtime split by owner: `scheduler`, `quota`, `executions`, `pipeline` (the one pipeline launcher), `projector`, `triggers`, `state`, `ipc`, `offline`, `update` (the updater display state), `rule_call` (the rule-control dispatcher) and `activity` (the rule-activity registry), plus the engine suite; `src/daemon/engine.rs` is the `DaemonEngine` facade |
 | `src/daemon/actions/` | One module per action family (`process`, `window`, `input`, `macro`, `audio`, `script`, `filesystem`, `webhook`, `system`, `overlay`, `tokens`) over the shared bounded runner in `src/command.rs` and the MTA COM guard in `src/win_com.rs`; `src/daemon/actions.rs` is the facade, the control-flow dispatcher and the exhaustive standard-action family dispatcher; command-line/PowerShell quoting lives in `src/win_args.rs` |
@@ -115,12 +115,13 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/ipc/` | Named-pipe client, the shared request/response protocol, the one framing implementation both sides use, and the overlay wire encoding |
 | `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation, the shared action-tree visitor (`Rule::visit_actions`) and the generated rule schema (`src/models.rs` is the facade) |
 | `src/validation.rs` | Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path |
-| `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection (`src/cli.rs` is the facade) |
+| `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection in `src/cli/target.rs`, which also owns the one IPC round-trip adapter behind the command-specific `*_via_daemon` functions and the one post-snapshot offline→daemon transition helper (`src/cli.rs` is the facade) |
 | `src/config/` | Split configuration persistence: storage policy, caches and the four section modules (`src/config.rs` is the facade) |
 | `src/i18n/` | Locale registry, the flat `Strings` declaration (`src/i18n/strings.rs`) and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
 | `src/updater/` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/`.old` executable cleanup (`src/updater.rs` is the facade over `release`, `install_mode`, `portable`, `install`, `apply`, `temp` and `util`) |
-| `src/sharing.rs` | `SYN1:` Brotli + Base64 share codes: SHA-256 prefix, library dependency bundling, bounded decode |
+| `src/sharing/` | `SYN1:` Brotli + Base64 share codes split by stage (`format`, `payload`, `encode`, `decode`, `import`, `assets`; `src/sharing.rs` is the facade): SHA-256 prefix, library dependency bundling, bounded decode |
+| `src/clipboard.rs` | One system-clipboard helper set (`copy_text_to_clipboard`, `read_text`) shared by the share flow, the inspector and token expansion |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch, written through `IShellLink`; a same-named foreign shortcut is never overwritten (a rule-id-suffixed name is used instead) |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
 
@@ -481,28 +482,29 @@ dead seek knob would be fake UI.
 
 ## Sharing and backup
 
-`src/sharing.rs` turns rules into `SYN1:` text codes that can be pasted into chats: the JSON payload
-is Brotli-compressed (quality 11, with a versioned custom dictionary), prefixed with an 8-byte
-SHA-256 checksum and Base64URL-encoded. A code also bundles the macro presets and overlays its rules
-reference, so the recipient gets a working automation set. Presets or overlays whose id already
-exists locally with different content are re-identified; a content-equal entry is reused instead of
-duplicated, so importing the same code twice adds nothing. Rules whose content already exists are
-skipped as duplicates, and colliding rule ids get a fresh id. Bundled overlay button and toggle
-targets are re-pointed at the final imported rule ids, and a target that neither the code nor the
-local rule set provides is reported as a warning.
+The `src/sharing/` tree (facade `src/sharing.rs` over the `format`, `payload`, `encode`, `decode`,
+`import` and `assets` stages) turns rules into `SYN1:` text codes that can be pasted into chats: the
+JSON payload is Brotli-compressed (quality 11, with a versioned custom dictionary), prefixed with an
+8-byte SHA-256 checksum and Base64URL-encoded. A code also bundles the macro presets and overlays
+its rules reference, so the recipient gets a working automation set. Presets or overlays whose id
+already exists locally with different content are re-identified; a content-equal entry is reused
+instead of duplicated, so importing the same code twice adds nothing. Rules whose content already
+exists are skipped as duplicates, and colliding rule ids get a fresh id. Bundled overlay button and
+toggle targets are re-pointed at the final imported rule ids, and a target that neither the code nor
+the local rule set provides is reported as a warning.
 
 Sender-local data never travels: runtime counters are reset, and custom icon paths plus overlay
 image and button icon paths are dropped with a notice. Truncated or altered codes fail the checksum
 instead of decoding to garbage, and the comparison accumulates every differing byte rather than
 stopping at the first one. Decoding is bounded (4 MiB of code, 8 MiB of decompressed payload, 500
 rules, 500 overlays and 500 macro presets), so a hostile code cannot exhaust memory. Exporting is
-one click: the code is compressed on a worker thread and copied straight to the clipboard. Importing
-is one daemon-owned `IpcRequest::ImportShare` step that applies rules plus library entries, skips
-duplicates and creates the rules disabled by default. The toast reports how many rules, library
-entries and duplicates were handled, while advisory notices (scripts, elevated processes, webhooks,
-dropped icons and overlay images, unresolved overlay targets, missing presets/overlays) are written
-to the log. JSON files remain the backup format: `--rules-export` and the CLI authoring commands
-cover file-based migration.
+one click: the code is compressed on a worker thread and copied straight to the clipboard through
+the shared `src/clipboard.rs` helper. Importing is one daemon-owned `IpcRequest::ImportShare` step
+that applies rules plus library entries, skips duplicates and creates the rules disabled by default.
+The toast reports how many rules, library entries and duplicates were handled, while advisory
+notices (scripts, elevated processes, webhooks, dropped icons and overlay images, unresolved overlay
+targets, missing presets/overlays) are written to the log. JSON files remain the backup format:
+`--rules-export` and the CLI authoring commands cover file-based migration.
 
 ## Installation forms and updates
 

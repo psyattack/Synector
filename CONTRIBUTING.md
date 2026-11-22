@@ -66,19 +66,21 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Named-pipe server | `src/daemon/ipc_server.rs` |
 | GUI state, drafts, undo, IPC calls | `src/gui/state/` (facade `src/gui/state.rs`) |
 | Preset library writes shared by the overlay and macro studios | `src/gui/state/library_write.rs` |
-| Views and inspectors | `src/gui/views/`; the inspector tree is `src/gui/views/inspector/` (facade `src/gui/views/inspector.rs`) |
-| Shared widgets and renderers | `src/gui/components/` |
+| Views and inspectors | `src/gui/views/`; the inspector, rules view, overlay studio and macro studio are module trees: `src/gui/views/inspector/` (facade `src/gui/views/inspector.rs`), `src/gui/views/rules_view/` (facade `src/gui/views/rules_view.rs`), `src/gui/views/overlay_modal/` (facade `src/gui/views/overlay_modal.rs`), `src/gui/views/macro_modal/` (facade `src/gui/views/macro_modal.rs`) |
+| Shared widgets and renderers | `src/gui/components/`; the rule-card and condition glyph tables shared by the rules list and the inspector live in `src/gui/views/rule_summary.rs` |
 | Catalog modal shell (entry definition, chrome, filtering, lifecycle) | `src/gui/components/catalog_modal.rs`; per-kind tables and commit adapters stay in `src/gui/views/catalogs/` |
-| Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs` |
+| Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header, HSVA colour editor, tag pills) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs`, `src/gui/components/color_picker.rs`, `src/gui/components/chips.rs` |
+| Studio preset picker shared by the overlay and macro studios | `src/gui/views/presets.rs` (each studio keeps its own modal shell, data source and load/delete/save effects) |
 | Localization | `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |
-| CLI rule authoring | `src/cli/` (facade `src/cli.rs`) |
+| CLI rule authoring | `src/cli/` (facade `src/cli.rs`); one daemon IPC round-trip adapter and the post-snapshot offline→daemon transition helper in `src/cli/target.rs` |
 | Process entry, runtime dispatch and argv vocabulary | `src/app/` (facade `src/app.rs`); cross-process flag spellings in `src/arg_spellings.rs` |
 | IPC protocol | `src/ipc/protocol.rs` |
 | IPC framing shared by client and server | `src/ipc/framing.rs` |
 | Overlay wire encoding | `src/ipc/overlay_wire.rs` |
 | Configuration persistence | `src/config/` (facade `src/config.rs`) |
-| Share codes | `src/sharing.rs` |
+| Share codes | `src/sharing/` (facade `src/sharing.rs`; stages `format`, `payload`, `encode`, `decode`, `import`, `assets`) |
+| Clipboard access | `src/clipboard.rs` (`copy_text_to_clipboard`, `read_text`) |
 | Autostart registration | `src/autorun.rs` |
 | Updates and self-replacement | `src/updater/` (facade `src/updater.rs`) |
 | Logging | `src/logging.rs` |

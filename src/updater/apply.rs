@@ -111,10 +111,5 @@ pub fn apply_update_and_restart(exe_path: &Path, pending_path: &Path) -> Result<
         cmd.spawn().map_err(|e| format!("Failed to spawn restart script: {e}"))?;
     }
 
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new(exe_path).spawn();
-    }
-
     std::process::exit(0);
 }

@@ -6,7 +6,7 @@ pub(super) fn interpolate_tokens(text: &str, context: &HashMap<String, String>) 
         result = result.replace(&format!("{{{}}}", k), v);
     }
     if result.contains("{Clipboard}") {
-        let cb = crate::sharing::read_text_from_clipboard().unwrap_or_else(|_| String::new());
+        let cb = crate::clipboard::read_text().unwrap_or_else(|_| String::new());
         result = result.replace("{Clipboard}", &cb);
     }
     if result.contains("{Date}") {

@@ -1014,8 +1014,6 @@ impl eframe::App for OverlayWindowApp {
 
         #[cfg(windows)]
         let egui_render_opacity = 1.0;
-        #[cfg(not(windows))]
-        let egui_render_opacity = self.current_opacity;
 
         if self.overlay.id == "overlay_update_notification" {
             let version = self.override_text.as_deref().unwrap_or("latest");
@@ -1367,8 +1365,6 @@ pub fn run_overlay_window(
                 })
                 .unwrap_or((mon_x + rel_x, mon_y + rel_y))
         }
-        #[cfg(not(windows))]
-        (mon_x + rel_x, mon_y + rel_y)
     } else {
         (mon_x + rel_x, mon_y + rel_y)
     };

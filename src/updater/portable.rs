@@ -40,11 +40,6 @@ fn gui_process_exe_path() -> Option<PathBuf> {
     }
 }
 
-#[cfg(not(windows))]
-fn gui_process_exe_path() -> Option<PathBuf> {
-    None
-}
-
 /// The executable a portable update has to replace.
 ///
 /// With process masking enabled the portable daemon runs from `...\Synector\bin\WindowsServiceHost.exe`.
@@ -134,17 +129,6 @@ pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(
                 }
             }
             Err(err) => crate::logging::warn("UPDATER", &err),
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        let mut cmd = std::process::Command::new("tar");
-        cmd.args(["-xf", &zip_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()]);
-        if let Ok(outcome) = run_command_bounded(cmd, TOOL_TIMEOUT) {
-            if outcome.succeeded() {
-                extracted_successfully = true;
-            }
         }
     }
 

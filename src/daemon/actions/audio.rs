@@ -77,10 +77,6 @@ pub(super) async fn execute(action: &Action, context: &HashMap<String, String>) 
             {
                 set_audio_device_format(*target, *sample_rate, *bit_depth, *channels, dev_name.as_deref()).await?;
             }
-            #[cfg(not(windows))]
-            {
-                let _ = (target, dev_name, sample_rate, bit_depth, channels);
-            }
             Ok(())
         }
 
@@ -502,10 +498,6 @@ pub fn set_master_volume_scalar(scalar: f32) {
             unsafe { endpoint.SetMasterVolumeLevelScalar(scalar.clamp(0.0, 1.0), std::ptr::null()) }
                 .map_err(|e| format!("SetMasterVolumeLevelScalar failed: {e}"))
         });
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = scalar;
     }
 }
 

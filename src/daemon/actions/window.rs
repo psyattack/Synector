@@ -301,11 +301,6 @@ pub fn get_foreground_window_pid() -> Option<u32> {
     }
 }
 
-#[cfg(not(windows))]
-pub fn get_foreground_window_pid() -> Option<u32> {
-    None
-}
-
 pub fn has_matching_window(process_name: &str, match_mode: crate::models::ProcessMatchMode) -> bool {
     #[cfg(windows)]
     {
@@ -396,10 +391,5 @@ pub fn has_matching_window(process_name: &str, match_mode: crate::models::Proces
             let _ = EnumWindows(Some(enum_proc), LPARAM(&mut ctx as *mut _ as isize));
         }
         ctx.found
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (process_name, match_mode);
-        false
     }
 }

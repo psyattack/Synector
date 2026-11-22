@@ -125,7 +125,7 @@ impl GuiState {
         match polled {
             Polled::Outcome((Ok(code), count, warnings)) => {
                 self.share.rx = None;
-                crate::sharing::copy_text_to_clipboard(ctx, &code);
+                crate::clipboard::copy_text_to_clipboard(ctx, &code);
                 let mut message = self.loc().toast_share_copied.replace("{}", &count.to_string());
                 if !warnings.is_empty() {
                     let notices = self
@@ -167,7 +167,7 @@ impl GuiState {
     /// Rules are created disabled; the daemon applies the code atomically and reports how many
     /// rules, library entries and duplicates it handled, which the toast summarizes.
     pub fn import_automations_from_clipboard(&mut self, _ctx: &egui::Context) {
-        let text = match crate::sharing::read_text_from_clipboard() {
+        let text = match crate::clipboard::read_text() {
             Ok(text) => text,
             Err(error) => {
                 self.set_toast(format!("{}: {}", self.loc().toast_import_clipboard_err, error));

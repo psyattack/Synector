@@ -309,8 +309,6 @@ impl ProcessWatcher {
             );
             None
         };
-        #[cfg(not(windows))]
-        crate::logging::info("WATCHER", "Process tracing uses Toolhelp32 snapshot polling");
 
         Self {
             known_processes: initial,
@@ -327,10 +325,6 @@ impl ProcessWatcher {
                 self.etw_session.is_some(),
                 ETW_TRACE_STOPPED.load(Ordering::SeqCst),
             )
-        }
-        #[cfg(not(windows))]
-        {
-            false
         }
     }
 
@@ -437,11 +431,6 @@ impl ProcessWatcher {
         map
     }
 
-    #[cfg(not(windows))]
-    pub fn snapshot_process_map() -> HashMap<u32, String> {
-        HashMap::new()
-    }
-
     #[cfg(windows)]
     pub fn get_process_image_path(pid: u32) -> Option<String> {
         unsafe {
@@ -461,11 +450,6 @@ impl ProcessWatcher {
             }
             None
         }
-    }
-
-    #[cfg(not(windows))]
-    pub fn get_process_image_path(_pid: u32) -> Option<String> {
-        None
     }
 
     pub fn find_exe_path_by_name(process_name: &str) -> Option<String> {
@@ -558,11 +542,6 @@ impl ProcessWatcher {
         items
     }
 
-    #[cfg(not(windows))]
-    pub fn get_detailed_snapshot() -> Vec<ProcessSnapshotItem> {
-        Vec::new()
-    }
-
     #[cfg(windows)]
     fn get_window_titles() -> HashMap<u32, String> {
         let mut map: HashMap<u32, String> = HashMap::new();
@@ -605,7 +584,6 @@ fn process_name_from_path(path: &str) -> Option<String> {
 /// resolved from the image path first and from a Toolhelp snapshot second, so protected/PPL
 /// processes whose image path cannot be opened still produce the same start event the polling
 /// path produces, and their stop event is not lost. The pid is always recorded.
-#[cfg_attr(not(windows), allow(dead_code))]
 fn apply_etw_events(
     events: Vec<RawProcessEvent>,
     known: &mut HashMap<u32, String>,
@@ -655,7 +633,6 @@ fn apply_etw_events(
 /// feeding the same trigger surface. A pid that already exited cannot be named any more: it is
 /// dropped with a debug line (polling would have retried on its next tick, so this is the only
 /// remaining case where the two paths can still differ).
-#[cfg_attr(not(windows), allow(dead_code))]
 fn reconcile_known_processes(
     known: &mut HashMap<u32, String>,
     current: &HashMap<u32, String>,
@@ -762,11 +739,6 @@ pub fn is_elevated() -> bool {
             }
         }
     }
-    false
-}
-
-#[cfg(not(windows))]
-pub fn is_elevated() -> bool {
     false
 }
 

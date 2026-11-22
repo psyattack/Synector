@@ -131,11 +131,6 @@ pub fn strip_pe_icon(exe_path: &std::path::Path) -> bool {
     }
 }
 
-#[cfg(not(windows))]
-pub fn strip_pe_icon(_exe_path: &std::path::Path) -> bool {
-    false
-}
-
 /// Directory holding the masked daemon copy (`WindowsServiceHost.exe`).
 fn masked_daemon_dir() -> std::path::PathBuf {
     crate::config::AppConfig::config_dir().join("bin")

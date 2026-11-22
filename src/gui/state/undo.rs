@@ -1,8 +1,8 @@
 //! One bounded undo/redo implementation shared by the rule draft and the overlay studio.
 //!
-//! Both histories have to stay public `Vec<T>` fields this session (tests and
-//! `overlay_modal.rs` read them directly), so the shared algorithm operates on the stacks
-//! themselves instead of wrapping them in a new type.
+//! Both histories stay plain `Vec<T>` fields on their owners — tests and `overlay_modal.rs`
+//! read them directly — so the shared algorithm operates on the stacks themselves instead of
+//! wrapping them in a new type.
 
 use super::overlay_studio::OverlayStudioState;
 use super::GuiState;

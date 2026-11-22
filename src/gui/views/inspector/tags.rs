@@ -1,6 +1,7 @@
 //! Rule tag editor: pills, picker, palette and icon picker.
 
 use super::*;
+use crate::gui::components::chips::{paint_tag_pill, tag_pill_width, TagPillStyle};
 
 pub(crate) fn render_inspector_tag_section(
     ui: &mut Ui,
@@ -15,39 +16,13 @@ pub(crate) fn render_inspector_tag_section(
         ui.spacing_mut().item_spacing.y = 4.0;
 
         let mut remove_idx = None;
+        let editor_style = &TagPillStyle::INSPECTOR_EDITOR;
         for (idx, tag) in rule.tags.iter().enumerate() {
             let color = theme::tag_color(tag, t.accent_ink);
-            let has_icon = tag.icon.as_ref().is_some_and(|i| !i.is_empty());
-            let name_galley = widgets::caps(ui, &tag.name, 10.0, theme::medium(), 0.0, color);
-            let icon_w = if has_icon { 16.0 } else { 0.0 };
-            let pill_w = name_galley.size().x + icon_w + 24.0;
-            let (rect, _resp) = ui.allocate_exact_size(vec2(pill_w, 20.0), Sense::hover());
+            let pill_w = tag_pill_width(ui, tag, editor_style);
+            let (rect, _resp) = ui.allocate_exact_size(vec2(pill_w, editor_style.height), Sense::hover());
 
-            ui.painter().rect(
-                rect,
-                CornerRadius::same(10),
-                color.gamma_multiply(0.18),
-                Stroke::new(1.0, color.gamma_multiply(0.45)),
-                egui::StrokeKind::Inside,
-            );
-
-            let mut curr_x = rect.left() + 8.0;
-            if let Some(ico) = &tag.icon {
-                if !ico.is_empty() {
-                    let ico_rect = Rect::from_min_size(pos2(curr_x, rect.top()), vec2(14.0, rect.height()));
-                    ui.painter().text(
-                        ico_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        ico,
-                        egui::FontId::new(11.0, theme::phosphor()),
-                        color,
-                    );
-                    curr_x += 15.0;
-                }
-            }
-
-            let text_pos = pos2(curr_x, rect.center().y - name_galley.size().y / 2.0);
-            ui.painter().galley(text_pos, name_galley, color);
+            paint_tag_pill(ui, rect, tag, editor_style, color, color, color, false);
 
             let close_rect = Rect::from_center_size(pos2(rect.right() - 8.0, rect.center().y), vec2(14.0, 14.0));
             let close_resp = ui.interact(close_rect, ui.scope_id().with(("tag_rem", idx)), Sense::click());
@@ -116,37 +91,14 @@ pub(crate) fn render_inspector_tag_section(
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         ui.spacing_mut().item_spacing.y = 4.0;
+                        let picker_style = &TagPillStyle::INSPECTOR_PICKER;
                         for ext in available {
                             let c = theme::tag_color(&ext, t.accent_ink);
-                            let has_ico = ext.icon.as_ref().is_some_and(|i| !i.is_empty());
-                            let name_galley = widgets::caps(ui, &ext.name, 9.5, theme::medium(), 0.0, c);
-                            let pill_w = name_galley.size().x + if has_ico { 14.0 } else { 0.0 } + 14.0;
-                            let (pill_rect, pill_resp) = ui.allocate_exact_size(vec2(pill_w, 18.0), Sense::click());
+                            let pill_w = tag_pill_width(ui, &ext, picker_style);
+                            let (pill_rect, pill_resp) = ui.allocate_exact_size(vec2(pill_w, picker_style.height), Sense::click());
                             let h = pill_resp.hovered();
-                            ui.painter().rect(
-                                pill_rect,
-                                CornerRadius::same(9),
-                                if h { c.gamma_multiply(0.35) } else { c.gamma_multiply(0.18) },
-                                Stroke::new(1.0, if h { c } else { c.gamma_multiply(0.5) }),
-                                egui::StrokeKind::Inside,
-                            );
-
-                            let mut cx = pill_rect.left() + 6.0;
-                            if let Some(ico) = &ext.icon {
-                                if !ico.is_empty() {
-                                    let ico_rect = Rect::from_min_size(pos2(cx, pill_rect.top()), vec2(12.0, pill_rect.height()));
-                                    ui.painter().text(
-                                        ico_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        ico,
-                                        egui::FontId::new(10.0, theme::phosphor()),
-                                        if h { t.ink_strong } else { c },
-                                    );
-                                    cx += 13.0;
-                                }
-                            }
-                            let tp = pos2(cx, pill_rect.center().y - name_galley.size().y / 2.0);
-                            ui.painter().galley(tp, name_galley, if h { t.ink_strong } else { c });
+                            let ink = if h { t.ink_strong } else { c };
+                            paint_tag_pill(ui, pill_rect, &ext, picker_style, c, ink, ink, h);
 
                             if pill_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 rule.tags.push(ext);

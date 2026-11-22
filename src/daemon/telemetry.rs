@@ -6,21 +6,12 @@ mod media;
 mod process;
 mod system;
 
-// The facade keeps every item's original public path even when the binary has
-// no in-crate caller for it, so the re-export must not be flagged as unused.
-#[allow(unused_imports)]
-pub use self::audio::{is_system_audio_playing, simulate_media_key};
-#[allow(unused_imports)]
-pub use self::engine::{get_engine_telemetry, update_engine_stats, EngineTelemetrySnapshot};
+pub use self::audio::simulate_media_key;
+pub use self::engine::{get_engine_telemetry, update_engine_stats};
 pub use self::graph::{get_graph_current_label, get_graph_samples};
 pub use self::keys::{get_active_or_recent_keys, is_vk_pressed};
-#[allow(unused_imports)]
-pub use self::media::{get_system_media_status, SystemMediaStatus};
-#[allow(unused_imports)]
-pub use self::system::{
-    format_telemetry_text, get_network_speed_bytes_per_sec, get_system_metrics,
-    get_total_network_octets, sample_system_cpu, SystemTelemetryData,
-};
+pub use self::media::get_system_media_status;
+pub use self::system::format_telemetry_text;
 
 #[cfg(test)]
 use std::time::{Duration, Instant};

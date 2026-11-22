@@ -136,4 +136,47 @@ mod tests {
             "every failure envelope names the target key"
         );
     }
+
+    /// `emit_json` prints exactly this text, so the goldens also pin the serialized key order and
+    /// the `null`/empty-array forms a machine consumer sees ([U13-011]).
+    #[test]
+    fn test_envelopes_serialize_to_frozen_goldens() {
+        let report = ApplyReport {
+            created: vec!["a".to_string()],
+            updated: vec!["b".to_string()],
+        };
+        let success = report_json(true, "daemon", &report, &["c".to_string()], true, &[]);
+        assert_eq!(
+            serde_json::to_string_pretty(&success).expect("serialize report"),
+            r#"{
+  "created": [
+    "a"
+  ],
+  "deleted": [
+    "c"
+  ],
+  "dry_run": true,
+  "ok": true,
+  "target": "daemon",
+  "updated": [
+    "b"
+  ],
+  "warnings": []
+}"#
+        );
+
+        let failure = error_json("boom", &["boom".to_string()], &[], None);
+        assert_eq!(
+            serde_json::to_string_pretty(&failure).expect("serialize error"),
+            r#"{
+  "error": "boom",
+  "errors": [
+    "boom"
+  ],
+  "ok": false,
+  "target": null,
+  "warnings": []
+}"#
+        );
+    }
 }

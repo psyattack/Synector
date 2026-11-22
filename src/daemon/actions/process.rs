@@ -83,10 +83,6 @@ pub(super) async fn execute(action: &Action, context: &HashMap<String, String>) 
                     }
                     return Ok(());
                 }
-                #[cfg(not(windows))]
-                {
-                    let _ = (&path, &argv);
-                }
             }
 
             let mut cmd = Command::new(&path);
@@ -392,10 +388,6 @@ pub fn trim_working_set(
                 target_process
             ));
         }
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (target_process, target_pid, soft_limit_mb, skip_if_focused);
     }
     Ok(())
 }

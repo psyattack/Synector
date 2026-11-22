@@ -7,12 +7,12 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::config::{AppConfig, RulesFile, RuntimeState};
-use crate::ipc::IpcClient;
 use crate::models::Rule;
 #[cfg(test)]
 use crate::models::{Action, Trigger};
 
 use super::json::fail_with;
+use super::target::daemon_took_over_after_snapshot;
 
 /// Result of an upsert: which rule ids were created and which replaced an existing rule.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -226,9 +226,7 @@ pub(super) fn import_share_offline(
             ));
         }
     }
-    // Re-check immediately before the second write: a daemon that started in between would be
-    // overwritten by this whole-section rewrite ([U13-003]).
-    if IpcClient::is_daemon_running() {
+    if daemon_took_over_after_snapshot() {
         return Err(fail_with(
             json_output,
             "the daemon started while the import was running; the library was updated but the rules were not imported - re-run the command so it goes through IPC",

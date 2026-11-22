@@ -82,10 +82,6 @@ pub(crate) struct CommandOutcome {
     pub(crate) stderr: String,
     pub(crate) timed_out: bool,
     pub(crate) stdout_truncated: bool,
-    /// Parity with `stdout_truncated` for callers that surface stderr bytes; the Lua bridge
-    /// only marks truncated stdout, so nothing reads this field yet.
-    #[allow(dead_code)]
-    pub(crate) stderr_truncated: bool,
     stdout_bytes: Vec<u8>,
     stderr_bytes: Vec<u8>,
 }
@@ -238,7 +234,7 @@ fn run_command_bounded_with(
         rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
     };
     let (stdout_bytes, stdout_truncated) = collect(stdout_rx);
-    let (stderr_bytes, stderr_truncated) = collect(stderr_rx);
+    let stderr_bytes = collect(stderr_rx).0;
     let stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
     let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
 
@@ -248,7 +244,6 @@ fn run_command_bounded_with(
         stderr,
         timed_out,
         stdout_truncated,
-        stderr_truncated,
         stdout_bytes,
         stderr_bytes,
     })

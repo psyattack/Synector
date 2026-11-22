@@ -339,7 +339,7 @@ pub(crate) fn action_summary_preview(action: &Action, loc: &crate::i18n::Strings
             }
         }
         Action::IfElse { conditions, then_actions, else_if_branches, else_actions } => {
-            let glyph = conditions.first().map(|c| crate::gui::views::rules_view::condition_icon_glyph(&c.condition)).unwrap_or("❓");
+            let glyph = conditions.first().map(|c| crate::gui::views::rule_summary::condition_icon_glyph(&c.condition)).unwrap_or("❓");
             let count_txt = conditions.len().to_string();
             let then_txt = then_actions.len().to_string();
             let else_txt = else_actions.len().to_string();

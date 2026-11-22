@@ -35,8 +35,6 @@ pub fn update_engine_stats(active_rules: usize, active_macros: usize, quota_rem:
 pub fn get_engine_telemetry() -> EngineTelemetrySnapshot {
     #[cfg(windows)]
     let uptime = unsafe { GetTickCount64() };
-    #[cfg(not(windows))]
-    let uptime = 0u64;
 
     let heartbeat_pulse = (uptime / 500) % 2 == 0;
 

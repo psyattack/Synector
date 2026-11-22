@@ -610,9 +610,6 @@ pub fn release_all_simulated_inputs() {
     }
 }
 
-#[cfg(not(windows))]
-pub fn release_all_simulated_inputs() {}
-
 #[cfg(windows)]
 pub(super) fn send_char_event(ch: char) {
     if !INPUT_INJECTION_ENABLED {

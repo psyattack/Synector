@@ -99,7 +99,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                                 }
                             }
                             if !rendered {
-                                let glyph = crate::gui::views::rules_view::default_icon_glyph(rule);
+                                let glyph = crate::gui::views::rule_summary::default_icon_glyph(rule);
                                 p.text(icon_rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::new(18.0, theme::phosphor()), if is_hovered { t.accent_ink } else { t.ink_strong });
                             }
 

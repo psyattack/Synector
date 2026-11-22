@@ -296,7 +296,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                             .on_hover_text(loc.inspector_webhook_copy_url)
                             .on_hover_cursor(egui::CursorIcon::PointingHand);
                         if resp.clicked() {
-                            crate::sharing::copy_text_to_clipboard(ui.ctx(), &full_url);
+                            crate::clipboard::copy_text_to_clipboard(ui.ctx(), &full_url);
                             state.set_toast(loc.toast_url_copied);
                         }
                     }

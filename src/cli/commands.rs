@@ -23,8 +23,8 @@ use super::rules_io::{
 };
 use super::share::{cmd_import_share, cmd_share};
 use super::target::{
-    apply_via_daemon, config_source, current_config, daemon_config, delete_via_daemon,
-    load_config_for_cli, reset_via_daemon, sync_via_daemon, toggle_via_daemon,
+    apply_via_daemon, config_source, current_config, daemon_config, daemon_took_over_after_snapshot,
+    delete_via_daemon, load_config_for_cli, reset_via_daemon, sync_via_daemon, toggle_via_daemon,
 };
 
 const EXAMPLE_RULES_JSON: &str = r#"[
@@ -218,9 +218,7 @@ fn cmd_apply(path: &str, json_output: bool, dry_run: bool) -> i32 {
     }
 
     let previous = cfg.rules.clone();
-    if IpcClient::is_daemon_running() {
-        // The daemon became reachable after the snapshot and now owns the rule set. Route the
-        // change through IPC instead of rewriting rules.json under it ([U13-003]).
+    if daemon_took_over_after_snapshot() {
         return match daemon_config() {
             Ok(current) => {
                 let report = classify_rules(&current.rules, &rules);
@@ -319,9 +317,7 @@ fn cmd_sync(path: &str, json_output: bool, dry_run: bool) -> i32 {
         return sync_via_daemon(rules, &report, &deleted, json_output, &warnings);
     }
 
-    if IpcClient::is_daemon_running() {
-        // The daemon became reachable after the snapshot: send the declarative replace over IPC
-        // rather than overwriting rules.json under it ([U13-003]).
+    if daemon_took_over_after_snapshot() {
         return match daemon_config() {
             Ok(current) => {
                 let (report, deleted) = plan_sync(&current.rules, &rules);
@@ -471,8 +467,7 @@ fn cmd_delete(id: &str, json_output: bool) -> i32 {
     let Some(removed) = take_rule(&mut cfg.rules, id) else {
         return fail_with(json_output, &format!("rule \"{id}\" not found"));
     };
-    if IpcClient::is_daemon_running() {
-        // A daemon that started after the offline read owns runtime and rules now ([U13-003]).
+    if daemon_took_over_after_snapshot() {
         return delete_via_daemon(id, json_output);
     }
     if let Err(err) = save_rules(&cfg.rules) {
@@ -512,9 +507,7 @@ fn cmd_toggle(id: &str, enabled: bool, json_output: bool) -> i32 {
     if from_daemon {
         return toggle_via_daemon(id, enabled, json_output);
     }
-    if IpcClient::is_daemon_running() {
-        // The daemon became reachable after the snapshot and would be overwritten here
-        // ([U13-003]).
+    if daemon_took_over_after_snapshot() {
         return toggle_via_daemon(id, enabled, json_output);
     }
     if let Err(err) = save_rules(&cfg.rules) {
@@ -551,8 +544,7 @@ fn cmd_reset(id: &str, json_output: bool) -> i32 {
     if from_daemon {
         return reset_via_daemon(id, json_output);
     }
-    if IpcClient::is_daemon_running() {
-        // The daemon became reachable after the snapshot; it owns runtime counters ([U13-003]).
+    if daemon_took_over_after_snapshot() {
         return reset_via_daemon(id, json_output);
     }
     if let Err(err) = save_rules(&cfg.rules) {

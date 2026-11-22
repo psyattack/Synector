@@ -22,10 +22,6 @@ pub(crate) fn get_current_foreground_process() -> Option<String> {
     }
     None
 }
-#[cfg(not(windows))]
-pub(crate) fn get_current_foreground_process() -> Option<String> {
-    None
-}
 
 static REGEX_CACHE: std::sync::LazyLock<std::sync::RwLock<std::collections::HashMap<String, Option<regex::Regex>>>> =
     std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));

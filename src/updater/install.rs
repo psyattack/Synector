@@ -136,15 +136,6 @@ fn launch_installer_process(setup_path: &Path, parameters: &str) -> Result<(), S
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn launch_installer_process(setup_path: &Path, parameters: &str) -> Result<(), String> {
-    std::process::Command::new(setup_path)
-        .args(parameters.split_whitespace())
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Failed to start the update installer: {e}"))
-}
-
 /// Runs the downloaded setup silently and exits: the installer replaces the files, refreshes the
 /// uninstaller metadata and restarts Synector in the mode requested by `UpdateMode`.
 fn install_with_installer(setup_path: &Path) -> Result<(), String> {

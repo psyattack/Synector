@@ -389,9 +389,5 @@ pub async fn execute_macro_event(
             }
         }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = (event, speed, context);
-    }
     Ok(())
 }

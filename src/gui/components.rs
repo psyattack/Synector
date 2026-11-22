@@ -1,4 +1,6 @@
 pub mod catalog_modal;
+pub mod chips;
+pub mod color_picker;
 pub mod dnd;
 pub mod duration;
 pub mod icons;

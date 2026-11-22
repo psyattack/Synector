@@ -610,10 +610,6 @@ pub fn is_session_locked() -> bool {
             hwnd.0.is_null()
         }
     }
-    #[cfg(not(windows))]
-    {
-        false
-    }
 }
 
 #[cfg(test)]

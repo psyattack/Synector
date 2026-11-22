@@ -11,22 +11,12 @@ mod update;
 pub use monitors::get_system_monitors;
 #[cfg(windows)]
 pub(crate) use monitors::monitor_scale;
-// The facade keeps every item's original public path even when the binary has
-// no in-crate caller for it, so the re-export must not be flagged as unused.
-#[allow(unused_imports)]
 pub use supervisor::{
-    ActiveOverlayProcess, check_process_terminated, flash_overlay, get_active_overlay_ids,
-    get_calibrated_position, hide_all, hide_all_sync, hide_overlay, hide_overlay_sync, init,
-    save_calibrated_position, show_overlay, toggle_overlay,
+    check_process_terminated, flash_overlay, get_active_overlay_ids, get_calibrated_position,
+    hide_all, hide_all_sync, hide_overlay, init, save_calibrated_position, show_overlay,
+    toggle_overlay,
 };
-#[cfg(windows)]
-#[allow(unused_imports)]
-pub use supervisor::find_overlay_hwnd;
-#[allow(unused_imports)]
-pub use text::{
-    get_overlay_text, live_overlay_text, live_overlay_text_if_changed, live_overlay_text_path,
-    update_overlay_text,
-};
+pub use text::{live_overlay_text_if_changed, update_overlay_text};
 pub use update::{
     hide_update_progress_overlay, show_update_notification, show_update_progress_overlay,
 };
@@ -35,6 +25,7 @@ pub use update::{
 mod tests {
     use super::monitors::monitor_bounds_to_logical;
     use super::supervisor::{active_map, spawn_overlay_process};
+    use super::text::{get_overlay_text, live_overlay_text, live_overlay_text_path};
     use super::*;
     use crate::models::OverlayAnchor;
     use crate::models::OverlayDefinition;

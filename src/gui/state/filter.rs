@@ -1,5 +1,5 @@
-//! Rules-list filtering: the distinct-tag aggregation and the visibility predicate behind
-//! `GuiState::visible_rules`. `rules_view::visible_rule_order` keeps its own copy this session.
+//! Rules-list filtering: the distinct-tag aggregation and the visibility predicate shared by
+//! `GuiState::visible_rules` and `rules_view::visible_rule_order`.
 
 use crate::models::Rule;
 
@@ -38,24 +38,24 @@ impl GuiState {
         let needle = self.search_query.trim().to_lowercase();
         rules
             .into_iter()
-            .filter(|rule| matches_visible_filters(rule, self.selected_tag_filter.as_deref(), &needle))
+            .filter(|rule| rule_matches_visible_filters(rule, self.selected_tag_filter.as_deref(), &needle))
             .collect()
     }
 }
 
-/// Whether one rule matches the active tag filter and the lowercased search needle. Lives in
-/// state so the visible list and the "copy all" export cannot disagree (U05-013).
-fn matches_visible_filters(rule: &Rule, tag_filter: Option<&str>, needle: &str) -> bool {
-    if let Some(tag) = tag_filter {
-        if !rule.tags.iter().any(|t| t.name.eq_ignore_ascii_case(tag)) {
+/// True when a rule matches the tag filter and search query — the same predicate
+/// `GuiState::visible_rules` applies to the "copy all" export (U05-013).
+pub(crate) fn rule_matches_visible_filters(rule: &Rule, tag_filter: Option<&str>, needle_lower: &str) -> bool {
+    if let Some(tag_name) = tag_filter {
+        if !rule.tags.iter().any(|t| t.name.eq_ignore_ascii_case(tag_name)) {
             return false;
         }
     }
-    if needle.is_empty() {
+    if needle_lower.is_empty() {
         return true;
     }
-    rule.name.to_lowercase().contains(needle)
-        || rule.tags.iter().any(|t| t.name.to_lowercase().contains(needle))
+    rule.name.to_lowercase().contains(needle_lower)
+        || rule.tags.iter().any(|t| t.name.to_lowercase().contains(needle_lower))
 }
 
 #[cfg(test)]
