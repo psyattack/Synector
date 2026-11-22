@@ -1,7 +1,6 @@
 use mlua::{Error as LuaError, HookTriggers, Lua, Value, VmState};
 use std::collections::HashMap;
-use std::io::Read;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -21,9 +20,10 @@ const MAX_RETURNED_STRING_BYTES: usize = 64 * 1024;
 const MAX_OUTPUT_VARS: usize = 64;
 const MAX_OUTPUT_KEY_BYTES: usize = 256;
 const MAX_OUTPUT_VALUE_BYTES: usize = 16 * 1024;
-/// `ph.run_cmd` deadline and captured output cap.
+/// `ph.run_cmd` deadline and captured output caps. The stdout cap is the shared runner's
+/// per-stream cap, so the `[output truncated]` marker keeps its exact meaning.
 const RUN_CMD_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_CMD_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_CMD_OUTPUT_BYTES: usize = crate::command::MAX_CAPTURED_OUTPUT;
 const MAX_CMD_STDERR_BYTES: usize = 2 * 1024;
 
 pub struct LuaRunner;
@@ -201,85 +201,32 @@ impl LuaRunner {
     }
 }
 
-enum WaitOutcome {
-    Exited(ExitStatus),
-    TimedOut,
-    Failed(std::io::Error),
-}
-
-/// Kills `cmd` and any process it started. Killing only the shell would leave a
-/// long-running grandchild holding the stdout/stderr pipes open, so the reader
-/// threads below would never see EOF.
-fn kill_process_tree(child: &mut std::process::Child) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        let _ = Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &child.id().to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Runs a shell command on a helper process with a wall-clock deadline, a capped
-/// capture of stdout/stderr, and the documented `Error: ...` string for every
-/// failure mode. Blocking on purpose: `ph.run_cmd` is synchronous in the Lua VM.
+/// Runs a shell command through the shared bounded runner with a wall-clock deadline, a capped
+/// capture of stdout/stderr, the documented `Error: ...` string for every failure mode, and the
+/// process-tree kill on timeout or wait error. Blocking on purpose: `ph.run_cmd` is synchronous
+/// in the Lua VM.
 fn run_shell_command(cmd: &str, timeout: Duration) -> String {
-    let mut child = match Command::new("cmd")
-        .args(["/C", cmd])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(err) => return format!("Error: {err}"),
+    let mut command = Command::new("cmd");
+    command.args(["/C", cmd]);
+    let outcome = match crate::command::run_command_bounded_ex(command, timeout, true) {
+        Ok(outcome) => outcome,
+        Err(error) => return format!("Error: {}", error.io_error()),
     };
 
-    let stdout_reader = child
-        .stdout
-        .take()
-        .map(|stream| std::thread::spawn(move || read_capped(stream, MAX_CMD_OUTPUT_BYTES)));
-    let stderr_reader = child
-        .stderr
-        .take()
-        .map(|stream| std::thread::spawn(move || read_capped(stream, MAX_CMD_STDERR_BYTES)));
+    if outcome.timed_out {
+        return format!("Error: command timed out after {}s", timeout.as_secs_f32());
+    }
 
-    let deadline = Instant::now() + timeout;
-    let outcome = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break WaitOutcome::Exited(status),
-            Ok(None) => {}
-            Err(err) => {
-                kill_process_tree(&mut child);
-                break WaitOutcome::Failed(err);
-            }
-        }
-        if Instant::now() >= deadline {
-            kill_process_tree(&mut child);
-            break WaitOutcome::TimedOut;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let stdout = capped_string(outcome.stdout_bytes(), MAX_CMD_OUTPUT_BYTES);
+    let stderr = capped_string(outcome.stderr_bytes(), MAX_CMD_STDERR_BYTES);
+    let stderr = stderr.trim();
 
-    let (stdout, stdout_truncated) = join_reader(stdout_reader);
-    let (stderr, _) = join_reader(stderr_reader);
-
-    let status = match outcome {
-        WaitOutcome::Exited(status) => status,
-        WaitOutcome::TimedOut => {
-            return format!("Error: command timed out after {}s", timeout.as_secs_f32());
-        }
-        WaitOutcome::Failed(err) => return format!("Error: {err}"),
+    let Some(status) = outcome.status else {
+        return "Error: command terminated abnormally".to_string();
     };
 
     if status.success() {
-        if stdout_truncated {
+        if outcome.stdout_truncated {
             return format!("{stdout}\n[output truncated]");
         }
         return stdout;
@@ -289,7 +236,6 @@ fn run_shell_command(cmd: &str, timeout: Duration) -> String {
         Some(code) => format!("Error: exit code {code}"),
         None => "Error: command terminated abnormally".to_string(),
     };
-    let stderr = stderr.trim();
     if !stderr.is_empty() {
         message.push_str(": ");
         message.push_str(stderr);
@@ -297,36 +243,11 @@ fn run_shell_command(cmd: &str, timeout: Duration) -> String {
     message
 }
 
-fn join_reader(
-    handle: Option<std::thread::JoinHandle<(String, bool)>>,
-) -> (String, bool) {
-    handle
-        .and_then(|handle| handle.join().ok())
-        .unwrap_or_else(|| (String::new(), false))
-}
-
-fn read_capped(mut stream: impl Read, cap: usize) -> (String, bool) {
-    let mut captured = Vec::new();
-    let mut truncated = false;
-    let mut buf = [0u8; 8192];
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if captured.len() < cap {
-                    let keep = (cap - captured.len()).min(n);
-                    captured.extend_from_slice(&buf[..keep]);
-                    if keep < n {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    (String::from_utf8_lossy(&captured).into_owned(), truncated)
+/// Lossy-decodes at most `cap` raw bytes, matching the old hand-rolled reader (the stderr cap is
+/// smaller than the shared capture cap, so the byte boundary stays the same).
+fn capped_string(bytes: &[u8], cap: usize) -> String {
+    let keep = bytes.len().min(cap);
+    String::from_utf8_lossy(&bytes[..keep]).into_owned()
 }
 
 #[cfg(test)]
@@ -436,6 +357,35 @@ mod tests {
             "the command must be killed at the deadline"
         );
         assert!(out.starts_with("Error: command timed out"), "{out}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_run_shell_command_marks_truncated_stdout() {
+        let out = run_shell_command(
+            "for /L %i in (1,1,7000) do @echo xxxxxxxxxx",
+            Duration::from_secs(10),
+        );
+        assert!(
+            out.ends_with("\n[output truncated]"),
+            "stdout over the {MAX_CMD_OUTPUT_BYTES} byte cap must carry the marker"
+        );
+        assert!(out.len() >= MAX_CMD_OUTPUT_BYTES, "{}", out.len());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_run_shell_command_caps_error_stderr() {
+        let out = run_shell_command(
+            "(for /L %i in (1,1,300) do @echo eeeeeeeee 1>&2) & exit /b 1",
+            Duration::from_secs(10),
+        );
+        assert!(out.starts_with("Error: exit code 1: "), "{out}");
+        assert!(
+            out.len() < MAX_CMD_STDERR_BYTES + 100,
+            "the stderr suffix must keep its {MAX_CMD_STDERR_BYTES} byte cap: {}",
+            out.len()
+        );
     }
 
     #[test]

@@ -42,17 +42,24 @@ cargo run -- --status        # print daemon status over IPC and exit
 |---|---|
 | Domain types, serde tags, JSON schema | `src/models/` (facade `src/models.rs`) |
 | Structural rule validation and warnings shared by CLI/config/engine/GUI | `src/validation.rs` |
-| Scheduling, quotas, cooldowns, active executions | `src/daemon/engine.rs` |
-| Rule-to-rule calls and stops | `src/daemon/rule_call.rs` |
-| Rule-activity snapshot behind wait/check conditions | `src/daemon/rule_activity.rs` |
-| Action execution handlers | `src/daemon/actions.rs` |
+| Scheduling, quotas, cooldowns, active executions | `src/daemon/engine/` (facade `src/daemon/engine.rs`; modules `scheduler`, `quota`, `executions`, `pipeline`, `projector`, `triggers`, `state`, `ipc`, `offline`, `update`, `rule_call`, `activity`) |
+| Daemon start-up, background loops and shutdown order | `src/daemon/runtime/` (facade `src/daemon/runtime.rs`; `src/daemon.rs` keeps the module list and `run_daemon`) |
+| Rule-to-rule calls and stops | `src/daemon/engine/rule_call.rs` (`crate::daemon::rule_call` is a re-export) |
+| Rule-activity snapshot behind wait/check conditions | `src/daemon/engine/activity.rs` (`crate::daemon::rule_activity` is a re-export) |
+| Condition evaluation and process/window/device matching | `src/daemon/conditions.rs` |
+| Action execution handlers | `src/daemon/actions/` (facade `src/daemon/actions.rs`; one module per family) |
+| Bounded subprocess runner and `CommandOutcome` (action handlers, Lua bridge, updater tools) | `src/command.rs` |
+| Windows command-line quoting, PowerShell literals and the no-window spawn flag | `src/win_args.rs` |
+| COM apartment guard (MTA/STA, fallible/infallible) | `src/win_com.rs` |
+| Action timeout budgets and module-side re-exports | `src/daemon/actions/support/` |
+| Read-only action-tree traversal | `src/models/rule.rs` (`Rule::visit_actions`) |
 | Process detection | `src/daemon/watcher.rs` |
 | File and directory watching | `src/daemon/file_watcher.rs` |
 | Hotkeys | `src/daemon/hotkeys.rs` |
 | System events and state | `src/daemon/system_events.rs` |
-| System telemetry, media and key visualizer | `src/daemon/telemetry.rs` |
-| Tray icon, menu and notifications | `src/daemon/tray.rs` |
-| Overlay process lifecycle and placement | `src/daemon/overlay_manager.rs`, `src/gui/overlay_window.rs`; placement math in `src/models/overlay/geometry.rs` |
+| System telemetry, media and key visualizer | `src/daemon/telemetry/` (facade `src/daemon/telemetry.rs`) |
+| Tray icon, menu and notifications | `src/daemon/tray/` (facade `src/daemon/tray.rs`) |
+| Overlay process lifecycle and placement | `src/daemon/overlay_manager/` (facade `src/daemon/overlay_manager.rs`), `src/gui/overlay_window.rs`; placement math in `src/models/overlay/geometry.rs` |
 | Webhook trigger server | `src/daemon/webhook_server.rs` |
 | Lua runtime and the `ph` API | `src/daemon/lua_runner.rs` |
 | Discord Rich Presence | `src/daemon/discord_rpc.rs` |
@@ -73,14 +80,15 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Configuration persistence | `src/config/` (facade `src/config.rs`) |
 | Share codes | `src/sharing.rs` |
 | Autostart registration | `src/autorun.rs` |
-| Updates and self-replacement | `src/updater.rs` |
+| Updates and self-replacement | `src/updater/` (facade `src/updater.rs`) |
 | Logging | `src/logging.rs` |
 | Single-instance guards | `src/single_instance.rs` |
 
-Adding or changing a trigger, action or condition touches `src/models/`, the engine and action
-handlers, the catalog/inspector GUI views, and both i18n catalogs. Treat `src/models/` (facade
-`src/models.rs`) as the single source of truth: the JSON schema printed by `--rules-schema` is
-generated from it with `schemars`, so the CLI format cannot drift from the real types.
+Adding or changing a trigger, action or condition touches `src/models/`, the engine
+(`src/daemon/engine/`) and the action handlers (`src/daemon/actions/`), the catalog/inspector GUI
+views, and both i18n catalogs. Treat `src/models/` (facade `src/models.rs`) as the single source of
+truth: the JSON schema printed by `--rules-schema` is generated from it with `schemars`, so the CLI
+format cannot drift from the real types.
 
 ## Code conventions
 

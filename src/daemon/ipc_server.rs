@@ -195,9 +195,9 @@ mod tests {
         let engine = Arc::new(Mutex::new(DaemonEngine::new(AppConfig::default())));
         {
             let mut eng = engine.lock().await;
-            eng.is_downloading_update = true;
-            eng.update_download_progress = 0.3;
-            eng.update_status = Some("30%".to_string());
+            eng.begin_update_download();
+            eng.set_update_progress(0.3);
+            eng.set_update_status("30%".to_string());
         }
 
         let response = dispatch(Arc::clone(&engine), IpcRequest::GetUpdateProgress).await;

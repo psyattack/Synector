@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 use crate::models::{Action, Rule, Trigger};
+use crate::win_com::{Apartment, ComApartment};
 use windows::core::{HSTRING, Interface, PCWSTR};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
-    COINIT_APARTMENTTHREADED, STGM_READ,
+    CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER, STGM_READ,
 };
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 
@@ -65,7 +65,7 @@ fn shortcut_arguments(rule_id: &str) -> String {
     format!(
         "{} {}",
         crate::arg_spellings::RUN_RULE,
-        crate::app::args::quote_windows_argument(rule_id)
+        crate::win_args::quote_windows_argument(rule_id)
     )
 }
 
@@ -137,28 +137,6 @@ fn path_matches(a: &Path, b: &Path) -> bool {
     !a.as_os_str().is_empty() && !b.as_os_str().is_empty() && normalize(a) == normalize(b)
 }
 
-/// Initializes the calling thread as an STA apartment for the duration of one shortcut operation.
-struct ComApartment;
-
-impl ComApartment {
-    fn init() -> Result<Self, String> {
-        unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED)
-                .ok()
-                .map_err(|e| format!("COM initialization failed: {e}"))?;
-        }
-        Ok(Self)
-    }
-}
-
-impl Drop for ComApartment {
-    fn drop(&mut self) {
-        unsafe {
-            CoUninitialize();
-        }
-    }
-}
-
 fn create_shell_link() -> Result<IShellLinkW, String> {
     unsafe {
         CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
@@ -174,7 +152,7 @@ fn write_shortcut(
     icon_location: &str,
     description: &str,
 ) -> Result<(), String> {
-    let _apartment = ComApartment::init()?;
+    let _apartment = ComApartment::try_init(Apartment::SingleThreaded)?;
     unsafe {
         let link = create_shell_link()?;
 
@@ -211,7 +189,7 @@ struct ShortcutInfo {
 }
 
 fn read_shortcut(path: &Path) -> Option<ShortcutInfo> {
-    let _apartment = ComApartment::init().ok()?;
+    let _apartment = ComApartment::try_init(Apartment::SingleThreaded).ok()?;
     unsafe {
         let link = create_shell_link().ok()?;
         let persist: IPersistFile = link.cast().ok()?;

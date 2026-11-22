@@ -419,7 +419,7 @@ pub fn build_payload(
     let mut seen_presets = HashSet::new();
 
     for rule in &rules {
-        visit_rule_actions(rule, &mut |action| match action {
+        rule.visit_actions(&mut |action| match action {
             Action::Macro {
                 preset_id: Some(preset_id),
                 ..
@@ -483,7 +483,7 @@ fn push_warning(warnings: &mut Vec<ShareWarning>, warning: ShareWarning) {
 }
 
 fn collect_sensitive_warnings(rule: &Rule, warnings: &mut Vec<ShareWarning>) {
-    visit_rule_actions(rule, &mut |action| match action {
+    rule.visit_actions(&mut |action| match action {
         Action::ExecuteScript { .. } => {
             push_warning(warnings, ShareWarning::SensitiveScript);
         }
@@ -755,7 +755,7 @@ fn validate_rule_definition(rule: &Rule) -> Result<(), ShareError> {
             .any(|item| !item.condition.validation_errors().is_empty())
         || {
             let mut invalid = false;
-            visit_rule_actions(rule, &mut |action| {
+            rule.visit_actions(&mut |action| {
                 invalid |= !action.validation_errors().is_empty();
             });
             invalid
@@ -958,7 +958,7 @@ pub fn prepare_import(
         .collect();
     for rule in &rules {
         collect_sensitive_warnings(rule, &mut warnings);
-        visit_rule_actions(rule, &mut |action| match action {
+        rule.visit_actions(&mut |action| match action {
             Action::Macro {
                 preset_id: Some(preset_id),
                 ..
@@ -1260,35 +1260,6 @@ fn remap_overlay_rule_targets(
                 InteractiveControlKind::Slider { .. } => {}
             },
             _ => {}
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Action traversal
-// ---------------------------------------------------------------------------
-
-/// Visits every action of a rule, including nested `if_else` branches.
-pub fn visit_rule_actions(rule: &Rule, visit: &mut impl FnMut(&Action)) {
-    visit_actions(&rule.actions, visit);
-    visit_actions(&rule.on_exit_actions, visit);
-}
-
-fn visit_actions(actions: &[Action], visit: &mut impl FnMut(&Action)) {
-    for action in actions {
-        visit(action);
-        if let Action::IfElse {
-            then_actions,
-            else_if_branches,
-            else_actions,
-            ..
-        } = action
-        {
-            visit_actions(then_actions, visit);
-            for branch in else_if_branches {
-                visit_actions(&branch.actions, visit);
-            }
-            visit_actions(else_actions, visit);
         }
     }
 }

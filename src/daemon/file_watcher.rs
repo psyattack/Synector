@@ -1,4 +1,4 @@
-use crate::daemon::engine::DaemonEngine;
+use crate::daemon::engine::{DaemonEngine, ExecutionOrigin};
 use crate::models::Trigger;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -159,7 +159,7 @@ impl FileWatcherService {
         custom_ctx.insert("FileDir".to_string(), file_dir);
 
         let _ = eng
-            .try_execute_rule_with_context(rule, event_type, 0, custom_ctx)
+            .trigger(rule, ExecutionOrigin::SystemEvent, event_type, 0, custom_ctx)
             .await;
     }
 

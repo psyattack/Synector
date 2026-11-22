@@ -90,25 +90,36 @@ answers. Raw mutex probing stays private to `SingleInstanceGuard`, which uses it
 A daemon whose tray cannot be created runs headless, but it still exits through the coordinated
 shutdown when asked: On App Close rules stop the engine, running overlays are closed synchronously
 so their fade-out plays instead of the kill-on-close Job Object ending them, and only then are the
-runtime counters and overlay positions flushed.
+runtime counters and overlay positions flushed. That wiring lives in `src/daemon/runtime/`:
+`bootstrap` creates the Tokio runtime and installs the rule-control dispatcher, hotkey listener, IPC
+server and background loops in their fixed order, `loops` holds each long-lived loop body, `launch`
+records the `--gui-exe` path and `shutdown` owns the signal plus the ordered sequence above.
 
 ## Layers
 
 | Area | Responsibility |
 |---|---|
 | `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the catalog modals (`src/gui/views/catalogs/`), the shared catalog shell and GUI primitives (`src/gui/components/`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
-| `src/daemon/` | Rule engine, action handlers, triggers and watchers, Lua runner, tray, overlay supervisor, webhook server, named-pipe server, Discord RPC |
+| `src/daemon.rs`, `src/daemon/runtime/` | Daemon tier entry: the module list and `run_daemon`, with the start-up/loop/shutdown wiring split into `bootstrap` (runtime creation and fixed install/spawn order), `loops` (process, window, system-event, schedule, hotkey, file, webhook, coalesced-flush and update-check loops), `shutdown` (the signal and the coordinated sequence) and `launch` (the `--gui-exe` path) |
+| `src/daemon/engine/` | Rule runtime split by owner: `scheduler`, `quota`, `executions`, `pipeline` (the one pipeline launcher), `projector`, `triggers`, `state`, `ipc`, `offline`, `update` (the updater display state), `rule_call` (the rule-control dispatcher) and `activity` (the rule-activity registry), plus the engine suite; `src/daemon/engine.rs` is the `DaemonEngine` facade |
+| `src/daemon/actions/` | One module per action family (`process`, `window`, `input`, `macro`, `audio`, `script`, `filesystem`, `webhook`, `system`, `overlay`, `tokens`) over the shared bounded runner in `src/command.rs` and the MTA COM guard in `src/win_com.rs`; `src/daemon/actions.rs` is the facade, the control-flow dispatcher and the exhaustive standard-action family dispatcher; command-line/PowerShell quoting lives in `src/win_args.rs` |
+| `src/daemon/conditions.rs` | Condition evaluation and process/window/device matching shared by the engine ticks and the action handlers (`evaluate_condition`, `matches_process`, `device_filter_matches`, `strip_exe_suffix`, foreground-process probe); action code no longer reaches the engine for these |
+| `src/daemon/overlay_manager/` | Overlay child supervision split into `supervisor`, `job`, `text`, `monitors` and `update`; `src/daemon/overlay_manager.rs` re-exports the unchanged surface |
+| `src/daemon/` services | Process watcher, hotkeys, system events, telemetry (`src/daemon/telemetry/`), tray (`src/daemon/tray/`), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC |
 | `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
-| `src/daemon/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher |
-| `src/daemon/rule_activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions |
+| `src/win_args.rs` | One Windows command-line helper set: UTF-16-equivalent argument splitting/quoting/joining, PowerShell single-quoted literal escaping and the no-window spawn flag shared by the daemon, the app tier, updater, autorun and shortcuts |
+| `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `ph.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling) |
+| `src/win_com.rs` | One COM apartment guard (MTA or STA, infallible or fallible) shared by action audio, telemetry audio and shortcut creation; it uninitialises only when `CoInitializeEx` returned `S_OK`, so a thread another component already initialised is never decremented |
+| `src/daemon/engine/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher; the historical `crate::daemon::rule_call` module path is kept as a re-export |
+| `src/daemon/engine/activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions; the historical `crate::daemon::rule_activity` module path is kept as a re-export |
 | `src/ipc/` | Named-pipe client, the shared request/response protocol, the one framing implementation both sides use, and the overlay wire encoding |
-| `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation and the generated rule schema (`src/models.rs` is the facade) |
+| `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation, the shared action-tree visitor (`Rule::visit_actions`) and the generated rule schema (`src/models.rs` is the facade) |
 | `src/validation.rs` | Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path |
 | `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection (`src/cli.rs` is the facade) |
 | `src/config/` | Split configuration persistence: storage policy, caches and the four section modules (`src/config.rs` is the facade) |
 | `src/i18n/` | Locale registry, the flat `Strings` declaration (`src/i18n/strings.rs`) and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
-| `src/updater.rs` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/`.old` executable cleanup |
+| `src/updater/` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/`.old` executable cleanup (`src/updater.rs` is the facade over `release`, `install_mode`, `portable`, `install`, `apply`, `temp` and `util`) |
 | `src/sharing.rs` | `SYN1:` Brotli + Base64 share codes: SHA-256 prefix, library dependency bundling, bounded decode |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch, written through `IShellLink`; a same-named foreign shortcut is never overwritten (a rule-id-suffixed name is used instead) |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
@@ -256,12 +267,25 @@ least one plug-and-play notification, which avoids firing a "device disconnected
 ## Rule engine
 
 A rule pairs one optional trigger with preconditions, an ordered action pipeline, `on_exit_actions`,
-and cooldown/quota limits. `src/daemon/engine.rs` schedules triggered runs, evaluates conditions,
-enforces quotas and cooldowns, tracks active executions and reports analytics. Internally the engine
-is decomposed behind that unchanged surface: a private scheduler owns admission and tick throttling,
-a quota ledger owns the documented counter semantics, an execution tracker owns active pipelines,
-abort handles, recurring test loops and bound satellites, and a read-only state projector builds the
-`DaemonState` snapshot the IPC layer serializes.
+and cooldown/quota limits. `src/daemon/engine.rs` is the `DaemonEngine` facade: it schedules
+triggered runs, evaluates conditions, enforces quotas and cooldowns, tracks active executions and
+reports analytics. The implementation is split by owner under `src/daemon/engine/`: `scheduler`
+owns admission and tick throttling, `quota` the documented counter semantics, `executions` active
+pipelines, abort handles, recurring test loops and bound satellites, `pipeline` the step loop, the
+single launch machinery behind the triggered/exit/recurring paths and the call/context entry points,
+`triggers` the process/window/schedule/resource/system intake, `projector` the read-only
+`DaemonState` snapshot the IPC layer serializes, `state` the log buffer and section persistence,
+`ipc` the request dispatcher and rule writers, `offline` the `--run-rule` fallback, `update` the
+updater display state (`UpdateStatus`), `rule_call` the dispatcher installed by the daemon,
+`activity` the process-wide activity registry, and `tests` the engine suite. The bound-satellite,
+bound-overlay and rule-overlay registries live in the tracker, so one teardown owner is responsible
+for them; `DaemonEngine::trigger(rule, origin, context_name, pid, extra_ctx)` is the only pipeline
+entry point and every caller states the `ExecutionOrigin` explicitly (there is no string-to-origin
+fallback). Condition evaluation and process/window/device matching live in `src/daemon/conditions.rs`,
+which the action handlers call directly; `Rule::visit_actions` in the model is the one read-only
+action-tree traversal used by the engine, sharing, validation and the GUI, including the
+active-overlay branch of `is_rule_executing`, which scans nested `IfElse` branches and the exit
+actions as well as the top-level pipeline.
 
 - **Cooldown:** minimum time between two triggered runs. It is seeded from `last_executed_at`
   when the daemon starts, so a restart does not clear a cooldown that is still running; a run the
@@ -304,9 +328,16 @@ Schedule triggers are admitted by the scheduler rather than by scanning every ru
 one-shot schedule is consumed only when its run actually starts, so a one-shot whose preconditions
 or quota rejected the attempt stays armed.
 
-Action handlers are asynchronous. Helper subprocesses — scripts, archive tools, audio/device helpers
-and elevated launches — run through one bounded runner on a blocking thread that enforces a timeout
-and caps captured output at 64 KiB per stream. The budgets are 300 s for PowerShell/Batch scripts,
+Action handlers are asynchronous. Each action family lives in its own module under
+`src/daemon/actions/` (`process`, `window`, `input`, `macro`, `audio`, `script`, `filesystem`,
+`webhook`, `system`, `overlay`, `tokens`); the standard-action dispatcher matches every family
+exhaustively, so a new `Action` variant cannot silently no-op. Helper subprocesses — scripts, archive
+tools, audio/device helpers and elevated launches — run through the one bounded runner in
+`src/command.rs` on a blocking thread that enforces a timeout and caps captured output at 64 KiB
+per stream; the Lua `ph.run_cmd` bridge uses the same runner (with a process-tree kill on timeout),
+and the updater's external extraction tools run through it with a 600 s ceiling. The Windows
+argument quoter, PowerShell literal escaper and no-window spawn flag live in `src/win_args.rs`; the
+COM apartment guard lives in `src/win_com.rs`. The budgets are 300 s for PowerShell/Batch scripts,
 600 s for archive helpers and 120 s for an elevation prompt; a spawn failure, non-zero exit or
 timeout is reported as an action error instead of being ignored. Outbound `http_webhook` actions use
 the process-wide `reqwest` client and send configured headers as request headers, never through a
@@ -317,7 +348,8 @@ rather than a silent success.
 ### Rule-to-rule control
 
 `Action::RuleControl` runs inside the calling pipeline's task and cannot reach the engine, which
-lives behind the daemon's mutex. The daemon installs a dispatcher (`src/daemon/rule_call.rs`): the
+lives behind the daemon's mutex. The daemon installs a dispatcher (`src/daemon/engine/rule_call.rs`,
+the historical `crate::daemon::rule_call` path): the
 action submits a `call` or `stop` request and awaits the reply, and a waiting call is resolved
 outside the engine lock so a long pipeline never freezes the daemon.
 
@@ -340,7 +372,8 @@ executions, abort handles and call chains are keyed by it.
 
 `RuleCondition::RuleRunning`, `WaitCondition::RuleStarted` and `WaitCondition::RuleStopped` observe
 another rule instead of the machine. The engine publishes every pipeline start and finish into
-`src/daemon/rule_activity.rs`, a process-wide map guarded by a short lock: a start is recorded where
+`src/daemon/engine/activity.rs` (the historical `crate::daemon::rule_activity` path),
+a process-wide map guarded by a short lock: a start is recorded where
 the pipeline task is created, and the finish sits in the same execution guard that reports the
 completion event, so a normal finish, an abort, a user stop and a `rule_control stop` all decrement
 the counter through one path. Readers (wait polling, check, if/else and pre-conditions) take that
@@ -395,7 +428,11 @@ of retrying silently. The Macro Studio and the Overlay Studio share that one lib
 
 Overlays are borderless, GPU-accelerated windows rendered by a dedicated process
 (`--overlay-window <id>`), positioned by the daemon's supervisor across monitors with DPI and
-orientation awareness. Optional `WDA_EXCLUDEFROMCAPTURE` keeps overlays out of screen capture.
+orientation awareness. The supervisor is split by owner under `src/daemon/overlay_manager/`
+(`supervisor` for active children and calibrated positions, `job` for the kill-on-close Job Object,
+`text` for the live-text channel, `monitors` for DPI/logical bounds and `update` for the updater's
+notification overlays); `src/daemon/overlay_manager.rs` re-exports the same public surface.
+Optional `WDA_EXCLUDEFROMCAPTURE` keeps overlays out of screen capture.
 Running overlay children are assigned to a kill-on-close Job Object, so they cannot outlive the
 daemon. `SetText` and `ph.overlay_set_text` publish a label to
 `%LOCALAPPDATA%\Synector\overlay_text\<slug>-<hash>.txt` by atomic replace; the overlay window polls

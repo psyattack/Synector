@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
-use crate::daemon::engine::DaemonEngine;
+use crate::daemon::engine::{DaemonEngine, ExecutionOrigin};
 use crate::models::Trigger;
 
 pub const DEFAULT_WEBHOOK_PORT: u16 = 48123;
@@ -96,7 +97,7 @@ impl WebhookServer {
                         }).cloned();
 
                         if let Some(rule) = matching_rule {
-                            let _ = eng.try_execute_rule(&rule, &format!("Webhook ({})", target_clean), 0).await;
+                            let _ = eng.trigger(&rule, ExecutionOrigin::Webhook, &format!("Webhook ({})", target_clean), 0, HashMap::new()).await;
                             let body = format!("{{\"status\":\"triggered\",\"rule\":\"{}\"}}\n", rule.name);
                             let resp = format!(
                                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

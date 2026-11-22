@@ -25,11 +25,9 @@ struct SchtasksResult {
 }
 
 fn run_schtasks(args: &[&str]) -> Result<SchtasksResult, String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
     let mut cmd = std::process::Command::new("schtasks");
     cmd.args(args);
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    crate::win_args::apply_no_window(&mut cmd);
     let output = cmd
         .output()
         .map_err(|e| format!("Failed to run schtasks: {e}"))?;

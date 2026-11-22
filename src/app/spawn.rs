@@ -83,9 +83,7 @@ pub(crate) fn ensure_daemon_running(no_elevate: bool) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        crate::win_args::apply_no_window(&mut cmd);
     }
 
     let mut child = cmd.spawn().map_err(|err| {

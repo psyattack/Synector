@@ -524,42 +524,13 @@ pub(crate) fn parse_run_rule_argument(argv: &[String]) -> RunRuleArgument {
 /// This is the `CommandLineToArgvW`/MSVC CRT convention: backslashes are only special in front of
 /// a double quote, so they are doubled before quotes and before the closing quote; embedded quotes
 /// are preceded by `2n + 1` backslashes. Empty arguments are preserved as `""`.
+#[allow(dead_code)] // The quotation moved to `win_args`; this name is kept for its tests.
 pub(crate) fn quote_windows_argument(argument: &str) -> String {
-    if argument.is_empty() {
-        return "\"\"".to_string();
-    }
-    if !argument.contains([' ', '\t', '"']) {
-        return argument.to_string();
-    }
-
-    let mut quoted = String::with_capacity(argument.len() + 2);
-    quoted.push('"');
-    let mut backslashes = 0usize;
-    for character in argument.chars() {
-        match character {
-            '\\' => backslashes += 1,
-            '"' => {
-                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
-                quoted.push('"');
-                backslashes = 0;
-            }
-            other => {
-                quoted.push_str(&"\\".repeat(backslashes));
-                quoted.push(other);
-                backslashes = 0;
-            }
-        }
-    }
-    quoted.push_str(&"\\".repeat(backslashes * 2));
-    quoted.push('"');
-    quoted
+    crate::win_args::quote_windows_argument(argument)
 }
 
 pub(crate) fn build_elevation_arguments(args: &[String]) -> String {
-    args.iter()
-        .map(|argument| quote_windows_argument(argument))
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::win_args::join_windows_arguments(args)
 }
 
 #[cfg(test)]

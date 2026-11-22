@@ -112,6 +112,28 @@ impl Default for Rule {
     }
 }
 
+/// Visits every action of an action list depth-first, in pipeline order: the action itself,
+/// then its `if_else` `then_actions`, each `else_if_branches[i].actions` in order, and finally
+/// its `else_actions`. Actions outside an `if_else` are leaves.
+pub fn visit_action_list(actions: &[Action], visit: &mut impl FnMut(&Action)) {
+    for action in actions {
+        visit(action);
+        if let Action::IfElse {
+            then_actions,
+            else_if_branches,
+            else_actions,
+            ..
+        } = action
+        {
+            visit_action_list(then_actions, visit);
+            for branch in else_if_branches {
+                visit_action_list(&branch.actions, visit);
+            }
+            visit_action_list(else_actions, visit);
+        }
+    }
+}
+
 impl Rule {
     pub fn clone_with_new_id(&self) -> Self {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -164,6 +186,13 @@ impl Rule {
         for action in self.actions.iter_mut().chain(self.on_exit_actions.iter_mut()) {
             action.normalize_overlay_ids();
         }
+    }
+
+    /// Visits every action of the rule read-only, in execution order: the `actions` pipeline
+    /// first, then `on_exit_actions`, each depth-first through nested `if_else` branches.
+    pub fn visit_actions(&self, visit: &mut impl FnMut(&Action)) {
+        visit_action_list(&self.actions, visit);
+        visit_action_list(&self.on_exit_actions, visit);
     }
 }
 

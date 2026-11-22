@@ -73,8 +73,8 @@ pub(crate) fn validate_rules(rules: &[Rule]) -> Vec<String> {
                 ));
             }
         };
-        walk_actions(&rule.actions, &mut check);
-        walk_actions(&rule.on_exit_actions, &mut check);
+        crate::models::visit_action_list(&rule.actions, &mut check);
+        crate::models::visit_action_list(&rule.on_exit_actions, &mut check);
         if has_infinite_macro && !matches!(rule.trigger, Some(Trigger::GlobalHotkey { .. })) {
             errors.push(format!(
                 "rule #{number} ({}): an infinite macro requires a global hotkey trigger, otherwise the rule can never be stopped",
@@ -250,29 +250,10 @@ pub(crate) fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
             }
             _ => {}
         };
-        walk_actions(&rule.actions, &mut check);
-        walk_actions(&rule.on_exit_actions, &mut check);
+        crate::models::visit_action_list(&rule.actions, &mut check);
+        crate::models::visit_action_list(&rule.on_exit_actions, &mut check);
     }
     warnings
-}
-
-fn walk_actions<F: FnMut(&Action)>(actions: &[Action], visit: &mut F) {
-    for action in actions {
-        visit(action);
-        if let Action::IfElse {
-            then_actions,
-            else_if_branches,
-            else_actions,
-            ..
-        } = action
-        {
-            walk_actions(then_actions, visit);
-            for branch in else_if_branches {
-                walk_actions(&branch.actions, visit);
-            }
-            walk_actions(else_actions, visit);
-        }
-    }
 }
 
 fn display_id(rule: &Rule) -> &str {

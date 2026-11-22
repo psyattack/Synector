@@ -64,39 +64,22 @@ impl GuiState {
         }
     }
 
+    /// Collects the overlay ids referenced by one action. Branch traversal is
+    /// [`Rule::visit_actions`]'s job, so this stays shallow.
     pub fn extract_action_overlay_ids(action: &crate::models::Action, out: &mut Vec<String>) {
-        match action {
-            crate::models::Action::Overlay { overlay_id, custom_overlay, .. } => {
-                out.push(overlay_id.clone());
-                if let Some(cust) = custom_overlay {
-                    out.push(cust.id.clone());
-                }
+        if let crate::models::Action::Overlay { overlay_id, custom_overlay, .. } = action {
+            out.push(overlay_id.clone());
+            if let Some(cust) = custom_overlay {
+                out.push(cust.id.clone());
             }
-            crate::models::Action::IfElse { then_actions, else_if_branches, else_actions, .. } => {
-                for a in then_actions {
-                    Self::extract_action_overlay_ids(a, out);
-                }
-                for b in else_if_branches {
-                    for a in &b.actions {
-                        Self::extract_action_overlay_ids(a, out);
-                    }
-                }
-                for a in else_actions {
-                    Self::extract_action_overlay_ids(a, out);
-                }
-            }
-            _ => {}
         }
     }
 
     pub fn extract_rule_overlay_ids(rule: &Rule) -> Vec<String> {
         let mut ids = Vec::new();
-        for a in &rule.actions {
-            Self::extract_action_overlay_ids(a, &mut ids);
-        }
-        for a in &rule.on_exit_actions {
-            Self::extract_action_overlay_ids(a, &mut ids);
-        }
+        rule.visit_actions(&mut |action| {
+            Self::extract_action_overlay_ids(action, &mut ids);
+        });
         ids
     }
 
