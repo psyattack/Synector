@@ -323,10 +323,12 @@ positions are written coalesced, not on every event.
 
 ### The webhook port is busy
 
-The local webhook server binds `127.0.0.1:48123`, and the port is fixed. If another application
-already owns it, the bind error is logged and the server retries with a capped backoff (1 s doubling
-to 30 s), so webhook-triggered rules resume once the port is freed. Close the conflicting
-application, or stop the rule source until the port is available.
+The local webhook server binds `127.0.0.1:48123`, and the port is fixed. It only runs while at
+least one enabled rule uses the webhook trigger, so a busy port cannot affect a daemon whose rules
+never use it. While a webhook rule is enabled and another application already owns the port, the
+bind error is logged and the server retries with a capped backoff (1 s doubling to 30 s), so
+webhook-triggered rules resume once the port is freed. Close the conflicting application, or stop
+the rule source until the port is available.
 
 ### Where do I report a bug or a security issue?
 

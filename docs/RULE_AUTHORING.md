@@ -222,7 +222,10 @@ Wait and check steps can observe a rule instead of a system event:
 ## Webhook trigger
 
 Anything that can make a local HTTP request can start a rule: the daemon listens on
-`http://127.0.0.1:48123/api/v1/trigger/<endpoint>`; the port is fixed.
+`http://127.0.0.1:48123/api/v1/trigger/<endpoint>`; the port is fixed. The listener exists only
+while at least one enabled rule has a `webhook` trigger: disabling the last one or deleting it
+closes the port again, and enabling a webhook rule starts it within about a second without
+restarting the daemon.
 
 - The tail of the path is matched against enabled rules: the rule `id`, or the `endpoint_path` of a
   `webhook` trigger. A leading slash in `endpoint_path` is tolerated, a trailing slash in the request
@@ -235,9 +238,9 @@ Anything that can make a local HTTP request can start a rule: the daemon listens
   `{"status":"error","message":"Invalid endpoint. Use /api/v1/trigger/<endpoint_or_rule_id>"}`.
 
 A `200` means a rule was found, not that the pipeline ran: the engine still applies cooldowns and
-quotas, so a request can be accepted and then skipped. The server is local-only; if another process
-owns the port, the bind error is logged and the daemon retries with a capped backoff (1 s doubling
-to 30 s), so webhook rules start working once the port is free.
+quotas, so a request can be accepted and then skipped. The server is local-only; while a webhook
+rule is enabled and another process owns the port, the bind error is logged and the daemon retries
+with a capped backoff (1 s doubling to 30 s), so webhook rules start working once the port is free.
 
 Outbound `http_webhook` actions send the rule's custom `headers` as HTTP headers, not through a
 shell; the method and header names/values must be valid or the action fails. A non-2xx response is

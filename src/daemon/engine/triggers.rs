@@ -354,14 +354,17 @@ impl DaemonEngine {
 
     }
 
+    /// Samples the foreground window once and triggers matching `window_focus` rules. Returns
+    /// whether any enabled rule follows the foreground window, so the daemon loop can back off
+    /// when none does.
     #[cfg(windows)]
-    pub async fn tick_window_focus(&mut self) {
+    pub async fn tick_window_focus(&mut self) -> bool {
         let has_focus_rules = self.config.rules.iter().any(|r| {
             r.is_enabled && matches!(r.trigger, Some(Trigger::WindowFocus { .. }))
         });
         if !has_focus_rules {
             self.last_foreground_pid = None;
-            return;
+            return false;
         }
 
         use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
@@ -410,7 +413,7 @@ impl DaemonEngine {
                     }
                 }
             }
-            return;
+            return true;
         }
 
         if fg_pid != 0 && self.last_foreground_pid != Some(fg_pid) {
@@ -485,6 +488,8 @@ impl DaemonEngine {
                 }
             }
         }
+
+        true
     }
 
     pub async fn tick_resource_threshold(&mut self) {

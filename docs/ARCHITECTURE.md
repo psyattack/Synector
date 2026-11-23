@@ -285,11 +285,17 @@ Other sources are mixed by nature:
 - **Push/event sources:** kernel ETW process lifecycle records, Win32 named-pipe IPC, the local
   webhook server (`127.0.0.1:48123`), low-level keyboard/mouse hooks during macro recording, Raw
   Input camera deltas, `WM_POWERBROADCAST` for sleep/resume and console display state, and
-  `WM_DEVICECHANGE` for plug-and-play devices.
+  `WM_DEVICECHANGE` for plug-and-play devices. The webhook server only listens while at least one
+  enabled rule uses the `webhook` trigger; the daemon re-reads the rule set and starts or stops the
+  listener, so a daemon whose rules do not use the trigger holds no socket and logs no listener line.
 - **Polling sources:** Toolhelp32 process snapshots when ETW is unavailable, foreground-window
   detection, the file watcher, resource thresholds, session lock, AC/battery power source,
   user idle/active, network state and system telemetry (CPU, RAM, network, battery, volume).
-  Polling loops back off when no rule uses the corresponding trigger. The system trigger's idle
+  Polling loops back off when no rule uses the corresponding trigger: the process snapshots drop to
+  a 3 s dormancy tick when no process or resource rule and no bound companion needs them, foreground
+  focus drops to 3 s without a `window_focus` rule, and the system-event sampler drops to 10 s when
+  no enabled rule has a system trigger or an `event` condition (its notification window still wakes
+  it for suspend, display and device broadcasts). The system trigger's idle
   event uses a fixed five-minute threshold; only the `event` condition carries a rule-authored
   `idle_duration_sec`.
 - **Global hotkeys:** `hotkeys.rs` checks `GetAsyncKeyState` for the registered combinations on a
