@@ -141,9 +141,15 @@ pub static STRINGS: Strings = Strings {
     settings_btn_browse: "BROWSE...",
     settings_btn_reset: "RESET",
     settings_tray_icon_placeholder: "C:\\Path\\To\\icon.ico or executable with icon",
-    settings_theme_dark: "DARK",
-    settings_theme_light: "LIGHT",
-    settings_theme_chocolate: "CHOCOLATE",
+    settings_theme_dark: "Dark",
+    settings_theme_light: "Light",
+    settings_skin_title: "Interface skin",
+    settings_skin_desc: "Choose the interface style",
+    settings_skin_modern: "Modern",
+    settings_skin_classic: "Classic",
+    settings_accent_title: "Accent colour",
+    settings_accent_desc: "Tint for selection, focus rings and active controls",
+    settings_accent_custom: "CUSTOM",
 
     // Inspector Drawer (inspector.rs)
     inspector_eyebrow_task_details: "TASK DETAILS",

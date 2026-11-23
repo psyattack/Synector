@@ -141,7 +141,13 @@ pub struct Strings {
     pub settings_tray_icon_placeholder: &'static str,
     pub settings_theme_dark: &'static str,
     pub settings_theme_light: &'static str,
-    pub settings_theme_chocolate: &'static str,
+    pub settings_skin_title: &'static str,
+    pub settings_skin_desc: &'static str,
+    pub settings_skin_modern: &'static str,
+    pub settings_skin_classic: &'static str,
+    pub settings_accent_title: &'static str,
+    pub settings_accent_desc: &'static str,
+    pub settings_accent_custom: &'static str,
 
     // Inspector Drawer (inspector.rs)
     pub inspector_eyebrow_task_details: &'static str,

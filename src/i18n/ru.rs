@@ -141,9 +141,15 @@ pub static STRINGS: Strings = Strings {
     settings_btn_browse: "ОБЗОР...",
     settings_btn_reset: "СБРОС",
     settings_tray_icon_placeholder: "C:\\Путь\\К\\иконке.ico или файлу с иконкой",
-    settings_theme_dark: "ТЁМНАЯ",
-    settings_theme_light: "СВЕТЛАЯ",
-    settings_theme_chocolate: "ШОКОЛАДНАЯ",
+    settings_theme_dark: "Тёмная",
+    settings_theme_light: "Светлая",
+    settings_skin_title: "Скин интерфейса",
+    settings_skin_desc: "Выберите стиль интерфейса",
+    settings_skin_modern: "Современный",
+    settings_skin_classic: "Классический",
+    settings_accent_title: "Акцентный цвет",
+    settings_accent_desc: "Цвет выделения, фокуса и активных элементов",
+    settings_accent_custom: "СВОЙ",
 
     // Inspector Drawer (inspector.rs)
     inspector_eyebrow_task_details: "ДЕТАЛИ ЗАДАЧИ",

@@ -1,4 +1,4 @@
-use egui::{vec2, Color32, CornerRadius, Sense, Stroke, Ui};
+use egui::{vec2, Color32, Sense, Stroke, Ui};
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::macro_recorder::{CaptureChannel, MacroRecorder};
 use crate::gui::theme::{self, Tokens};
@@ -134,8 +134,8 @@ fn render_filter_chip(
         (t.sunken, t.hairline().color, t.muted)
     };
 
-    p.rect_filled(rect, CornerRadius::same(2), bg);
-    p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    p.rect_filled(rect, t.inset_corner(), bg);
+    p.rect_stroke(rect, t.inset_corner(), Stroke::new(1.0, border), egui::StrokeKind::Inside);
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,

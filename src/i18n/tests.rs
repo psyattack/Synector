@@ -34,8 +34,8 @@ fn test_get_language_catalogs() {
     assert_eq!(en.rules_tag_filter_all, "All Tags");
     assert_eq!(ru.rules_tag_filter_all, "Все теги");
 
-    assert_eq!(en.settings_theme_chocolate, "CHOCOLATE");
-    assert_eq!(ru.settings_theme_chocolate, "ШОКОЛАДНАЯ");
+    assert_eq!(en.settings_theme_dark, "Dark");
+    assert_eq!(ru.settings_theme_dark, "Тёмная");
 
     assert_eq!(en.footer_btn_update, "UPDATE");
     assert_eq!(ru.footer_btn_update, "ОБНОВИТЬ");

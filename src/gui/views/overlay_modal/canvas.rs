@@ -300,7 +300,7 @@ pub(super) fn render_overlay_canvas(
     let tb_frame = egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::same(4))
+        .corner_radius(t.inset_corner())
         .inner_margin(egui::Margin::symmetric(8, 4));
     let tb_content_w = (avail_canvas_w - tb_frame.total_margin().sum().x).max(60.0);
 

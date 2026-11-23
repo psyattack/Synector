@@ -103,7 +103,7 @@ pub(crate) fn render_process_name_row(
                 egui::TextEdit::singleline(process_name)
                     .hint_text(hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );
@@ -130,7 +130,7 @@ pub(crate) fn render_optional_process_name_row(
                 egui::TextEdit::singleline(&mut buffer)
                     .hint_text(hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             ).changed() {

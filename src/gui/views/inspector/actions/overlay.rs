@@ -121,13 +121,13 @@ pub(crate) fn render_overlay_fields(
         } else {
             t.hairline().color
         };
-        p.rect_filled(rect, CornerRadius::same(2), bg);
-        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+        p.rect_filled(rect, t.inset_corner(), bg);
+        p.rect_stroke(rect, t.inset_corner(), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
 
         // Icon chip on left
         let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
         let icon_bg = if is_overlay_showing || hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
-        p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
+        p.rect_filled(icon_box, t.inset_corner(), icon_bg);
         p.text(
             icon_box.center(),
             egui::Align2::CENTER_CENTER,
@@ -211,7 +211,7 @@ pub(crate) fn render_overlay_fields(
             egui::TextEdit::singleline(&mut ov_txt)
                 .hint_text(loc.inspector_overlay_hint_override)
                 .desired_width(ui.available_width())
-                .min_size(vec2(0.0, theme::CONTROL_H))
+                .min_size(vec2(0.0, theme::control_height(ui)))
                 .margin(vec2(10.0, 8.0)),
         ).changed() {
             *override_text = if ov_txt.trim().is_empty() { None } else { Some(ov_txt) };
@@ -248,7 +248,7 @@ pub(crate) fn render_overlay_fields(
                 egui::TextEdit::singleline(&mut proc_txt)
                     .hint_text(loc.overlay_studio_hint_process)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .margin(vec2(10.0, 8.0)),
             ).changed() {
                 overlay_def.target_process = if proc_txt.trim().is_empty() { None } else { Some(proc_txt) };

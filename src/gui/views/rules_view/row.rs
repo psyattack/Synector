@@ -1,4 +1,4 @@
-use egui::{CornerRadius, pos2, Rect, Sense, Stroke, Ui, vec2};
+use egui::{pos2, Rect, Sense, Stroke, Ui, vec2};
 use crate::gui::components::icons::ProcessIconCache;
 use crate::gui::components::widgets::{self, Glyph};
 use crate::gui::theme::{self, Tokens};
@@ -57,7 +57,7 @@ pub(super) fn render_track_row(
     let frame = egui::Frame::new()
         .fill(fill)
         .stroke(stroke)
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(10, 6));
 
     let mut grip_started = false;
@@ -79,8 +79,8 @@ pub(super) fn render_track_row(
                 // 2. Rule Icon (28x28)
                 let icon_size = vec2(28.0, 28.0);
                 let (icon_rect, icon_resp) = ui.allocate_exact_size(icon_size, Sense::click());
-                ui.painter().rect_filled(icon_rect, CornerRadius::ZERO, t.sunken);
-                ui.painter().rect_stroke(icon_rect, CornerRadius::ZERO, t.hairline(), egui::StrokeKind::Inside);
+                ui.painter().rect_filled(icon_rect, t.chip_corner(), t.sunken);
+                ui.painter().rect_stroke(icon_rect, t.chip_corner(), t.hairline(), egui::StrokeKind::Inside);
 
                 let mut loaded_texture = false;
                 if let Some(path) = &rule.custom_icon_path {

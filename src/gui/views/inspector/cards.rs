@@ -8,7 +8,7 @@ pub(crate) fn render_infinite_macro_warning(ui: &mut Ui, state: &GuiState, t: &T
     egui::Frame::new()
         .fill(t.warn.gamma_multiply(0.12))
         .stroke(Stroke::new(1.0, t.warn.gamma_multiply(0.4)))
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(10, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -50,7 +50,7 @@ pub(crate) fn render_action_card(
     let mut fields_resp = ActionFieldsResponse::default();
 
     let ghost_id = ui.scope_id().with(("card_ghost", is_exit_pipeline, idx));
-    let ghost_anim = ui.ctx().animate_bool_with_time_and_easing(ghost_id, is_being_dragged, 0.15, easing::cubic_out);
+    let ghost_anim = theme::motion::animate_bool(ui.ctx(), ghost_id, is_being_dragged, t.metrics().motion.fast);
 
     let (fill, stroke) = if is_dimmed {
         (t.sunken.gamma_multiply(0.4), Stroke::new(1.0, t.muted.gamma_multiply(0.2)))
@@ -68,7 +68,7 @@ pub(crate) fn render_action_card(
     let card_response = egui::Frame::new()
         .fill(fill)
         .stroke(stroke)
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -150,7 +150,7 @@ pub(crate) fn render_action_card(
                             // Middle blank space on top strip is also draggable
                             let empty_w = (ui.available_width() - 4.0).max(0.0);
                             if empty_w > 0.0 {
-                                let (_, strip_resp) = ui.allocate_exact_size(vec2(empty_w, theme::CONTROL_H), Sense::click_and_drag());
+                                let (_, strip_resp) = ui.allocate_exact_size(vec2(empty_w, theme::control_height(ui)), Sense::click_and_drag());
                                 if strip_resp.drag_started() {
                                     drag_started = true;
                                 }
@@ -233,7 +233,7 @@ pub(crate) fn render_subaction_card(
     let mut fields_resp = ActionFieldsResponse::default();
 
     let ghost_id = ui.scope_id().with(("sub_card_ghost", parent_idx, branch_salt, sub_idx));
-    let ghost_anim = ui.ctx().animate_bool_with_time_and_easing(ghost_id, is_being_dragged, 0.15, easing::cubic_out);
+    let ghost_anim = theme::motion::animate_bool(ui.ctx(), ghost_id, is_being_dragged, t.metrics().motion.fast);
 
     let is_overlay_active = match sub_act {
         Action::Overlay { overlay_id, custom_overlay, .. } => {
@@ -262,7 +262,7 @@ pub(crate) fn render_subaction_card(
     let card_response = egui::Frame::new()
         .fill(fill)
         .stroke(stroke)
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -337,7 +337,7 @@ pub(crate) fn render_subaction_card(
                             // Middle blank space on top strip is also draggable
                             let empty_w = (ui.available_width() - 4.0).max(0.0);
                             if empty_w > 0.0 {
-                                let (_, strip_resp) = ui.allocate_exact_size(vec2(empty_w, theme::CONTROL_H), Sense::click_and_drag());
+                                let (_, strip_resp) = ui.allocate_exact_size(vec2(empty_w, theme::control_height(ui)), Sense::click_and_drag());
                                 if strip_resp.drag_started() {
                                     drag_started = true;
                                 }

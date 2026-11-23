@@ -1,4 +1,4 @@
-use egui::{pos2, vec2, CornerRadius, RichText, Sense, Stroke, Ui};
+use egui::{pos2, vec2, RichText, Sense, Stroke, Ui};
 use crate::gui::components::dnd;
 use crate::gui::components::widgets;
 use crate::gui::theme::{self, Tokens};
@@ -214,8 +214,8 @@ pub(super) fn render_timeline(
                             t.hairline().color
                         };
 
-                        ui.painter().rect_filled(row_rect, CornerRadius::same(2), bg_color);
-                        ui.painter().rect_stroke(row_rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+                        ui.painter().rect_filled(row_rect, t.inset_corner(), bg_color);
+                        ui.painter().rect_stroke(row_rect, t.inset_corner(), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
 
                         ui.scope_builder(egui::UiBuilder::new().max_rect(row_rect), |ui| {
                             ui.spacing_mut().interact_size.y = 19.0;

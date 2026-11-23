@@ -1,4 +1,4 @@
-use egui::{CornerRadius, pos2, Rect, Sense, Stroke, Ui, vec2};
+use egui::{pos2, Rect, Sense, Stroke, Ui, vec2};
 use crate::gui::components::chips::{paint_tag_pill, tag_pill_width, TagPillStyle};
 use crate::gui::theme::{self, Tokens};
 
@@ -64,7 +64,7 @@ pub(super) fn render_card_tags_at(
 
         ui.painter().rect(
             more_rect,
-            CornerRadius::same(3),
+            t.chip_corner(),
             t.sunken,
             Stroke::new(0.8, t.line),
             egui::StrokeKind::Inside,

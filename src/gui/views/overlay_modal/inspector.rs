@@ -1,7 +1,7 @@
 //! Overlay studio inspector: the card panel, the drag-reorder element list and one property
 //! panel per element kind, plus the shared property rows they use.
 
-use egui::{vec2, CornerRadius, FontId, Rect, RichText, Sense, Stroke, Ui};
+use egui::{vec2, FontId, Rect, RichText, Sense, Stroke, Ui};
 
 use crate::gui::components::color_picker::inline_color_editor;
 use crate::gui::components::dnd;
@@ -57,28 +57,33 @@ struct ElementDndSession {
     target_idx: usize,
 }
 
-/// Overlay element list drop line: 20 px, 0.16 s, rail inset 20/8 and a plain 10 px bead.
-const ELEM_DROP_LINE_STYLE: dnd::DropLineStyle = dnd::DropLineStyle {
-    height: 20.0,
-    anim_secs: 0.16,
-    corner: CornerRadius::same(2),
-    fill_alpha: 0.08,
-    line_width: 2.0,
-    line_left: 20.0,
-    line_right: 8.0,
-    bead: Some(dnd::DropBead {
-        left: 10.0,
-        radius: 3.5,
-        halo_radius: None,
-    }),
-};
+/// Overlay element list drop line: 20 px, 0.16 s, rail inset 20/8 and a plain 10 px bead. The
+/// corner follows the skin, like the other drop indicators.
+fn elem_drop_line_style(t: &Tokens) -> dnd::DropLineStyle {
+    dnd::DropLineStyle {
+        height: 20.0,
+        anim_secs: 0.16,
+        corner: t.chip_corner(),
+        fill_alpha: 0.08,
+        line_width: 2.0,
+        line_left: 20.0,
+        line_right: 8.0,
+        bead: Some(dnd::DropBead {
+            left: 10.0,
+            radius: 3.5,
+            halo_radius: None,
+        }),
+    }
+}
 
 /// Element drag preview chrome: a flat card with a 1 px accent stroke.
-const ELEM_PREVIEW_STYLE: dnd::FloatingPreviewStyle = dnd::FloatingPreviewStyle {
-    corner: CornerRadius::same(4),
-    stroke_width: 1.0,
-    shadow: false,
-};
+fn elem_preview_style(t: &Tokens) -> dnd::FloatingPreviewStyle {
+    dnd::FloatingPreviewStyle {
+        corner: t.inset_corner(),
+        stroke_width: 1.0,
+        shadow: false,
+    }
+}
 
 fn render_elem_drop_slot(
     ui: &mut Ui,
@@ -99,7 +104,7 @@ fn render_elem_drop_slot(
     };
 
     let anim_id = ui.scope_id().with(("elem_drop_anim", slot_idx));
-    dnd::drop_line(ui, anim_id, is_targeted, &ELEM_DROP_LINE_STYLE, t);
+    dnd::drop_line(ui, anim_id, is_targeted, &elem_drop_line_style(t), t);
 }
 
 /// Per-kind minimum element size, shared by the inspector rows and the canvas clamp so the
@@ -132,13 +137,13 @@ fn render_lock_aspect_toggle(
     };
     let color = if locked { t.accent_ink } else { t.faint };
     let tip = if locked { tooltip_locked } else { tooltip_unlocked };
-    let (rect, resp) = ui.allocate_exact_size(vec2(theme::CONTROL_H, theme::CONTROL_H), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(theme::control_height(ui), theme::control_height(ui)), Sense::click());
     if locked {
-        ui.painter().rect_filled(rect, CornerRadius::same(3), t.accent_ink.gamma_multiply(0.2));
+        ui.painter().rect_filled(rect, t.chip_corner(), t.accent_ink.gamma_multiply(0.2));
     } else if resp.hovered() {
-        ui.painter().rect_filled(rect, CornerRadius::same(3), t.sunken);
+        ui.painter().rect_filled(rect, t.chip_corner(), t.sunken);
     }
-    ui.painter().rect_stroke(rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
+    ui.painter().rect_stroke(rect, t.chip_corner(), t.hairline(), egui::StrokeKind::Inside);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -169,11 +174,11 @@ fn render_size_rows(
             ui.horizontal(|ui| {
                 let aspect = if *height > 0.0 { *width / *height } else { 1.0 };
                 let total_w = ui.available_width();
-                let btn_w = theme::CONTROL_H;
+                let btn_w = theme::control_height(ui);
                 let spacing = ui.spacing().item_spacing.x;
                 let field_w = ((total_w - btn_w - spacing * 2.0 - 4.0) / 2.0).max(40.0).floor();
                 let w_resp = ui.add_sized(
-                    vec2(field_w, theme::CONTROL_H),
+                    vec2(field_w, theme::control_height(ui)),
                     egui::DragValue::new(width)
                         .range(limits.min_w..=canvas_w.max(limits.min_w))
                         .prefix(loc.overlay_studio_field_w)
@@ -181,7 +186,7 @@ fn render_size_rows(
                         .speed(1.0),
                 );
                 let h_resp = ui.add_sized(
-                    vec2(field_w, theme::CONTROL_H),
+                    vec2(field_w, theme::control_height(ui)),
                     egui::DragValue::new(height)
                         .range(limits.min_h..=canvas_h.max(limits.min_h))
                         .prefix(loc.overlay_studio_field_h)
@@ -388,7 +393,7 @@ fn render_overlay_card_panel(
     let (max_w, max_h) = max_card_dimensions(overlay, screen_w, screen_h);
 
     let total_w = ui.available_width();
-    let btn_w = theme::CONTROL_H;
+    let btn_w = theme::control_height(ui);
     let spacing = ui.spacing().item_spacing.x;
     let field_w = ((total_w - btn_w - spacing * 2.0 - 4.0) / 2.0).max(40.0).floor();
 
@@ -399,7 +404,7 @@ fn render_overlay_card_panel(
     let mut dim_changed = false;
     ui.horizontal(|ui| {
         let w_resp = ui.add_sized(
-            vec2(field_w, theme::CONTROL_H),
+            vec2(field_w, theme::control_height(ui)),
             egui::DragValue::new(&mut overlay.rect.width)
                 .range(20.0..=max_w)
                 .prefix(loc.overlay_studio_field_width)
@@ -407,7 +412,7 @@ fn render_overlay_card_panel(
                 .speed(1.0),
         );
         let h_resp = ui.add_sized(
-            vec2(field_w, theme::CONTROL_H),
+            vec2(field_w, theme::control_height(ui)),
             egui::DragValue::new(&mut overlay.rect.height)
                 .range(20.0..=max_h)
                 .prefix(loc.overlay_studio_field_height)
@@ -562,7 +567,7 @@ fn render_overlay_element_list(
         let card_resp = egui::Frame::new()
             .fill(frame_fill)
             .stroke(frame_stroke)
-            .corner_radius(CornerRadius::same(4))
+            .corner_radius(t.inset_corner())
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
@@ -682,7 +687,7 @@ fn render_overlay_element_list(
                     ui,
                     egui::Id::unique("elem_drag_float"),
                     float_rect,
-                    &ELEM_PREVIEW_STYLE,
+                    &elem_preview_style(t),
                     t,
                     |p| {
                         p.text(
@@ -900,7 +905,7 @@ fn render_image_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, c
         let img_path_resp = ui.add(
             egui::TextEdit::singleline(path)
                 .desired_width(ui.available_width())
-                .min_size(vec2(0.0, theme::CONTROL_H))
+                .min_size(vec2(0.0, theme::control_height(ui)))
                 .margin(vec2(8.0, 5.0))
                 .hint_text(loc.overlay_studio_hint_img_path),
         );

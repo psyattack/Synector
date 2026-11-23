@@ -18,7 +18,7 @@ Related documents: [documentation map](README.md) · [rule authoring](RULE_AUTHO
 +-------------------------------------------------------------+
 |            Interactive Desktop GUI (eframe / egui)           |
 |  - Hardware accelerated, high-DPI                            |
-|  - Themes: Dark, Light, Chocolate                            |
+|  - Dark and light palettes                                   |
 |  - English and Russian locales (src/i18n)                    |
 |  - Rule Builder, Macro Studio, Overlay Studio, Inspector,    |
 |    Analytics                                                 |
@@ -124,6 +124,53 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/clipboard.rs` | One system-clipboard helper set (`copy_text_to_clipboard`, `read_text`) shared by the share flow, the inspector and token expansion |
 | `src/shortcut.rs` | Windows `.lnk` generation for direct rule launch, written through `IShellLink`; a same-named foreign shortcut is never overwritten (a rule-id-suffixed name is used instead) |
 | `src/single_instance.rs` | Named mutex guards for daemon and GUI |
+
+### Design tokens and skins
+
+The GUI reads every colour and every geometry value from one token layer, `src/gui/theme.rs`
+(facade over `src/gui/theme/`). `tokens` owns the dark and light palettes and the resolved
+`Tokens` value a view reads; `skin` owns the geometry, density and stroke metrics; `style` derives
+egui's `Visuals`, spacing and text styles from both; `motion` owns the platform motion permission;
+`paint` holds the shared painting helpers and `fonts` registers the bundled type stacks.
+
+The palette and the skin are independent axes: switching one never changes the other. A view
+asks for a role (`t.sunken`), a helper (`t.hairline()`) or a metric (`t.metrics().card_radius`)
+rather than branching on either, which is what lets a second visual generation ship as a new
+metrics value instead of a second view tree. The few surfaces that genuinely compose differently
+per generation — the header tabs, the appearance previews — read `Metrics::skin` for that one
+branch, never to pick a colour.
+
+A skin owns geometry (radii, control and bar heights), strokes, elevation (`Shadow`) and motion
+(`Motion`). The type and colour voice is shared: both generations keep the mono-caps labels and the
+Archivo display face, and both palettes are orthogonal to the skin, so both skins must stay
+readable in both. The generations differ in how they compose chrome: the classic one keeps flat,
+opaque panels with square cards, while the modern one lifts tinted translucent surfaces
+(`Tokens::raised`, `Tokens::surface`) and marks the active tab with one sliding pill instead of an
+inverted block. The modern generation is the default; the classic one stays selectable from
+Settings (`ui_skin`).
+
+A user accent (`settings.accent`) re-tints `Palette::accent`, derives a readable `accent_ink` from
+it and tints the selection background; an accent change is applied at once instead of fading,
+because a fade would chase the colour picker's drag. Omitting the value keeps the palette's own
+accent, and the Settings reset button clears the override.
+
+Motion has two owners: the skin sets the durations, and `theme::motion` asks Windows whether client
+area animations are enabled (`SPI_GETCLIENTAREAANIMATION`, cached for the process). When the system
+says no, every duration collapses to zero, transitions return their target immediately and no
+transition schedules a repaint. Components animate user-triggered state only — hover, press, a
+drawer, a dialog, a drop indicator — never decoration. A palette change additionally cross-fades
+the colour roles (`Palette::lerp`, 0.18 s): views read the blended palette while the fade runs, and
+each frame re-derives the native widget visuals until it settles, when the target visuals are
+applied once more. A skin change never fades colours, because the palette is unchanged.
+
+`src/gui/theme.rs` also owns one convention test, `views_never_pick_a_literal_frame_radius`: it
+walks `src/gui/views/**` and fails if a `Frame` carries a literal corner radius instead of a skin
+helper, so the sweep cannot erode unnoticed.
+
+The window backdrop (`theme::paint_backdrop`) is painted once behind every panel. The classic skin
+paints the flat page colour; the modern skin paints a quiet two-stop wash derived from the palette,
+which its translucent panels (`surface_alpha`) let through. Nothing decorative is painted on top of
+it.
 
 ## Data flow
 

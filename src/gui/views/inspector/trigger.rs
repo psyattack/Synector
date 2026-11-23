@@ -15,7 +15,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -237,7 +237,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                                     egui::TextEdit::singleline(folder_path)
                                         .hint_text(loc.inspector_hint_watch_path)
                                         .desired_width(ui.available_width())
-                                        .min_size(vec2(0.0, theme::CONTROL_H))
+                                        .min_size(vec2(0.0, theme::control_height(ui)))
                                         .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );
@@ -252,7 +252,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                             egui::TextEdit::singleline(&mut ext)
                                 .hint_text(loc.inspector_hint_filter_ext)
                                 .desired_width(max_w)
-                                .min_size(vec2(0.0, theme::CONTROL_H))
+                                .min_size(vec2(0.0, theme::control_height(ui)))
                                 .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         ).changed() {
@@ -275,7 +275,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                             egui::TextEdit::singleline(endpoint_path)
                                 .hint_text(loc.inspector_hint_webhook_endpoint)
                                 .desired_width(ui.available_width())
-                                .min_size(vec2(0.0, theme::CONTROL_H))
+                                .min_size(vec2(0.0, theme::control_height(ui)))
                                 .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
@@ -316,7 +316,7 @@ pub(crate) fn render_trigger_info_frame(ui: &mut Ui, glyph: &'static str, desc: 
     egui::Frame::new()
         .fill(t.bg)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

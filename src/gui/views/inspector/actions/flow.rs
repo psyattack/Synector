@@ -125,7 +125,7 @@ pub(crate) fn render_wait_fields(
                             egui::TextEdit::singleline(key_combination)
                                 .hint_text(loc.inspector_hint_wait_hotkey)
                                 .desired_width(ui.available_width())
-                                .min_size(vec2(0.0, theme::CONTROL_H))
+                                .min_size(vec2(0.0, theme::control_height(ui)))
                                 .align(egui::Align2::LEFT_CENTER)
                                 .margin(vec2(10.0, 8.0)),
                         );
@@ -145,7 +145,7 @@ pub(crate) fn render_wait_fields(
                                     egui::TextEdit::singleline(path)
                                         .hint_text(loc.inspector_hint_wait_file_path)
                                         .desired_width(ui.available_width())
-                                        .min_size(vec2(0.0, theme::CONTROL_H))
+                                        .min_size(vec2(0.0, theme::control_height(ui)))
                                         .align(egui::Align2::LEFT_CENTER)
                                         .margin(vec2(10.0, 8.0)),
                                 );

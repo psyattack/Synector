@@ -1,7 +1,7 @@
 //! Drag & drop engine of the rules list: the rule-identity session, the drop-slot resolution and
 //! the row loop that hosts the slots.
 
-use egui::{CornerRadius, Rect, Ui, vec2};
+use egui::{Rect, Ui, vec2};
 use crate::gui::components::dnd;
 use crate::gui::components::icons::ProcessIconCache;
 use crate::gui::state::{GuiState, RuleSortMode};
@@ -67,28 +67,33 @@ fn dnd_drop_target<'a>(ids: &[&'a str], src_idx: usize, dst_slot: usize) -> Opti
     }
 }
 
-/// Rules list drop line: 16 px, 0.16 s, rail inset 16/16 and a plain 20 px bead.
-const RULE_DROP_LINE_STYLE: dnd::DropLineStyle = dnd::DropLineStyle {
-    height: 16.0,
-    anim_secs: 0.16,
-    corner: CornerRadius::ZERO,
-    fill_alpha: 0.08,
-    line_width: 2.0,
-    line_left: 16.0,
-    line_right: 16.0,
-    bead: Some(dnd::DropBead {
-        left: 20.0,
-        radius: 3.0,
-        halo_radius: None,
-    }),
-};
+/// Rules list drop line: 16 px, 0.16 s, rail inset 16/16 and a plain 20 px bead. The corner
+/// follows the skin, so a rounded generation gets a capsule instead of a rectangle.
+fn rule_drop_line_style(t: &Tokens) -> dnd::DropLineStyle {
+    dnd::DropLineStyle {
+        height: 16.0,
+        anim_secs: 0.16,
+        corner: t.chip_corner(),
+        fill_alpha: 0.08,
+        line_width: 2.0,
+        line_left: 16.0,
+        line_right: 16.0,
+        bead: Some(dnd::DropBead {
+            left: 20.0,
+            radius: 3.0,
+            halo_radius: None,
+        }),
+    }
+}
 
 /// Rule drag preview chrome: a flat card with a 1 px accent stroke.
-const RULE_PREVIEW_STYLE: dnd::FloatingPreviewStyle = dnd::FloatingPreviewStyle {
-    corner: CornerRadius::same(2),
-    stroke_width: 1.0,
-    shadow: false,
-};
+fn rule_preview_style(t: &Tokens) -> dnd::FloatingPreviewStyle {
+    dnd::FloatingPreviewStyle {
+        corner: t.card_corner(),
+        stroke_width: 1.0,
+        shadow: false,
+    }
+}
 
 fn render_rule_drop_slot(
     ui: &mut Ui,
@@ -104,7 +109,7 @@ fn render_rule_drop_slot(
     };
 
     let anim_id = ui.scope_id().with(("rule_slot_anim", slot_idx));
-    dnd::drop_line(ui, anim_id, is_targeted, &RULE_DROP_LINE_STYLE, t);
+    dnd::drop_line(ui, anim_id, is_targeted, &rule_drop_line_style(t), t);
 }
 
 /// `(source id, target id, insert after target)` of one committed drag.
@@ -256,7 +261,7 @@ pub(super) fn render_rule_list(
                     ui,
                     egui::Id::unique("rule_drag_preview"),
                     float_rect,
-                    &RULE_PREVIEW_STYLE,
+                    &rule_preview_style(t),
                     t,
                     |p| {
                         let preview_text = format!("{} {}", default_icon_glyph(dragged_rule), dragged_rule.name);

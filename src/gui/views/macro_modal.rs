@@ -143,7 +143,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                         );
                     },
                     |ui| {
-                        if gui_widgets::glyph_button(ui, gui_widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
+                        if gui_widgets::glyph_button_quiet(ui, gui_widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
 

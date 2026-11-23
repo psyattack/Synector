@@ -6,7 +6,7 @@
 //! virtualised table body so every piece can be reasoned about (and tested) on its own.
 
 use egui::{
-    Color32, CornerRadius, Margin, Rect, Sense, Stroke,
+    Color32, Margin, Rect, Sense, Stroke,
     pos2, vec2,
 };
 use egui_extras::{Column, TableBody, TableBuilder};
@@ -29,7 +29,7 @@ pub fn render_process_picker_modal(ctx: &egui::Context, state: &mut GuiState) {
         .height_fraction(0.82)
         .min_size(vec2(720.0, 480.0))
         .max_size(vec2(960.0, 680.0))
-        .header_height(46.0)
+        .header_height(t.metrics().control_h + 20.0)
         .header_sunken(true)
         .show(ctx, &t, |frame| {
             render_picker_header(frame, state, &t, loc);
@@ -65,7 +65,7 @@ fn render_picker_header(
 ) {
     frame.header(|ui, close_req| {
         egui::Frame::new()
-            .inner_margin(Margin { left: 14, right: 12, top: 7, bottom: 7 })
+            .inner_margin(Margin { left: 14, right: 12, top: 10, bottom: 10 })
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
@@ -80,13 +80,11 @@ fn render_picker_header(
 
                         ui.add_space(8.0);
 
-                        ui.add(
-                            egui::TextEdit::singleline(&mut state.process_search_query)
-                                .hint_text(loc.hunter_search_placeholder)
-                                .desired_width(240.0)
-                                .min_size(vec2(0.0, theme::CONTROL_H))
-                                .align(egui::Align2::LEFT_CENTER)
-                                .margin(vec2(10.0, 8.0)),
+                        widgets::catalog_search_box_sized(
+                            ui,
+                            &mut state.process_search_query,
+                            loc.hunter_search_placeholder,
+                            240.0,
                         );
                     });
                 });
@@ -238,7 +236,7 @@ fn render_process_name_cell(
 
     let p = ui.painter();
     if row_resp.hovered() {
-        p.rect_filled(row_rect, CornerRadius::ZERO, t.sunken);
+        p.rect_filled(row_rect, t.control_corner(), t.sunken);
     }
     p.hline(row_rect.x_range(), row_rect.bottom() - 0.5, t.hairline());
 
@@ -247,7 +245,7 @@ fn render_process_name_cell(
     if let Some(tex) = icons.get_icon(ui.ctx(), proc.pid, &proc.name) {
         p.image(tex.id(), icon_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     } else {
-        p.rect_stroke(icon_rect.shrink(2.0), CornerRadius::ZERO, Stroke::new(1.0, t.line_strong), egui::StrokeKind::Inside);
+        p.rect_stroke(icon_rect.shrink(2.0), t.chip_corner(), Stroke::new(1.0, t.line_strong), egui::StrokeKind::Inside);
         p.circle_filled(icon_rect.center(), 2.0, t.muted);
     }
 
@@ -309,7 +307,7 @@ fn render_process_select_cell(
     name: &str,
 ) {
     ui.vertical_centered(|ui| {
-        ui.add_space((ui.available_height() - theme::CONTROL_H).max(0.0) / 2.0);
+        ui.add_space((ui.available_height() - theme::control_height(ui)).max(0.0) / 2.0);
         if widgets::button(ui, loc.hunter_btn_select, Kind::Primary, 0.0).clicked()
             || row_double_clicked
         {

@@ -145,7 +145,7 @@ pub(crate) fn render_datetime_picker(
 
                 let mut col = 1;
                 for _ in 1..start_col {
-                    ui.allocate_exact_size(vec2(two_digit_w, theme::CONTROL_H), Sense::hover());
+                    ui.allocate_exact_size(vec2(two_digit_w, theme::control_height(ui)), Sense::hover());
                     col += 1;
                 }
 

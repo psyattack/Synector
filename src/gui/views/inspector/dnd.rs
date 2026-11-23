@@ -27,28 +27,33 @@ pub(crate) fn dnd_preview_action<'a>(
     action
 }
 
-/// Inspector pipeline drop line: 22 px, 0.18 s, rail inset 24/8 and a haloed 12 px bead.
-const DROP_LINE_STYLE: dnd::DropLineStyle = dnd::DropLineStyle {
-    height: 22.0,
-    anim_secs: 0.18,
-    corner: CornerRadius::same(2),
-    fill_alpha: 0.08,
-    line_width: 1.8,
-    line_left: 24.0,
-    line_right: 8.0,
-    bead: Some(dnd::DropBead {
-        left: 12.0,
-        radius: 3.5,
-        halo_radius: Some(5.5),
-    }),
-};
+/// Inspector pipeline drop line: 22 px, 0.18 s, rail inset 24/8 and a haloed 12 px bead. The
+/// corner follows the skin, so a rounded generation gets a capsule instead of a rectangle.
+fn drop_line_style(t: &Tokens) -> dnd::DropLineStyle {
+    dnd::DropLineStyle {
+        height: 22.0,
+        anim_secs: 0.18,
+        corner: t.chip_corner(),
+        fill_alpha: 0.08,
+        line_width: 1.8,
+        line_left: 24.0,
+        line_right: 8.0,
+        bead: Some(dnd::DropBead {
+            left: 12.0,
+            radius: 3.5,
+            halo_radius: Some(5.5),
+        }),
+    }
+}
 
 /// Floating preview chrome: an elevated card with a 1.5 px accent stroke.
-const PREVIEW_STYLE: dnd::FloatingPreviewStyle = dnd::FloatingPreviewStyle {
-    corner: CornerRadius::same(2),
-    stroke_width: 1.5,
-    shadow: true,
-};
+fn preview_style(t: &Tokens) -> dnd::FloatingPreviewStyle {
+    dnd::FloatingPreviewStyle {
+        corner: t.inset_corner(),
+        stroke_width: 1.5,
+        shadow: true,
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_drop_slot(
@@ -68,7 +73,7 @@ pub(crate) fn render_drop_slot(
     };
 
     let anim_id = ui.scope_id().with(("slot_anim", pipeline_id, slot_idx));
-    let Some((rect, anim)) = dnd::drop_line(ui, anim_id, is_targeted, &DROP_LINE_STYLE, t) else {
+    let Some((rect, anim)) = dnd::drop_line(ui, anim_id, is_targeted, &drop_line_style(t), t) else {
         return;
     };
 
@@ -114,7 +119,7 @@ pub(crate) fn render_floating_drag_preview(
         ui,
         Id::unique(("dnd_float_preview", pipeline_id)),
         preview_rect,
-        &PREVIEW_STYLE,
+        &preview_style(t),
         t,
         |painter| {
             // Top accent stripe

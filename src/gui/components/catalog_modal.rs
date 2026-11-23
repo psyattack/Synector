@@ -161,8 +161,29 @@ fn render_catalog_body<T: CatalogEntry>(
 
     // Body background surfaces & divider
     let p = ui.painter();
-    p.rect_filled(sidebar_rect, CornerRadius::ZERO, t.bg);
-    p.rect_filled(cards_rect, CornerRadius::ZERO, t.sunken);
+    // The modal card is rounded, so the body panels must round their bottom corners too,
+    // otherwise their square corners poke out of the card in the lower left and right.
+    let card_radius = t.metrics().modal_radius;
+    p.rect_filled(
+        sidebar_rect,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: card_radius,
+            se: 0,
+        },
+        t.bg,
+    );
+    p.rect_filled(
+        cards_rect,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: 0,
+            se: card_radius,
+        },
+        t.sunken,
+    );
 
     // Seamless 1px geometric vertical divider without line-cap protrusion (DPI-independent)
     let v_divider = Rect::from_min_max(
@@ -208,10 +229,10 @@ fn render_catalog_body<T: CatalogEntry>(
 
                     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
                     if resp.hovered() && !is_active {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), t.sunken);
+                        ui.painter().rect_filled(rect, t.chip_corner(), t.hover_fill());
                     }
                     if is_active {
-                        ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
+                        ui.painter().rect_filled(rect, t.chip_corner(), bg);
                     }
 
                     ui.painter().text(
@@ -265,7 +286,7 @@ fn render_catalog_body<T: CatalogEntry>(
             ui.add_space(10.0);
             let search_w = (ui.available_width() - 10.0).max(60.0);
             ui.allocate_ui_with_layout(
-                vec2(search_w, 32.0),
+                vec2(search_w, t.metrics().control_h),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
                     widgets::catalog_search_box(ui, view.search_query, view.search_hint);

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::sections::{
-    default_overlays, AppTheme, Library, RulesFile, RuntimeState, Settings, WindowState,
+    default_overlays, AppTheme, Library, RulesFile, RuntimeState, Settings, UiSkin, WindowState,
 };
 use super::storage::{
     clean_stale_temp_files, log_section_create_failure, LIBRARY_FILE, RULES_FILE, RUNTIME_FILE,
@@ -37,6 +37,10 @@ pub struct AppConfig {
     pub auto_install_updates: bool,
     #[serde(default)]
     pub theme: AppTheme,
+    #[serde(default)]
+    pub ui_skin: UiSkin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
 
     // rules.json
     #[serde(default)]
@@ -60,6 +64,8 @@ impl Default for AppConfig {
             check_updates_on_startup: true,
             auto_install_updates: false,
             theme: AppTheme::Dark,
+            ui_skin: UiSkin::default(),
+            accent: None,
             rules: Vec::new(),
             overlays: default_overlays(),
             macro_presets: crate::models::default_macro_presets(),
@@ -170,6 +176,8 @@ impl AppConfig {
             check_updates_on_startup: settings.check_updates_on_startup,
             auto_install_updates: settings.auto_install_updates,
             theme: settings.theme,
+            ui_skin: settings.ui_skin,
+            accent: settings.accent,
             rules,
             overlays: library.overlays,
             macro_presets: library.macro_presets,
@@ -188,6 +196,8 @@ impl AppConfig {
             check_updates_on_startup: self.check_updates_on_startup,
             auto_install_updates: self.auto_install_updates,
             theme: self.theme,
+            ui_skin: self.ui_skin,
+            accent: self.accent.clone(),
         }
     }
 
@@ -202,6 +212,8 @@ impl AppConfig {
         self.check_updates_on_startup = settings.check_updates_on_startup;
         self.auto_install_updates = settings.auto_install_updates;
         self.theme = settings.theme;
+        self.ui_skin = settings.ui_skin;
+        self.accent = settings.accent;
     }
 
     /// Projects the presets half of the aggregate into its own section.
@@ -362,7 +374,9 @@ mod tests {
             language: crate::i18n::Language::Russian,
             check_updates_on_startup: false,
             auto_install_updates: true,
-            theme: AppTheme::Chocolate,
+            theme: AppTheme::Light,
+            ui_skin: UiSkin::Modern,
+            accent: Some("#2d81ff".to_string()),
         };
         let mut config = AppConfig::default();
         config.apply_settings(settings.clone());

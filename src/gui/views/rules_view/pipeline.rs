@@ -1,4 +1,4 @@
-use egui::{CornerRadius, Sense, Stroke, Ui, vec2};
+use egui::{Sense, Stroke, Ui, vec2};
 use crate::gui::components::widgets;
 use crate::gui::theme::{self, Tokens};
 use crate::i18n::Strings;
@@ -40,7 +40,7 @@ pub(super) fn render_track_pipeline(
     let galley = widgets::caps(ui, &trig_chip, 9.5, theme::mono(), 0.5, t.accent_ink);
     let chip_w = galley.size().x + 12.0;
     let (chip_rect, _chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
-    ui.painter().rect(chip_rect, CornerRadius::ZERO, t.sunken, t.hairline(), egui::StrokeKind::Inside);
+    ui.painter().rect(chip_rect, t.chip_corner(), t.sunken, t.hairline(), egui::StrokeKind::Inside);
     widgets::paint_centred(ui, chip_rect, galley, t.accent_ink);
 
     // 2. Pre-conditions (if any) - NO arrow before IF
@@ -126,7 +126,7 @@ fn render_action_chip(
     let galley = widgets::caps(ui, &step_label, 9.5, font, 0.5, chip_ink);
     let chip_w = galley.size().x + 12.0;
     let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
-    ui.painter().rect(chip_rect, CornerRadius::ZERO, chip_fill, chip_stroke, egui::StrokeKind::Inside);
+    ui.painter().rect(chip_rect, t.chip_corner(), chip_fill, chip_stroke, egui::StrokeKind::Inside);
     widgets::paint_centred(ui, chip_rect, galley, chip_ink);
 
     if is_current {

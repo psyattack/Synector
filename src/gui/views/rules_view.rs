@@ -2,11 +2,11 @@
 //! precision segmented cells, hairline cards, numbered section eyebrows,
 //! uppercase mono badges, and inverted action buttons.
 
-use egui::{Ui, vec2};
+use egui::Ui;
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::rule_matches_visible_filters;
 use crate::gui::state::{GuiState, RuleSortMode};
-use crate::gui::theme::{self, Tokens};
+use crate::gui::theme::Tokens;
 use crate::models::Rule;
 
 mod dnd;
@@ -155,14 +155,13 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
             ui.add_space(6.0);
 
-            // Search box (pinned to right of combo-boxes)
-            ui.add(
-                egui::TextEdit::singleline(&mut state.search_query)
-                    .hint_text(loc.rules_search_placeholder)
-                    .desired_width(180.0)
-                    .min_size(vec2(0.0, theme::CONTROL_H))
-                    .align(egui::Align2::LEFT_CENTER)
-                    .margin(vec2(8.0, 7.0)),
+            // Search box (pinned to right of combo-boxes), on the shared field style so it
+            // matches the library modals.
+            widgets::catalog_search_box_sized(
+                ui,
+                &mut state.search_query,
+                loc.rules_search_placeholder,
+                180.0,
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

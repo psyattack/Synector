@@ -240,10 +240,16 @@ pub(crate) fn paint_tag_pill(
         (true, Some(hover)) => hover,
         _ => style.chrome,
     };
+    let t = crate::gui::theme::Tokens::get(ui.ctx());
+    let corner = if t.metrics().skin == crate::config::UiSkin::Modern {
+        t.metrics().chip_radius
+    } else {
+        style.corner
+    };
     let painter = ui.painter();
     painter.rect(
         rect,
-        CornerRadius::same(style.corner),
+        CornerRadius::same(corner),
         color.gamma_multiply(chrome.fill_gamma),
         Stroke::new(chrome.stroke_width, color.gamma_multiply(chrome.stroke_gamma)),
         egui::StrokeKind::Inside,

@@ -3,7 +3,7 @@
 //! and process details.
 
 use egui::{
-    Color32, CornerRadius, Id, Order, Pos2, Rect, RichText, Sense, Stroke, Ui, emath::easing, pos2, vec2,
+    Color32, CornerRadius, Id, Order, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2,
 };
 use crate::gui::components::script_highlighter::{create_script_layouter, ScriptLanguage};
 use crate::gui::components::widgets::{self, Cell, Glyph, Kind};
@@ -172,14 +172,19 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
         state.selected_process = None;
     }
 
-    let k = ctx.animate_bool_with_time_and_easing(Id::unique("inspector-slide"), is_open, 0.22, easing::cubic_out);
+    let k = theme::motion::animate_bool(
+        ctx,
+        Id::unique("inspector-slide"),
+        is_open,
+        t.metrics().motion.drawer,
+    );
     if k <= 0.001 && !is_open {
         return;
     }
 
     let full = ctx.content_rect();
-    let top = (full.top() + theme::HEADER_H).min(full.bottom());
-    let bottom = (full.bottom() - theme::FOOTER_H).max(top);
+    let top = (full.top() + t.metrics().header_h).min(full.bottom());
+    let bottom = (full.bottom() - t.metrics().footer_h).max(top);
     let area = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), bottom));
 
     let width = (area.width() * 0.42).clamp(460.0, 720.0).min(area.width());
@@ -211,9 +216,17 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
         .show(ctx, |ui| {
             let panel = Rect::from_min_size(pos2(left, area.top()), vec2(width, area.height()));
             let p = ui.painter();
-            p.add(theme::shadow(&t).as_shape(panel, CornerRadius::ZERO));
-            p.rect_filled(panel, CornerRadius::ZERO, t.bg);
-            p.vline(panel.left() + 0.5, panel.y_range(), Stroke::new(1.0, t.line_strong));
+            let drawer_corner = t.drawer_corner();
+            p.add(theme::shadow(&t).as_shape(panel, drawer_corner));
+            p.rect_filled(panel, drawer_corner, t.bg);
+            // The left edge is rounded in the modern generation, so the edge divider starts
+            // where the corner ends instead of hanging outside the fill.
+            let corner_inset = drawer_corner.nw as f32;
+            p.vline(
+                panel.left() + 0.5,
+                egui::Rangef::new(panel.top() + corner_inset, panel.bottom() - corner_inset),
+                Stroke::new(t.metrics().hairline_w, t.line_strong),
+            );
 
             ui.set_min_size(panel.size());
             ui.set_max_size(panel.size());
@@ -230,7 +243,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                 Some(egui::Frame::new()
                     .fill(t.sunken)
                     .stroke(t.hairline())
-                    .corner_radius(CornerRadius::ZERO)
+                    .corner_radius(t.card_corner())
                     .inner_margin(egui::Margin {
                         left: 20,
                         right: 14,
@@ -365,7 +378,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                     egui::Frame::new()
                         .fill(t.sunken)
                         .stroke(t.hairline())
-                        .corner_radius(CornerRadius::ZERO)
+                        .corner_radius(t.card_corner())
                         .inner_margin(egui::Margin::symmetric(20, 10))
                         .show(ui, |ui| {
                             let loc = state.loc();

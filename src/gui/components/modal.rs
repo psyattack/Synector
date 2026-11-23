@@ -125,7 +125,7 @@ pub fn render_modal_header(
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add_space(header.right_pad);
-            if widgets::glyph_button(ui, Glyph::Close, header.close_tip).clicked() {
+            if widgets::glyph_button_quiet(ui, Glyph::Close, header.close_tip).clicked() {
                 *close_requested = true;
             }
             trailing(ui);
@@ -138,7 +138,7 @@ pub fn render_modal_header(
 /// Features:
 /// - **Modern Cinematic animation**: graceful rise (`+24px -> 0px`), depth zoom (`0.92 -> 1.00`),
 ///   and smooth card opacity fade (`0.0 -> 1.0`) preventing harsh dark pop-in.
-/// - **Asymmetric timing**: smooth 240ms open deceleration, fast 160ms close response.
+/// - **Asymmetric timing**: the active skin's motion metrics open slower than they close.
 /// - **Consistent theming**: automatic depth shadow, background fills, border strokes, hairline dividers,
 ///   and optional signature top accent stripe.
 /// - **Nested dialogs**: a modal opened over another modal dims the card below it instead of
@@ -154,8 +154,6 @@ pub struct Modal {
     close_on_escape: bool,
     close_on_scrim: bool,
     scrim_max_alpha: u8,
-    open_duration: f32,
-    close_duration: f32,
     header_height: Option<f32>,
     toolbar_height: Option<f32>,
     footer_height: Option<f32>,
@@ -176,8 +174,6 @@ impl Modal {
             close_on_escape: true,
             close_on_scrim: true,
             scrim_max_alpha: 215,
-            open_duration: 0.24,
-            close_duration: 0.16,
             header_height: None,
             toolbar_height: None,
             footer_height: None,
@@ -274,12 +270,14 @@ impl Modal {
             }
         }
 
-        let anim = ctx.animate_bool_with_time_and_easing(
-            anim_id,
-            self.is_open,
-            if self.is_open { self.open_duration } else { self.close_duration },
-            egui::emath::easing::cubic_out,
-        );
+        // The skin owns the duration; the platform may veto motion entirely.
+        let motion = t.metrics().motion;
+        let seconds = if self.is_open {
+            motion.modal_open
+        } else {
+            motion.modal_close
+        };
+        let anim = theme::motion::animate_bool(ctx, anim_id, self.is_open, seconds);
 
         // Track the open transition ourselves: egui only raises layers it did not see on the
         // previous pass, which misses a reopen while the close animation still runs.
@@ -413,21 +411,34 @@ impl Modal {
                 // 1. Paint background surfaces and precision dividers first
                 {
                     let p = ui.painter();
+                    let radius = CornerRadius::same(t.metrics().modal_radius);
+                    let top_radius = CornerRadius {
+                        nw: radius.nw,
+                        ne: radius.ne,
+                        sw: 0,
+                        se: 0,
+                    };
+                    let bottom_radius = CornerRadius {
+                        nw: 0,
+                        ne: 0,
+                        sw: radius.sw,
+                        se: radius.se,
+                    };
 
                     // Blooming drop shadow
                     if card_alpha > 0.02 {
                         let mut shadow = theme::shadow(t);
                         shadow.color = shadow.color.gamma_multiply(card_alpha);
-                        p.add(shadow.as_shape(modal_rect, CornerRadius::same(2)));
+                        p.add(shadow.as_shape(modal_rect, radius));
                     }
 
                     // Base background
-                    p.rect_filled(modal_rect, CornerRadius::same(2), t.bg.gamma_multiply(card_alpha));
+                    p.rect_filled(modal_rect, radius, t.bg.gamma_multiply(card_alpha));
 
                     // Header fill
                     if let Some(h_rect) = header_rect {
                         let fill = if self.header_sunken { t.sunken } else { t.bg };
-                        p.rect_filled(h_rect, CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 }, fill.gamma_multiply(card_alpha));
+                        p.rect_filled(h_rect, top_radius, fill.gamma_multiply(card_alpha));
                     }
 
                     // Toolbar fill
@@ -440,7 +451,7 @@ impl Modal {
                         let cr = if footer_rect.is_some() {
                             CornerRadius::ZERO
                         } else {
-                            CornerRadius { nw: 0, ne: 0, sw: 2, se: 2 }
+                            bottom_radius
                         };
                         p.rect_filled(body_rect, cr, t.sunken.gamma_multiply(card_alpha));
                     }
@@ -448,7 +459,7 @@ impl Modal {
                     // Footer fill
                     if let Some(f_rect) = footer_rect {
                         let fill = if self.footer_sunken { t.sunken } else { t.bg };
-                        p.rect_filled(f_rect, CornerRadius { nw: 0, ne: 0, sw: 2, se: 2 }, fill.gamma_multiply(card_alpha));
+                        p.rect_filled(f_rect, bottom_radius, fill.gamma_multiply(card_alpha));
                     }
                 }
 
@@ -499,8 +510,8 @@ impl Modal {
                     // Outer border stroke
                     p.rect_stroke(
                         modal_rect,
-                        CornerRadius::same(2),
-                        Stroke::new(1.0, t.line_strong.gamma_multiply(card_alpha)),
+                        CornerRadius::same(t.metrics().modal_radius),
+                        Stroke::new(t.metrics().hairline_w, t.line_strong.gamma_multiply(card_alpha)),
                         egui::StrokeKind::Inside,
                     );
                 }

@@ -483,7 +483,7 @@ mod tests {
     fn unit_dropdown_aligns_with_numeric_field() {
         let ctx = egui::Context::default();
         crate::gui::theme::install_fonts(&ctx);
-        crate::gui::theme::apply_theme(&ctx, crate::config::AppTheme::Dark);
+        crate::gui::theme::apply_theme(&ctx, crate::config::AppTheme::Dark, crate::config::UiSkin::Classic, None);
         let loc = crate::i18n::get(crate::i18n::Language::English);
         let mut seconds = 90.0_f64;
         let mut drag_rect = None;

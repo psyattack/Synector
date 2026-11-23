@@ -1,11 +1,11 @@
 //! Preferences and System Settings:
 //! Modern Master-Detail layout with clean sidebar categories, toggle switches,
-//! theme palette cards, live tray icon preview, and direct configuration folder access.
+//! palette preview swatches, live tray icon preview, and direct configuration folder access.
 
-use egui::{Color32, CornerRadius, Rect, Sense, Stroke, Ui, pos2, vec2};
+use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::{GuiState, SettingsTab};
-use crate::gui::theme::{self, Tokens};
+use crate::gui::theme::{self, Metrics, Palette, Tokens};
 
 pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
     let t = Tokens::get(ui.ctx());
@@ -79,8 +79,8 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
 
                 // Vertical divider from header edge to footer edge (exact 1px filled rect, DPI-independent)
                 let div_x = sidebar_rect.right() + 12.0;
-                let top_y = theme::HEADER_H;
-                let bottom_y = (ui.ctx().content_rect().bottom() - theme::FOOTER_H)
+                let top_y = t.metrics().header_h;
+                let bottom_y = (ui.ctx().content_rect().bottom() - t.metrics().footer_h)
                     .max(content_rect.bottom())
                     .max(start_top + initial_avail_h);
 
@@ -91,7 +91,7 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
                     );
                     ui.painter()
                         .with_clip_rect(ui.ctx().content_rect())
-                        .rect_filled(v_divider, CornerRadius::ZERO, t.hairline().color);
+                        .rect_filled(v_divider, t.inset_corner(), t.hairline().color);
                 }
             } else {
                 // Narrow / Compact Responsive Fallback: Top segmented tabs + panel
@@ -171,11 +171,11 @@ fn render_sidebar(ui: &mut Ui, state: &mut GuiState, loc: &crate::i18n::Strings,
             Color32::TRANSPARENT
         };
 
-        ui.painter().rect_filled(rect, CornerRadius::ZERO, bg_fill);
+        ui.painter().rect_filled(rect, t.control_corner(), bg_fill);
 
         if is_active {
             let bar_rect = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
-            ui.painter().rect_filled(bar_rect, CornerRadius::ZERO, t.accent);
+            ui.painter().rect_filled(bar_rect, t.card_corner(), t.accent);
         }
 
         let text_y = rect.center().y;
@@ -216,7 +216,7 @@ fn render_content_panel(
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(20, 16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -342,12 +342,13 @@ fn render_general_content(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
-            // Live preview button matching the exact size of the input line (theme::CONTROL_H x theme::CONTROL_H)
-            let preview_size = vec2(theme::CONTROL_H, theme::CONTROL_H);
+            // Live preview button matching the exact size of the input line next to it.
+            let control_h = theme::control_height(ui);
+            let preview_size = vec2(control_h, control_h);
             let (p_rect, p_resp) = ui.allocate_exact_size(preview_size, Sense::click());
             let p_hovered = p_resp.hovered();
             let p_stroke = if p_hovered { Stroke::new(1.0, t.line_strong) } else { t.hairline() };
-            ui.painter().rect(p_rect, CornerRadius::ZERO, t.bg, p_stroke, egui::StrokeKind::Inside);
+            ui.painter().rect(p_rect, t.card_corner(), t.bg, p_stroke, egui::StrokeKind::Inside);
 
             let mut icon_rendered = false;
             if let Some(ref path) = cfg.tray_icon_path {
@@ -423,7 +424,7 @@ fn render_general_content(
                     .id(input_id)
                     .hint_text(loc.settings_tray_icon_placeholder)
                     .desired_width(input_w)
-                    .min_size(vec2(input_w, theme::CONTROL_H))
+                    .min_size(vec2(input_w, control_h))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(8.0, 6.0)),
             );
@@ -455,7 +456,7 @@ fn render_general_content(
             if edit.invalid {
                 ui.painter().rect_stroke(
                     response.rect,
-                    CornerRadius::ZERO,
+                    t.card_corner(),
                     Stroke::new(1.0, t.bad),
                     egui::StrokeKind::Inside,
                 );
@@ -557,54 +558,259 @@ fn render_appearance_content(
 
     widgets::hrule(ui);
 
-    // 2. Color Theme with visual palette cards
+    // 2. Colour theme as palette preview swatches: each tile is a miniature window — a thin
+    // accent strip over a content well — so the palette previews itself instead of carrying a
+    // caption. The name stays as the tooltip and as the accessibility label.
     render_setting_row(ui, loc.settings_theme_title, loc.settings_theme_desc, t, |ui| {
-        // Preview swatches come from the live palette, so a Tokens change cannot desynchronize
-        // the cards from the theme the user actually gets.
         let themes = [
             (crate::config::AppTheme::Dark, loc.settings_theme_dark),
             (crate::config::AppTheme::Light, loc.settings_theme_light),
-            (crate::config::AppTheme::Chocolate, loc.settings_theme_chocolate),
         ];
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
 
             for (thm, label) in themes {
-                let palette = Tokens::of(thm);
+                // The preview comes from the live palette, so a Tokens change cannot
+                // desynchronize the swatches from the theme the user actually gets.
+                let palette = Tokens::of(thm, t.metrics().skin);
                 let is_selected = state.theme == thm;
-                let card_size = vec2(90.0, theme::CONTROL_H);
-                let (rect, resp) = ui.allocate_exact_size(card_size, Sense::click());
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
                 if resp.clicked() && !is_selected {
                     state.set_theme(thm);
-                    crate::gui::theme::apply_theme(ui.ctx(), thm);
                     cfg.theme = thm;
                     *changed = true;
                 }
 
-                let hovered = resp.hovered();
-                let border_stroke = if is_selected {
-                    Stroke::new(2.0, t.accent)
-                } else if hovered {
-                    Stroke::new(1.0, t.line_strong)
-                } else {
-                    t.hairline()
-                };
+                let well = paint_preview_tile(
+                    ui,
+                    rect,
+                    t,
+                    palette.palette(),
+                    t.metrics(),
+                    is_selected,
+                    resp.hovered(),
+                );
+                // Two faint lines read as content rows inside the miniature window.
+                for row in 0..2 {
+                    let y = well.top() + 7.0 + row as f32 * 7.0;
+                    if y + 1.0 < well.bottom() {
+                        ui.painter().hline(
+                            egui::Rangef::new(well.left() + 5.0, well.right() - 5.0),
+                            y,
+                            Stroke::new(1.0, palette.line),
+                        );
+                    }
+                }
 
-                ui.painter().rect(rect, CornerRadius::ZERO, palette.bg, border_stroke, egui::StrokeKind::Inside);
-
-                // Accent dot + theme name
-                let dot_center = pos2(rect.left() + 14.0, rect.center().y);
-                ui.painter().circle_filled(dot_center, 4.0, palette.accent);
-
-                let text_pos = pos2(rect.left() + 24.0, rect.center().y);
-                let galley = widgets::caps(ui, label, 10.0, theme::mono_bold(), 1.0, palette.ink);
-                widgets::paint_left(ui, Rect::from_min_size(pos2(text_pos.x, text_pos.y - galley.size().y / 2.0), galley.size()), galley, palette.ink);
-
-                resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                resp.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
+                });
+                resp.on_hover_text(label)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
             }
         });
     });
+
+    widgets::hrule(ui);
+
+    // 3. Skin generation: preview tiles, mirroring the palette swatches above, so a third or
+    // fourth generation can be added as one more tile.
+    render_setting_row(ui, loc.settings_skin_title, loc.settings_skin_desc, t, |ui| {
+        let skins = [
+            (crate::config::UiSkin::Modern, loc.settings_skin_modern),
+            (crate::config::UiSkin::Classic, loc.settings_skin_classic),
+        ];
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            for (skin, label) in skins {
+                let metrics = Metrics::of(skin);
+                let palette = Tokens::of(state.theme, skin);
+                let is_selected = state.ui_skin == skin;
+                let (rect, resp) =
+                    ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
+                if resp.clicked() && !is_selected {
+                    state.set_ui_skin(skin);
+                    cfg.ui_skin = skin;
+                    *changed = true;
+                }
+
+                // The miniature shows the generation's own geometry: strip, content well and a
+                // control whose corner radius is the skin's.
+                let well = paint_preview_tile(
+                    ui,
+                    rect,
+                    t,
+                    palette.palette(),
+                    metrics,
+                    is_selected,
+                    resp.hovered(),
+                );
+                let painter = ui.painter();
+                let control_h = (well.height() - 10.0).clamp(6.0, 10.0);
+                let control = Rect::from_min_size(
+                    well.min + vec2(5.0, 5.0),
+                    vec2((well.width() * 0.5).max(18.0), control_h),
+                );
+                painter.rect_filled(
+                    control,
+                    egui::CornerRadius::same(metrics.control_radius.min(8)),
+                    palette.accent_ink.gamma_multiply(0.7),
+                );
+                let dot = Rect::from_center_size(
+                    pos2(control.right() + 8.0, control.center().y),
+                    vec2(8.0, 8.0),
+                );
+                if dot.right() < well.right() && dot.bottom() < well.bottom() {
+                    painter.rect_filled(
+                        dot,
+                        egui::CornerRadius::same(metrics.control_radius.min(4)),
+                        palette.sunken,
+                    );
+                }
+
+                resp.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
+                });
+                resp.on_hover_text(label)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+            }
+        });
+    });
+
+    widgets::hrule(ui);
+
+    // 4. Accent colour: a few presets plus the shared HSVA editor for anything custom.
+    let accent = crate::gui::theme::parse_accent(state.accent.as_deref());
+    let accent_editor_id = egui::Id::unique("settings-accent-editor");
+    render_setting_row(ui, loc.settings_accent_title, loc.settings_accent_desc, t, |ui| {
+        const PRESETS: [(&str, [u8; 3]); 6] = [
+            ("#2d81ff", [0x2d, 0x81, 0xff]),
+            ("#8b7bd8", [0x8b, 0x7b, 0xd8]),
+            ("#4fb3a0", [0x4f, 0xb3, 0xa0]),
+            ("#d9a04a", [0xd9, 0xa0, 0x4a]),
+            ("#e06a86", [0xe0, 0x6a, 0x86]),
+            ("#9aa0aa", [0x9a, 0xa0, 0xaa]),
+        ];
+        // The presets and the two buttons share one wrapped row: in a narrow settings panel the
+        // buttons drop to a second line instead of being clipped.
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+            for (hex, rgb) in PRESETS {
+                let selected = accent == Some(rgb);
+                let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                ui.painter().circle_filled(
+                    rect.center(),
+                    9.0,
+                    Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+                );
+                if selected {
+                    ui.painter().circle_stroke(rect.center(), 11.0, Stroke::new(2.0, t.ink_strong));
+                } else if resp.hovered() {
+                    ui.painter().circle_stroke(rect.center(), 11.0, t.hairline());
+                }
+                if resp.clicked() && !selected {
+                    state.set_accent(Some(hex.to_string()));
+                    cfg.accent = Some(hex.to_string());
+                    *changed = true;
+                }
+                resp.widget_info(|| {
+                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, hex)
+                });
+                resp.on_hover_text(hex);
+            }
+
+            let button_h = t.metrics().control_h;
+            if widgets::compact_button(ui, loc.settings_accent_custom, Kind::Secondary, button_h)
+                .clicked()
+            {
+                let open = ui.data(|d| d.get_temp::<bool>(accent_editor_id)).unwrap_or(false);
+                ui.data_mut(|d| d.insert_temp(accent_editor_id, !open));
+            }
+
+            if accent.is_some()
+                && widgets::compact_button(ui, loc.settings_btn_reset, Kind::Secondary, button_h)
+                    .clicked()
+            {
+                // Clearing the override brings back the palette accent. The editor closes with
+                // it, otherwise the next frame would write the old custom colour straight back.
+                state.set_accent(None);
+                cfg.accent = None;
+                ui.data_mut(|d| d.insert_temp(accent_editor_id, false));
+                *changed = true;
+            }
+        });
+    });
+
+    if ui.data(|d| d.get_temp::<bool>(accent_editor_id)).unwrap_or(false) {
+        let mut rgba = accent
+            .map(|[r, g, b]| [r, g, b, 255])
+            .unwrap_or([0x2d, 0x81, 0xff, 255]);
+        crate::gui::components::color_picker::inline_color_editor(ui, &mut rgba, false, t, loc);
+        let rgb = [rgba[0], rgba[1], rgba[2]];
+        if accent != Some(rgb) {
+            let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+            state.set_accent(Some(hex.clone()));
+            cfg.accent = Some(hex);
+            *changed = true;
+        }
+        ui.add_space(6.0);
+    }
+}
+
+/// Paints the chrome every appearance preview tile shares: the selection border, the page
+/// colour, the accent strip and the content well. `metrics` belongs to the generation the tile
+/// previews, so a skin tile shows its own geometry. Returns the well rect, where the caller
+/// draws its miniature body.
+fn paint_preview_tile(
+    ui: &Ui,
+    rect: Rect,
+    t: &Tokens,
+    palette: Palette,
+    metrics: Metrics,
+    selected: bool,
+    hovered: bool,
+) -> Rect {
+    let border = if selected {
+        Stroke::new(2.0, t.accent)
+    } else if hovered {
+        Stroke::new(t.metrics().hairline_w, t.line_strong)
+    } else {
+        t.hairline()
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(metrics.card_radius),
+        palette.bg,
+        border,
+        egui::StrokeKind::Inside,
+    );
+
+    let inset = 6.0;
+    let strip = Rect::from_min_size(
+        rect.min + vec2(inset, inset),
+        vec2(rect.width() - 2.0 * inset, 6.0),
+    );
+    painter.rect_filled(
+        strip,
+        egui::CornerRadius::same(metrics.inset_radius),
+        palette.accent,
+    );
+
+    let well = Rect::from_min_max(
+        pos2(rect.left() + inset, strip.bottom() + 4.0),
+        pos2(rect.right() - inset, rect.bottom() - inset),
+    );
+    painter.rect(
+        well,
+        egui::CornerRadius::same(metrics.inset_radius),
+        palette.sunken,
+        Stroke::new(1.0, palette.line),
+        egui::StrokeKind::Inside,
+    );
+    well
 }
 
 /// Installed-version subtitle of the updates row. The catalog supplies the product name and

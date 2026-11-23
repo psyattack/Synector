@@ -48,20 +48,35 @@ impl WindowState {
     }
 }
 
+/// The two shipped palettes. A palette is only colours; the geometry and typography of the
+/// interface belong to the GUI skin, so a skin switch never changes the theme and vice versa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AppTheme {
     #[default]
     Dark,
     Light,
-    Chocolate,
+}
+
+/// The visual generation of the interface: its geometry, density, strokes and type voice.
+///
+/// Independent of [`AppTheme`]: switching the skin never changes the palette and switching the
+/// palette never changes the skin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UiSkin {
+    /// Rounded, layered, sans-serif. The default generation.
+    #[default]
+    Modern,
+    /// The original studio identity: hard edges, hairlines, mono labels.
+    Classic,
 }
 
 // ---------------------------------------------------------------------------
 // settings.json
 // ---------------------------------------------------------------------------
 
-/// Rarely written host preferences: window geometry, tray, language, theme and
+/// Rarely written host preferences: window geometry, tray, language, theme, skin and
 /// update behaviour.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
@@ -83,6 +98,11 @@ pub struct Settings {
     pub auto_install_updates: bool,
     #[serde(default)]
     pub theme: AppTheme,
+    #[serde(default)]
+    pub ui_skin: UiSkin,
+    /// Custom accent colour as #RRGGBB; absent means the palette's default accent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
 }
 
 impl Default for Settings {
@@ -97,6 +117,8 @@ impl Default for Settings {
             check_updates_on_startup: true,
             auto_install_updates: false,
             theme: AppTheme::Dark,
+            ui_skin: UiSkin::default(),
+            accent: None,
         }
     }
 }
@@ -207,7 +229,7 @@ mod tests {
                 is_maximized: true,
             }),
             language: crate::i18n::Language::Russian,
-            theme: AppTheme::Chocolate,
+            theme: AppTheme::Light,
             hide_tray_icon: true,
             check_updates_on_startup: false,
             ..Default::default()
@@ -218,7 +240,7 @@ mod tests {
         let decoded = Settings::read_from(&dir);
         assert_eq!(decoded.version, CONFIG_VERSION);
         assert_eq!(decoded.language, crate::i18n::Language::Russian);
-        assert_eq!(decoded.theme, AppTheme::Chocolate);
+        assert_eq!(decoded.theme, AppTheme::Light);
         assert!(decoded.hide_tray_icon);
         assert!(!decoded.check_updates_on_startup);
         assert_eq!(decoded.window.as_ref().map(|w| w.is_maximized), Some(true));
@@ -326,17 +348,33 @@ mod tests {
     }
 
     #[test]
+    fn accent_round_trips_and_stays_optional() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.accent, None, "no accent means the palette default");
+        let decoded: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.accent, None);
+
+        settings.accent = Some("#8b7bd8".to_string());
+        let decoded: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(decoded.accent.as_deref(), Some("#8b7bd8"));
+    }
+
+    #[test]
     fn app_theme_serde_and_default() {
         assert_eq!(AppTheme::default(), AppTheme::Dark);
         assert_eq!(serde_json::to_string(&AppTheme::Dark).unwrap(), "\"dark\"");
         assert_eq!(serde_json::to_string(&AppTheme::Light).unwrap(), "\"light\"");
         assert_eq!(
-            serde_json::to_string(&AppTheme::Chocolate).unwrap(),
-            "\"chocolate\""
+            serde_json::from_str::<AppTheme>("\"dark\"").unwrap(),
+            AppTheme::Dark
         );
         assert_eq!(
-            serde_json::from_str::<AppTheme>("\"chocolate\"").unwrap(),
-            AppTheme::Chocolate
+            serde_json::from_str::<AppTheme>("\"light\"").unwrap(),
+            AppTheme::Light
+        );
+        assert!(
+            serde_json::from_str::<AppTheme>("\"chocolate\"").is_err(),
+            "a removed palette name is rejected like any other unknown value"
         );
     }
 }

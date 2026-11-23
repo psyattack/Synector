@@ -1,463 +1,69 @@
-//! Design tokens, typography and visuals matching the high-precision studio aesthetic:
-//! hard geometric edges, hairline rules, Archivo display headings, Inter body text,
-//! and Geist Mono labels and HUD widgets.
+//! Design-token layer of the GUI: one resolved style per frame.
+//!
+//! Two independent axes meet here and nowhere else:
+//!
+//! - [`tokens`] owns the colour palettes and the resolved [`Tokens`] a view reads;
+//! - [`skin`] owns the geometry, density, stroke, elevation and motion metrics;
+//! - [`style`] derives egui's `Visuals`, spacing and text styles from both;
+//! - [`motion`] answers whether the platform wants animated transitions;
+//! - [`paint`] holds the shared painting helpers (including the window backdrop);
+//! - [`fonts`] registers the bundled and system type stacks.
+//!
+//! Views read [`Tokens`] for roles and metrics instead of hardcoding colours, radii or control
+//! heights, so a new visual generation is a new metrics value rather than a second view tree.
+//! The few surfaces that genuinely compose differently per generation — the header tabs, the
+//! appearance previews — read `Metrics::skin` for that one branch, never to pick a colour.
 
-use std::sync::Arc;
-use egui::epaint::text::VariationCoords;
-use egui::{Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, FontTweak, Stroke, TextStyle, Visuals};
-pub use crate::config::AppTheme;
+mod fonts;
+pub mod motion;
+mod paint;
+mod skin;
+mod style;
+mod tokens;
 
-/// Height of buttons, inputs and filter cells.
-pub const CONTROL_H: f32 = 34.0;
+pub use fonts::*;
+pub use skin::*;
+pub use style::*;
+pub use tokens::*;
 
-/// Natural outer height of a framed control (DragValue, ComboBox, Button): the button
-/// text plus the theme's button padding on both sides. Keeping `interact_size.y` at this
-/// value makes all of them take exactly the same height instead of a mix of natural and
-/// minimum sizes, which is what made a ComboBox sit lower than a DragValue next to it.
-pub fn framed_control_height(ui: &egui::Ui) -> f32 {
-    let text_h = ui.text_style_height(&TextStyle::Button);
-    (text_h + 2.0 * ui.spacing().button_padding.y).ceil()
-}
-
-/// The precision `.hud-label`: 11 px Geist Mono 500, uppercase, 0.15 em letter-spacing.
-pub const HUD_SIZE: f32 = 11.0;
-pub const HUD_SPACING: f32 = HUD_SIZE * 0.15;
-
-/// Button labels: 11 px Geist Mono 700, uppercase, 0.12 em letter-spacing.
-pub const BUTTON_SPACING: f32 = HUD_SIZE * 0.12;
-
-/// Height of the top navigation/title bar.
-pub const HEADER_H: f32 = 48.0;
-
-/// Height of the bottom telemetry/status bar.
-pub const FOOTER_H: f32 = 34.0;
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Tokens {
-    pub dark: bool,
-    /// Page and card surface.
-    pub bg: Color32,
-    /// Recessed wells, badges and row hovers.
-    pub sunken: Color32,
-    /// Standard body text.
-    pub ink: Color32,
-    /// High-emphasis headings and labels.
-    pub ink_strong: Color32,
-    /// Secondary text.
-    pub muted: Color32,
-    /// Faint tertiary text, separators, indices.
-    pub faint: Color32,
-    /// Subtle hairlines (15% opacity).
-    pub line: Color32,
-    /// Emphasized hairlines / active outlines (40% opacity).
-    pub line_strong: Color32,
-    /// Primary brand blue (for surfaces).
-    pub accent: Color32,
-    /// Primary brand blue (for text/icons).
-    pub accent_ink: Color32,
-    /// Inversion fill (solid white in dark mode).
-    pub invert_bg: Color32,
-    /// Inversion ink (near black in dark mode).
-    pub invert_fg: Color32,
-    /// Status emerald green.
-    pub good: Color32,
-    /// Status amber warning.
-    pub warn: Color32,
-    /// Status crimson danger.
-    pub bad: Color32,
-}
-
-const fn ink_alpha(rgb: u32, alpha: u8) -> Color32 {
-    let [_, r, g, b] = rgb.to_be_bytes();
-    Color32::from_rgba_unmultiplied_const(r, g, b, alpha)
-}
-
-const fn hex(rgb: u32) -> Color32 {
-    let [_, r, g, b] = rgb.to_be_bytes();
-    Color32::from_rgb(r, g, b)
-}
-
-impl Tokens {
-    pub const DARK: Self = Self {
-        dark: true,
-        bg: hex(0x121316),
-        sunken: hex(0x060607),
-        ink: hex(0xf2f1ee),
-        ink_strong: hex(0xffffff),
-        muted: ink_alpha(0xf2f1ee, 153),
-        faint: ink_alpha(0xf2f1ee, 97),
-        line: ink_alpha(0xf2f1ee, 38),
-        line_strong: ink_alpha(0xf2f1ee, 102),
-        accent: hex(0x2d81ff),
-        accent_ink: hex(0x74aaff),
-        invert_bg: hex(0xffffff),
-        invert_fg: hex(0x0b0b0c),
-        good: hex(0x3fd6b8),
-        warn: hex(0xffc14d),
-        bad: hex(0xff6259),
-    };
-
-    pub const LIGHT: Self = Self {
-        dark: false,
-        bg: hex(0xf2f1ee),
-        sunken: hex(0xe9e8e4),
-        ink: hex(0x101014),
-        ink_strong: hex(0x000000),
-        muted: ink_alpha(0x101014, 158),
-        faint: ink_alpha(0x101014, 107),
-        line: ink_alpha(0x101014, 41),
-        line_strong: ink_alpha(0x101014, 102),
-        accent: hex(0x2d81ff),
-        accent_ink: hex(0x1659c4),
-        invert_bg: hex(0x101014),
-        invert_fg: hex(0xf2f1ee),
-        good: hex(0x0a7563),
-        warn: hex(0x8a5800),
-        bad: hex(0xb3261e),
-    };
-
-    pub const CHOCOLATE: Self = Self {
-        dark: true,
-        bg: hex(0x201714),
-        sunken: hex(0x130d0a),
-        ink: hex(0xf2e8dc),
-        ink_strong: hex(0xfff7ee),
-        muted: ink_alpha(0xf2e8dc, 153),
-        faint: ink_alpha(0xf2e8dc, 97),
-        line: ink_alpha(0xf2e8dc, 38),
-        line_strong: ink_alpha(0xf2e8dc, 102),
-        accent: hex(0xd97736),
-        accent_ink: hex(0xf29652),
-        invert_bg: hex(0xf2e8dc),
-        invert_fg: hex(0x1c1310),
-        good: hex(0x45cf9c),
-        warn: hex(0xfcb447),
-        bad: hex(0xf25f52),
-    };
-
-    /// The palette for a configured [`AppTheme`]; the single derivation used by
-    /// [`Tokens::get`] and [`apply_theme`] so the two cannot drift apart.
-    pub fn of(theme: AppTheme) -> Self {
-        match theme {
-            AppTheme::Dark => Self::DARK,
-            AppTheme::Light => Self::LIGHT,
-            AppTheme::Chocolate => Self::CHOCOLATE,
-        }
-    }
-
-    pub fn get(ctx: &egui::Context) -> Self {
-        let theme = ctx.data(|d| d.get_temp::<AppTheme>(egui::Id::unique("app_theme"))).unwrap_or(AppTheme::Dark);
-        Self::of(theme)
-    }
-
-    pub fn hairline(&self) -> Stroke {
-        Stroke::new(1.0, self.line)
-    }
-
-}
-
-
-pub fn shadow(t: &Tokens) -> egui::epaint::Shadow {
-    egui::epaint::Shadow {
-        offset: [0, 8],
-        blur: 24,
-        spread: 0,
-        color: Color32::from_black_alpha(if t.dark { 140 } else { 36 }),
-    }
-}
-
-pub fn scrim(t: &Tokens, amount: f32) -> Color32 {
-    let alpha = if t.dark { 170.0 } else { 105.0 } * amount.clamp(0.0, 1.0);
-    Color32::from_black_alpha(alpha.round() as u8)
-}
-
-/// Resolves a rule tag colour (`#RRGGBB`, parsed by the model) against a palette fallback.
-/// The model owns the parser; this is the GUI-side presentation of a tag colour.
-pub(crate) fn tag_color(tag: &crate::models::RuleTag, fallback: Color32) -> Color32 {
-    tag.color
-        .as_deref()
-        .and_then(crate::models::parse_hex_color)
-        .map(|[r, g, b]| Color32::from_rgb(r, g, b))
-        .unwrap_or(fallback)
-}
-
-/// Archivo 620 display font for headings and branding.
-pub fn display() -> FontFamily {
-    FontFamily::Name("display".into())
-}
-
-/// Archivo Regular (400 weight).
-pub fn font_archivo() -> FontFamily {
-    FontFamily::Name("archivo".into())
-}
-
-/// Archivo Bold (700 weight).
-pub fn font_archivo_bold() -> FontFamily {
-    FontFamily::Name("archivo-bold".into())
-}
-
-/// Inter 500 font for medium body copy.
-pub fn medium() -> FontFamily {
-    FontFamily::Name("medium".into())
-}
-
-/// Inter 600 font for semibold body copy.
-pub fn semibold() -> FontFamily {
-    FontFamily::Name("semibold".into())
-}
-
-/// Geist Mono 500 for precision labels and tags.
-pub fn mono() -> FontFamily {
-    FontFamily::Name("mono".into())
-}
-
-/// Geist Mono 700 for button titles and active counts.
-pub fn mono_bold() -> FontFamily {
-    FontFamily::Name("mono-bold".into())
-}
-
-/// Phosphor icon font family.
-pub fn phosphor() -> FontFamily {
-    FontFamily::Name("phosphor".into())
-}
-
-type Face<'a> = (&'a str, &'static [u8], &'a [([u8; 4], f32)], FontFamily);
-
-pub fn install_fonts(ctx: &egui::Context) {
-    ctx.set_fonts(build_fonts());
-}
-
-/// Builds the full font set. Kept separate from [`install_fonts`] so tests can
-/// verify that icon and emoji fallbacks stay registered.
-pub(crate) fn build_fonts() -> FontDefinitions {
-    const INTER: &[u8] = include_bytes!("../../assets/fonts/Inter-Variable.ttf");
-    const ARCHIVO: &[u8] = include_bytes!("../../assets/fonts/Archivo-Variable.ttf");
-    const GEIST_MONO: &[u8] = include_bytes!("../../assets/fonts/GeistMono-Variable.ttf");
-
-    let mut fonts = FontDefinitions::default();
-    
-    // Register Phosphor Icons into the font system
-    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-    fonts.families.insert(phosphor(), vec!["phosphor".into()]);
-
-    let mut fallback: Vec<String> = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    fallback.retain(|f| f != "phosphor");
-    fallback.insert(0, "phosphor".into());
-
-    let mut mono_fallback: Vec<String> = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
-    mono_fallback.retain(|f| f != "phosphor");
-    mono_fallback.insert(0, "phosphor".into());
-
-    let faces: [Face<'_>; 9] = [
-        ("Inter", INTER, &[(*b"wght", 400.0), (*b"opsz", 14.0)], FontFamily::Proportional),
-        ("Inter-Medium", INTER, &[(*b"wght", 500.0), (*b"opsz", 14.0)], medium()),
-        ("Inter-SemiBold", INTER, &[(*b"wght", 600.0), (*b"opsz", 14.0)], semibold()),
-        ("Archivo-Regular", ARCHIVO, &[(*b"wght", 400.0), (*b"wdth", 100.0)], font_archivo()),
-        ("Archivo-Bold", ARCHIVO, &[(*b"wght", 700.0), (*b"wdth", 105.0)], font_archivo_bold()),
-        ("Archivo-Display", ARCHIVO, &[(*b"wght", 620.0), (*b"wdth", 118.0)], display()),
-        ("GeistMono", GEIST_MONO, &[(*b"wght", 400.0)], FontFamily::Monospace),
-        ("GeistMono-Medium", GEIST_MONO, &[(*b"wght", 500.0)], mono()),
-        ("GeistMono-Bold", GEIST_MONO, &[(*b"wght", 700.0)], mono_bold()),
-    ];
-
-    for (name, bytes, coords, family) in faces {
-        let tweak = FontTweak {
-            coords: VariationCoords::new(coords.iter().copied()),
-            ..Default::default()
-        };
-        fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_static(bytes).tweak(tweak)));
-        
-        let mut stack = vec![name.to_owned()];
-        if family == FontFamily::Monospace || family == mono() || family == mono_bold() {
-            stack.extend(mono_fallback.iter().cloned());
-        } else {
-            stack.extend(fallback.iter().cloned());
-        }
-        if !stack.iter().any(|f| f == "phosphor") {
-            stack.push("phosphor".into());
-        }
-        fonts.families.insert(family, stack);
-    }
-
-    #[cfg(windows)]
-    {
-        let sys_fonts: &[(&str, &str)] = &[
-            ("arial", "C:\\Windows\\Fonts\\arial.ttf"),
-            ("arial-bold", "C:\\Windows\\Fonts\\arialbd.ttf"),
-            ("impact", "C:\\Windows\\Fonts\\impact.ttf"),
-            ("segoe ui", "C:\\Windows\\Fonts\\segoeui.ttf"),
-            ("segoe ui-bold", "C:\\Windows\\Fonts\\segoeuib.ttf"),
-            ("consolas", "C:\\Windows\\Fonts\\consola.ttf"),
-            ("consolas-bold", "C:\\Windows\\Fonts\\consolab.ttf"),
-            ("tahoma", "C:\\Windows\\Fonts\\tahoma.ttf"),
-            ("tahoma-bold", "C:\\Windows\\Fonts\\tahomabd.ttf"),
-            ("verdana", "C:\\Windows\\Fonts\\verdana.ttf"),
-            ("verdana-bold", "C:\\Windows\\Fonts\\verdanab.ttf"),
-            ("comic sans ms", "C:\\Windows\\Fonts\\comic.ttf"),
-            ("comic sans ms-bold", "C:\\Windows\\Fonts\\comicbd.ttf"),
-            ("georgia", "C:\\Windows\\Fonts\\georgia.ttf"),
-            ("georgia-bold", "C:\\Windows\\Fonts\\georgiab.ttf"),
-            ("trebuchet ms", "C:\\Windows\\Fonts\\trebuc.ttf"),
-            ("trebuchet ms-bold", "C:\\Windows\\Fonts\\trebucbd.ttf"),
-            ("courier new", "C:\\Windows\\Fonts\\cour.ttf"),
-            ("courier new-bold", "C:\\Windows\\Fonts\\courbd.ttf"),
-        ];
-        for (name, path) in sys_fonts {
-            if let Ok(bytes) = std::fs::read(path) {
-                let font_name = (*name).to_string();
-                fonts.font_data.insert(font_name.clone(), Arc::new(FontData::from_owned(bytes)));
-                let mut stack = vec![font_name.clone()];
-                stack.extend(fallback.iter().cloned());
-                fonts.families.insert(FontFamily::Name(font_name.into()), stack);
-            }
-        }
-    }
-
-    fonts
-}
-
-fn visuals(t: &Tokens) -> Visuals {
-    let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
-    v.panel_fill = t.bg;
-    v.window_fill = t.bg;
-    v.extreme_bg_color = t.sunken;
-    v.text_edit_bg_color = Some(t.sunken);
-    v.faint_bg_color = t.sunken;
-    v.code_bg_color = t.sunken;
-    v.window_stroke = Stroke::new(1.0, t.line_strong);
-    v.window_corner_radius = CornerRadius::ZERO;
-    v.menu_corner_radius = CornerRadius::ZERO;
-    v.window_shadow = shadow(t);
-    v.popup_shadow = shadow(t);
-    v.override_text_color = Some(t.ink);
-    v.hyperlink_color = t.accent_ink;
-    v.selection.bg_fill = t.accent;
-    v.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-    v.warn_fg_color = t.warn;
-    v.error_fg_color = t.bad;
-
-    for (w, fill, stroke, fg) in [
-        (&mut v.widgets.noninteractive, t.bg, t.line, t.muted),
-        (&mut v.widgets.inactive, t.bg, t.line, t.ink),
-        (&mut v.widgets.hovered, t.sunken, t.line_strong, t.ink_strong),
-        (&mut v.widgets.active, t.sunken, t.line_strong, t.ink_strong),
-        (&mut v.widgets.open, t.sunken, t.line_strong, t.ink_strong),
-    ] {
-        w.bg_fill = fill;
-        w.weak_bg_fill = fill;
-        w.bg_stroke = Stroke::new(1.0, stroke);
-        w.corner_radius = CornerRadius::ZERO;
-        w.fg_stroke = Stroke::new(1.0, fg);
-        w.expansion = 0.0;
-    }
-    v
-}
-
-pub fn apply_theme(ctx: &egui::Context, theme: AppTheme) {
-    let tokens = Tokens::of(theme);
-    ctx.data_mut(|d| d.insert_temp(egui::Id::unique("app_theme"), theme));
-
-    // The preference must be set before the visuals: `Context::set_visuals` writes into
-    // whichever egui theme is currently active. Applying Chocolate while Light is active
-    // used to leave the chocolate palette in the Light style while `Tokens::get` already
-    // reported CHOCOLATE, so native widgets rendered with the plain dark palette.
-    ctx.set_theme(if tokens.dark {
-        egui::ThemePreference::Dark
-    } else {
-        egui::ThemePreference::Light
-    });
-    ctx.set_visuals_of(egui::Theme::Dark, visuals(&Tokens::DARK));
-    ctx.set_visuals_of(egui::Theme::Light, visuals(&Tokens::LIGHT));
-    ctx.set_visuals(visuals(&tokens));
-
-    ctx.all_styles_mut(|style| {
-        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-        style.spacing.icon_spacing = 8.0;
-        style.spacing.button_padding = egui::vec2(12.0, 6.0);
-        style.spacing.interact_size.y = CONTROL_H;
-        style.spacing.menu_margin = egui::Margin::same(4);
-        style.spacing.window_margin = egui::Margin::same(4);
-        style.text_styles = [
-            (TextStyle::Heading, FontId::new(22.0, display())),
-            (TextStyle::Body, FontId::new(13.5, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(12.5, medium())),
-            (TextStyle::Small, FontId::new(11.5, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace)),
-        ]
-        .into();
-    });
-}
+pub(crate) use paint::{paint_backdrop, tag_color, well};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::{Path, PathBuf};
 
-    #[test]
-    fn fonts_register_phosphor_and_bundled_emoji_fallbacks() {
-        let fonts = build_fonts();
-        for name in ["phosphor", "NotoEmoji-Regular", "emoji-icon-font"] {
-            assert!(
-                fonts.font_data.contains_key(name),
-                "{name} is missing from font_data"
-            );
-        }
-        for family in [FontFamily::Proportional, FontFamily::Monospace] {
-            let stack = fonts.families.get(&family).expect("font family");
-            for name in ["phosphor", "NotoEmoji-Regular", "emoji-icon-font"] {
-                assert!(
-                    stack.iter().any(|font| font == name),
-                    "{name} is missing from {family:?} fallback"
-                );
+    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("view directory") {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                out.push(path);
             }
         }
     }
 
+    /// The skin owns the corner radius of every framed surface. A view that picks a literal
+    /// radius cannot follow the active generation, so this guard keeps the sweep from eroding.
     #[test]
-    fn apply_theme_applies_the_palette_to_the_active_egui_theme() {
-        let ctx = egui::Context::default();
+    fn views_never_pick_a_literal_frame_radius() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gui/views");
+        let mut files = Vec::new();
+        rust_files(&root, &mut files);
+        assert!(!files.is_empty(), "the view directory must exist");
 
-        // The regression scenario: switch Light -> Chocolate. The chocolate palette (a
-        // dark theme with different colours) must land in the Dark style, not in Light.
-        apply_theme(&ctx, AppTheme::Light);
-        assert_eq!(Tokens::get(&ctx), Tokens::LIGHT);
-        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::LIGHT.bg);
-
-        apply_theme(&ctx, AppTheme::Chocolate);
-        assert_eq!(Tokens::get(&ctx), Tokens::CHOCOLATE);
-        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::CHOCOLATE.bg);
-        assert_eq!(
-            ctx.global_style().visuals.text_edit_bg_color,
-            Some(Tokens::CHOCOLATE.sunken)
+        let mut offenders = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("read a view file");
+            for (index, line) in text.lines().enumerate() {
+                if line.contains("corner_radius(CornerRadius::") {
+                    offenders.push(format!("{}:{}", file.display(), index + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "frames take their corner radius from the skin, not from a literal: {offenders:?}"
         );
-
-        apply_theme(&ctx, AppTheme::Dark);
-        assert_eq!(Tokens::get(&ctx), Tokens::DARK);
-        assert_eq!(ctx.global_style().visuals.panel_fill, Tokens::DARK.bg);
-    }
-
-    #[test]
-    fn test_rule_tag_serde_and_color_parsing() {
-        use crate::models::RuleTag;
-
-        let tag = RuleTag::new("Productivity")
-            .with_color("#10B981")
-            .with_icon("⚡");
-
-        let json = serde_json::to_string(&tag).unwrap();
-        let decoded: RuleTag = serde_json::from_str(&json).unwrap();
-        assert_eq!(decoded.name, "Productivity");
-        assert_eq!(decoded.color.as_deref(), Some("#10B981"));
-        assert_eq!(decoded.icon.as_deref(), Some("⚡"));
-
-        let color = tag_color(&decoded, Color32::WHITE);
-        assert_eq!(color, Color32::from_rgb(0x10, 0xB9, 0x81));
-
-        let invalid_color_tag = RuleTag::new("Bad").with_color("not_a_color");
-        let fallback = Color32::from_rgb(1, 2, 3);
-        assert_eq!(tag_color(&invalid_color_tag, fallback), fallback);
-
-        // A non-ASCII colour is rejected by the model parser and keeps the fallback.
-        let broken = RuleTag::new("Broken").with_color("a\u{e9}\u{20ac}");
-        assert_eq!(tag_color(&broken, fallback), fallback);
     }
 }

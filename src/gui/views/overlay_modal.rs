@@ -1,7 +1,7 @@
 //! Overlay Studio modal shell: the studio and presets modal entry points, the public geometry
 //! re-exports and the submodules that make up the studio.
 
-use egui::{pos2, vec2, CornerRadius, Rect};
+use egui::{pos2, vec2, Rect};
 
 use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets::{self, Kind};
@@ -143,7 +143,7 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                     pos2(left_rect.right(), body_rect.top() + 1.0),
                     pos2(left_rect.right() + 1.0, body_rect.bottom() - 1.0),
                 );
-                ui.painter().rect_filled(v_divider, CornerRadius::ZERO, t.hairline().color);
+                ui.painter().rect_filled(v_divider, t.inset_corner(), t.hairline().color);
 
                 // LEFT PANEL: Overlay Settings & Elements Inspector
                 ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {

@@ -72,7 +72,7 @@ pub(crate) fn render_inspector_tag_section(
         egui::Frame::new()
             .fill(t.sunken.gamma_multiply(0.6))
             .stroke(t.hairline())
-            .corner_radius(CornerRadius::same(4))
+            .corner_radius(t.inset_corner())
             .inner_margin(egui::Margin::same(8))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
@@ -130,11 +130,11 @@ pub(crate) fn render_inspector_tag_section(
                         let c = theme::tag_color(&crate::models::RuleTag::new("").with_color(hex), t.accent_ink);
                         let is_active = state.new_tag_color.as_deref() == Some(hex);
                         let (swatch, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::click());
-                        ui.painter().rect_filled(swatch, CornerRadius::same(3), c);
+                        ui.painter().rect_filled(swatch, t.chip_corner(), c);
                         if is_active {
                             ui.painter().rect_stroke(
                                 swatch.expand(1.5),
-                                CornerRadius::same(4),
+                                t.inset_corner(),
                                 Stroke::new(1.5, t.ink_strong),
                                 egui::StrokeKind::Outside,
                             );
@@ -171,10 +171,10 @@ pub(crate) fn render_inspector_tag_section(
                         let (btn_rect, mut btn_resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
                         let hovered = btn_resp.hovered();
                         if is_sel {
-                            ui.painter().rect_filled(btn_rect, CornerRadius::same(3), t.sunken);
-                            ui.painter().rect_stroke(btn_rect, CornerRadius::same(3), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
+                            ui.painter().rect_filled(btn_rect, t.chip_corner(), t.sunken);
+                            ui.painter().rect_stroke(btn_rect, t.chip_corner(), Stroke::new(1.0, t.accent_ink), egui::StrokeKind::Inside);
                         } else if hovered {
-                            ui.painter().rect_filled(btn_rect, CornerRadius::same(3), t.sunken.gamma_multiply(0.5));
+                            ui.painter().rect_filled(btn_rect, t.chip_corner(), t.sunken.gamma_multiply(0.5));
                         }
                         if ico.is_empty() {
                             ui.painter().text(
@@ -219,7 +219,7 @@ pub(crate) fn render_inspector_tag_section(
                         t.sunken
                     };
                     let btn_stroke = if can_add { Stroke::NONE } else { Stroke::new(1.0, t.line) };
-                    ui.painter().rect(btn_rect, CornerRadius::same(3), btn_fill, btn_stroke, egui::StrokeKind::Inside);
+                    ui.painter().rect(btn_rect, t.chip_corner(), btn_fill, btn_stroke, egui::StrokeKind::Inside);
                     widgets::paint_centred(ui, btn_rect, btn_galley, if can_add { t.invert_fg } else { t.faint });
 
                     if btn_resp.on_hover_cursor(if can_add { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed }).clicked() && can_add {

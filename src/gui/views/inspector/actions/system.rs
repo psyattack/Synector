@@ -16,7 +16,7 @@ pub(crate) fn render_notification_fields(
         egui::TextEdit::singleline(title)
             .hint_text(loc.inspector_field_notif_title_hint)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .align(egui::Align2::LEFT_CENTER)
             .margin(vec2(10.0, 8.0)),
     );
@@ -26,7 +26,7 @@ pub(crate) fn render_notification_fields(
         egui::TextEdit::singleline(message)
             .hint_text(loc.inspector_field_notif_message_hint)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .align(egui::Align2::LEFT_CENTER)
             .margin(vec2(10.0, 8.0)),
     );
@@ -188,7 +188,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(app_id)
             .hint_text(loc.inspector_hint_discord_app_id)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     );
     ui.add_space(4.0);
@@ -198,7 +198,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(details)
             .hint_text(loc.inspector_hint_discord_details)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     );
     ui.add_space(4.0);
@@ -208,7 +208,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(rpc_state)
             .hint_text(loc.inspector_hint_discord_state)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     );
     ui.add_space(4.0);
@@ -219,7 +219,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(&mut l_img)
             .hint_text(loc.inspector_hint_discord_large_image)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     ).changed() {
         *large_image = if l_img.trim().is_empty() { None } else { Some(l_img) };
@@ -232,7 +232,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(&mut l_txt)
             .hint_text(loc.inspector_hint_discord_large_text)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     ).changed() {
         *large_text = if l_txt.trim().is_empty() { None } else { Some(l_txt) };
@@ -245,7 +245,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(&mut s_img)
             .hint_text(loc.inspector_hint_discord_small_image)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     ).changed() {
         *small_image = if s_img.trim().is_empty() { None } else { Some(s_img) };
@@ -258,7 +258,7 @@ pub(crate) fn render_discord_rpc_set_fields(
         egui::TextEdit::singleline(&mut s_txt)
             .hint_text(loc.inspector_hint_discord_small_text)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .margin(vec2(10.0, 8.0)),
     ).changed() {
         *small_text = if s_txt.trim().is_empty() { None } else { Some(s_txt) };
@@ -288,7 +288,7 @@ pub(crate) fn render_discord_rpc_set_fields(
                     egui::TextEdit::singleline(&mut btn.url)
                         .hint_text(loc.inspector_discord_btn_url)
                         .desired_width(url_w)
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
@@ -296,7 +296,7 @@ pub(crate) fn render_discord_rpc_set_fields(
                     egui::TextEdit::singleline(&mut btn.label)
                         .hint_text(loc.inspector_discord_btn_label)
                         .desired_width(label_w)
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
@@ -326,7 +326,7 @@ pub(crate) fn render_discord_rpc_clear_fields(
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

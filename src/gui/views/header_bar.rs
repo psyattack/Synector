@@ -5,7 +5,7 @@ use crate::gui::theme::{self, Tokens};
 
 pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
     let t = Tokens::get(ui.ctx());
-    let h = theme::HEADER_H;
+    let h = t.metrics().header_h;
     let full_rect = ui.max_rect();
 
     let loc = state.loc();
@@ -50,10 +50,35 @@ pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
     let total_tabs_w: f32 = galleys.iter().map(|(_, _, w)| *w).sum();
     let center_x = full_rect.center().x;
     let mut current_x = (center_x - total_tabs_w / 2.0).round();
+    let modern = t.metrics().skin == crate::config::UiSkin::Modern;
 
-    for (view, galley, w) in galleys {
-        let tab_rect = Rect::from_min_size(pos2(current_x, full_rect.top()), vec2(w, h));
-        current_x += w;
+    // One sliding pill marks the active tab in the modern generation. Its rect is animated in
+    // egui's temporary data, so the tab switch reads as movement instead of a jump.
+    let mut pill_target = None;
+    for (view, galley, w) in &galleys {
+        let tab_rect = Rect::from_min_size(pos2(current_x, full_rect.top()), vec2(*w, h));
+        current_x += *w;
+        if *view == state.active_view {
+            pill_target = Some(Rect::from_center_size(tab_rect.center(), galley.size() + vec2(24.0, 10.0)));
+        }
+    }
+    if modern {
+        if let Some(target) = pill_target {
+            let pill = theme::motion::slide_rect(ui.ctx(), egui::Id::unique("header-tab-pill"), target);
+            ui.painter().rect_filled(
+                pill,
+                CornerRadius::same((pill.height() * 0.5) as u8),
+                t.raised(),
+            );
+        }
+    }
+
+    current_x = (center_x - total_tabs_w / 2.0).round();
+    for (view, galley, w) in &galleys {
+        let view = *view;
+        let galley = galley.clone();
+        let tab_rect = Rect::from_min_size(pos2(current_x, full_rect.top()), vec2(*w, h));
+        current_x += *w;
 
         let resp = ui.interact(tab_rect, ui.scope_id().with(view as usize), egui::Sense::click());
         if resp.clicked() {
@@ -71,11 +96,12 @@ pub fn render_header_bar(ui: &mut Ui, state: &mut GuiState) {
             state.active_view = view;
         }
         let on = state.active_view == view || resp.hovered();
-        let span = Rect::from_center_size(tab_rect.center(), galley.size() + vec2(14.0, 8.0));
-        if on {
+        if on && !modern {
+            let span = Rect::from_center_size(tab_rect.center(), galley.size() + vec2(14.0, 8.0));
             ui.painter().rect_filled(span, CornerRadius::ZERO, t.invert_bg);
         }
-        widgets::paint_centred(ui, tab_rect, galley, if on { t.invert_fg } else { t.muted });
+        let active_ink = if modern { t.ink_strong } else { t.invert_fg };
+        widgets::paint_centred(ui, tab_rect, galley, if on { active_ink } else { t.muted });
         resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     }
 }

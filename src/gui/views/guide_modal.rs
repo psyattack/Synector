@@ -2,7 +2,7 @@
 //! Provides comprehensive architectural documentation, shortcuts,
 //! trigger/action deep-dive, token reference, output piping, and recipes.
 
-use egui::{pos2, vec2, CornerRadius, Rect, RichText, Sense, Stroke, Ui};
+use egui::{pos2, vec2, Rect, RichText, Sense, Stroke, Ui};
 use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets;
 use crate::gui::state::GuiState;
@@ -119,7 +119,7 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                     pos2(sidebar_rect.right(), body_rect.top() + 1.0),
                     pos2(sidebar_rect.right() + 1.0, body_rect.bottom() - 1.0),
                 );
-                ui.painter().rect_filled(v_divider, CornerRadius::ZERO, t.hairline().color);
+                ui.painter().rect_filled(v_divider, t.inset_corner(), t.hairline().color);
 
                 // Left Sidebar (Table of Contents)
                 ui.scope_builder(egui::UiBuilder::new().max_rect(sidebar_rect), |ui| {
@@ -144,10 +144,10 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
 
                                 let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
                                 if resp.hovered() && !is_active {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(4), t.sunken);
+                                    ui.painter().rect_filled(rect, t.control_corner(), t.sunken);
                                 }
                                 if is_active {
-                                    ui.painter().rect_filled(rect, CornerRadius::same(4), bg);
+                                    ui.painter().rect_filled(rect, t.control_corner(), bg);
                                 }
 
                                 ui.painter().text(
@@ -270,7 +270,7 @@ fn doc_callout(ui: &mut Ui, title: &str, body: &str, t: &Tokens, is_tip: bool) {
     egui::Frame::new()
         .fill(bg)
         .stroke(Stroke::new(1.0, border_color.gamma_multiply(0.35)))
-        .corner_radius(CornerRadius::same(2))
+        .corner_radius(t.inset_corner())
         .inner_margin(egui::Margin::symmetric(14, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -300,7 +300,7 @@ fn doc_code_block(ui: &mut Ui, code: &str, t: &Tokens) {
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::same(2))
+        .corner_radius(t.inset_corner())
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

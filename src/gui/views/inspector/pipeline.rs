@@ -20,7 +20,7 @@ pub(crate) fn render_add_action_button(
     } else {
         Stroke::new(1.0, t.muted.gamma_multiply(0.35))
     };
-    p.rect_stroke(rect, CornerRadius::same(2), border, egui::StrokeKind::Inside);
+    p.rect_stroke(rect, t.inset_corner(), border, egui::StrokeKind::Inside);
 
     let text_color = if is_hov { t.accent_ink } else { t.faint };
     let plus_galley = p.layout_no_wrap(

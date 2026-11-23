@@ -30,7 +30,7 @@ pub(crate) fn render_start_process_fields(
                 egui::TextEdit::singleline(file_path)
                     .hint_text(loc.inspector_field_executable_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );
@@ -42,7 +42,7 @@ pub(crate) fn render_start_process_fields(
         egui::TextEdit::singleline(arguments)
             .hint_text(loc.inspector_field_arguments_hint)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .align(egui::Align2::LEFT_CENTER)
             .margin(vec2(10.0, 8.0)),
     );
@@ -62,7 +62,7 @@ pub(crate) fn render_start_process_fields(
                 egui::TextEdit::singleline(&mut wd_str)
                     .hint_text(loc.inspector_field_working_directory_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             ).changed() {

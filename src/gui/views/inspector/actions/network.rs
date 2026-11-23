@@ -29,7 +29,7 @@ pub(crate) fn render_http_webhook_fields(
                 egui::TextEdit::singleline(url)
                     .hint_text(loc.inspector_field_webhook_url_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );

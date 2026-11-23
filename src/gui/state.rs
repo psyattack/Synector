@@ -72,6 +72,8 @@ pub struct GuiState {
     pub(crate) last_element_catalog: Option<ElementCatalogModalState>,
     pub(crate) language: crate::i18n::Language,
     pub(crate) theme: crate::config::AppTheme,
+    pub(crate) ui_skin: crate::config::UiSkin,
+    pub(crate) accent: Option<String>,
     pub(crate) toast: Option<(String, Instant)>,
     pub(crate) is_daemon_connected: bool,
     pub(crate) has_connected_daemon: bool,
@@ -158,6 +160,8 @@ impl GuiState {
             last_element_catalog: None,
             language: settings.language,
             theme: settings.theme,
+            ui_skin: settings.ui_skin,
+            accent: settings.accent,
             toast: None,
             is_daemon_connected: false,
             has_connected_daemon: false,
@@ -218,6 +222,16 @@ impl GuiState {
             self.theme = theme;
             self.set_toast(self.loc().toast_theme_changed);
         }
+    }
+
+    /// Switches the visual generation. The palette is untouched: the two axes are independent.
+    pub fn set_ui_skin(&mut self, skin: crate::config::UiSkin) {
+        self.ui_skin = skin;
+    }
+
+    /// Sets the custom accent (`#RRGGBB`), or clears it back to the palette default.
+    pub fn set_accent(&mut self, accent: Option<String>) {
+        self.accent = accent;
     }
 
     pub fn set_toast(&mut self, msg: impl Into<String>) {

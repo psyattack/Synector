@@ -24,6 +24,8 @@ internals see [ARCHITECTURE.md](ARCHITECTURE.md).
   - [A save failed — is my edit lost?](#a-save-failed--is-my-edit-lost)
   - [How do I create or change an overlay?](#how-do-i-create-or-change-an-overlay)
   - [How do I record and replay a macro?](#how-do-i-record-and-replay-a-macro)
+- [Interface](#interface)
+  - [How do I change the appearance?](#how-do-i-change-the-appearance)
 - [Rules and triggers](#rules-and-triggers)
   - [My rule does not fire](#my-rule-does-not-fire)
   - [What is the difference between a cooldown and a quota?](#what-is-the-difference-between-a-cooldown-and-a-quota)
@@ -193,6 +195,19 @@ the sequence on a background thread, **Esc** stops recording, cancels an active 
 closes the studio. The action then decides playback: operation Run, Stop or Toggle, repeat count, and
 an optional preset stored in `library.json`. Playback uses hardware scan codes with short holds and
 humanized timing, so it also registers in DirectInput games.
+
+## Interface
+
+### How do I change the appearance?
+
+**Settings → Appearance** holds three independent controls. The palette swatches switch between the
+**Dark** and **Light** themes — only colours change. The **skin tiles** choose the interface
+generation: the modern look (rounded, layered surfaces, one sliding pill for the active tab) or the
+original studio one (hard edges, hairline rules, square chrome); the palette stays whatever you
+picked. **Accent colour** offers a few presets and a custom colour picker for selection, focus rings
+and active controls; **Reset** clears the custom accent back to the palette's own. All three choices
+are stored in `settings.json` as `theme`, `ui_skin` and `accent` (omitted while no custom accent is
+set) and apply immediately, without a restart.
 
 ## Rules and triggers
 

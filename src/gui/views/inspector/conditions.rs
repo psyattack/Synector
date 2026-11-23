@@ -64,7 +64,7 @@ pub(crate) fn render_condition_card(
     egui::Frame::new()
         .fill(fill)
         .stroke(stroke)
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -113,7 +113,7 @@ pub(crate) fn render_condition_operator_connector(
     let mut cells_w = 0.0;
     for (_, c) in &op_options {
         let galley = widgets::caps(ui, c.label, theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, t.ink);
-        cells_w += (galley.size().x + 24.0).max(theme::CONTROL_H);
+        cells_w += (galley.size().x + 24.0).max(theme::control_height(ui));
     }
 
     let side_w = ((avail_w - cells_w - 12.0) * 0.5).max(12.0);
@@ -121,7 +121,7 @@ pub(crate) fn render_condition_operator_connector(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        let (rect_left, _) = ui.allocate_exact_size(vec2(side_w, theme::CONTROL_H), Sense::hover());
+        let (rect_left, _) = ui.allocate_exact_size(vec2(side_w, theme::control_height(ui)), Sense::hover());
         ui.painter().line_segment(
             [pos2(rect_left.left(), rect_left.center().y), pos2(rect_left.right(), rect_left.center().y)],
             Stroke::new(1.0, t.muted.gamma_multiply(0.25)),
@@ -131,7 +131,7 @@ pub(crate) fn render_condition_operator_connector(
 
         let rem_w = (ui.available_width() - 2.0).max(0.0);
         if rem_w > 0.0 {
-            let (rect_right, _) = ui.allocate_exact_size(vec2(rem_w, theme::CONTROL_H), Sense::hover());
+            let (rect_right, _) = ui.allocate_exact_size(vec2(rem_w, theme::control_height(ui)), Sense::hover());
             ui.painter().line_segment(
                 [pos2(rect_right.left(), rect_right.center().y), pos2(rect_right.right(), rect_right.center().y)],
                 Stroke::new(1.0, t.muted.gamma_multiply(0.25)),
@@ -211,7 +211,7 @@ pub(crate) fn render_single_condition_editor(
                     egui::TextEdit::singleline(start_time)
                         .hint_text(loc.inspector_hint_cond_time_from)
                         .desired_width(65.0)
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
@@ -220,7 +220,7 @@ pub(crate) fn render_single_condition_editor(
                     egui::TextEdit::singleline(end_time)
                         .hint_text(loc.inspector_hint_cond_time_to)
                         .desired_width(65.0)
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(8.0, 6.0)),
                 );
@@ -286,7 +286,7 @@ pub(crate) fn render_single_condition_editor(
                         egui::TextEdit::singleline(path)
                             .hint_text(loc.inspector_hint_cond_file_path)
                             .desired_width(ui.available_width())
-                            .min_size(vec2(0.0, theme::CONTROL_H))
+                            .min_size(vec2(0.0, theme::control_height(ui)))
                             .align(egui::Align2::LEFT_CENTER)
                             .margin(vec2(10.0, 8.0)),
                     );
@@ -300,7 +300,7 @@ pub(crate) fn render_single_condition_editor(
                 egui::TextEdit::singleline(&mut ext_buf)
                     .hint_text(loc.inspector_cond_file_ext_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             ).changed() {

@@ -2,7 +2,7 @@
 //! with 3 core KPI metrics (Total Executions, Active Rules, System Uptime),
 //! category filter cells, instant query filtering, level badges, and hairline rules.
 
-use egui::{CornerRadius, Margin, Ui, pos2, vec2};
+use egui::{Margin, Ui, pos2, vec2};
 use crate::gui::components::widgets::{self, Cell, Kind};
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
@@ -104,14 +104,12 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
 
                 ui.add_space(8.0);
 
-                // Search edit
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.analytics_log_filter)
-                        .hint_text(loc.logs_search_placeholder)
-                        .desired_width(240.0)
-                        .min_size(vec2(0.0, theme::CONTROL_H))
-                        .align(egui::Align2::LEFT_CENTER)
-                        .margin(vec2(10.0, 8.0)),
+                // Search edit, on the shared field style and the height of the button next to it.
+                widgets::catalog_search_box_sized(
+                    ui,
+                    &mut state.analytics_log_filter,
+                    loc.logs_search_placeholder,
+                    240.0,
                 );
             });
         });
@@ -151,10 +149,7 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
         let logs_inner_h = (ui.available_height() - kpi_h - spacing_y - frame_margins_y - bottom_padding).max(80.0);
 
         if filtered.is_empty() {
-            egui::Frame::new()
-                .fill(t.sunken)
-                .stroke(t.hairline())
-                .corner_radius(CornerRadius::ZERO)
+            theme::well(&t)
                 .inner_margin(Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -168,10 +163,7 @@ pub fn render_analytics_view(ui: &mut Ui, state: &mut GuiState) {
                 });
         } else {
             // 2. Monospace Terminal Well (Top to Bottom Chronological Stream)
-            egui::Frame::new()
-                .fill(t.sunken)
-                .stroke(t.hairline())
-                .corner_radius(CornerRadius::ZERO)
+            theme::well(&t)
                 .inner_margin(Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -276,8 +268,8 @@ fn render_kpi_card(
 ) {
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), egui::Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::ZERO, t.sunken);
-    p.rect_stroke(rect, CornerRadius::ZERO, t.hairline(), egui::StrokeKind::Inside);
+    p.rect_filled(rect, t.card_corner(), t.sunken);
+    p.rect_stroke(rect, t.card_corner(), t.hairline(), egui::StrokeKind::Inside);
 
     // Title HUD label
     p.text(

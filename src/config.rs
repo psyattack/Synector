@@ -22,7 +22,7 @@ mod sections;
 mod storage;
 
 pub use app::AppConfig;
-pub use sections::{AppTheme, Library, RuleRuntime, RulesFile, RuntimeState, Settings, WindowState};
+pub use sections::{AppTheme, Library, RuleRuntime, RulesFile, RuntimeState, Settings, UiSkin, WindowState};
 
 /// Schema version stamped into every config file. Bump it when a section layout
 /// changes and handle the older value in `storage::normalize_version`.

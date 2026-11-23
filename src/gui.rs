@@ -46,6 +46,8 @@ pub struct SynectorApp {
     state: GuiState,
     fonts_ready: bool,
     current_theme: Option<crate::config::AppTheme>,
+    current_skin: Option<crate::config::UiSkin>,
+    current_accent: Option<[u8; 3]>,
     /// Latest geometry observed in this frame (used for change detection and exit persistence).
     last_window_state: Option<WindowState>,
     /// Geometry that is already on disk; compared against to decide what needs a write.
@@ -66,12 +68,15 @@ impl SynectorApp {
         let mut state = GuiState::new();
         state.sync_with_daemon();
         let config = Settings::read();
-        theme::apply_theme(&cc.egui_ctx, config.theme);
+        let accent = theme::parse_accent(config.accent.as_deref());
+        theme::apply_theme(&cc.egui_ctx, config.theme, config.ui_skin, accent);
         let last_window_state = config.window;
         Self {
             state,
             fonts_ready: false,
             current_theme: Some(config.theme),
+            current_skin: Some(config.ui_skin),
+            current_accent: accent,
             persisted_window_state: last_window_state.clone(),
             last_window_state,
             // Persist the first change immediately instead of waiting out the first window.
@@ -135,7 +140,7 @@ impl SynectorApp {
         });
     }
 
-    fn render_toast(&self, ui: &mut Ui, _t: &Tokens) {
+    fn render_toast(&self, ui: &mut Ui, t: &Tokens) {
         if let Some((msg, time)) = &self.state.toast {
             let elapsed = time.elapsed().as_secs_f32();
             if elapsed < 3.0 {
@@ -156,7 +161,7 @@ impl SynectorApp {
 
                 egui::Area::new(egui::Id::unique("app-toast"))
                     .order(egui::Order::Tooltip)
-                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -theme::FOOTER_H - 24.0))
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -t.metrics().footer_h - 24.0))
                     .interactable(false)
                     .show(ui.ctx(), |ui| {
                         egui::Frame::new()
@@ -190,9 +195,15 @@ impl App for SynectorApp {
             ctx.request_repaint();
             return;
         }
-        if self.current_theme != Some(self.state.theme) {
-            apply_theme(&ctx, self.state.theme);
+        let accent = theme::parse_accent(self.state.accent.as_deref());
+        if self.current_theme != Some(self.state.theme)
+            || self.current_skin != Some(self.state.ui_skin)
+            || self.current_accent != accent
+        {
+            apply_theme(&ctx, self.state.theme, self.state.ui_skin, accent);
             self.current_theme = Some(self.state.theme);
+            self.current_skin = Some(self.state.ui_skin);
+            self.current_accent = accent;
         }
 
         // Sync with daemon state
@@ -255,27 +266,35 @@ impl App for SynectorApp {
 
         let tokens = Tokens::get(&ctx);
 
+        // A running palette cross-fade re-derives the native visuals each frame; it is a no-op
+        // otherwise.
+        theme::tick_palette_fade(&ctx);
+
+        // The backdrop sits under every panel. The classic skin paints the flat page colour;
+        // the modern skin paints a quiet wash that its translucent surfaces show through.
+        theme::paint_backdrop(&ctx, &tokens);
+
         // 1. Top Header Bar (Title Bar & Navigation)
         egui::Panel::top("header")
-            .exact_size(theme::HEADER_H)
+            .exact_size(tokens.metrics().header_h)
             .resizable(false)
-            .frame(egui::Frame::new().fill(tokens.bg))
+            .frame(egui::Frame::new().fill(tokens.surface()))
             .show(ui, |ui| {
                 render_header_bar(ui, &mut self.state);
             });
 
         // 2. Bottom Footer Bar (Telemetry, Memory, Autorun)
         egui::Panel::bottom("footer")
-            .exact_size(theme::FOOTER_H)
+            .exact_size(tokens.metrics().footer_h)
             .resizable(false)
-            .frame(egui::Frame::new().fill(tokens.bg).inner_margin(egui::Margin::symmetric(20, 0)))
+            .frame(egui::Frame::new().fill(tokens.surface()).inner_margin(egui::Margin::symmetric(20, 0)))
             .show(ui, |ui| {
                 self.render_footer(ui, &tokens);
             });
 
         // 3. Central Stage (Wide, comfortable, elegant)
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(tokens.bg).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 8 }))
+            .frame(egui::Frame::new().fill(tokens.surface()).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 8 }))
             .show(ui, |ui| {
                 match self.state.active_view {
                     ActiveView::Rules => render_rules_view(ui, &mut self.state),

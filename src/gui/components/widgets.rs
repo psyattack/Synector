@@ -5,6 +5,7 @@ use std::sync::Arc;
 use egui::{
     Color32, CornerRadius, Galley, Rect, Response, Sense, Stroke, Ui, pos2, vec2,
 };
+use crate::config::UiSkin;
 use crate::gui::theme::{self, Tokens};
 
 pub use super::duration::{
@@ -13,6 +14,10 @@ pub use super::duration::{
 };
 
 /// `text` laid out uppercase in `family`, `spacing` points between letters.
+///
+/// The voice belongs to the design language, not to the skin: both generations keep the studio
+/// typography (mono caps labels, Archivo display), so a skin only changes geometry, surfaces and
+/// motion.
 pub fn caps(
     ui: &Ui,
     text: &str,
@@ -27,7 +32,8 @@ pub fn caps(
         extra_letter_spacing: spacing,
         ..Default::default()
     };
-    ui.painter().layout_job(egui::text::LayoutJob::single_section(text.to_uppercase(), format))
+    ui.painter()
+        .layout_job(egui::text::LayoutJob::single_section(text.to_uppercase(), format))
 }
 
 /// A `.hud-label`: 11 px Geist Mono, uppercase, widely spaced.
@@ -66,12 +72,23 @@ pub fn eyebrow(ui: &mut Ui, index: &str, label: &str) {
     });
 }
 
-/// A small square status badge: 10 px mono on sunken surface with hairline border.
+/// A small status badge: a chip in the label voice of the skin.
 pub fn badge(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, 10.0, theme::mono(), 1.0, color);
     let (rect, resp) = ui.allocate_exact_size(vec2(galley.size().x + 12.0, 20.0), Sense::hover());
-    ui.painter().rect(rect, CornerRadius::ZERO, t.sunken, t.hairline(), egui::StrokeKind::Inside);
+    let fill = if t.metrics().skin == UiSkin::Classic {
+        t.sunken
+    } else {
+        t.raised()
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(t.metrics().control_radius),
+        fill,
+        t.hairline(),
+        egui::StrokeKind::Inside,
+    );
     paint_centred(ui, rect, galley, color);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text));
     resp
@@ -108,34 +125,71 @@ struct KindPaint {
     fill: Color32,
     stroke: Stroke,
     ink: Color32,
+    /// Paint the one-pixel inner top highlight that reads as a glass edge.
+    gloss: bool,
 }
 
 /// Resolves a [`Kind`] once so [`button`] and [`compact_button`] always paint a variant
-/// the same way. Compact buttons live in dense bars, so their resting `Secondary` fill
-/// uses the recessed surface; every other variant is identical for both callers.
-fn kind_paint(kind: Kind, t: &Tokens, hovered: bool, compact: bool) -> KindPaint {
-    let dim = if hovered { 0.85 } else { 1.0 };
+/// the same way. `hover` is the eased 0..1 pointer state, so the transition is smooth without
+/// any view having to animate it. Compact buttons live in dense bars, so their resting
+/// `Secondary` fill uses the recessed surface.
+fn kind_paint(kind: Kind, t: &Tokens, hover: f32, compact: bool) -> KindPaint {
+    if t.metrics().skin == UiSkin::Modern {
+        // The modern generation: a monochrome call to action, lift-based secondary, no accent
+        // slabs. The accent is reserved for focus and selection.
+        return match kind {
+            Kind::Primary => KindPaint {
+                // The page colour is mixed in instead of lifting the fill through gamma: a gamma
+                // lift cannot dim the black primary of the light palette, so its hover would be
+                // invisible there.
+                fill: t.ink_strong.lerp_to_gamma(t.bg, 0.16 * hover),
+                stroke: Stroke::NONE,
+                ink: t.bg,
+                gloss: false,
+            },
+            Kind::Danger => KindPaint {
+                fill: t.bad.gamma_multiply(1.0 + 0.12 * hover),
+                stroke: Stroke::NONE,
+                ink: Color32::WHITE,
+                gloss: false,
+            },
+            Kind::Secondary => KindPaint {
+                // A translucent tint instead of an opaque grey slab: the page wash shows
+                // through, and the hover is felt in the border and the label.
+                fill: t.glass_button(hover),
+                stroke: Stroke::new(
+                    t.metrics().hairline_w,
+                    t.line.lerp_to_gamma(t.line_strong, 0.55 + 0.45 * hover),
+                ),
+                ink: t.ink.lerp_to_gamma(t.ink_strong, hover),
+                gloss: true,
+            },
+        };
+    }
+
+    let dim = 1.0 - 0.15 * hover;
     match kind {
         Kind::Primary => KindPaint {
             fill: t.invert_bg.gamma_multiply(dim),
             stroke: Stroke::NONE,
             ink: t.invert_fg,
+            gloss: false,
         },
         Kind::Danger => KindPaint {
             fill: t.bad.gamma_multiply(dim),
             stroke: Stroke::NONE,
             ink: Color32::WHITE,
+            gloss: false,
         },
-        Kind::Secondary if hovered => KindPaint {
-            fill: t.invert_bg,
-            stroke: Stroke::NONE,
-            ink: t.invert_fg,
-        },
-        Kind::Secondary => KindPaint {
-            fill: if compact { t.sunken } else { t.bg },
-            stroke: Stroke::new(1.0, t.line_strong),
-            ink: t.ink,
-        },
+        Kind::Secondary => {
+            let rest = if compact { t.sunken } else { t.bg };
+            KindPaint {
+                fill: rest.lerp_to_gamma(t.invert_bg, hover),
+                stroke: Stroke::new(1.0, t.line_strong.gamma_multiply(1.0 - hover)),
+                ink: t.ink.lerp_to_gamma(t.invert_fg, hover),
+                gloss: false,
+            }
+        }
     }
 }
 
@@ -143,6 +197,7 @@ fn kind_paint(kind: Kind, t: &Tokens, hovered: bool, compact: bool) -> KindPaint
 /// frame, centres the galley and registers the label with egui.
 fn paint_kind_button(
     ui: &Ui,
+    t: &Tokens,
     resp: &Response,
     galley: Arc<Galley>,
     text: &str,
@@ -152,11 +207,21 @@ fn paint_kind_button(
     let fade = |c: Color32| if enabled { c } else { c.gamma_multiply(0.4) };
     ui.painter().rect(
         resp.rect,
-        CornerRadius::ZERO,
+        CornerRadius::same(t.metrics().control_radius),
         fade(paint.fill),
         Stroke::new(paint.stroke.width, fade(paint.stroke.color)),
         egui::StrokeKind::Inside,
     );
+    if paint.gloss {
+        // A lit inner edge, inset by the corner radius so it never crosses the rounding.
+        let inset = t.metrics().control_radius.min(6) as f32;
+        let top = resp.rect.top() + 1.0;
+        ui.painter().hline(
+            resp.rect.x_range().shrink(inset),
+            top,
+            Stroke::new(1.0, fade(t.surface_highlight())),
+        );
+    }
     paint_centred(ui, resp.rect, galley, fade(paint.ink));
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text));
 }
@@ -181,13 +246,16 @@ pub fn button_width(ui: &Ui, text: &str, min_width: f32) -> f32 {
 pub fn button(ui: &mut Ui, text: &str, kind: Kind, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, t.ink);
-    let size = vec2((galley.size().x + 28.0).max(width), theme::CONTROL_H);
+    let size = vec2((galley.size().x + 28.0).max(width), t.metrics().control_h);
     let (_, resp) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;
 
-    let paint = kind_paint(kind, &t, hovered, false);
-    paint_kind_button(ui, &resp, galley, text, enabled, paint);
+    // One eased hover value per button: the transition lives in the theme layer, not in views.
+    let hover_seconds = if theme::motion::scroll_in_progress(ui.ctx()) { 0.0 } else { t.metrics().motion.fast };
+    let hover = theme::motion::animate_bool(ui.ctx(), resp.id.with("kind_hover"), hovered, hover_seconds);
+    let paint = kind_paint(kind, &t, hover, false);
+    paint_kind_button(ui, &t, &resp, galley, text, enabled, paint);
     finish_kind_button(resp, enabled)
 }
 
@@ -203,11 +271,12 @@ pub fn full_width_action_button(
     let p = ui.painter();
 
     let border = if is_hov {
-        Stroke::new(1.0, t.accent_ink)
+        Stroke::new(t.metrics().hairline_w, t.accent_ink)
     } else {
-        Stroke::new(1.0, t.muted.gamma_multiply(0.35))
+        Stroke::new(t.metrics().hairline_w, t.muted.gamma_multiply(0.35))
     };
-    p.rect_stroke(rect, CornerRadius::same(2), border, egui::StrokeKind::Inside);
+    let radius = CornerRadius::same(t.metrics().control_radius);
+    p.rect_stroke(rect, radius, border, egui::StrokeKind::Inside);
 
     let text_color = if is_hov { t.accent_ink } else { t.faint };
     let plus_galley = p.layout_no_wrap(
@@ -235,11 +304,11 @@ pub fn full_width_action_button(
     resp.clicked()
 }
 
-/// Precision toggle switch with smooth animated track and thumb, and hover feedback.
+/// Toggle switch with an animated track and thumb, sized and voiced by the active skin.
 pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
     let t = Tokens::get(ui.ctx());
-    let width = 38.0;
-    let height = 20.0;
+    let metrics = t.metrics();
+    let (width, height) = (metrics.toggle_w, metrics.toggle_h);
     let (rect, mut resp) = ui.allocate_exact_size(vec2(width, height), Sense::click());
     if resp.clicked() {
         *on = !*on;
@@ -248,27 +317,36 @@ pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;
 
-    // Smooth ease-out animation for on/off transition
-    let how_on = ui.ctx().animate_bool_responsive(resp.id, *on);
+    // The skin owns the duration, the OS owns whether motion is allowed at all.
+    let how_on = theme::motion::animate_bool(
+        ui.ctx(),
+        resp.id,
+        *on,
+        metrics.motion.fast,
+    );
 
     let bg_color = {
-        let off_bg = if hovered { t.line_strong } else { t.sunken };
+        let off_bg = if hovered {
+            t.line_strong
+        } else {
+            if metrics.skin == UiSkin::Modern {
+                t.raised()
+            } else {
+                t.sunken
+            }
+        };
         let on_bg = if hovered { t.accent.gamma_multiply(0.85) } else { t.accent };
-        let r = egui::lerp((off_bg.r() as f32)..=(on_bg.r() as f32), how_on) as u8;
-        let g = egui::lerp((off_bg.g() as f32)..=(on_bg.g() as f32), how_on) as u8;
-        let b = egui::lerp((off_bg.b() as f32)..=(on_bg.b() as f32), how_on) as u8;
-        let a = egui::lerp((off_bg.a() as f32)..=(on_bg.a() as f32), how_on) as u8;
-        Color32::from_rgba_unmultiplied(r, g, b, a)
+        off_bg.lerp_to_gamma(on_bg, how_on)
     };
 
     let border_stroke = if how_on >= 0.98 {
         Stroke::NONE
     } else {
         let border_color = if hovered { t.line_strong } else { t.line };
-        Stroke::new(1.0, border_color.gamma_multiply(1.0 - how_on))
+        Stroke::new(metrics.hairline_w, border_color.gamma_multiply(1.0 - how_on))
     };
 
-    let corner_radius = CornerRadius::same(height as u8 / 2);
+    let corner_radius = CornerRadius::same((height * 0.5) as u8);
     ui.painter().rect(rect, corner_radius, bg_color, border_stroke, egui::StrokeKind::Inside);
 
     let thumb_radius = (height - 6.0) / 2.0;
@@ -303,8 +381,10 @@ pub fn compact_button(ui: &mut Ui, text: &str, kind: Kind, height: f32) -> Respo
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;
 
-    let paint = kind_paint(kind, &t, hovered, true);
-    paint_kind_button(ui, &resp, galley, text, enabled, paint);
+    let hover_seconds = if theme::motion::scroll_in_progress(ui.ctx()) { 0.0 } else { t.metrics().motion.fast };
+    let hover = theme::motion::animate_bool(ui.ctx(), resp.id.with("kind_hover"), hovered, hover_seconds);
+    let paint = kind_paint(kind, &t, hover, true);
+    paint_kind_button(ui, &t, &resp, galley, text, enabled, paint);
     finish_kind_button(resp, enabled)
 }
 
@@ -325,11 +405,26 @@ impl<'a> Cell<'a> {
     }
 }
 
-/// Mutually exclusive options in a row of hairline cells. The chosen one is inverted.
+/// Mutually exclusive options in a row of cells. The classic generation inverts the chosen
+/// cell; the modern one slides a lifted pill to it and drops the internal dividers.
 pub fn cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, Cell<'_>)]) -> bool {
     let t = Tokens::get(ui.ctx());
+    let metrics = t.metrics();
+    let classic = metrics.skin == UiSkin::Classic;
+    let radius = CornerRadius::same(metrics.control_radius);
     let mut changed = false;
-    let mut rects = Vec::with_capacity(options.len());
+    /// One laid-out segment: its rect, its label, an optional count and the ink it must be
+    /// painted with. Painting happens after the sliding indicator, so the pill stays behind
+    /// the text.
+    struct PlacedCell {
+        rect: Rect,
+        label: Arc<Galley>,
+        count: Option<(Arc<Galley>, Color32)>,
+        ink: Color32,
+        on: bool,
+    }
+
+    let mut placed: Vec<PlacedCell> = Vec::with_capacity(options.len());
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -338,28 +433,24 @@ pub fn cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, Cel
             let label = hud_galley(ui, cell.label, t.ink);
             let count = cell.count.map(|(n, highlight)| {
                 let c = if on {
-                    t.invert_fg.gamma_multiply(0.65)
+                    if classic {
+                        t.invert_fg.gamma_multiply(0.65)
+                    } else {
+                        t.muted
+                    }
                 } else {
                     highlight.filter(|_| n > 0).unwrap_or(t.faint)
                 };
                 (hud_galley(ui, &n.to_string(), c), c)
             });
             let w = label.size().x + count.as_ref().map_or(0.0, |(g, _)| g.size().x + 8.0) + 24.0;
-            let (rect, resp) = ui.allocate_exact_size(vec2(w, theme::CONTROL_H), Sense::click());
+            let (rect, resp) = ui.allocate_exact_size(vec2(w, metrics.control_h), Sense::click());
             let hovered = resp.hovered();
 
-            let (fill, ink) = match (on, hovered) {
-                (true, _) => (t.invert_bg, t.invert_fg),
-                (false, true) => (t.sunken, t.ink_strong),
-                (false, false) => (Color32::TRANSPARENT, t.muted),
-            };
-
-            ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
-            let text_rect = rect.shrink2(vec2(12.0, 0.0));
-            let label_w = label.size().x;
-            paint_left(ui, text_rect, label, ink);
-            if let Some((g, c)) = count {
-                paint_left(ui, text_rect.with_min_x(text_rect.left() + label_w + 8.0), g, c);
+            let ink = if on || hovered { t.ink_strong } else { t.muted };
+            if classic && (on || hovered) {
+                let fill = if on { t.invert_bg } else { t.sunken };
+                ui.painter().rect_filled(rect, radius, fill);
             }
 
             let resp = if !cell.tip.trim().is_empty() {
@@ -371,16 +462,32 @@ pub fn cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut T, options: &[(T, Cel
                 *value = *opt;
                 changed = true;
             }
-            rects.push(rect);
+            let ink = if on && classic { t.invert_fg } else { ink };
+            placed.push(PlacedCell { rect, label, count, ink, on });
         }
     });
 
-    if let (Some(first), Some(last)) = (rects.first(), rects.last()) {
+    for cell in &placed {
+        // The modern chosen segment is simply lifted; there is no slide between options.
+        if cell.on && !classic {
+            ui.painter().rect_filled(cell.rect.shrink(1.0), radius, t.raised_hover());
+        }
+        let text_rect = cell.rect.shrink2(vec2(12.0, 0.0));
+        let label_w = cell.label.size().x;
+        paint_left(ui, text_rect, cell.label.clone(), cell.ink);
+        if let Some((g, c)) = &cell.count {
+            paint_left(ui, text_rect.with_min_x(text_rect.left() + label_w + 8.0), g.clone(), *c);
+        }
+    }
+
+    if let (Some(first), Some(last)) = (placed.first(), placed.last()) {
         let p = ui.painter();
-        p.rect_stroke(first.union(*last), CornerRadius::ZERO, t.hairline(), egui::StrokeKind::Inside);
-        let (top, bottom) = (first.top(), first.bottom());
-        for r in rects.iter().skip(1) {
-            p.vline(r.left(), top..=bottom, t.hairline());
+        p.rect_stroke(first.rect.union(last.rect), radius, t.hairline(), egui::StrokeKind::Inside);
+        if classic {
+            let (top, bottom) = (first.rect.top(), first.rect.bottom());
+            for cell in placed.iter().skip(1) {
+                p.vline(cell.rect.left(), top..=bottom, t.hairline());
+            }
         }
     }
 
@@ -608,28 +715,82 @@ fn paint_font_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, c
     );
 }
 
-/// Small outlined square button with a drawn glyph (X, Clone, Expand, More, Reset); inverts on hover.
+/// Small outlined icon button with a drawn glyph (X, Clone, Expand, More, Reset).
 pub fn glyph_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
-    let size = if ui.spacing().interact_size.y < theme::CONTROL_H {
+    let control_h = Tokens::get(ui.ctx()).metrics().control_h;
+    let size = if ui.spacing().interact_size.y < control_h {
         ui.spacing().interact_size.y
     } else {
-        theme::CONTROL_H
+        control_h
     };
     glyph_button_custom(ui, glyph, size, false, tip)
 }
 
-/// Small outlined square button with custom size and active state.
+/// The same icon button without a resting surface: only the hover paints. Used by dialog
+/// headers and title bars, where a column of grey squares would compete with the content.
+pub fn glyph_button_quiet(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
+    let size = Tokens::get(ui.ctx()).metrics().control_h;
+    glyph_button_impl(ui, glyph, size, false, true, tip)
+}
+
+/// Icon button with custom size and active state.
 pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, tip: &str) -> Response {
+    glyph_button_impl(ui, glyph, size, active, false, tip)
+}
+
+fn glyph_button_impl(
+    ui: &mut Ui,
+    glyph: Glyph,
+    size: f32,
+    active: bool,
+    quiet: bool,
+    tip: &str,
+) -> Response {
     let t = Tokens::get(ui.ctx());
+    let metrics = t.metrics();
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let hovered = resp.hovered();
     let p = ui.painter();
-    let (fill, stroke, c) = if active || hovered {
+    let (fill, stroke, c) = if metrics.skin == UiSkin::Modern {
+        if quiet {
+            // No resting chrome at all; the hover supplies both the tint and the outline.
+            if hovered {
+                (
+                    t.glass_button(1.0),
+                    Stroke::new(metrics.hairline_w, t.line_strong),
+                    t.ink_strong,
+                )
+            } else {
+                (Color32::TRANSPARENT, Stroke::NONE, t.ink)
+            }
+        } else if active {
+            (
+                t.glass_button(1.0),
+                Stroke::new(metrics.hairline_w, t.line_strong),
+                t.ink_strong,
+            )
+        } else {
+            (
+                t.glass_button(if hovered { 1.0 } else { 0.0 }),
+                Stroke::new(
+                    metrics.hairline_w,
+                    t.line.lerp_to_gamma(t.line_strong, if hovered { 1.0 } else { 0.0 }),
+                ),
+                if hovered { t.ink_strong } else { t.ink },
+            )
+        }
+    } else if active || hovered {
         (t.invert_bg, Stroke::NONE, t.invert_fg)
     } else {
-        (t.bg, Stroke::new(1.0, t.line_strong), t.ink)
+        (t.bg, Stroke::new(metrics.hairline_w, t.line_strong), t.ink)
     };
-    p.rect(rect, CornerRadius::ZERO, fill, stroke, egui::StrokeKind::Inside);
+    p.rect(
+        rect,
+        CornerRadius::same(metrics.control_radius),
+        fill,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
     let m = rect.center();
     match glyph {
         Glyph::Close => paint_line_glyph(p, glyph, m, (size * 0.15).clamp(3.5, 4.5), Stroke::new(1.5, c)),
@@ -648,7 +809,7 @@ pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, t
 
 /// A precision drag handle with 6 studio dots; senses click and drag.
 pub fn drag_handle(ui: &mut Ui, tip: &str) -> Response {
-    drag_handle_custom(ui, theme::CONTROL_H, tip)
+    drag_handle_custom(ui, theme::control_height(ui), tip)
 }
 
 /// A precision drag handle with customizable height and 6 studio dots; senses click and drag.
@@ -665,7 +826,7 @@ pub fn drag_handle_custom_interactive(ui: &mut Ui, height: f32, tip: &str, inter
     let dragged = resp.dragged() && interactive;
     let p = ui.painter();
     if hovered || dragged {
-        p.rect_filled(rect, CornerRadius::ZERO, t.sunken);
+        p.rect_filled(rect, CornerRadius::same(t.metrics().control_radius), t.sunken);
     }
     let c = if dragged {
         t.accent_ink
@@ -700,7 +861,7 @@ pub fn drag_handle_custom_interactive(ui: &mut Ui, height: f32, tip: &str, inter
     resp.on_hover_cursor(cursor)
 }
 
-/// App wordmark in display font with accent color suffix, vertically centered in container of given height.
+/// App wordmark in the display font, vertically centered in a container of the given height.
 pub fn wordmark(ui: &mut Ui, prefix: &str, suffix: &str, size: f32, height: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let mut job = egui::text::LayoutJob::default();
@@ -731,7 +892,7 @@ pub fn checkbox_group<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -
     ret
 }
 
-/// A compact checkbox that does not inflate to 34px CONTROL_H.
+/// A compact checkbox that does not inflate to the skin's control height.
 pub fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<egui::WidgetText>) -> Response {
     let old_h = ui.spacing().interact_size.y;
     ui.spacing_mut().interact_size.y = 20.0;
@@ -765,34 +926,67 @@ pub fn checkbox_row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
 }
 
 /// A sleek, rounded catalog search input with an embedded magnifying glass icon at the start,
-/// corner radius matching catalog cards (CornerRadius::same(6)), an integrated clear button,
-/// and subtle focus highlighting.
-pub fn catalog_search_box(
+/// a field radius from the active skin metrics, an integrated clear button, and subtle focus
+/// highlighting. It fills the available width.
+pub fn catalog_search_box(ui: &mut Ui, query: &mut String, hint_text: &str) -> Response {
+    let search_w = ui.available_width().max(60.0);
+    catalog_search_box_sized(ui, query, hint_text, search_w)
+}
+
+/// The same search field with an explicit width, for toolbars that must not stretch. The height
+/// always comes from the active skin, like every other control.
+pub fn catalog_search_box_sized(
     ui: &mut Ui,
     query: &mut String,
     hint_text: &str,
+    search_w: f32,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
     let search_id = ui.scope_id().with("catalog_search_box_input");
     let is_focused = ui.ctx().memory(|m| m.has_focus(search_id));
-
-    let search_w = ui.available_width().max(60.0);
-    let (box_rect, box_resp) = ui.allocate_exact_size(vec2(search_w, 32.0), Sense::click());
+    let field_h = t.metrics().control_h.max(24.0);
+    let (box_rect, box_resp) = ui.allocate_exact_size(vec2(search_w, field_h), Sense::click());
     if box_resp.clicked() {
         ui.ctx().memory_mut(|m| m.request_focus(search_id));
     }
 
     let is_hovered = box_resp.hovered();
+    let modern = t.metrics().skin == UiSkin::Modern;
     let border_stroke = if is_focused {
-        Stroke::new(1.0, t.accent_ink)
+        if modern {
+            // A wider focus ring instead of a colour-only change: the ring stays readable on
+            // the layered surface.
+            Stroke::new(2.0, t.accent.gamma_multiply(0.65))
+        } else {
+            Stroke::new(1.0, t.accent_ink)
+        }
     } else if is_hovered {
-        Stroke::new(1.0, t.line_strong)
+        Stroke::new(t.metrics().hairline_w, t.line_strong)
     } else {
-        Stroke::new(1.0, t.line)
+        // The same resting border as a secondary button, so a field reads as the same material.
+        Stroke::new(
+            t.metrics().hairline_w,
+            t.line.lerp_to_gamma(t.line_strong, if modern { 0.55 } else { 0.0 }),
+        )
     };
 
-    ui.painter().rect_filled(box_rect, CornerRadius::same(6), t.bg);
-    ui.painter().rect_stroke(box_rect, CornerRadius::same(6), border_stroke, egui::StrokeKind::Inside);
+    let radius = t.field_corner();
+    let fill = if modern {
+        // Exactly the secondary-button tint: a field and a button are the same material.
+        t.glass_button(if is_focused { 0.9 } else if is_hovered { 0.45 } else { 0.0 })
+    } else {
+        t.bg
+    };
+    ui.painter().rect_filled(box_rect, radius, fill);
+    ui.painter().rect_stroke(box_rect, radius, border_stroke, egui::StrokeKind::Inside);
+    if modern {
+        let inset = (t.metrics().field_radius as f32 * 0.6).min(6.0);
+        ui.painter().hline(
+            box_rect.x_range().shrink(inset),
+            box_rect.top() + 1.0,
+            Stroke::new(1.0, t.surface_highlight()),
+        );
+    }
 
     // Magnifying glass icon on left, perfectly centered vertically
     let icon_pos = pos2(box_rect.left() + 11.0, box_rect.center().y);
@@ -808,25 +1002,34 @@ pub fn catalog_search_box(
     let has_query = !query.is_empty();
     let clear_w = if has_query { 28.0 } else { 10.0 };
 
-    // Text edit area between icon and clear button, spanning full height to center text vertically
+    // The text edit lives in a child layout that centres its row vertically. The widget itself
+    // keeps its natural line height, so no padding guess can push the text to the bottom edge.
     let text_rect = Rect::from_min_max(
-        pos2(box_rect.left() + 32.0, box_rect.top() + 1.0),
-        pos2(box_rect.right() - clear_w, box_rect.bottom() + 1.0),
+        pos2(box_rect.left() + 32.0, box_rect.top()),
+        pos2(box_rect.right() - clear_w, box_rect.bottom()),
     );
-
-    let edit_resp = ui.put(
-        text_rect,
+    let mut edit_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(text_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    // `add_sized` forces the edit to the text area's size, so its own layout cannot make it
+    // taller than the field and drag the line downwards.
+    let edit_resp = edit_ui.add_sized(
+        text_rect.size(),
         egui::TextEdit::singleline(query)
             .id(search_id)
             .hint_text(
-                egui::RichText::new(hint_text)
+                egui::RichText::new(hint_text.to_uppercase())
                     .family(theme::medium())
-                    .size(12.5)
+                    .size(11.0)
                     .color(t.faint),
             )
-            .font(egui::FontId::new(12.5, theme::medium()))
+            .font(egui::FontId::new(11.0, theme::medium()))
             .text_color(t.ink)
             .frame(egui::Frame::NONE)
+            .margin(vec2(0.0, 0.0))
+            .desired_width(text_rect.width().max(10.0))
             .align(egui::Align2::LEFT_CENTER),
     );
 
@@ -839,7 +1042,7 @@ pub fn catalog_search_box(
         let clear_resp = ui.interact(clear_rect, ui.scope_id().with("catalog_search_clear"), Sense::click());
         let clear_hovered = clear_resp.hovered();
         if clear_hovered {
-            ui.painter().rect_filled(clear_rect, CornerRadius::same(3), t.sunken);
+            ui.painter().rect_filled(clear_rect, t.chip_corner(), t.sunken);
         }
         ui.painter().text(
             clear_rect.center(),
@@ -861,30 +1064,92 @@ pub fn catalog_search_box(
 mod tests {
     use super::*;
 
+    /// The search hint must sit on the vertical centre of the field box, in any container.
+    #[test]
+    fn search_hint_is_vertically_centred_in_the_field() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::install_fonts(&ctx);
+        crate::gui::theme::apply_theme(
+            &ctx,
+            crate::config::AppTheme::Dark,
+            crate::config::UiSkin::Modern,
+            None,
+        );
+
+        let mut query = String::new();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(420.0, 120.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                ui.add_space(40.0);
+                let _ = super::catalog_search_box_sized(ui, &mut query, "search actions", 360.0);
+            },
+        );
+        output.textures_delta.clear();
+
+        let field_centre_y = 40.0 + 16.0;
+        let mut seen = false;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                if text.galley.text().to_lowercase().contains("search actions") {
+                    let centre = text.pos.y + text.galley.size().y * 0.5;
+                    assert!(
+                        (centre - field_centre_y).abs() <= 3.0,
+                        "hint centre {centre} is not the field centre {field_centre_y}"
+                    );
+                    seen = true;
+                }
+            }
+        }
+        assert!(seen, "the hint must be rendered");
+    }
+
+    #[test]
+    fn modern_primary_reacts_to_hover_in_both_palettes() {
+        for theme in [
+            crate::config::AppTheme::Dark,
+            crate::config::AppTheme::Light,
+        ] {
+            let t = Tokens::of(theme, UiSkin::Modern);
+            let rest = kind_paint(Kind::Primary, &t, 0.0, false);
+            let hovered = kind_paint(Kind::Primary, &t, 1.0, false);
+            assert_ne!(
+                rest.fill, hovered.fill,
+                "the primary button must show hover feedback in {theme:?}"
+            );
+            assert_eq!(rest.ink, hovered.ink, "the label colour stays readable");
+        }
+    }
+
     #[test]
     fn kind_paint_resolves_every_variant_for_both_button_sizes() {
         let t = Tokens::DARK;
 
-        let primary = kind_paint(Kind::Primary, &t, false, false);
+        let primary = kind_paint(Kind::Primary, &t, 0.0, false);
         assert_eq!(primary.fill, t.invert_bg);
         assert_eq!(primary.ink, t.invert_fg);
         assert_eq!(primary.stroke, Stroke::NONE);
         // The compact helper used to paint Primary with the accent colour instead.
-        let primary_compact = kind_paint(Kind::Primary, &t, false, true);
+        let primary_compact = kind_paint(Kind::Primary, &t, 0.0, true);
         assert_eq!(primary_compact.fill, t.invert_bg);
         assert_eq!(primary_compact.ink, t.invert_fg);
-        assert_ne!(kind_paint(Kind::Primary, &t, true, false).fill, t.invert_bg);
+        assert_ne!(kind_paint(Kind::Primary, &t, 1.0, false).fill, t.invert_bg);
 
-        let secondary = kind_paint(Kind::Secondary, &t, false, false);
+        let secondary = kind_paint(Kind::Secondary, &t, 0.0, false);
         assert_eq!(secondary.fill, t.bg);
         assert_eq!(secondary.ink, t.ink);
         assert_eq!(secondary.stroke.width, 1.0);
-        assert_eq!(kind_paint(Kind::Secondary, &t, false, true).fill, t.sunken);
-        let secondary_hovered = kind_paint(Kind::Secondary, &t, true, false);
+        assert_eq!(kind_paint(Kind::Secondary, &t, 0.0, true).fill, t.sunken);
+        let secondary_hovered = kind_paint(Kind::Secondary, &t, 1.0, false);
         assert_eq!(secondary_hovered.fill, t.invert_bg);
         assert_eq!(secondary_hovered.ink, t.invert_fg);
 
-        let danger = kind_paint(Kind::Danger, &t, false, true);
+        let danger = kind_paint(Kind::Danger, &t, 0.0, true);
         assert_eq!(danger.fill, t.bad);
         assert_eq!(danger.ink, Color32::WHITE);
     }

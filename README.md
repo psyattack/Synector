@@ -183,7 +183,7 @@ directory for portable or isolated runs.
 
 | File / folder | Contents |
 |---|---|
-| `settings.json` | Window geometry, tray visibility, daemon masking, language, theme and update preferences |
+| `settings.json` | Window geometry, tray visibility, daemon masking, language, palette, skin, accent and update preferences |
 | `rules.json` | Automation rule definitions (runtime counters are written zeroed) |
 | `library.json` | Overlay and macro presets |
 | `runtime.json` | Per-rule execution counters, last-run timestamps and custom quota-window anchors |
@@ -209,7 +209,9 @@ quarantine of a section that fails to parse, read caches and coalescing rules ar
 | `language` | `"english"` or `"russian"` (default `"english"`) | Interface language |
 | `check_updates_on_startup` | boolean (default `true`) | Check GitHub for a new release at startup |
 | `auto_install_updates` | boolean (default `false`) | Install a downloaded update without asking |
-| `theme` | `"dark"`, `"light"` or `"chocolate"` (default `"dark"`) | Interface palette |
+| `theme` | `"dark"` or `"light"` (default `"dark"`) | Interface palette |
+| `ui_skin` | `"modern"` or `"classic"` (default `"modern"`) | Interface generation: the modern look or the original studio one |
+| `accent` | string, optional | Custom accent colour (`"#rrggbb"`) for selection, focus rings and active controls; omitted keeps the palette default |
 
 ## Rule authoring from the CLI
 

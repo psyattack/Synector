@@ -65,7 +65,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
             egui::Frame::new()
                 .fill(t.sunken)
                 .stroke(t.hairline())
-                .corner_radius(CornerRadius::ZERO)
+                .corner_radius(t.card_corner())
                 .inner_margin(egui::Margin::symmetric(14, 12))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
@@ -82,9 +82,9 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                             let is_hovered = icon_resp.hovered();
                             let p = ui.painter();
 
-                            p.rect_filled(icon_rect, CornerRadius::ZERO, if is_hovered { t.sunken } else { t.bg });
+                            p.rect_filled(icon_rect, t.chip_corner(), if is_hovered { t.sunken } else { t.bg });
                             let stroke_color = if is_hovered { t.accent_ink } else { t.line_strong };
-                            p.rect_stroke(icon_rect, CornerRadius::ZERO, Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
+                            p.rect_stroke(icon_rect, t.chip_corner(), Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
 
                             let mut rendered = false;
                             if let Some(path) = &rule.custom_icon_path {

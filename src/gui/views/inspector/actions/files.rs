@@ -114,7 +114,7 @@ pub(crate) fn render_archive_fields(
                 egui::TextEdit::singleline(source_path)
                     .hint_text(src_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );
@@ -156,7 +156,7 @@ pub(crate) fn render_archive_fields(
                 egui::TextEdit::singleline(destination_path)
                     .hint_text(dst_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );
@@ -246,7 +246,7 @@ pub(crate) fn render_file_system_fields(
                 egui::TextEdit::singleline(path)
                     .hint_text(p_hint)
                     .desired_width(ui.available_width())
-                    .min_size(vec2(0.0, theme::CONTROL_H))
+                    .min_size(vec2(0.0, theme::control_height(ui)))
                     .align(egui::Align2::LEFT_CENTER)
                     .margin(vec2(10.0, 8.0)),
             );
@@ -274,7 +274,7 @@ pub(crate) fn render_file_system_fields(
                     egui::TextEdit::singleline(&mut tgt)
                         .hint_text(loc.inspector_hint_fs_target_path)
                         .desired_width(ui.available_width())
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(10.0, 8.0)),
                 ).changed() {

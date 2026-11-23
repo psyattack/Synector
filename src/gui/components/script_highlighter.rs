@@ -4,7 +4,7 @@
 
 use egui::{Color32, FontId, TextFormat};
 use egui::text::LayoutJob;
-use crate::gui::theme::{self, Tokens};
+use crate::gui::theme::{self, Palette, Tokens};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScriptLanguage {
@@ -596,12 +596,13 @@ pub fn highlight_script(
     job
 }
 
-/// Identity of a tokenized job in the highlight cache.
+/// Identity of a tokenized job in the highlight cache. Highlighting depends on the colours,
+/// not on the geometry, so the key carries the palette rather than the whole token set.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 struct HighlightKey {
     lang: ScriptLanguage,
     font_size_bits: u32,
-    tokens: Tokens,
+    palette: Palette,
     text_hash: u64,
     text_len: usize,
 }
@@ -673,7 +674,7 @@ fn cached_highlight(
     let key = HighlightKey {
         lang,
         font_size_bits: font_size.to_bits(),
-        tokens: *t,
+        palette: t.palette(),
         text_hash: hasher.finish(),
         text_len: text.len(),
     };
@@ -837,7 +838,7 @@ mod tests {
         let key = |text_hash: u64| HighlightKey {
             lang: ScriptLanguage::Lua,
             font_size_bits: 12.0f32.to_bits(),
-            tokens: Tokens::DARK,
+            palette: Tokens::DARK.palette(),
             text_hash,
             text_len: 1,
         };

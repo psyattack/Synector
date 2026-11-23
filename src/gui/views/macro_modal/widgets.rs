@@ -25,7 +25,7 @@ pub(super) fn ghost_icon_button(ui: &mut Ui, glyph: widgets::Glyph, tip: &str, i
         } else {
             t.accent_ink.gamma_multiply(0.12)
         };
-        p.rect_filled(rect, CornerRadius::same(2), bg_hover);
+        p.rect_filled(rect, t.inset_corner(), bg_hover);
     }
 
     let glyph_color = if hovered {
@@ -55,11 +55,12 @@ pub(super) fn ghost_icon_button(ui: &mut Ui, glyph: widgets::Glyph, tip: &str, i
 }
 
 pub(super) fn render_chip(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
+    let t = Tokens::get(ui.ctx());
     let chip_h = 19.0;
     let text_w = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::new(9.5, theme::mono_bold()), fg).size().x;
     let (rect, _) = ui.allocate_exact_size(vec2(text_w + 12.0, chip_h), Sense::hover());
-    ui.painter().rect_filled(rect, CornerRadius::same(2), bg);
-    ui.painter().rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
+    ui.painter().rect_filled(rect, t.inset_corner(), bg);
+    ui.painter().rect_stroke(rect, t.inset_corner(), Stroke::new(1.0, fg.gamma_multiply(0.7)), egui::StrokeKind::Inside);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -70,6 +71,7 @@ pub(super) fn render_chip(ui: &mut Ui, label: &str, fg: Color32, bg: Color32) {
 }
 
 pub(super) fn render_clickable_chip(ui: &mut Ui, label: &str, fg: Color32, bg: Color32, tooltip: &str) -> bool {
+    let t = Tokens::get(ui.ctx());
     let chip_h = 19.0;
     let text_w = ui.painter().layout_no_wrap(label.to_string(), egui::FontId::new(9.5, theme::mono_bold()), fg).size().x;
     let (rect, resp) = ui.allocate_exact_size(vec2(text_w + 12.0, chip_h), Sense::click());
@@ -78,8 +80,8 @@ pub(super) fn render_clickable_chip(ui: &mut Ui, label: &str, fg: Color32, bg: C
     let border_color = if hovered { fg } else { fg.gamma_multiply(0.7) };
     let bg_color = if hovered { bg.blend(fg.gamma_multiply(0.20)) } else { bg };
 
-    ui.painter().rect_filled(rect, CornerRadius::same(2), bg_color);
-    ui.painter().rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+    ui.painter().rect_filled(rect, t.inset_corner(), bg_color);
+    ui.painter().rect_stroke(rect, t.inset_corner(), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
@@ -128,7 +130,7 @@ pub(super) fn render_compact_cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut
                 (false, false) => (Color32::TRANSPARENT, t.muted),
             };
 
-            ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+            ui.painter().rect_filled(rect, t.inset_corner(), fill);
             let text_rect = rect.shrink2(vec2(6.0, 0.0));
             widgets::paint_left(ui, text_rect, galley, ink);
             let resp = if !cell.tip.trim().is_empty() {
@@ -146,7 +148,7 @@ pub(super) fn render_compact_cells<T: PartialEq + Copy>(ui: &mut Ui, value: &mut
 
     if let (Some(first), Some(last)) = (rects.first(), rects.last()) {
         let union = first.union(*last);
-        ui.painter().rect_stroke(union, CornerRadius::same(2), t.hairline(), egui::StrokeKind::Inside);
+        ui.painter().rect_stroke(union, t.inset_corner(), t.hairline(), egui::StrokeKind::Inside);
     }
 
     changed

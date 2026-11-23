@@ -3,7 +3,7 @@
 //! with HTML & Markdown parsing, clickable links, and one-click update installation.
 
 use egui::{
-    CornerRadius, RichText, Ui, vec2,
+    RichText, Ui, vec2,
 };
 use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets::{self, Kind};
@@ -321,7 +321,7 @@ fn render_code_block(ui: &mut Ui, code: &str, t: &Tokens) {
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
-        .corner_radius(CornerRadius::ZERO)
+        .corner_radius(t.card_corner())
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

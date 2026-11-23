@@ -98,13 +98,13 @@ pub(crate) fn render_macro_fields(
         let p = ui.painter();
         let bg = if hovered { t.sunken } else { t.bg };
         let border_color = if hovered { t.accent_ink } else { t.hairline().color };
-        p.rect_filled(rect, CornerRadius::same(2), bg);
-        p.rect_stroke(rect, CornerRadius::same(2), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
+        p.rect_filled(rect, t.inset_corner(), bg);
+        p.rect_stroke(rect, t.inset_corner(), Stroke::new(1.0, border_color), egui::StrokeKind::Inside);
 
         // Icon chip on left
         let icon_box = Rect::from_min_size(rect.min + vec2(8.0, 7.0), vec2(30.0, 30.0));
         let icon_bg = if hovered { t.accent_ink.gamma_multiply(0.22) } else { t.accent_ink.gamma_multiply(0.12) };
-        p.rect_filled(icon_box, CornerRadius::same(2), icon_bg);
+        p.rect_filled(icon_box, t.inset_corner(), icon_bg);
         p.text(
             icon_box.center(),
             egui::Align2::CENTER_CENTER,

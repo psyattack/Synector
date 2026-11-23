@@ -7,8 +7,7 @@
 //! element list and the macro timeline work by index — so no session type is shared.
 
 use egui::{
-    emath::easing, pos2, vec2, CornerRadius, Id, LayerId, Order, Painter, Pos2, Rect, Sense, Stroke,
-    Ui,
+    pos2, vec2, CornerRadius, Id, LayerId, Order, Painter, Pos2, Rect, Sense, Stroke, Ui,
 };
 use crate::gui::theme::{self, Tokens};
 
@@ -115,12 +114,9 @@ pub fn drop_line(
     style: &DropLineStyle,
     t: &Tokens,
 ) -> Option<(Rect, f32)> {
-    let anim = ui.ctx().animate_bool_with_time_and_easing(
-        anim_id,
-        targeted,
-        style.anim_secs,
-        easing::cubic_out,
-    );
+    // A drop indicator is motion like any other: the platform may switch it off entirely.
+    let anim =
+        crate::gui::theme::motion::animate_bool(ui.ctx(), anim_id, targeted, style.anim_secs);
     if anim <= 0.001 {
         return None;
     }

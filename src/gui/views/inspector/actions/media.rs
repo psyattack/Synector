@@ -70,7 +70,7 @@ pub(crate) fn render_play_sound_fields(
                     egui::TextEdit::singleline(file_path)
                         .hint_text(loc.inspector_hint_sound_file)
                         .desired_width(ui.available_width())
-                        .min_size(vec2(0.0, theme::CONTROL_H))
+                        .min_size(vec2(0.0, theme::control_height(ui)))
                         .align(egui::Align2::LEFT_CENTER)
                         .margin(vec2(10.0, 8.0)),
                 );
@@ -255,7 +255,7 @@ pub(crate) fn render_default_device_fields(
         egui::TextEdit::singleline(device_name)
             .hint_text(dev_hint)
             .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H))
+            .min_size(vec2(0.0, theme::control_height(ui)))
             .align(egui::Align2::LEFT_CENTER)
             .margin(vec2(10.0, 8.0)),
     );

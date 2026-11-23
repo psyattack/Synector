@@ -4,7 +4,7 @@
 //! format and the effects of the returned intents (load/delete/save with its toast and close
 //! logic); this module only renders the save-name field, the search field and the filtered list.
 
-use egui::{vec2, CornerRadius, FontId, RichText, Sense};
+use egui::{vec2, FontId, RichText, Sense};
 
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::theme::{self, Tokens};
@@ -53,7 +53,7 @@ pub(crate) fn render_preset_picker(
             egui::TextEdit::singleline(save_name)
                 .hint_text(loc.presets_save_placeholder)
                 .desired_width(text_w)
-                .min_size(vec2(0.0, theme::CONTROL_H))
+                .min_size(vec2(0.0, theme::control_height(ui)))
         );
         if widgets::button(ui, loc.presets_save_btn, Kind::Primary, btn_w).clicked() {
             save_requested = true;
@@ -64,13 +64,8 @@ pub(crate) fn render_preset_picker(
     widgets::rule(ui, 1.0);
     ui.add_space(10.0);
 
-    // 2. Search (at top of list)
-    ui.add(
-        egui::TextEdit::singleline(search)
-            .hint_text(loc.presets_search_placeholder)
-            .desired_width(ui.available_width())
-            .min_size(vec2(0.0, theme::CONTROL_H - 4.0))
-    );
+    // 2. Search (at top of list), on the shared field style.
+    widgets::catalog_search_box(ui, search, loc.presets_search_placeholder);
     ui.add_space(10.0);
 
     // 3. Presets List
@@ -94,8 +89,8 @@ pub(crate) fn render_preset_picker(
                     ui.scope(|ui| {
                         let row_h = 52.0;
                         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::hover());
-                        ui.painter().rect_filled(rect, CornerRadius::same(3), t.sunken);
-                        ui.painter().rect_stroke(rect, CornerRadius::same(3), t.hairline(), egui::StrokeKind::Inside);
+                        ui.painter().rect_filled(rect, t.inset_corner(), t.sunken);
+                        ui.painter().rect_stroke(rect, t.inset_corner(), t.hairline(), egui::StrokeKind::Inside);
 
                         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                             egui::Frame::new().inner_margin(egui::Margin::symmetric(14, 8)).show(ui, |ui| {
