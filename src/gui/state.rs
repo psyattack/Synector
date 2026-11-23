@@ -87,6 +87,8 @@ pub struct GuiState {
     pub(crate) show_changelog_modal: bool,
     pub(crate) show_guide_modal: bool,
     pub(crate) guide_selected_topic: usize,
+    /// Set when the guide switches chapter, so its content scroll area returns to the top.
+    pub(crate) guide_scroll_to_top: bool,
     pub(crate) analytics_log_filter: String,
     pub(crate) group_full_presses: bool,
     pub(crate) undo_stack: Vec<Rule>,
@@ -175,6 +177,7 @@ impl GuiState {
             show_changelog_modal: false,
             show_guide_modal: false,
             guide_selected_topic: 0,
+            guide_scroll_to_top: false,
             analytics_log_filter: String::new(),
             group_full_presses: false,
             undo_stack: Vec::new(),

@@ -166,8 +166,10 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                                     fg,
                                 );
 
-                                if resp.clicked() {
+                                if resp.clicked() && state.guide_selected_topic != idx {
                                     state.guide_selected_topic = idx;
+                                    // A chapter is a page: flipping to it always starts at the top.
+                                    state.guide_scroll_to_top = true;
                                 }
                             }
                         });
@@ -179,22 +181,25 @@ pub fn render_guide_modal(ctx: &egui::Context, state: &mut GuiState) {
                         .fill(t.bg)
                         .inner_margin(egui::Margin::symmetric(26, 20))
                         .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
+                            let mut scroll = egui::ScrollArea::vertical()
                                 .id_salt("guide_content_scroll")
                                 .auto_shrink([false, false])
-                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.spacing_mut().item_spacing.y = 8.0;
+                                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                            if std::mem::take(&mut state.guide_scroll_to_top) {
+                                scroll = scroll.vertical_scroll_offset(0.0);
+                            }
+                            scroll.show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.spacing_mut().item_spacing.y = 8.0;
 
-                                    // Resolve through the same list the sidebar enumerates, so
-                                    // reordering or inserting a topic cannot silently render a
-                                    // different chapter (the old hardcoded match fell through to
-                                    // Recipes).
-                                    let cur_topic = selected_topic(state.guide_selected_topic);
+                                // Resolve through the same list the sidebar enumerates, so
+                                // reordering or inserting a topic cannot silently render a
+                                // different chapter (the old hardcoded match fell through to
+                                // Recipes).
+                                let cur_topic = selected_topic(state.guide_selected_topic);
 
-                                    render_topic_content(ui, cur_topic, &t, lang);
-                                });
+                                render_topic_content(ui, cur_topic, &t, lang);
+                            });
                         });
                 });
             });
@@ -338,7 +343,7 @@ fn doc_table_row(ui: &mut Ui, col1: &str, col2: &str, t: &Tokens) {
 fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
     if lang == Language::Russian {
         doc_header(ui, "Концепция и Архитектура Правил", t);
-        doc_paragraph(ui, "Synector работает на базе детерминированного асинхронного движка событий. Каждое правило (Rule) — это независимый контур автоматизации со своим жизненным циклом.", t);
+        doc_paragraph(ui, "Synector работает на базе детерминированного асинхронного движка событий. Каждое правило (Rule) — это независимый контур со своим жизненным циклом.", t);
 
         doc_callout(
             ui,
@@ -375,7 +380,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         );
     } else {
         doc_header(ui, "Concepts & Architecture", t);
-        doc_paragraph(ui, "Synector operates on a deterministic, asynchronous event loop. Each automation is configured as an autonomous Rule with an isolated lifecycle.", t);
+        doc_paragraph(ui, "Synector operates on a deterministic, asynchronous event loop. Each rule is an autonomous pipeline with an isolated lifecycle.", t);
 
         doc_callout(
             ui,
@@ -397,7 +402,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Hide Tray Icon (Stealth)", "Runs the background daemon without a notification-area icon.", t);
         doc_table_row(ui, "PE Masking", "Runs a daemon copy as WindowsServiceHost.exe with the generic Windows icon, so Task Manager sees it as a system process.", t);
         doc_table_row(ui, "Test Rule / Step", "Test the full pipeline or single actions directly in the studio without waiting for real triggers.", t);
-        doc_table_row(ui, "Backup & Sharing", "Export and import automations as JSON, or use SYN1: codes that bundle the referenced macro presets and overlays; imports are created disabled and duplicates are skipped.", t);
+        doc_table_row(ui, "Backup & Sharing", "Export and import rules as JSON, or use SYN1: codes that bundle the referenced macro presets and overlays; imports are created disabled and duplicates are skipped.", t);
         doc_table_row(ui, "Tags & Reordering", "Custom colored tags with icons, tag filtering, multi-mode sorting, and precision drag-and-drop rule card reordering.", t);
         doc_table_row(ui, "Shortcuts (.lnk)", "Generate Windows desktop shortcuts for direct 1-click rule invocation from shell or external launchers.", t);
         doc_table_row(ui, "Template Presets", "Reusable Overlay and Macro preset libraries with detach support, quick operations (Run, Stop, Toggle), and runtime text updates.", t);
@@ -507,7 +512,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
 fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
     if lang == Language::Russian {
         doc_header(ui, "Все Виды Триггеров", t);
-        doc_paragraph(ui, "Триггер определяет событие, инициирующее автоматизацию. Выбрать нужный триггер можно через встроенную Библиотеку Триггеров с мгновенным поиском по ключевым словам:", t);
+        doc_paragraph(ui, "Триггер определяет событие, инициирующее правило. Выбрать нужный триггер можно через встроенную Библиотеку Триггеров с мгновенным поиском по ключевым словам:", t);
 
         doc_table_row(ui, "PROCESSES", "Process — запуск .exe с режимами Exact / Wildcard / Regex и опцией Single Instance; Window — получение или потеря фокуса окном процесса.", t);
         doc_table_row(ui, "SCHEDULE & TIME", "Interval (каждые N секунд), Daily (время и выбранные дни недели), One-Shot (точная дата и время) и Monthly (заданный день месяца).", t);
@@ -564,7 +569,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         );
     } else {
         doc_header(ui, "Triggers Deep-Dive", t);
-        doc_paragraph(ui, "A trigger defines the origin event that initiates automation. Choose triggers conveniently from the built-in Trigger Catalog with instant search:", t);
+        doc_paragraph(ui, "A trigger defines the origin event that initiates a rule. Choose triggers conveniently from the built-in Trigger Catalog with instant search:", t);
 
         doc_table_row(ui, "PROCESSES", "Process — executable launch with Exact / Wildcard / Regex matching and Single Instance; Window — a process window gains or loses focus.", t);
         doc_table_row(ui, "SCHEDULE & TIME", "Interval (every N seconds), Daily (time plus selected weekdays), One-Shot (exact date and time), and Monthly (selected day of month).", t);
@@ -878,7 +883,7 @@ fn render_output_piping_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
 // ----------------------------------------------------------------------------
 fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
     if lang == Language::Russian {
-        doc_header(ui, "Практические Рецепты Автоматизации", t);
+        doc_header(ui, "Практические Рецепты Правил", t);
 
         doc_callout(
             ui,
@@ -951,7 +956,7 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_callout(
             ui,
-            "Рецепт: Автоматизация кликов и ввода (Аппаратный Макрос)",
+            "Рецепт: Аппаратный Макрос (клики и ввод)",
             "• Триггер: Global Hotkey -> Ctrl + Alt + M (или кнопка мыши, напр. M4 в режиме Hold mode)\n\
              • Шаг 1: Аппаратный Макрос (Hardware Macro) в Студии:\n\
                — Перемещение мыши в координаты (1400, 450) + Клик ЛКМ\n\
@@ -996,7 +1001,7 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             false,
         );
     } else {
-        doc_header(ui, "Practical Automation Recipes", t);
+        doc_header(ui, "Practical Rule Recipes", t);
 
         doc_callout(
             ui,
@@ -1069,7 +1074,7 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         ui.add_space(2.0);
         doc_callout(
             ui,
-            "Recipe: UI Automation (Hardware Macro)",
+            "Recipe: Hardware Macro (clicks and typing)",
             "• Trigger: Global Hotkey -> Ctrl + Alt + M (or mouse button e.g. M4 in Hold mode)\n\
              • Step 1: Hardware Macro configured in Macro Studio:\n\
                — Move cursor to coordinates (1400, 450) + LMB click\n\
