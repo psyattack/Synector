@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use egui::{Align2, Color32, CornerRadius, FontId, Galley, Rect, Stroke, Ui, pos2, vec2};
 
-use crate::gui::components::widgets;
 use crate::gui::theme;
 use crate::models::RuleTag;
 
@@ -33,15 +32,6 @@ impl TagFont {
             Self::Medium => theme::medium(),
         }
     }
-}
-
-/// How a pill lays its label out.
-#[derive(Clone, Copy)]
-enum TagTextLayout {
-    /// The tag name verbatim, laid out with `Painter::layout_no_wrap`.
-    Plain,
-    /// The uppercased name through [`widgets::caps`], with no extra letter spacing.
-    Caps,
 }
 
 /// How a pill measures, positions and paints its icon.
@@ -80,7 +70,6 @@ pub(crate) struct TagPillStyle {
     min_width: f32,
     text_size: f32,
     text_font: TagFont,
-    text_layout: TagTextLayout,
     icon_size: f32,
     icon_layout: TagIconLayout,
     chrome: TagPillChrome,
@@ -97,7 +86,6 @@ impl TagPillStyle {
         min_width: 18.0,
         text_size: 9.5,
         text_font: TagFont::Mono,
-        text_layout: TagTextLayout::Plain,
         icon_size: 10.0,
         icon_layout: TagIconLayout::Galley { gap: 3.5 },
         chrome: TagPillChrome {
@@ -108,7 +96,7 @@ impl TagPillStyle {
         hover_chrome: None,
     };
 
-    /// Inspector editor pill: 20 px tall, corner 10, caps 10 medium, 14 px icon slot at 11 px.
+    /// Inspector editor pill: 20 px tall, corner 10, 10 medium text, 14 px icon slot at 11 px.
     pub(crate) const INSPECTOR_EDITOR: Self = Self {
         height: 20.0,
         corner: 10,
@@ -117,7 +105,6 @@ impl TagPillStyle {
         min_width: 0.0,
         text_size: 10.0,
         text_font: TagFont::Medium,
-        text_layout: TagTextLayout::Caps,
         icon_size: 11.0,
         icon_layout: TagIconLayout::Slot {
             measure_width: 16.0,
@@ -132,7 +119,7 @@ impl TagPillStyle {
         hover_chrome: None,
     };
 
-    /// Inspector picker pill: 18 px tall, corner 9, caps 9.5 medium, 12 px icon slot at 10 px.
+    /// Inspector picker pill: 18 px tall, corner 9, 9.5 medium text, 12 px icon slot at 10 px.
     pub(crate) const INSPECTOR_PICKER: Self = Self {
         height: 18.0,
         corner: 9,
@@ -141,7 +128,6 @@ impl TagPillStyle {
         min_width: 0.0,
         text_size: 9.5,
         text_font: TagFont::Medium,
-        text_layout: TagTextLayout::Caps,
         icon_size: 10.0,
         icon_layout: TagIconLayout::Slot {
             measure_width: 14.0,
@@ -166,24 +152,15 @@ fn tag_icon(tag: &RuleTag) -> Option<&str> {
     tag.icon.as_deref().filter(|icon| !icon.is_empty())
 }
 
-/// Lays the tag name out in the style's font and case. `color` only feeds layout; the
-/// painted colour is supplied separately by [`paint_tag_pill`].
+/// Lays the tag name out verbatim in the style's font. `color` only feeds layout; the painted
+/// colour is supplied separately by [`paint_tag_pill`]. The case is never transformed here: the
+/// inspector preview must show the tag exactly as the rules card does.
 fn layout_text(ui: &Ui, tag: &RuleTag, style: &TagPillStyle, color: Color32) -> Arc<Galley> {
-    match style.text_layout {
-        TagTextLayout::Plain => ui.painter().layout_no_wrap(
-            tag.name.clone(),
-            FontId::new(style.text_size, style.text_font.family()),
-            color,
-        ),
-        TagTextLayout::Caps => widgets::caps(
-            ui,
-            &tag.name,
-            style.text_size,
-            style.text_font.family(),
-            0.0,
-            color,
-        ),
-    }
+    ui.painter().layout_no_wrap(
+        tag.name.clone(),
+        FontId::new(style.text_size, style.text_font.family()),
+        color,
+    )
 }
 
 fn layout_icon(ui: &Ui, icon: &str, style: &TagPillStyle, color: Color32) -> Arc<Galley> {
