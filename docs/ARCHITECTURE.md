@@ -299,9 +299,9 @@ Other sources are mixed by nature:
   event uses a fixed five-minute threshold; only the `event` condition carries a rule-authored
   `idle_duration_sec`.
 - **Global hotkeys:** `hotkeys.rs` checks `GetAsyncKeyState` for the registered combinations on a
-  short interval (8 ms while hotkeys exist) and sleeps on a condition variable when there are none.
-  This is a polling design, not a `RegisterHotKey` hook; it is what allows mouse-button combinations
-  and hold/repeat modes to share one code path.
+  short interval (8 ms while hotkeys exist) and blocks on a condition variable with no periodic
+  wake-up when there are none. This is a polling design, not a `RegisterHotKey` hook; it is what
+  allows mouse-button combinations and hold/repeat modes to share one code path.
 
 ### System notification window
 

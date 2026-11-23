@@ -133,11 +133,13 @@ fn run_hotkey_poll_loop(event_tx: tokio::sync::mpsc::UnboundedSender<HotkeyEvent
         let is_empty = {
             if let Ok(mut lock) = MONITORED_HOTKEYS.lock() {
                 // If there are no hotkeys to monitor, wait on Condvar instead of spinning at 8ms!
+                // A blocking wait (not a timed one) means an idle daemon does not wake this
+                // thread at all; `reload` notifies while holding the lock, so no wake-up is lost.
                 while lock.is_empty() && LISTENER_RUNNING.load(Ordering::SeqCst) {
-                    match HOTKEY_CVAR.wait_timeout(lock, std::time::Duration::from_millis(500)) {
-                        Ok((guard, _)) => lock = guard,
+                    match HOTKEY_CVAR.wait(lock) {
+                        Ok(guard) => lock = guard,
                         Err(poisoned) => {
-                            lock = poisoned.into_inner().0;
+                            lock = poisoned.into_inner();
                             break;
                         }
                     }
