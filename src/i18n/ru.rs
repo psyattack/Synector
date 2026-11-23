@@ -2,7 +2,7 @@ use crate::i18n::Strings;
 
 pub static STRINGS: Strings = Strings {
     // Navigation Tabs (header_bar.rs)
-    tab_automations: "АВТОМАТИЗАЦИЯ",
+    tab_automations: "ПРАВИЛА",
     tab_analytics: "АНАЛИТИКА",
     tab_settings: "НАСТРОЙКИ",
 
@@ -24,9 +24,9 @@ pub static STRINGS: Strings = Strings {
     footer_autorun_off: "АВТОЗАПУСК: ВЫКЛ",
 
     // Rules View (rules_view.rs)
-    rules_btn_new: "+ НОВАЯ АВТОМАТИЗАЦИЯ",
-    rules_search_placeholder: "ПОИСК АВТОМАТИЗАЦИЙ...",
-    rules_empty_title: "НЕТ НАСТРОЕННЫХ ПРАВИЛ АВТОМАТИЗАЦИИ",
+    rules_btn_new: "+ НОВОЕ ПРАВИЛО",
+    rules_search_placeholder: "ПОИСК ПРАВИЛ...",
+    rules_empty_title: "НЕТ НАСТРОЕННЫХ ПРАВИЛ",
     rules_btn_create_first: "СОЗДАТЬ ПЕРВОЕ ПРАВИЛО",
     rules_badge_manual: "РУЧНОЙ",
     rules_btn_run_manual: "ЗАПУСТИТЬ",
@@ -39,10 +39,10 @@ pub static STRINGS: Strings = Strings {
     rules_btn_test_run: "ТЕСТОВЫЙ ЗАПУСК",
     rules_btn_test_run_tip: "Немедленно запустить цепочку действий правила",
     rules_btn_copy_all: "ЭКСПОРТ ВСЕХ",
-    rules_btn_copy_all_tip: "Скопировать автоматизации компактным кодом обмена в буфер (учитывает фильтр тегов и поиск)",
+    rules_btn_copy_all_tip: "Скопировать правила компактным кодом обмена в буфер (учитывает фильтр тегов и поиск)",
     rules_btn_import: "ИМПОРТ",
-    rules_btn_import_tip: "Импортировать одну или несколько автоматизаций из буфера обмена",
-    rules_btn_copy_single_tip: "Скопировать эту автоматизацию как сжатый код в буфер обмена",
+    rules_btn_import_tip: "Импортировать одно или несколько правил из буфера обмена",
+    rules_btn_copy_single_tip: "Скопировать это правило как сжатый код в буфер обмена",
     rules_badge_running: "ВЫПОЛНЯЕТСЯ",
     rules_summary_cond_if: "ЕСЛИ",
     rules_summary_step_active: "ТЕКУЩИЙ ШАГ",
@@ -61,7 +61,7 @@ pub static STRINGS: Strings = Strings {
     rules_summary_no_actions: "НЕТ ДЕЙСТВИЙ",
     rules_summary_bound_satellite: "СВЯЗАННЫЙ СПУТНИК",
     rules_summary_on_exit: "ПРИ ВЫХОДЕ",
-    rules_default_new_name: "Новый сценарий автоматизации",
+    rules_default_new_name: "Новое правило",
     rules_tip_drag_rule: "Перетащите для изменения порядка правила",
     rules_sort_default: "По умолчанию",
     rules_sort_name_asc: "По имени (А-Я)",
@@ -152,7 +152,8 @@ pub static STRINGS: Strings = Strings {
     settings_accent_custom: "СВОЙ",
 
     // Inspector Drawer (inspector.rs)
-    inspector_eyebrow_task_details: "ДЕТАЛИ ЗАДАЧИ",
+    inspector_eyebrow_rule_details: "ДЕТАЛИ ПРАВИЛА",
+    inspector_eyebrow_process_details: "ДЕТАЛИ ПРОЦЕССА",
     inspector_btn_close_tip: "Закрыть",
     inspector_tags_add: "+ Тег",
     inspector_tags_create_title: "Новый тег",
@@ -303,7 +304,7 @@ pub static STRINGS: Strings = Strings {
     inspector_cond_file_state_label: "СОСТОЯНИЕ ФАЙЛА",
 
     inspector_eyebrow_actions_start: "ДЕЙСТВИЯ ПРИ ЗАПУСКЕ ПРОЦЕССА",
-    inspector_eyebrow_actions_pipeline: "ЦЕПОЧКА ПОСЛЕДОВАТЕЛЬНЫХ ДЕЙСТВИЙ",
+    inspector_eyebrow_actions_pipeline: "ЦЕПОЧКА ДЕЙСТВИЙ",
     inspector_eyebrow_actions_exit: "ДЕЙСТВИЯ ПРИ ЗАВЕРШЕНИИ ПРОЦЕССА",
     inspector_btn_save_rule: "СОХРАНИТЬ ПРАВИЛО",
     inspector_btn_clone: "КЛОНИРОВАТЬ",
@@ -438,7 +439,7 @@ pub static STRINGS: Strings = Strings {
     inspector_hotkey_repeat_in_loop: "Повторять в цикле",
     inspector_hotkey_repeat_in_loop_tip: "Повторять цепочку действий бесконечно до повторного нажатия хоткея",
     rules_no_filtered_matches: "НЕТ ПРАВИЛ ПО ТЕКУЩЕМУ ФИЛЬТРУ",
-    rules_no_filtered_matches_tip: "Нет автоматизаций, соответствующих выбранной вкладке или поисковому запросу",
+    rules_no_filtered_matches_tip: "Нет правил, соответствующих выбранной вкладке или поисковому запросу",
 
     // Condition resource & file watcher labels
     inspector_cond_res_cpu: "ЦП >",
@@ -492,8 +493,8 @@ pub static STRINGS: Strings = Strings {
     inspector_no_active_window: "Нет активного главного окна",
     inspector_field_working_set_ram: "ПАМЯТЬ WORKING SET",
     inspector_bytes_suffix: "БАЙТ",
-    inspector_eyebrow_quick_actions: "БЫСТРЫЕ ДЕЙСТВИЯ АВТОМАТИЗАЦИИ",
-    inspector_btn_create_automation: "+ СОЗДАТЬ ПРАВИЛО АВТОМАТИЗАЦИИ",
+    inspector_eyebrow_quick_actions: "БЫСТРЫЕ ДЕЙСТВИЯ ПРАВИЛА",
+    inspector_btn_create_automation: "+ СОЗДАТЬ ПРАВИЛО",
     inspector_btn_terminate_process: "ЗАВЕРШИТЬ ПРОЦЕСС",
     inspector_rule_track_prefix: "Отслеживать",
     inspector_pick_running: "Запущенные...",
@@ -526,9 +527,9 @@ pub static STRINGS: Strings = Strings {
     toast_autorun_disabled: "Автозапуск отключен",
     toast_lang_changed: "Язык интерфейса изменен на русский",
     toast_theme_changed: "Цветовая тема изменена",
-    toast_copy_all_empty: "Нет автоматизаций для экспорта",
-    toast_import_success: "Успешно импортировано автоматизаций: {}",
-    toast_import_invalid: "Ошибка импорта автоматизации",
+    toast_copy_all_empty: "Нет правил для экспорта",
+    toast_import_success: "Успешно импортировано правил: {}",
+    toast_import_invalid: "Ошибка импорта правила",
     toast_import_clipboard_err: "Не удалось прочитать буфер обмена",
 
     // Settings Updates (settings_view.rs)
@@ -1088,7 +1089,7 @@ pub static STRINGS: Strings = Strings {
     inspector_overlay_op_set_text_desc: "Обновить динамический текст оверлея",
 
     // Sharing Codes
-    share_import_nothing_new: "Новых автоматизаций нет",
+    share_import_nothing_new: "Новых правил нет",
     share_warn_missing_macro: "Пресет макроса '{}' отсутствует и не будет работать",
     share_warn_missing_overlay: "Оверлей '{}' отсутствует и не будет работать",
     share_warn_script: "Содержит скрипты, выполняющие код при запуске",
@@ -1105,10 +1106,10 @@ pub static STRINGS: Strings = Strings {
     share_err_corrupted: "Код обмена повреждён или обрезан",
     share_err_checksum: "Код обмена не прошёл проверку целостности",
     share_err_payload_too_large: "Код обмена разворачивается в слишком большой объём данных",
-    share_err_too_many_rules: "Код обмена содержит слишком много автоматизаций",
+    share_err_too_many_rules: "Код обмена содержит слишком много правил",
     share_err_too_many_library_items: "Код обмена содержит слишком много оверлеев или пресетов макросов",
-    share_err_empty_payload: "Код обмена не содержит автоматизаций",
-    share_err_invalid_payload: "Код обмена не содержит корректных данных автоматизаций",
+    share_err_empty_payload: "Код обмена не содержит правил",
+    share_err_invalid_payload: "Код обмена не содержит корректных данных правил",
     share_err_unsupported_version: "Код обмена создан более новой версией Synector",
     toast_share_copied: "Код обмена скопирован (правил: {})",
     toast_share_warnings: "замечаний: {}",

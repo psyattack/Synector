@@ -219,14 +219,6 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
             let drawer_corner = t.drawer_corner();
             p.add(theme::shadow(&t).as_shape(panel, drawer_corner));
             p.rect_filled(panel, drawer_corner, t.bg);
-            // The left edge is rounded in the modern generation, so the edge divider starts
-            // where the corner ends instead of hanging outside the fill.
-            let corner_inset = drawer_corner.nw as f32;
-            p.vline(
-                panel.left() + 0.5,
-                egui::Rangef::new(panel.top() + corner_inset, panel.bottom() - corner_inset),
-                Stroke::new(t.metrics().hairline_w, t.line_strong),
-            );
 
             ui.set_min_size(panel.size());
             ui.set_max_size(panel.size());
@@ -262,7 +254,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().interact_size.y = 0.0;
                                 ui.spacing_mut().item_spacing.y = 1.0;
-                                widgets::hud(ui, loc.inspector_eyebrow_task_details, t.muted);
+                                widgets::hud(ui, loc.inspector_eyebrow_process_details, t.muted);
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().interact_size.y = 0.0;
                                     ui.spacing_mut().item_spacing.x = 6.0;
@@ -300,13 +292,22 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                 .as_ref()
                 .map(|rule| load_save_errors(ctx, &rule.id))
                 .unwrap_or_default();
-            // The footer grows with the validation lines so the drawer error list is never clipped.
+            // One footer height for both skins: the historical 52 px strip, and one content
+            // height too. The skin's control row (34 px classic, 38 px modern) used to make the
+            // bar's contents different heights, so the strip is centred around the classic row in
+            // both generations and the footer reads the same after a skin switch.
+            let strip_h = 52.0;
+            let footer_control_h = theme::CONTROL_H;
+            let footer_margin = ((strip_h - footer_control_h) / 2.0).max(0.0).round() as i8;
             let footer_h = if is_editing_rule {
-                52.0 + if save_errors.is_empty() {
-                    0.0
-                } else {
-                    18.0 + save_errors.len() as f32 * 15.0
-                }
+                strip_h
+                    + if save_errors.is_empty() {
+                        0.0
+                    } else {
+                        // Generous: the frame must stay inside this guess, or its bottom edge is
+                        // clipped by the strip's square corner.
+                        24.0 + save_errors.len() as f32 * 20.0
+                    }
             } else {
                 0.0
             };
@@ -375,13 +376,25 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
             // 3. Fixed Bottom Action Strip (Save / Cancel / Clone always visible and strictly pinned to drawer bottom)
             if let Some(rule) = state.editing_rule.clone() {
                 ui.scope_builder(egui::UiBuilder::new().max_rect(footer_rect), |ui| {
+                    // The strip is cut square by the drawer's edge divider: a rounded bottom-left
+                    // corner would curl away from that line and leave the corner visibly apart
+                    // from the separator.
+                    let footer_corner = egui::CornerRadius::ZERO;
                     egui::Frame::new()
                         .fill(t.sunken)
-                        .stroke(t.hairline())
-                        .corner_radius(t.card_corner())
-                        .inner_margin(egui::Margin::symmetric(20, 10))
+                        // No frame border: the drawer's own edge divider already runs along
+                        // the left side, and a full border painted a second, slightly offset
+                        // vertical line on top of it. Only the top rule is drawn below.
+                        .stroke(Stroke::NONE)
+                        .corner_radius(footer_corner)
+                        .inner_margin(egui::Margin::symmetric(20, footer_margin))
                         .show(ui, |ui| {
                             let loc = state.loc();
+                            // Fill the strip instead of growing from its content, so the frame
+                            // ends exactly on the drawer's bottom edge.
+                            ui.set_min_height(
+                                (footer_rect.height() - f32::from(footer_margin) * 2.0).max(0.0),
+                            );
                             ui.set_width(ui.available_width());
                             ui.set_max_width(ui.available_width());
                             if !save_errors.is_empty() {
@@ -402,7 +415,7 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
 
-                                if widgets::button(ui, loc.inspector_btn_save_rule, Kind::Primary, 120.0).clicked() {
+                                if widgets::button_with_height(ui, loc.inspector_btn_save_rule, Kind::Primary, 120.0, footer_control_h).clicked() {
                                     // Same contract as `--rules-apply`: validate the draft with the
                                     // shared model validator and keep the editor open on errors.
                                     let mut candidate = rule.clone();
@@ -419,20 +432,20 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                                 }
 
                                 if !state.is_creating_new_rule
-                                    && widgets::button(ui, loc.inspector_btn_clone, Kind::Secondary, 0.0)
+                                    && widgets::button_with_height(ui, loc.inspector_btn_clone, Kind::Secondary, 0.0, footer_control_h)
                                         .clicked()
                                 {
                                     state.clone_rule(&rule);
                                 }
 
                                 if state.is_creating_new_rule
-                                    && widgets::button(ui, loc.inspector_btn_reset, Kind::Secondary, 0.0)
+                                    && widgets::button_with_height(ui, loc.inspector_btn_reset, Kind::Secondary, 0.0, footer_control_h)
                                         .clicked()
                                 {
                                     state.reset_builder_state();
                                 }
 
-                                if widgets::button(ui, loc.inspector_btn_cancel, Kind::Secondary, 0.0).clicked() {
+                                if widgets::button_with_height(ui, loc.inspector_btn_cancel, Kind::Secondary, 0.0, footer_control_h).clicked() {
                                     state.close_editor();
                                 }
 
@@ -445,6 +458,22 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                         });
                 });
             }
+
+            // The only border the action strip needs: its top rule. The drawer's edge divider
+            // is the left border and the panel edge is the bottom one. A process inspector has
+            // no action strip, so it must not get a stray rule at the drawer's bottom edge.
+            if footer_h > 0.0 {
+                ui.painter()
+                    .with_clip_rect(panel)
+                    .hline(footer_rect.x_range(), footer_rect.top() + 0.5, t.hairline());
+            }
+
+            // One straight rule down the whole drawer, painted last so no footer surface can dim
+            // or break it. The strip's square bottom-left corner is cut by this line instead of
+            // curling away from it.
+            ui.painter()
+                .with_clip_rect(panel)
+                .vline(panel.left() + 0.5, panel.top()..=panel.bottom(), t.hairline());
         });
 }
 

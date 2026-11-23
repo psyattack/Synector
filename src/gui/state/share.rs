@@ -32,7 +32,7 @@ impl GuiState {
         self.start_share_export(vec![rule.clone()]);
     }
 
-    /// Copies every automation currently visible in the rules view: the same tag filter and
+    /// Copies every rule currently visible in the rules list: the same tag filter and
     /// search that drive the list, so sharing a subset no longer requires deleting rules.
     pub fn copy_all_rules_to_clipboard(&mut self, _ctx: &egui::Context) {
         let rules = self.visible_rules();
@@ -68,7 +68,7 @@ impl GuiState {
             self.share.queued.push_back(ShareExportJob { payload, warnings });
             crate::logging::info(
                 "SHARE",
-                &format!("Queued share code for {rule_count} automation(s) behind the running export"),
+                &format!("Queued share code for {rule_count} rule(s) behind the running export"),
             );
             return;
         }
@@ -93,7 +93,7 @@ impl GuiState {
         }
         crate::logging::info(
             "SHARE",
-            &format!("Building share code for {rule_count} automation(s) in the background"),
+            &format!("Building share code for {rule_count} rule(s) in the background"),
         );
     }
 
@@ -138,7 +138,7 @@ impl GuiState {
                 crate::logging::info(
                     "SHARE",
                     &format!(
-                        "Share code copied: {count} automation(s), {} byte(s), {} notice(s)",
+                        "Share code copied: {count} rule(s), {} byte(s), {} notice(s)",
                         code.len(),
                         warnings.len()
                     ),
@@ -166,7 +166,7 @@ impl GuiState {
     ///
     /// Rules are created disabled; the daemon applies the code atomically and reports how many
     /// rules, library entries and duplicates it handled, which the toast summarizes.
-    pub fn import_automations_from_clipboard(&mut self, _ctx: &egui::Context) {
+    pub fn import_rules_from_clipboard(&mut self, _ctx: &egui::Context) {
         let text = match crate::clipboard::read_text() {
             Ok(text) => text,
             Err(error) => {

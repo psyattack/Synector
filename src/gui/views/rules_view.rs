@@ -1,4 +1,4 @@
-//! Automation rules view in the craft-launcher aesthetic:
+//! Rules view in the craft-launcher aesthetic:
 //! precision segmented cells, hairline cards, numbered section eyebrows,
 //! uppercase mono badges, and inverted action buttons.
 
@@ -165,14 +165,14 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
             );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Primary "+ NEW AUTOMATION" Button
+                // Primary "+ NEW RULE" Button
                 if widgets::button(ui, loc.rules_btn_new, Kind::Primary, 0.0).clicked() {
                     state.start_new_rule();
                 }
 
                 ui.add_space(4.0);
 
-                // Export all automations to clipboard
+                // Export all rules to clipboard
                 if widgets::button(ui, loc.rules_btn_copy_all, Kind::Secondary, 0.0)
                     .on_hover_text(loc.rules_btn_copy_all_tip)
                     .clicked()
@@ -182,12 +182,12 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
                 ui.add_space(4.0);
 
-                // Import automations from clipboard
+                // Import rules from clipboard
                 if widgets::button(ui, loc.rules_btn_import, Kind::Secondary, 0.0)
                     .on_hover_text(loc.rules_btn_import_tip)
                     .clicked()
                 {
-                    state.import_automations_from_clipboard(ui.ctx());
+                    state.import_rules_from_clipboard(ui.ctx());
                 }
             });
         });

@@ -22,7 +22,7 @@ Related documents: [documentation map](README.md) · [rule examples](EXAMPLES.md
 | `--rules-enable <id>`, `--rules-disable <id>` | Toggle one rule |
 | `--rules-reset <id>` | Clear `execution_count`/`last_executed_at`/quota anchor and re-enable |
 | `--rules-share [<id>]` | Print a `SYN1:` share code for one rule (id or name) or all rules |
-| `--rules-import-share <code\|file\|->` | Import automations from a `SYN1:` share code |
+| `--rules-import-share <code\|file\|->` | Import rules from a `SYN1:` share code |
 | `--rules-example` | Print an example rule file |
 | `--rules-schema` | Print the draft-07 JSON Schema for one rule object |
 | `--rules-reference` | Print a human-readable catalogue of triggers/actions/conditions |

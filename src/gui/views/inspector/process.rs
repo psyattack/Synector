@@ -50,7 +50,7 @@ pub(crate) fn render_process_inspector(ui: &mut Ui, state: &mut GuiState, proc: 
 
             widgets::hrule(ui);
 
-            widgets::eyebrow(ui, "02", loc.inspector_eyebrow_quick_actions);
+            widgets::section_heading(ui, loc.inspector_eyebrow_quick_actions);
 
             if widgets::button(ui, loc.inspector_btn_create_automation, Kind::Secondary, 0.0).clicked() {
                 state.apply_process_to_draft_or_new_rule(&proc.name);

@@ -150,7 +150,8 @@ pub struct Strings {
     pub settings_accent_custom: &'static str,
 
     // Inspector Drawer (inspector.rs)
-    pub inspector_eyebrow_task_details: &'static str,
+    pub inspector_eyebrow_rule_details: &'static str,
+    pub inspector_eyebrow_process_details: &'static str,
     pub inspector_btn_close_tip: &'static str,
     pub inspector_tags_add: &'static str,
     pub inspector_tags_create_title: &'static str,

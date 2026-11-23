@@ -1,4 +1,4 @@
-//! §02 trigger section: selector header, variants and system-event presentation.
+//! Trigger section: selector header, variants and system-event presentation.
 
 use super::*;
 
@@ -8,7 +8,7 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
     let is_manual = rule.trigger.as_ref().is_none_or(|t| matches!(t, Trigger::Manual));
 
     // 2. Trigger Section
-    widgets::eyebrow(ui, "02", loc.inspector_eyebrow_trigger);
+    widgets::section_heading(ui, loc.inspector_eyebrow_trigger);
 
     let mut switch_trigger_to_hunter = false;
 

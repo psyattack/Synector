@@ -539,7 +539,7 @@ The `src/sharing/` tree (facade `src/sharing.rs` over the `format`, `payload`, `
 `import` and `assets` stages) turns rules into `SYN1:` text codes that can be pasted into chats: the
 JSON payload is Brotli-compressed (quality 11, with a versioned custom dictionary), prefixed with an
 8-byte SHA-256 checksum and Base64URL-encoded. A code also bundles the macro presets and overlays
-its rules reference, so the recipient gets a working automation set. Presets or overlays whose id
+its rules reference, so the recipient gets a working rule set. Presets or overlays whose id
 already exists locally with different content are re-identified; a content-equal entry is reused
 instead of duplicated, so importing the same code twice adds nothing. Rules whose content already
 exists are skipped as duplicates, and colliding rule ids get a fresh id. Bundled overlay button and

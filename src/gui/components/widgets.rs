@@ -61,7 +61,7 @@ pub fn hud(ui: &mut Ui, text: &str, color: Color32) -> Response {
     resp
 }
 
-/// "01 / AUTOMATIONS": a section eyebrow, the index and separator faint.
+/// "01 / SECTION": a section eyebrow, the index and separator faint.
 pub fn eyebrow(ui: &mut Ui, index: &str, label: &str) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
@@ -70,6 +70,22 @@ pub fn eyebrow(ui: &mut Ui, index: &str, label: &str) {
         hud(ui, " / ", t.faint);
         hud(ui, label, t.muted);
     });
+}
+
+/// A section heading in the page-title voice of the in-app guide: display family, strong ink,
+/// a touch smaller than the guide's 17 px page title so it sits calmly inside the editor drawer.
+pub fn section_heading(ui: &mut Ui, text: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .family(theme::display())
+                .size(15.5)
+                .color(t.ink_strong),
+        )
+        .wrap()
+        .wrap_mode(egui::TextWrapMode::Wrap),
+    )
 }
 
 /// A small status badge: a chip in the label voice of the skin.
@@ -244,9 +260,16 @@ pub fn button_width(ui: &Ui, text: &str, min_width: f32) -> f32 {
 
 /// A square button with a mono uppercase label, at least `width` wide.
 pub fn button(ui: &mut Ui, text: &str, kind: Kind, width: f32) -> Response {
+    let height = Tokens::get(ui.ctx()).metrics().control_h;
+    button_with_height(ui, text, kind, width, height)
+}
+
+/// Same button at an explicit height. Bars whose content must not follow the skin's control row
+/// (the rule editor's footer keeps one row height in both generations) pass their own height.
+pub fn button_with_height(ui: &mut Ui, text: &str, kind: Kind, width: f32, height: f32) -> Response {
     let t = Tokens::get(ui.ctx());
     let galley = caps(ui, text, theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, t.ink);
-    let size = vec2((galley.size().x + 28.0).max(width), t.metrics().control_h);
+    let size = vec2((galley.size().x + 28.0).max(width), height);
     let (_, resp) = ui.allocate_exact_size(size, Sense::click());
     let enabled = ui.is_enabled();
     let hovered = resp.hovered() && enabled;

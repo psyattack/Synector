@@ -28,8 +28,8 @@ fn test_get_language_catalogs() {
     let en = get(Language::English);
     let ru = get(Language::Russian);
 
-    assert_eq!(en.tab_automations, "AUTOMATIONS");
-    assert_eq!(ru.tab_automations, "АВТОМАТИЗАЦИЯ");
+    assert_eq!(en.tab_automations, "RULES");
+    assert_eq!(ru.tab_automations, "ПРАВИЛА");
 
     assert_eq!(en.rules_tag_filter_all, "All Tags");
     assert_eq!(ru.rules_tag_filter_all, "Все теги");

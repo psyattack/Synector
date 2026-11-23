@@ -2,7 +2,7 @@ use crate::i18n::Strings;
 
 pub static STRINGS: Strings = Strings {
     // Navigation Tabs (header_bar.rs)
-    tab_automations: "AUTOMATIONS",
+    tab_automations: "RULES",
     tab_analytics: "ANALYTICS",
     tab_settings: "SETTINGS",
 
@@ -24,9 +24,9 @@ pub static STRINGS: Strings = Strings {
     footer_autorun_off: "AUTORUN: OFF",
 
     // Rules View (rules_view.rs)
-    rules_btn_new: "+ NEW AUTOMATION",
-    rules_search_placeholder: "SEARCH AUTOMATIONS...",
-    rules_empty_title: "NO AUTOMATION RULES CONFIGURED",
+    rules_btn_new: "+ NEW RULE",
+    rules_search_placeholder: "SEARCH RULES...",
+    rules_empty_title: "NO RULES CONFIGURED",
     rules_btn_create_first: "CREATE FIRST RULE",
     rules_badge_manual: "MANUAL",
     rules_btn_run_manual: "RUN",
@@ -39,10 +39,10 @@ pub static STRINGS: Strings = Strings {
     rules_btn_test_run: "TEST RUN",
     rules_btn_test_run_tip: "Trigger rule action pipeline immediately",
     rules_btn_copy_all: "EXPORT ALL",
-    rules_btn_copy_all_tip: "Copy automations as a compact shareable code to clipboard (respects the tag filter and search)",
+    rules_btn_copy_all_tip: "Copy rules as a compact shareable code to clipboard (respects the tag filter and search)",
     rules_btn_import: "IMPORT",
-    rules_btn_import_tip: "Import automation(s) from clipboard",
-    rules_btn_copy_single_tip: "Copy this automation as a compact shareable code to clipboard",
+    rules_btn_import_tip: "Import rule(s) from clipboard",
+    rules_btn_copy_single_tip: "Copy this rule as a compact shareable code to clipboard",
     rules_badge_running: "RUNNING",
     rules_summary_cond_if: "IF",
     rules_summary_step_active: "CURRENT STEP",
@@ -61,8 +61,8 @@ pub static STRINGS: Strings = Strings {
     rules_summary_no_actions: "NO ACTIONS",
     rules_summary_bound_satellite: "BOUND SATELLITE",
     rules_summary_on_exit: "ON-EXIT",
-    rules_default_new_name: "New Automation Flow",
-    rules_tip_drag_rule: "Drag to reorder automation rule",
+    rules_default_new_name: "New Rule",
+    rules_tip_drag_rule: "Drag to reorder rule",
     rules_sort_default: "Default",
     rules_sort_name_asc: "Name (A-Z)",
     rules_sort_name_desc: "Name (Z-A)",
@@ -101,7 +101,7 @@ pub static STRINGS: Strings = Strings {
     logs_cell_all: "ALL EVENTS",
     logs_cell_all_tip: "Show complete event telemetry stream - max 100 entries",
     logs_cell_rules: "RULES",
-    logs_cell_rules_tip: "Show automation trigger and action executions",
+    logs_cell_rules_tip: "Show rule trigger and action executions",
     logs_cell_processes: "PROCESSES",
     logs_cell_processes_tip: "Show Windows process start and exit hooks",
     logs_cell_daemon: "DAEMON",
@@ -152,7 +152,8 @@ pub static STRINGS: Strings = Strings {
     settings_accent_custom: "CUSTOM",
 
     // Inspector Drawer (inspector.rs)
-    inspector_eyebrow_task_details: "TASK DETAILS",
+    inspector_eyebrow_rule_details: "RULE DETAILS",
+    inspector_eyebrow_process_details: "PROCESS DETAILS",
     inspector_btn_close_tip: "Close",
     inspector_tags_add: "+ Add Tag",
     inspector_tags_create_title: "New Tag",
@@ -303,7 +304,7 @@ pub static STRINGS: Strings = Strings {
     inspector_cond_file_state_label: "FILE SYSTEM STATE",
 
     inspector_eyebrow_actions_start: "ACTIONS ON PROCESS START",
-    inspector_eyebrow_actions_pipeline: "ACTION SEQUENCE PIPELINE",
+    inspector_eyebrow_actions_pipeline: "ACTION PIPELINE",
     inspector_eyebrow_actions_exit: "ACTIONS ON PROCESS TERMINATION",
     inspector_btn_save_rule: "SAVE RULE",
     inspector_btn_clone: "CLONE",
@@ -438,7 +439,7 @@ pub static STRINGS: Strings = Strings {
     inspector_hotkey_repeat_in_loop: "Repeat in loop",
     inspector_hotkey_repeat_in_loop_tip: "Repeat pipeline continuously until hotkey is pressed again to stop",
     rules_no_filtered_matches: "NO RULES MATCH CURRENT FILTER",
-    rules_no_filtered_matches_tip: "No automations found matching current tab or search query",
+    rules_no_filtered_matches_tip: "No rules found matching current tab or search query",
 
     // Condition resource & file watcher labels
     inspector_cond_res_cpu: "CPU >",
@@ -492,8 +493,8 @@ pub static STRINGS: Strings = Strings {
     inspector_no_active_window: "No active top-level window",
     inspector_field_working_set_ram: "WORKING SET RAM",
     inspector_bytes_suffix: "BYTES",
-    inspector_eyebrow_quick_actions: "1-CLICK AUTOMATION ACTIONS",
-    inspector_btn_create_automation: "+ CREATE AUTOMATION RULE",
+    inspector_eyebrow_quick_actions: "1-CLICK RULE ACTIONS",
+    inspector_btn_create_automation: "+ CREATE RULE",
     inspector_btn_terminate_process: "TERMINATE PROCESS",
     inspector_rule_track_prefix: "Track",
     inspector_pick_running: "Pick running...",
@@ -526,9 +527,9 @@ pub static STRINGS: Strings = Strings {
     toast_autorun_disabled: "Autorun disabled",
     toast_lang_changed: "Language changed to English",
     toast_theme_changed: "Color theme updated",
-    toast_copy_all_empty: "No automations to export",
-    toast_import_success: "Successfully imported {} automation(s)",
-    toast_import_invalid: "Failed to import automation",
+    toast_copy_all_empty: "No rules to export",
+    toast_import_success: "Successfully imported {} rule(s)",
+    toast_import_invalid: "Failed to import rule",
     toast_import_clipboard_err: "Could not read clipboard",
 
     // Settings Updates (settings_view.rs)
@@ -1105,10 +1106,10 @@ pub static STRINGS: Strings = Strings {
     share_err_corrupted: "Share code is corrupted or truncated",
     share_err_checksum: "Share code failed its integrity check",
     share_err_payload_too_large: "Share code expands to too much data",
-    share_err_too_many_rules: "Share code contains too many automations",
+    share_err_too_many_rules: "Share code contains too many rules",
     share_err_too_many_library_items: "Share code contains too many overlays or macro presets",
-    share_err_empty_payload: "Share code contains no automations",
-    share_err_invalid_payload: "Share code does not contain valid automation data",
+    share_err_empty_payload: "Share code contains no rules",
+    share_err_invalid_payload: "Share code does not contain valid rule data",
     share_err_unsupported_version: "Share code was created by a newer Synector version",
     toast_share_copied: "Share code copied ({} rules)",
     toast_share_warnings: "{} notice(s)",

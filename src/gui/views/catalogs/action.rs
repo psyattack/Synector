@@ -204,7 +204,7 @@ const CATALOG_ITEMS: [ActionEntry; 26] = [
         },
     },
 
-    // 3. Automation & Logic
+    // 3. Rules & Logic
     CatalogEntryDef {
         category_idx: 3,
         badge: "FLOW",
@@ -310,7 +310,7 @@ const CATALOG_ITEMS: [ActionEntry; 26] = [
         tint: |t| t.accent_ink,
         keywords: &[
             "powershell", "pwsh", "ps1", "script", "code", "cmd", "batch", "bat", "lua", "terminal", "console",
-            "павершелл", "скрипт", "код", "автоматизация", "сценарий", "батник", "терминал", "луа",
+            "павершелл", "скрипт", "код", "сценарий", "батник", "терминал", "луа",
         ],
         constructor: || Action::ExecuteScript {
             interpreter: crate::models::ScriptType::PowerShell,

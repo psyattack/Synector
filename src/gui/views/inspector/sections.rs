@@ -1,4 +1,4 @@
-//! Ordered §01–§05 shell of the rule editor and the §01 basic-info block.
+//! Ordered shell of the rule editor and the basic-info block.
 
 use super::*;
 
@@ -60,7 +60,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
             let loc = state.loc();
             let is_manual = rule.trigger.as_ref().is_none_or(|t| matches!(t, Trigger::Manual));
 
-            widgets::eyebrow(ui, "01", loc.inspector_eyebrow_task_details);
+            widgets::section_heading(ui, loc.inspector_eyebrow_rule_details);
 
             egui::Frame::new()
                 .fill(t.sunken)
@@ -340,12 +340,13 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                     });
                 });
 
+            ui.add_space(8.0);
             super::trigger::render_trigger_section(ui, state, rule, t);
 
             ui.add_space(8.0);
 
             // 3. Pre-conditions (Section 03)
-            widgets::eyebrow(ui, "03", loc.inspector_eyebrow_conditions);
+            widgets::section_heading(ui, loc.inspector_eyebrow_conditions);
             render_conditions_section(ui, state, rule, t);
 
             ui.add_space(8.0);
@@ -358,7 +359,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
             } else {
                 loc.inspector_eyebrow_actions_pipeline
             };
-            widgets::eyebrow(ui, "04", action_header);
+            widgets::section_heading(ui, action_header);
 
             let exec_opt = state.get_rule_execution_state(rule);
             let step_prefix = loc.inspector_step_prefix;
@@ -387,7 +388,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
             // 5. Actions on Process Exit
             if is_process_trigger {
                 ui.add_space(8.0);
-                widgets::eyebrow(ui, "05", loc.inspector_eyebrow_actions_exit);
+                widgets::section_heading(ui, loc.inspector_eyebrow_actions_exit);
 
                 let exit_prefix = loc.inspector_exit_prefix;
                 let switch_to_hunter = {

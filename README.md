@@ -184,7 +184,7 @@ directory for portable or isolated runs.
 | File / folder | Contents |
 |---|---|
 | `settings.json` | Window geometry, tray visibility, daemon masking, language, palette, skin, accent and update preferences |
-| `rules.json` | Automation rule definitions (runtime counters are written zeroed) |
+| `rules.json` | Rule definitions (runtime counters are written zeroed) |
 | `library.json` | Overlay and macro presets |
 | `runtime.json` | Per-rule execution counters, last-run timestamps and custom quota-window anchors |
 | `logs\` | Daily diagnostic logs, one file per day, 7-day retention and an 8 MiB cap per file |
