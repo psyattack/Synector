@@ -89,6 +89,9 @@ impl SynectorApp {
 
     fn render_footer(&mut self, ui: &mut Ui, t: &Tokens) {
         let loc = self.state.loc();
+        // One footer row height in both skins: the modern control row is taller than the footer
+        // panel and used to shift the status line down by a pixel or two.
+        ui.spacing_mut().interact_size.y = theme::CONTROL_H;
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
@@ -287,6 +290,10 @@ impl App for SynectorApp {
         egui::Panel::bottom("footer")
             .exact_size(tokens.metrics().footer_h)
             .resizable(false)
+            // The panel's built-in separator reserves an outer-margin row and lands below the
+            // border, which shifts the footer's visible top edge between skins. The hairline is
+            // painted on the border instead, in the skin's own hairline colour.
+            .show_separator_line(false)
             .frame(egui::Frame::new().fill(tokens.surface()).inner_margin(egui::Margin::symmetric(20, 0)))
             .show(ui, |ui| {
                 self.render_footer(ui, &tokens);
@@ -344,6 +351,16 @@ impl App for SynectorApp {
 
         // 10. Centered Editor Guide & Documentation Modal
         render_guide_modal(&ctx, &mut self.state);
+
+        // One footer separator for both skins: painted after the panels so the central panel
+        // cannot cover the boundary row, and in the background layer so the inspector drawer and
+        // other Areas stay above it.
+        let footer_y = ctx.content_rect().bottom() - tokens.metrics().footer_h;
+        ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Background,
+            egui::Id::unique("footer-separator"),
+        ))
+        .hline(ctx.content_rect().x_range(), footer_y + 0.5, tokens.hairline());
 
         // 7. Borderless Window Edges (8-direction border resize & hairline stroke)
         widgets::window_edges(&ctx);
