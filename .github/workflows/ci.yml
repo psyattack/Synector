@@ -23,6 +23,47 @@ jobs:
       - name: Cargo Check
         run: cargo check --locked
 
+      # The GUI motion tests assert the cinematic modal transitions, and the app takes the motion
+      # permission from `SPI_GETCLIENTAREAANIMATION` — by design, when Windows disables client-area
+      # animations every duration collapses to zero and no transition starts. Windows Server images
+      # default to "Adjust for best performance", which leaves that switch off, so the test
+      # environment has to permit motion. The read-back keeps the step honest on a future image.
+      - name: Enable client-area animations
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+
+          public static class SynectorMotion {
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, out int pvParam, uint fWinIni);
+
+              [DllImport("user32.dll", SetLastError = true)]
+              public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, IntPtr pvParam, uint fWinIni);
+          }
+          "@
+
+          $SPI_GETCLIENTAREAANIMATION = 0x1042
+          $SPI_SETCLIENTAREAANIMATION = 0x1043
+          $SPIF_UPDATEINIFILE = 0x01
+          $SPIF_SENDCHANGE = 0x02
+
+          $enabled = 0
+          [void][SynectorMotion]::SystemParametersInfo($SPI_GETCLIENTAREAANIMATION, 0, [ref]$enabled, 0)
+          if ($enabled -ne 1) {
+              $set = [SynectorMotion]::SystemParametersInfo(
+                  $SPI_SETCLIENTAREAANIMATION, 0, [IntPtr]::new(1), $SPIF_UPDATEINIFILE -bor $SPIF_SENDCHANGE)
+              if (-not $set) {
+                  throw "SPI_SETCLIENTAREAANIMATION failed; the GUI motion tests cannot run"
+              }
+              [void][SynectorMotion]::SystemParametersInfo($SPI_GETCLIENTAREAANIMATION, 0, [ref]$enabled, 0)
+              if ($enabled -ne 1) {
+                  throw "client-area animations are still disabled (SPI_GETCLIENTAREAANIMATION returned $enabled)"
+              }
+          }
+          Write-Host "Client-area animations are enabled."
+
       - name: Cargo Test
         run: cargo test --locked
 
