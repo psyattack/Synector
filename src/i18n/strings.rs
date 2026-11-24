@@ -124,6 +124,8 @@ pub struct Strings {
     pub settings_hide_tray_icon_desc: &'static str,
     pub settings_mask_daemon_title: &'static str,
     pub settings_mask_daemon_desc: &'static str,
+    pub settings_logging_title: &'static str,
+    pub settings_logging_desc: &'static str,
     pub settings_config_folder_title: &'static str,
     pub settings_config_folder_desc: &'static str,
     pub settings_btn_open_folder: &'static str,

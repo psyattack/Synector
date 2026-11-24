@@ -135,7 +135,10 @@ the daemon.
   file.
 
 The log level comes from `SYNECTOR_LOG` (`off`, `error`, `warn`, `info`, `debug`, `trace`; default
-`info`). Restart Synector after changing it.
+`info`). Restart Synector after changing it. Disk logging itself can be turned off in
+**Settings → General** (*Write Logs to Disk*): new events stop being written right away, while the
+log files already on disk stay where they are. Turn the switch back on to resume appending to the
+current day's file.
 
 ### How do I back up or move my setup?
 

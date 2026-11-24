@@ -183,7 +183,7 @@ directory for portable or isolated runs.
 
 | File / folder | Contents |
 |---|---|
-| `settings.json` | Window geometry, tray visibility, daemon masking, language, palette, skin, accent and update preferences |
+| `settings.json` | Window geometry, tray visibility, daemon masking, disk logging, language, palette, skin, accent and update preferences |
 | `rules.json` | Rule definitions (runtime counters are written zeroed) |
 | `library.json` | Overlay and macro presets |
 | `runtime.json` | Per-rule execution counters, last-run timestamps and custom quota-window anchors |
@@ -194,24 +194,6 @@ edit these files with Synector stopped. A section written by a newer Synector bu
 overwritten by an older build, so downgrading cannot silently rewrite it. The write path, the
 quarantine of a section that fails to parse, read caches and coalescing rules are documented in
 [docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
-
-### Settings fields
-
-`settings.json` holds the preferences the app does not derive from the GUI state:
-
-| Field | Type | Meaning |
-|---|---|---|
-| `version` | integer | Schema version, rewritten on every save — leave it alone |
-| `window` | object | Saved main-window geometry and state; managed by the app |
-| `tray_icon_path` | string, optional | Custom tray icon file; the field is omitted while unset |
-| `hide_tray_icon` | boolean (default `false`) | Hide the tray icon |
-| `mask_daemon_process` | boolean (default `false`) | Run the daemon from the masked `WindowsServiceHost.exe` copy; changes apply after the next Synector restart |
-| `language` | `"english"` or `"russian"` (default `"english"`) | Interface language |
-| `check_updates_on_startup` | boolean (default `true`) | Check GitHub for a new release at startup |
-| `auto_install_updates` | boolean (default `false`) | Install a downloaded update without asking |
-| `theme` | `"dark"` or `"light"` (default `"dark"`) | Interface palette |
-| `ui_skin` | `"modern"` or `"classic"` (default `"modern"`) | Interface generation: the modern look or the original studio one |
-| `accent` | string, optional | Custom accent colour (`"#rrggbb"`) for selection, focus rings and active controls; omitted keeps the palette default |
 
 ## Rule authoring from the CLI
 

@@ -123,6 +123,16 @@ impl GuiState {
         self.failed_daemon_syncs = 0;
         self.is_daemon_connected = true;
         self.daemon_sync.note_success();
+        // The daemon owns `settings.json`, so its snapshot is the disk-logging truth for this
+        // process too. Only a changed snapshot is applied: a poll that was already in flight when
+        // the user toggled the setting must not re-enable logging behind the settings view.
+        let previous_log_to_disk = self
+            .daemon_state
+            .as_ref()
+            .map(|daemon| daemon.config.log_to_disk);
+        if previous_log_to_disk != Some(state.config.log_to_disk) {
+            crate::logging::set_disk_logging_enabled(state.config.log_to_disk);
+        }
         let rules_action_counts: std::collections::HashMap<String, usize> = state
             .config
             .rules

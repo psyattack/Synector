@@ -625,14 +625,19 @@ Russian/English `if lang == Language::Russian { ... } else { ... }` branches ins
 must be updated together.
 
 Diagnostics go through `crate::logging` into daily files under `%LOCALAPPDATA%\Synector\logs`; the
-level comes from `SYNECTOR_LOG` (`off|error|warn|info|debug|trace`, default `info`). Log identifiers
-and outcomes only — never script bodies, webhook payloads, rule JSON or other user secrets. Action
-errors that may embed script output are routed through the engine's `SensitiveLog` event. The logger
-primes today's file at start-up, so an unwritable logs directory is reported once on stderr and
-returned from `init()`; the process entry prints that returned failure as an explicit diagnostic because a
-release build has no console, and the open is not retried until the next day. Every append and
-compaction is serialized across processes with a named mutex, so the daemon, the GUI and a CLI
-command cannot interleave a write.
+level comes from `SYNECTOR_LOG` (`off|error|warn|info|debug|trace`, default `info`). File logging can
+also be turned off with the `log_to_disk` setting: every process reads it at start-up, the daemon
+applies a runtime change when it saves the section, and the GUI applies it on the toggle and then
+follows the daemon's snapshot, so all tiers stop writing together. Disabling only stops new events —
+the files already on disk, including the retention window, are left untouched and logging resumes on
+the same day's file when it is turned back on; `SYNECTOR_LOG=off` remains an independent override.
+Log identifiers and outcomes only — never script bodies, webhook payloads, rule JSON or other user
+secrets. Action errors that may embed script output are routed through the engine's `SensitiveLog`
+event. The logger primes today's file at start-up, so an unwritable logs directory is reported once
+on stderr and returned from `init()`; the process entry prints that returned failure as an explicit
+diagnostic because a release build has no console, and the open is not retried until the next day.
+Every append and compaction is serialized across processes with a named mutex, so the daemon, the
+GUI and a CLI command cannot interleave a write.
 
 ## Design conventions
 

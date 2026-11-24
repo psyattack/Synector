@@ -31,12 +31,16 @@ impl DaemonEngine {
             IpcRequest::SaveSettings(settings) => {
                 let tray_changed = self.config.tray_icon_path != settings.tray_icon_path;
                 let new_tray_path = settings.tray_icon_path.clone();
+                let log_to_disk = settings.log_to_disk;
                 // Window geometry is owned by the daemon through UpdateWindowState; a
                 // settings snapshot from the GUI may be older, so it never overrides it.
                 let mut settings = settings;
                 settings.window = self.config.window.clone();
                 self.config.apply_settings(settings);
                 self.persist_settings();
+                // Applies the in-memory preference: a failed save still stops this process from
+                // writing, and the next daemon start reads whatever reached the file.
+                crate::logging::set_disk_logging_enabled(log_to_disk);
                 if tray_changed {
                     crate::daemon::tray::update_tray_icon(new_tray_path);
                 }

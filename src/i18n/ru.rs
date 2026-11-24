@@ -126,6 +126,8 @@ pub static STRINGS: Strings = Strings {
     settings_hide_tray_icon_desc: "Фоновый демон работает без значка в области уведомлений",
     settings_mask_daemon_title: "Маскировать процесс демона",
     settings_mask_daemon_desc: "Запуск фоновой службы под видом системного процесса со стандартной иконкой Windows",
+    settings_logging_title: "Записывать логи на диск",
+    settings_logging_desc: "Остановить запись новых событий в папку logs; существующие файлы журнала сохраняются",
     settings_config_folder_title: "Папка конфигурации и данных",
     settings_config_folder_desc: "Хранилище правил, логов и настроек приложения",
     settings_btn_open_folder: "ОТКРЫТЬ В ПРОВОДНИКЕ",

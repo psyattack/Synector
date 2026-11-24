@@ -5,7 +5,7 @@
 //!
 //! | File          | Contents                                      | Write frequency  |
 //! |---------------|-----------------------------------------------|------------------|
-//! | `settings.json` | window, tray, language, theme, update options | rare           |
+//! | `settings.json` | window, tray, logging, language, theme, update options | rare          |
 //! | `rules.json`    | automation definitions, no runtime counters  | on rule edits    |
 //! | `library.json`  | overlay and macro presets                    | on preset edits  |
 //! | `runtime.json`  | per-rule execution counters                  | coalesced        |

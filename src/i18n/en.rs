@@ -126,6 +126,8 @@ pub static STRINGS: Strings = Strings {
     settings_hide_tray_icon_desc: "Run background daemon silently without tray notification icon",
     settings_mask_daemon_title: "Mask Daemon as System Service",
     settings_mask_daemon_desc: "Disguise background process as system service with generic Windows icon",
+    settings_logging_title: "Write Logs to Disk",
+    settings_logging_desc: "Stop writing new events to the logs folder; existing log files are kept",
     settings_config_folder_title: "Data & Configuration",
     settings_config_folder_desc: "Rules, logs, and application preferences storage",
     settings_btn_open_folder: "OPEN IN EXPLORER",

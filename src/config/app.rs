@@ -29,6 +29,8 @@ pub struct AppConfig {
     pub hide_tray_icon: bool,
     #[serde(default)]
     pub mask_daemon_process: bool,
+    #[serde(default = "default_true")]
+    pub log_to_disk: bool,
     #[serde(default)]
     pub language: crate::i18n::Language,
     #[serde(default = "default_true")]
@@ -60,6 +62,7 @@ impl Default for AppConfig {
             window: None,
             hide_tray_icon: false,
             mask_daemon_process: false,
+            log_to_disk: true,
             language: crate::i18n::Language::English,
             check_updates_on_startup: true,
             auto_install_updates: false,
@@ -172,6 +175,7 @@ impl AppConfig {
             window,
             hide_tray_icon: settings.hide_tray_icon,
             mask_daemon_process: settings.mask_daemon_process,
+            log_to_disk: settings.log_to_disk,
             language: settings.language,
             check_updates_on_startup: settings.check_updates_on_startup,
             auto_install_updates: settings.auto_install_updates,
@@ -192,6 +196,7 @@ impl AppConfig {
             window: self.window.clone(),
             hide_tray_icon: self.hide_tray_icon,
             mask_daemon_process: self.mask_daemon_process,
+            log_to_disk: self.log_to_disk,
             language: self.language,
             check_updates_on_startup: self.check_updates_on_startup,
             auto_install_updates: self.auto_install_updates,
@@ -208,6 +213,7 @@ impl AppConfig {
         self.window = settings.window;
         self.hide_tray_icon = settings.hide_tray_icon;
         self.mask_daemon_process = settings.mask_daemon_process;
+        self.log_to_disk = settings.log_to_disk;
         self.language = settings.language;
         self.check_updates_on_startup = settings.check_updates_on_startup;
         self.auto_install_updates = settings.auto_install_updates;
@@ -371,6 +377,7 @@ mod tests {
             }),
             hide_tray_icon: true,
             mask_daemon_process: true,
+            log_to_disk: false,
             language: crate::i18n::Language::Russian,
             check_updates_on_startup: false,
             auto_install_updates: true,

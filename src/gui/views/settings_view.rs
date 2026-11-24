@@ -499,7 +499,21 @@ fn render_general_content(
 
     widgets::hrule(ui);
 
-    // 5. Open Configuration and Storage Folder
+    // 5. Disk Logging Toggle
+    //
+    // Disabling takes effect in this process immediately and in the daemon when it saves the
+    // section; the log files already written are left alone, and turning the switch back on
+    // resumes appending to the same day's file.
+    render_setting_row(ui, loc.settings_logging_title, loc.settings_logging_desc, t, |ui| {
+        if widgets::toggle_switch(ui, &mut cfg.log_to_disk).changed() {
+            changes.config = true;
+            crate::logging::set_disk_logging_enabled(cfg.log_to_disk);
+        }
+    });
+
+    widgets::hrule(ui);
+
+    // 6. Open Configuration and Storage Folder
     render_setting_row(ui, loc.settings_config_folder_title, loc.settings_config_folder_desc, t, |ui| {
         if widgets::button(ui, loc.settings_btn_open_folder, Kind::Secondary, 0.0).clicked() {
             let dir = crate::config::AppConfig::config_dir();

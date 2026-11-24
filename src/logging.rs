@@ -7,6 +7,14 @@
 //! in place, a notice line explains the restart and the newest events stay at the end, so the name
 //! never changes, no extra files appear and one chatty rule cannot produce an unbounded log.
 //!
+//! Disk logging can also be turned off entirely from Settings (`log_to_disk` in `settings.json`):
+//! the logger then drops every event and stops opening the daily file, while the files already on
+//! disk stay untouched — re-enabling resumes appending to the same day's file. [`init`] seeds the
+//! flag, so no process creates a log file for a run that started with logging disabled; the
+//! daemon and the GUI pass a runtime change to [`set_disk_logging_enabled`]. The environment
+//! variable stays an independent override: `SYNECTOR_LOG=off` disables logging even when the
+//! setting is on.
+//!
 //! The logger is dependency-free and must never take a process down: an I/O failure drops that
 //! event, the first failure of a day is reported once on stderr and the open is not retried
 //! until the next day (so a permanently unwritable directory cannot turn every event into a
@@ -23,6 +31,7 @@ use std::any::Any;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Local, NaiveDate};
@@ -102,6 +111,8 @@ pub struct Logger {
     dir: PathBuf,
     max_level: Level,
     max_file_bytes: u64,
+    /// Mirrors the `log_to_disk` setting: when off, events are dropped before they reach the file.
+    disk_enabled: AtomicBool,
     open: Mutex<Option<OpenLog>>,
     /// First I/O failure of the day. Until the date changes the open is not attempted again.
     failure: Mutex<Option<LogFailure>>,
@@ -179,12 +190,13 @@ mod cross_process {
 
 impl Logger {
     /// Creates a logger that will write into `dir`; the directory is created on the first write
-    /// or when [`init`] primes the daily file.
+    /// or when [`init`] primes the daily file. Disk logging starts enabled.
     pub fn new(dir: impl Into<PathBuf>, max_level: Level) -> Self {
         Self {
             dir: dir.into(),
             max_level,
             max_file_bytes: MAX_FILE_BYTES,
+            disk_enabled: AtomicBool::new(true),
             open: Mutex::new(None),
             failure: Mutex::new(None),
         }
@@ -196,6 +208,7 @@ impl Logger {
             dir: dir.into(),
             max_level,
             max_file_bytes,
+            disk_enabled: AtomicBool::new(true),
             open: Mutex::new(None),
             failure: Mutex::new(None),
         }
@@ -206,9 +219,20 @@ impl Logger {
         self.max_level
     }
 
+    /// Turns writing to disk on or off. Disabling takes effect on the next event and leaves the
+    /// files already written untouched; enabling resumes appending to the current day's file.
+    pub fn set_disk_enabled(&self, enabled: bool) {
+        self.disk_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Whether this logger currently writes events to disk.
+    pub fn disk_enabled(&self) -> bool {
+        self.disk_enabled.load(Ordering::Relaxed)
+    }
+
     /// Writes one event when `level` passes the configured threshold.
     pub fn log(&self, level: Level, category: &str, message: &str) {
-        if !self.max_level.allows(level) {
+        if !self.disk_enabled() || !self.max_level.allows(level) {
             return;
         }
         self.write(Local::now(), level, category, message);
@@ -449,11 +473,13 @@ impl Logger {
 
 static GLOBAL: OnceLock<Logger> = OnceLock::new();
 
-/// Installs the process-wide logger, reading the threshold from [`ENV_VAR`]. Later calls are
-/// ignored, so every process can call it defensively.
+/// Installs the process-wide logger, reading the threshold from [`ENV_VAR`] and the
+/// `log_to_disk` setting from `settings.json`. Later calls are ignored, so every process can call
+/// it defensively.
 ///
-/// The first call primes today's file: an unwritable logs directory is reported once on stderr
-/// and returned in the [`InitReport`], and the open is not retried until the next day.
+/// The first call primes today's file unless logging is off (by environment or by setting): an
+/// unwritable logs directory is reported once on stderr and returned in the [`InitReport`], and
+/// the open is not retried until the next day.
 pub fn init() -> InitReport {
     let (max_level, problem) = match std::env::var(ENV_VAR) {
         Ok(raw) if !raw.trim().is_empty() => match Level::parse(&raw) {
@@ -470,8 +496,13 @@ pub fn init() -> InitReport {
     };
 
     if GLOBAL.get().is_none() {
+        // Each process reads the setting itself, so the daemon, the GUI, the CLI and an overlay
+        // window all agree without one having to notify the others at start-up. A missing or
+        // unreadable section keeps disk logging on, which matches the default.
+        let disk_enabled = crate::config::Settings::read().log_to_disk;
         let logger = Logger::new(log_dir(), max_level);
-        if max_level != Level::Off {
+        logger.set_disk_enabled(disk_enabled);
+        if max_level != Level::Off && disk_enabled {
             logger.prime();
         }
         let _ = GLOBAL.set(logger);
@@ -533,6 +564,15 @@ pub fn current_log_path() -> PathBuf {
 /// Effective threshold of the process-wide logger, or [`Level::Off`] before [`init`].
 pub fn level() -> Level {
     GLOBAL.get().map_or(Level::Off, Logger::max_level)
+}
+
+/// Turns disk logging of the process-wide logger on or off. It applies the `log_to_disk` setting
+/// to this process at runtime: events stop reaching the file immediately, and the files already
+/// on disk stay untouched. A no-op before [`init`].
+pub fn set_disk_logging_enabled(enabled: bool) {
+    if let Some(logger) = GLOBAL.get() {
+        logger.set_disk_enabled(enabled);
+    }
 }
 
 /// Writes one event through the process-wide logger; a no-op before [`init`].
@@ -776,6 +816,43 @@ mod tests {
         let (logger, dir) = temp_logger("disabled", Level::Off);
         logger.log(Level::Error, "PANIC", "never written");
         assert!(!dir.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_disk_logging_toggle_stops_writes_and_keeps_existing_events() {
+        let (logger, dir) = temp_logger("disk-toggle", Level::Info);
+        logger.log(Level::Info, "DAEMON", "written before disabling");
+
+        logger.set_disk_enabled(false);
+        assert!(!logger.disk_enabled());
+        logger.log(Level::Info, "DAEMON", "dropped while disabled");
+
+        let files = read_logs(&dir);
+        assert_eq!(files.len(), 1, "disabling must not remove the current file");
+        let (name, content) = &files[0];
+        assert!(content.contains("written before disabling"), "{content}");
+        assert!(!content.contains("dropped while disabled"), "{content}");
+
+        logger.set_disk_enabled(true);
+        logger.log(Level::Info, "DAEMON", "written after enabling");
+        let content = fs::read_to_string(dir.join(name)).expect("read the daily file");
+        assert!(content.contains("written after enabling"), "{content}");
+        assert_eq!(content.lines().count(), 2, "{content}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_disk_logging_disabled_at_start_creates_no_directory() {
+        let (logger, dir) = temp_logger("disk-off", Level::Info);
+        logger.set_disk_enabled(false);
+        logger.log(Level::Error, "PANIC", "never written");
+        assert!(
+            !dir.exists(),
+            "a run started with disk logging off must not create the logs directory"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

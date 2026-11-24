@@ -1,7 +1,7 @@
 //! `settings.json`: rarely written host preferences.
 //!
-//! Window geometry, tray, language, theme and update behaviour. Reads are served through the
-//! process cache; every successful save invalidates it.
+//! Window geometry, tray, disk logging, language, theme and update behaviour. Reads are served
+//! through the process cache; every successful save invalidates it.
 
 use std::path::{Path, PathBuf};
 
@@ -76,8 +76,8 @@ pub enum UiSkin {
 // settings.json
 // ---------------------------------------------------------------------------
 
-/// Rarely written host preferences: window geometry, tray, language, theme, skin and
-/// update behaviour.
+/// Rarely written host preferences: window geometry, tray, disk logging, language, theme,
+/// skin and update behaviour.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default = "default_version")]
@@ -90,6 +90,10 @@ pub struct Settings {
     pub hide_tray_icon: bool,
     #[serde(default)]
     pub mask_daemon_process: bool,
+    /// Write diagnostic events into `logs\`. Disabling stops new writes at once and keeps the
+    /// files already on disk; every process reads the flag at start-up.
+    #[serde(default = "default_true")]
+    pub log_to_disk: bool,
     #[serde(default)]
     pub language: crate::i18n::Language,
     #[serde(default = "default_true")]
@@ -113,6 +117,7 @@ impl Default for Settings {
             window: None,
             hide_tray_icon: false,
             mask_daemon_process: false,
+            log_to_disk: true,
             language: crate::i18n::Language::English,
             check_updates_on_startup: true,
             auto_install_updates: false,
@@ -232,6 +237,7 @@ mod tests {
             theme: AppTheme::Light,
             hide_tray_icon: true,
             check_updates_on_startup: false,
+            log_to_disk: false,
             ..Default::default()
         };
         settings.version = 0;
@@ -243,6 +249,7 @@ mod tests {
         assert_eq!(decoded.theme, AppTheme::Light);
         assert!(decoded.hide_tray_icon);
         assert!(!decoded.check_updates_on_startup);
+        assert!(!decoded.log_to_disk);
         assert_eq!(decoded.window.as_ref().map(|w| w.is_maximized), Some(true));
         assert_eq!(stray_temp_files(&dir), 0);
     }
@@ -357,6 +364,16 @@ mod tests {
         settings.accent = Some("#8b7bd8".to_string());
         let decoded: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(decoded.accent.as_deref(), Some("#8b7bd8"));
+    }
+
+    #[test]
+    fn log_to_disk_defaults_to_enabled_for_an_older_section() {
+        let decoded: Settings =
+            serde_json::from_str(r#"{"version":1,"theme":"dark"}"#).expect("settings decode");
+        assert!(
+            decoded.log_to_disk,
+            "a section written before the field existed must keep logging to disk"
+        );
     }
 
     #[test]
