@@ -38,35 +38,47 @@ pub(crate) fn render_overlay_fields(
             loc.inspector_preset_prefix.replace("{}", &matched_name)
         };
 
-        egui::ComboBox::from_id_salt(("overlay_preset_select", idx))
-            .selected_text(RichText::new(current_label).size(12.0))
-            .width((ui.available_width() - if !is_custom { 120.0 } else { 0.0 }).max(140.0))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(is_custom, loc.inspector_preset_custom).clicked()
-                    && custom_overlay.is_none()
-                {
-                    let id = if overlay_id.is_empty() {
-                        display_overlay
-                            .map(|o| o.id.clone())
-                            .unwrap_or_else(|| "overlay_crosshair".to_string())
-                    } else {
-                        overlay_id.clone()
-                    };
-                    let mut def = display_overlay
-                        .cloned()
-                        .unwrap_or_else(crate::models::OverlayDefinition::default_new_overlay);
-                    def.id = id.clone();
-                    *overlay_id = id;
-                    *custom_overlay = Some(Box::new(def));
-                }
-                for ov in &all_overlays {
-                    let is_sel = !is_custom && (ov.id == *overlay_id || ov.name.eq_ignore_ascii_case(overlay_id));
-                    if ui.selectable_label(is_sel, &ov.name).clicked() {
-                        *custom_overlay = None;
-                        *overlay_id = ov.id.clone();
+        // The selector takes whatever the trailing detach button leaves. The bounded slot makes
+        // the combo truncate the preset name instead of widening the step card with it.
+        let detach_w = if !is_custom {
+            widgets::compact_button_width(ui, loc.inspector_preset_detach)
+                + ui.spacing().item_spacing.x
+        } else {
+            0.0
+        };
+        let combo_w = (ui.available_width() - detach_w).max(1.0);
+        preset_selector_slot(ui, combo_w, |ui| {
+            egui::ComboBox::from_id_salt(("overlay_preset_select", idx))
+                .selected_text(RichText::new(current_label).size(12.0))
+                .width(combo_w)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(is_custom, loc.inspector_preset_custom).clicked()
+                        && custom_overlay.is_none()
+                    {
+                        let id = if overlay_id.is_empty() {
+                            display_overlay
+                                .map(|o| o.id.clone())
+                                .unwrap_or_else(|| "overlay_crosshair".to_string())
+                        } else {
+                            overlay_id.clone()
+                        };
+                        let mut def = display_overlay
+                            .cloned()
+                            .unwrap_or_else(crate::models::OverlayDefinition::default_new_overlay);
+                        def.id = id.clone();
+                        *overlay_id = id;
+                        *custom_overlay = Some(Box::new(def));
                     }
-                }
-            });
+                    for ov in &all_overlays {
+                        let is_sel = !is_custom && (ov.id == *overlay_id || ov.name.eq_ignore_ascii_case(overlay_id));
+                        if ui.selectable_label(is_sel, &ov.name).clicked() {
+                            *custom_overlay = None;
+                            *overlay_id = ov.id.clone();
+                        }
+                    }
+                });
+        });
 
         if !is_custom
             && widgets::compact_button(ui, loc.inspector_preset_detach, Kind::Secondary, 24.0)
@@ -138,7 +150,6 @@ pub(crate) fn render_overlay_fields(
 
         // Middle title
         let text_left = icon_box.right() + 10.0;
-        let title_pos = pos2(text_left, rect.center().y);
         let btn_title = if is_custom {
             loc.inspector_overlay_studio_title.to_string()
         } else {
@@ -147,16 +158,7 @@ pub(crate) fn render_overlay_fields(
                 .unwrap_or(overlay_id.as_str());
             format!("{} ({})", loc.inspector_overlay_studio_title, matched_name)
         };
-        p.text(
-            title_pos,
-            egui::Align2::LEFT_CENTER,
-            btn_title,
-            egui::FontId::new(13.0, theme::semibold()),
-            if is_overlay_showing || hovered { t.accent_ink } else { t.ink_strong },
-        );
-
-        // Action arrow pill on right
-        let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
+        let title_color = if is_overlay_showing || hovered { t.accent_ink } else { t.ink_strong };
         let (status_text, status_color) = if is_overlay_showing {
             (loc.inspector_badge_executing_now, t.accent_ink)
         } else if hovered {
@@ -164,12 +166,22 @@ pub(crate) fn render_overlay_fields(
         } else {
             (loc.inspector_overlay_studio_open, t.faint)
         };
-        p.text(
-            arrow_pos,
-            egui::Align2::RIGHT_CENTER,
+        // The title carries the preset name, so it is truncated before the right-hand pill
+        // instead of painting over it or past the card.
+        let pill_left = paint_studio_banner_pill(
+            p,
             status_text,
-            egui::FontId::new(11.0, theme::mono_bold()),
+            rect.right() - 14.0,
+            rect.center().y,
             status_color,
+        );
+        paint_studio_banner_title(
+            p,
+            &btn_title,
+            text_left,
+            rect.center().y,
+            pill_left - 8.0,
+            title_color,
         );
     }
 

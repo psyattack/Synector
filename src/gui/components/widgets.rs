@@ -395,6 +395,13 @@ pub fn toggle_switch(ui: &mut Ui, on: &mut bool) -> Response {
     resp
 }
 
+/// Exact width of a [`compact_button`] with this label, for rows that must reserve its space
+/// before laying out the widgets on its left.
+pub fn compact_button_width(ui: &Ui, text: &str) -> f32 {
+    let t = Tokens::get(ui.ctx());
+    caps(ui, text, 10.0, theme::mono_bold(), theme::BUTTON_SPACING, t.ink).size().x + 14.0
+}
+
 /// A compact button with specified height (e.g. for status/footer bars).
 pub fn compact_button(ui: &mut Ui, text: &str, kind: Kind, height: f32) -> Response {
     let t = Tokens::get(ui.ctx());

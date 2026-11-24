@@ -43,30 +43,42 @@ pub(crate) fn render_macro_fields(
             None => loc.inspector_preset_custom.to_string(),
         };
 
-        egui::ComboBox::from_id_salt(("macro_preset_select", idx))
-            .selected_text(RichText::new(current_label).size(12.0))
-            .width((ui.available_width() - if is_preset { 120.0 } else { 0.0 }).max(140.0))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(!is_preset, loc.inspector_preset_custom).clicked() {
-                    if let Some(pid) = preset_id.take() {
-                        if let Some(p) = all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(&pid)) {
-                            if events.is_empty() {
-                                *events = p.events.clone();
+        // The selector takes whatever the trailing detach button leaves. The bounded slot makes
+        // the combo truncate the preset name instead of widening the step card with it.
+        let detach_w = if is_preset {
+            widgets::compact_button_width(ui, loc.inspector_preset_detach)
+                + ui.spacing().item_spacing.x
+        } else {
+            0.0
+        };
+        let combo_w = (ui.available_width() - detach_w).max(1.0);
+        preset_selector_slot(ui, combo_w, |ui| {
+            egui::ComboBox::from_id_salt(("macro_preset_select", idx))
+                .selected_text(RichText::new(current_label).size(12.0))
+                .width(combo_w)
+                .truncate()
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(!is_preset, loc.inspector_preset_custom).clicked() {
+                        if let Some(pid) = preset_id.take() {
+                            if let Some(p) = all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(&pid)) {
+                                if events.is_empty() {
+                                    *events = p.events.clone();
+                                }
+                                *repeat = p.repeat;
+                                *speed = p.speed;
+                                *infinite = p.infinite;
                             }
-                            *repeat = p.repeat;
-                            *speed = p.speed;
-                            *infinite = p.infinite;
                         }
                     }
-                }
-                for p in &all_macro_presets {
-                    let is_sel = preset_id.as_deref().is_some_and(|id| id == p.id || id.eq_ignore_ascii_case(&p.name));
-                    if ui.selectable_label(is_sel, &p.name).clicked() {
-                        *preset_id = Some(p.id.clone());
-                        events.clear();
+                    for p in &all_macro_presets {
+                        let is_sel = preset_id.as_deref().is_some_and(|id| id == p.id || id.eq_ignore_ascii_case(&p.name));
+                        if ui.selectable_label(is_sel, &p.name).clicked() {
+                            *preset_id = Some(p.id.clone());
+                            events.clear();
+                        }
                     }
-                }
-            });
+                });
+        });
 
         if is_preset
             && widgets::compact_button(ui, loc.inspector_preset_detach, Kind::Secondary, 24.0)
@@ -115,29 +127,29 @@ pub(crate) fn render_macro_fields(
 
         // Middle title (clean, centered vertically)
         let text_left = icon_box.right() + 10.0;
-        let title_pos = pos2(text_left, rect.center().y);
         let studio_btn_text = if is_preset {
             let pname = preset_id.as_deref().and_then(|pid| all_macro_presets.iter().find(|p| p.id == pid || p.name.eq_ignore_ascii_case(pid))).map(|p| p.name.as_str()).unwrap_or(loc.inspector_preset_unknown);
             format!("{} ({})", loc.inspector_macro_studio_title, pname)
         } else {
             loc.inspector_macro_studio_title.to_string()
         };
-        p.text(
-            title_pos,
-            egui::Align2::LEFT_CENTER,
-            studio_btn_text,
-            egui::FontId::new(13.0, theme::semibold()),
-            if hovered { t.accent_ink } else { t.ink_strong },
-        );
-
-        // Action arrow pill on right
-        let arrow_pos = pos2(rect.right() - 14.0, rect.center().y);
-        p.text(
-            arrow_pos,
-            egui::Align2::RIGHT_CENTER,
+        let title_color = if hovered { t.accent_ink } else { t.ink_strong };
+        // The title carries the preset name, so it is truncated before the right-hand pill
+        // instead of painting over it or past the card.
+        let pill_left = paint_studio_banner_pill(
+            p,
             loc.inspector_macro_studio_open,
-            egui::FontId::new(11.0, theme::mono_bold()),
+            rect.right() - 14.0,
+            rect.center().y,
             if hovered { t.accent_ink } else { t.faint },
+        );
+        paint_studio_banner_title(
+            p,
+            &studio_btn_text,
+            text_left,
+            rect.center().y,
+            pill_left - 8.0,
+            title_color,
         );
     }
 }

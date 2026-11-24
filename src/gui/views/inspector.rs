@@ -533,6 +533,172 @@ mod tests {
         );
     }
 
+    /// A preset name wider than the whole action card.
+    const LONG_PRESET_NAME: &str =
+        "Preset with an extremely long descriptive name that cannot fit into the action card";
+
+    /// A rule editor holding one action, with a preset whose name is wider than the card.
+    fn preset_drawer_state(action: Action) -> GuiState {
+        let config = crate::config::AppConfig {
+            overlays: vec![crate::models::OverlayDefinition {
+                id: "overlay_long".into(),
+                name: LONG_PRESET_NAME.into(),
+                ..Default::default()
+            }],
+            macro_presets: vec![crate::models::MacroPreset::new(
+                "macro_long",
+                LONG_PRESET_NAME,
+                Vec::new(),
+            )],
+            ..Default::default()
+        };
+
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.daemon_state = Some(crate::ipc::DaemonState {
+            autorun_enabled: true,
+            uptime_secs: 0,
+            daemon_memory_bytes: 0,
+            active_rules_count: 0,
+            total_rules_count: 1,
+            config,
+            logs: Vec::new(),
+            active_rule_executions: Default::default(),
+            active_overlay_ids: Default::default(),
+            active_test_rule_ids: Default::default(),
+            available_update: None,
+            update_progress: None,
+            update_status: None,
+            pending_open_update_modal: false,
+            pending_auto_start_update: false,
+        });
+        state.editing_rule = Some(Rule {
+            id: "rule_drawer".into(),
+            name: "Drawer".into(),
+            actions: vec![action],
+            ..Default::default()
+        });
+        state
+    }
+
+    /// Paints the drawer until its open transition has settled and returns the last frame plus the
+    /// panel rect the drawer painted. The panel is the largest surface filled with the page bg.
+    fn settled_drawer_frame(ctx: &egui::Context, state: &mut GuiState) -> (egui::FullOutput, Rect) {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 900.0));
+        let mut output = None;
+        for time in [0.0, 0.1, 0.3, 0.6, 0.9] {
+            let mut frame = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    render_inspector_drawer(ui.ctx(), state);
+                },
+            );
+            frame.textures_delta.clear();
+            output = Some(frame);
+        }
+        let output = output.expect("the drawer rendered");
+        let bg = Tokens::get(ctx).bg;
+        let panel = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill == bg => Some(rect.rect),
+                _ => None,
+            })
+            .max_by(|left, right| {
+                (left.width() * left.height()).total_cmp(&(right.width() * right.height()))
+            })
+            .expect("the drawer panel is painted");
+        (output, panel)
+    }
+
+    /// A preset name is substituted into the selector and the studio banner of an action step.
+    /// Neither may resize the step card: egui's `ComboBox::width` is only a minimum, so the
+    /// selected text used to extend the row, and the step block was pushed past the drawer's right
+    /// inset while the banner title painted over the "open" pill.
+    #[test]
+    fn long_preset_names_keep_the_action_step_inside_the_drawer() {
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+        let cases = [
+            (
+                loc.inspector_overlay_studio_title,
+                loc.inspector_overlay_studio_open,
+                Action::Overlay {
+                    overlay_id: "overlay_long".into(),
+                    custom_overlay: None,
+                    operation: crate::models::OverlayOperation::Show,
+                    override_text: None,
+                    duration_ms: None,
+                    close_on_exit: false,
+                },
+            ),
+            (
+                loc.inspector_macro_studio_title,
+                loc.inspector_macro_studio_open,
+                Action::Macro {
+                    preset_id: Some("macro_long".into()),
+                    operation: crate::models::MacroOperation::Run,
+                    events: Vec::new(),
+                    repeat: 1,
+                    speed: 1.0,
+                    infinite: false,
+                },
+            ),
+        ];
+
+        for (banner_title, pill_text, action) in cases {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            let mut state = preset_drawer_state(action);
+            let (output, panel) = settled_drawer_frame(&ctx, &mut state);
+            let page_right = panel.right() - 20.0;
+
+            let mut offenders: Vec<Rect> = Vec::new();
+            let mut title: Option<(f32, bool)> = None;
+            let mut pill_left: Option<f32> = None;
+            for clipped in &output.shapes {
+                // The scrollable editor column is clipped inside the panel; the drawer chrome
+                // (surface, shadow, footer strip, scroll bar) is clipped to the panel itself.
+                if clipped.clip_rect.right() < panel.right() - 1.0 {
+                    let rect = clipped.shape.visual_bounding_rect();
+                    if rect.is_positive() && rect.right() > page_right + 0.5 {
+                        offenders.push(rect);
+                    }
+                }
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    if text.galley.text().starts_with(banner_title) {
+                        title = Some((text.pos.x + text.galley.size().x, text.galley.elided));
+                    } else if text.galley.text() == pill_text {
+                        pill_left = Some(text.pos.x);
+                    }
+                }
+            }
+
+            assert!(
+                offenders.is_empty(),
+                "{banner_title:?}: {} shapes cross the page's right inset (the page ends at \
+                 {page_right}, the panel at {}): {offenders:?}",
+                offenders.len(),
+                panel.right()
+            );
+            let (title_right, elided) = title.expect("the studio banner title is painted");
+            let pill_left = pill_left.expect("the studio banner pill is painted");
+            assert!(
+                elided,
+                "{banner_title:?}: the long preset name was not truncated in the banner"
+            );
+            assert!(
+                title_right <= pill_left - 8.0,
+                "{banner_title:?}: the banner title ends at {title_right} and runs over the pill \
+                 that starts at {pill_left}"
+            );
+        }
+    }
+
     /// The literals the conversion pass moved into the catalog must not come back into the
     /// view. Every needle is assembled from fragments so this test cannot match itself.
     #[test]

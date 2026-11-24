@@ -25,6 +25,54 @@ pub(crate) fn archive_format_cell(format: crate::models::ArchiveFormat, loc: &cr
     Cell::new(archive_format_label(format, loc), "")
 }
 
+/// Lays one preset selector out in the space it may occupy. `ComboBox::width` is only a minimum:
+/// its selected text extends the button, so a long preset name would widen the whole step card.
+/// The selector therefore lives in an exact-width slot and truncates its text there; the slot
+/// width is the row width minus whatever the call site reserves on the right.
+pub(crate) fn preset_selector_slot(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(
+        vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        add,
+    );
+}
+
+/// The right-hand "open" pill of a studio banner. Returns its left edge, so the banner title can
+/// be truncated before the pill instead of painting over it.
+pub(crate) fn paint_studio_banner_pill(
+    painter: &egui::Painter,
+    text: &str,
+    right: f32,
+    center_y: f32,
+    color: Color32,
+) -> f32 {
+    let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::new(11.0, theme::mono_bold()), color);
+    let left = right - galley.size().x;
+    painter.galley(pos2(left, center_y - galley.size().y * 0.5), galley, color);
+    left
+}
+
+/// The middle title of a studio banner, truncated at `max_right`: it carries the preset name,
+/// which can be longer than the banner and must not paint past the card or over the pill.
+pub(crate) fn paint_studio_banner_title(
+    painter: &egui::Painter,
+    text: &str,
+    left: f32,
+    center_y: f32,
+    max_right: f32,
+    color: Color32,
+) {
+    let format = egui::TextFormat {
+        font_id: egui::FontId::new(13.0, theme::semibold()),
+        color,
+        ..Default::default()
+    };
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), format);
+    job.wrap = egui::text::TextWrapping::truncate_at_width((max_right - left).max(1.0));
+    let galley = painter.layout_job(job);
+    painter.galley(pos2(left, center_y - galley.size().y * 0.5), galley, color);
+}
+
 pub(crate) fn archive_format_ext(format: crate::models::ArchiveFormat) -> &'static str {
     use crate::models::ArchiveFormat;
     match format {

@@ -34,6 +34,8 @@ const COLUMN_MIN_W: f32 = 820.0;
 const LOG_SECTION_H: f32 = 238.0;
 /// The page inset above the first block and below the last one; both are identical.
 const PAGE_INSET: f32 = 16.0;
+/// Side inset of the page inside the dialog body, left and right.
+const SIDE_INSET: f32 = 20.0;
 /// Samples the live CPU/RAM chart shows: the collector keeps about two minutes, the card title
 /// promises the last 60 seconds and the sample cadence is one per second.
 const LIVE_CHART_SAMPLES: usize = 60;
@@ -98,8 +100,8 @@ pub fn render_analytics_modal(ctx: &egui::Context, state: &mut GuiState) {
                 // One page: the activity log is the first section of the same scroll as the
                 // metrics, and the inset above the first block equals the one below the last.
                 let inner = Rect::from_min_max(
-                    ui.max_rect().min + vec2(20.0, PAGE_INSET),
-                    ui.max_rect().max - vec2(20.0, PAGE_INSET),
+                    ui.max_rect().min + vec2(SIDE_INSET, PAGE_INSET),
+                    ui.max_rect().max - vec2(SIDE_INSET, PAGE_INSET),
                 );
                 if inner.width() < 60.0 || inner.height() < 160.0 {
                     return;
@@ -932,11 +934,17 @@ fn render_log_panel(
                             };
                             widgets::badge(ui, &log.category, category_color);
                             let message_color = if log.level == "ERROR" { t.bad } else { t.ink };
-                            ui.label(
-                                RichText::new(&log.message)
-                                    .family(theme::mono())
-                                    .size(11.5)
-                                    .color(message_color),
+                            // A long message truncates at the right edge of the stream instead of
+                            // widening its row: one unbounded line used to stretch the whole page
+                            // width, and every card below it then laid itself out to that width.
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&log.message)
+                                        .family(theme::mono())
+                                        .size(11.5)
+                                        .color(message_color),
+                                )
+                                .truncate(),
                             );
                         });
                     }
@@ -1449,6 +1457,156 @@ mod tests {
                     "two sources share one series colour"
                 );
             }
+        }
+    }
+
+    /// A message far wider than the dialog: the stream has to truncate it rather than lay out to
+    /// the full width of the text.
+    const LONG_LOG_MESSAGE: &str =
+        "A logged event whose message is far wider than the analytics dialog, which is exactly \
+         what used to push the dashboard blocks past the right edge of the dialog";
+
+    /// [`analytics_state`] filled with the densest realistic content: long log messages, long rule
+    /// names, every run source and a full top-rules ranking.
+    fn dense_analytics_state(language: crate::i18n::Language) -> GuiState {
+        let mut state = analytics_state();
+        state.language = language;
+        let daemon = state
+            .daemon_state
+            .as_mut()
+            .expect("the fixture carries a daemon state");
+        daemon.config.rules.clear();
+        for index in 0..8 {
+            daemon.config.rules.push(Rule {
+                id: format!("rule_{index}"),
+                name: format!(
+                    "Rule with an extremely long descriptive name #{index} that a real rule may carry"
+                ),
+                execution_count: 0,
+                max_executions: Some(3),
+                ..Default::default()
+            });
+        }
+        daemon.logs = (0..24)
+            .map(|index| crate::models::LogItem {
+                timestamp: format!("2026-01-01 12:{index:02}:00"),
+                level: if index % 4 == 0 { "ERROR" } else { "INFO" }.to_string(),
+                category: "RULE".to_string(),
+                message: LONG_LOG_MESSAGE.to_string(),
+            })
+            .collect();
+        let snapshot = state.analytics.as_mut().expect("the fixture carries a snapshot");
+        snapshot.sources = RunSource::ALL
+            .iter()
+            .enumerate()
+            .map(|(index, source)| SourceRuns {
+                source: *source,
+                executions: (index as u32 + 1) * 111,
+            })
+            .collect();
+        snapshot.top_rules = (0..8)
+            .map(|index| RuleRuns {
+                rule_id: format!("rule_{index}"),
+                executions: 9_000 - index as u32,
+            })
+            .collect();
+        state
+    }
+
+    /// Renders the dialog until the open transition has settled and returns the last frame plus
+    /// the card rect painted for the dialog.
+    fn settled_analytics_frame(
+        ctx: &egui::Context,
+        state: &mut GuiState,
+        screen: Rect,
+    ) -> (egui::FullOutput, Rect) {
+        let mut output = None;
+        for time in [0.0, 0.1, 0.3, 0.5, 0.8] {
+            let mut frame = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    render_analytics_modal(ui.ctx(), state);
+                },
+            );
+            frame.textures_delta.clear();
+            output = Some(frame);
+        }
+        let output = output.expect("the dialog rendered");
+        let card = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect) if rect.fill == Tokens::DARK.bg => Some(rect.rect),
+                _ => None,
+            })
+            .max_by(|left, right| {
+                (left.width() * left.height()).total_cmp(&(right.width() * right.height()))
+            })
+            .expect("the dialog card is painted");
+        (output, card)
+    }
+
+    /// A long log line truncates at the right edge of the stream instead of widening the page.
+    /// One unbounded message used to stretch the page's layout width, and every card below it
+    /// then laid itself out to that width and painted over the dialog's right inset.
+    #[test]
+    fn long_log_messages_never_widen_the_page() {
+        for (screen, language) in [
+            // The smallest window the app allows, where the dashboard rows stack.
+            (vec2(880.0, 580.0), crate::i18n::Language::Russian),
+            (vec2(1280.0, 900.0), crate::i18n::Language::English),
+        ] {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            let mut state = dense_analytics_state(language);
+            state.show_analytics_modal = true;
+            let (output, card) = settled_analytics_frame(
+                &ctx,
+                &mut state,
+                Rect::from_min_size(pos2(0.0, 0.0), screen),
+            );
+            let page_right = card.right() - SIDE_INSET;
+
+            let mut offenders: Vec<String> = Vec::new();
+            let mut truncated_rows = 0;
+            for clipped in &output.shapes {
+                // The dialog surface, its shadow and its dividers are clipped wider than the card
+                // itself; every other shape belongs to the page.
+                if clipped.clip_rect.right() > card.right() + 0.5 {
+                    continue;
+                }
+                let visible = clipped
+                    .shape
+                    .visual_bounding_rect()
+                    .intersect(clipped.clip_rect);
+                if !visible.is_positive() {
+                    continue;
+                }
+                if visible.right() > page_right + 0.5 {
+                    offenders.push(format!("{visible:?}"));
+                }
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    if text.galley.text() == LONG_LOG_MESSAGE && text.galley.elided {
+                        truncated_rows += 1;
+                    }
+                }
+            }
+            assert!(
+                offenders.is_empty(),
+                "{language:?} at {screen:?}: {} shapes cross the page's right inset (the page ends \
+                 at {page_right}, the card at {}): {:?}",
+                offenders.len(),
+                card.right(),
+                &offenders[..offenders.len().min(6)]
+            );
+            assert!(
+                truncated_rows > 0,
+                "{language:?} at {screen:?}: no log line was truncated, the stream widened instead"
+            );
         }
     }
 }
