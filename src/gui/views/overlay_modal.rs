@@ -6,7 +6,7 @@ use egui::{pos2, vec2, Rect};
 use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::GuiState;
-use crate::gui::theme::Tokens;
+use crate::gui::theme::{self, Tokens};
 
 mod calibration;
 mod canvas;
@@ -83,7 +83,8 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
         .height_fraction(0.92)
         .min_size(vec2(920.0, 600.0))
         .max_size(vec2(1360.0, 940.0))
-        .header_height(50.0)
+        .header_height(46.0)
+        .header_sunken(true)
         .close_on_escape(studio.active_color_target.is_none())
         .show(ctx, &t, |frame| {
             // ---------------- 1. HEADER ----------------
@@ -96,15 +97,31 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                         glyph: Some(egui_phosphor::regular::FRAME_CORNERS),
                         glyph_size: 16.0,
                         close_tip: loc.modal_tip_close,
-                        left_pad: 18.0,
-                        glyph_pad: 6.0,
-                        right_pad: 16.0,
+                        left_pad: 16.0,
+                        glyph_pad: 8.0,
+                        right_pad: 14.0,
                         item_spacing_x: None,
                     },
-                    |ui| { widgets::hud(ui, loc.overlay_studio_title, t.ink); },
                     |ui| {
-                        // Calibrate Position on Screen Button
+                        ui.label(
+                            egui::RichText::new(loc.overlay_studio_title)
+                                .font(egui::FontId::new(14.0, theme::semibold()))
+                                .color(t.ink_strong),
+                        );
+
+                        // Header actions stay in the leading cluster, right after the title.
                         ui.add_space(8.0);
+
+                        // Presets Button
+                        let presets_kind = if studio.show_presets_popover { Kind::Primary } else { Kind::Secondary };
+                        if widgets::button(ui, loc.overlay_studio_presets_btn, presets_kind, 0.0).clicked() {
+                            studio.show_presets_popover = !studio.show_presets_popover;
+                            if studio.show_presets_popover && studio.preset_save_name.trim().is_empty() {
+                                studio.preset_save_name = studio.overlay.name.clone();
+                            }
+                        }
+
+                        // Calibrate Position on Screen Button
                         let cal_text = if studio.is_calibrating {
                             loc.overlay_studio_btn_calibrate_hide
                         } else {
@@ -114,17 +131,8 @@ pub fn render_overlay_modal(ctx: &egui::Context, state: &mut GuiState) {
                         if widgets::button(ui, cal_text, cal_kind, 0.0).clicked() {
                             toggle_calibration = true;
                         }
-
-                        // Presets Button
-                        ui.add_space(8.0);
-                        let presets_kind = if studio.show_presets_popover { Kind::Primary } else { Kind::Secondary };
-                        if widgets::button(ui, loc.overlay_studio_presets_btn, presets_kind, 0.0).clicked() {
-                            studio.show_presets_popover = !studio.show_presets_popover;
-                            if studio.show_presets_popover && studio.preset_save_name.trim().is_empty() {
-                                studio.preset_save_name = studio.overlay.name.clone();
-                            }
-                        }
                     },
+                    |_| {},
                 );
             });
 

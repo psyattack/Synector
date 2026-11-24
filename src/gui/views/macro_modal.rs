@@ -141,14 +141,11 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 .font(egui::FontId::new(14.0, theme::semibold()))
                                 .color(t.ink_strong),
                         );
-                    },
-                    |ui| {
-                        if gui_widgets::glyph_button_quiet(ui, gui_widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                        }
+
+                        // Header actions stay in the leading cluster, right after the title.
+                        ui.add_space(8.0);
 
                         // Presets button
-                        ui.add_space(8.0);
                         let presets_kind = if state.show_macro_presets_modal { Kind::Primary } else { Kind::Secondary };
                         if gui_widgets::button(ui, loc.macro_studio_presets_btn, presets_kind, 0.0).clicked() {
                             state.show_macro_presets_modal = !state.show_macro_presets_modal;
@@ -183,6 +180,11 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                             } else {
                                 run_macro_test_safe(events.clone(), *speed);
                             }
+                        }
+                    },
+                    |ui| {
+                        if gui_widgets::glyph_button_quiet(ui, gui_widgets::Glyph::Minimize, loc.macro_studio_minimize_tip).clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                         }
                     },
                 );

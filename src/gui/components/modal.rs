@@ -96,8 +96,10 @@ pub struct ModalHeader<'a> {
 /// The repeated modal header: an optional glyph, the dialog title, and a right-to-left close glyph.
 ///
 /// `title` renders in the left part of the header (the standard call sites pass `widgets::hud`);
-/// `trailing` renders after the close glyph inside the same right-to-left layout, so a header with
-/// extra actions keeps its order. Callers pass this straight into `ModalFrame::header`.
+/// the studio headers also append their action buttons there, so the leading cluster stays pinned
+/// to the left edge; `trailing` renders after the close glyph inside the same right-to-left layout,
+/// so a header with trailing actions keeps its order. Callers pass this straight into
+/// `ModalFrame::header`.
 pub fn render_modal_header(
     ui: &mut Ui,
     close_requested: &mut bool,

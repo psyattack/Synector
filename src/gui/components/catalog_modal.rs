@@ -19,6 +19,9 @@ use crate::gui::components::widgets;
 use crate::gui::theme::{self, Tokens};
 use crate::i18n::Strings;
 
+/// Corner radius shared by the catalog cards and the search field above the grid, in both skins.
+const CARD_CORNER: CornerRadius = CornerRadius::same(6);
+
 /// Presentation metadata every catalog card exposes to the shared renderer.
 ///
 /// `nestable` is the explicit "can live inside an If/Else branch" flag (U04-010): the badge stays
@@ -289,7 +292,12 @@ fn render_catalog_body<T: CatalogEntry>(
                 vec2(search_w, t.metrics().control_h),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {
-                    widgets::catalog_search_box(ui, view.search_query, view.search_hint);
+                    widgets::catalog_search_box_with_corner(
+                        ui,
+                        view.search_query,
+                        view.search_hint,
+                        CARD_CORNER,
+                    );
                 },
             );
         });
@@ -338,8 +346,8 @@ fn render_catalog_body<T: CatalogEntry>(
                                 let bg_col = if is_hovered { t.sunken } else { t.bg };
                                 let stroke_col = if is_hovered { t.accent_ink } else { t.line };
 
-                                ui.painter().rect_filled(rect, CornerRadius::same(6), bg_col);
-                                ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, stroke_col), egui::StrokeKind::Inside);
+                                ui.painter().rect_filled(rect, CARD_CORNER, bg_col);
+                                ui.painter().rect_stroke(rect, CARD_CORNER, Stroke::new(1.0, stroke_col), egui::StrokeKind::Inside);
 
                                 // Icon Chip on Left
                                 let chip_rect = Rect::from_center_size(

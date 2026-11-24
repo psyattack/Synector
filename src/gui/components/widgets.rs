@@ -952,8 +952,9 @@ pub fn checkbox_row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
 /// a field radius from the active skin metrics, an integrated clear button, and subtle focus
 /// highlighting. It fills the available width.
 pub fn catalog_search_box(ui: &mut Ui, query: &mut String, hint_text: &str) -> Response {
+    let corner = Tokens::get(ui.ctx()).field_corner();
     let search_w = ui.available_width().max(60.0);
-    catalog_search_box_sized(ui, query, hint_text, search_w)
+    catalog_search_box_in(ui, query, hint_text, search_w, corner)
 }
 
 /// The same search field with an explicit width, for toolbars that must not stretch. The height
@@ -963,6 +964,30 @@ pub fn catalog_search_box_sized(
     query: &mut String,
     hint_text: &str,
     search_w: f32,
+) -> Response {
+    let corner = Tokens::get(ui.ctx()).field_corner();
+    catalog_search_box_in(ui, query, hint_text, search_w, corner)
+}
+
+/// The same search field with an explicit corner radius, so a catalog whose cards keep one radius
+/// across both skins can make the field above the grid share it. Fills the available width.
+pub fn catalog_search_box_with_corner(
+    ui: &mut Ui,
+    query: &mut String,
+    hint_text: &str,
+    corner: egui::CornerRadius,
+) -> Response {
+    let search_w = ui.available_width().max(60.0);
+    catalog_search_box_in(ui, query, hint_text, search_w, corner)
+}
+
+/// Shared body of the search field variants: chrome, icon, text edit and clear button.
+fn catalog_search_box_in(
+    ui: &mut Ui,
+    query: &mut String,
+    hint_text: &str,
+    search_w: f32,
+    corner: egui::CornerRadius,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
     let search_id = ui.scope_id().with("catalog_search_box_input");
@@ -993,7 +1018,7 @@ pub fn catalog_search_box_sized(
         )
     };
 
-    let radius = t.field_corner();
+    let radius = corner;
     let fill = if modern {
         // Exactly the secondary-button tint: a field and a button are the same material.
         t.glass_button(if is_focused { 0.9 } else if is_hovered { 0.45 } else { 0.0 })
