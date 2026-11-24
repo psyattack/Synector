@@ -1,5 +1,57 @@
 # Changelog
 
+## [3.1.0](https://github.com/psyattack/Synector/compare/v3.0.1...v3.1.0) - 2026-11-25
+
+### Added
+- Interface Skins and Accent Colour: Settings > Appearance offers a Classic or Modern skin that changes control sizes, density and spacing independently of the dark or light palette, plus a custom accent colour for selection, focus rings and active controls.
+- Header Search and Dialogs: the navigation tabs are gone. The rules list is the only page, the header holds the single search field with glyph buttons for the analytics dashboard and settings, which open as dialogs. Typing in the header opens a grouped global search across rules, settings, the activity log, overlay and macro presets and the rule-builder catalogs, and applying a result opens that surface with the query already typed in.
+- Searchable Settings: settings are one scrolling column of blocks instead of tabs, and a search field filters every row by title and description, hiding a block when none of its rows match.
+- Windows Language and Theme: a first launch adopts the Windows interface language, Russian for a Russian Windows and English for every other, and keeps that choice from then on. Follow Windows Theme renders the palette Windows uses for its own apps, keeps tracking it at most once a second, and shades the tray menu with the same palette; picking a palette by hand turns the switch off.
+- Write Logs to Disk: a new Settings > General switch stops new log events without deleting files that already exist, and turning it back on resumes the same day's file.
+- Analytics Dialog: the dashboard opens from the header and shows rule-counter, session, live-load and success-rate cards, a live 60-second CPU/RAM chart together with the daemon's own CPU, memory and disk use, executions by source, 24-hour activity, top rules, rules that need attention and the in-app log stream. The daemon keeps the rolling history, so every finished or stopped run is counted exactly once.
+
+### Changed
+- Rule Editor: the builder's first section is RULE DETAILS, section headings use the guide's display face without numeric indices, the footer sits on one 52 px strip in both skins, and the app consistently calls configured items rules across the list, share messages and the in-app guide.
+- Lower Idle Load: the webhook port is bound only while at least one enabled webhook rule exists and released when the last one is disabled or removed, the hotkey listener sleeps until a hotkey is registered, and process, focus and system-event sampling slow down when no rule consumes them.
+- Removed Chocolate Palette: the chocolate theme is gone, and a settings file that still names it cannot be read, so the settings section falls back to defaults with the old file kept as a quarantine copy. Choose Dark or Light in Settings > Appearance.
+
+### Fixed
+- Copy and Paste: the Windows clipboard now works in both directions, so copied text reaches other applications and text copied elsewhere can be pasted into Synector.
+- Long Text: a long activity-log message no longer stretches the analytics page past the dialog edge, and a long preset name no longer widens a builder step card or runs over its banner title.
+- Rule Tags: the editor and picker previews show tag names exactly as entered, matching the rule cards.
+- Guide Navigation: a chapter opens at the top instead of keeping the previous chapter's scroll offset.
+- Studio Headers: Macro Studio actions sit after the title, and the Overlay Studio header matches its fill, geometry and title style, with Presets placed before Position on Screen.
+- Footer Separator: the status footer's hairline is drawn on the panel border instead of a row below it, and the footer keeps one height in both skins.
+- Catalog Search: the search fields in the catalog dialogs use the same corner radius as their cards.
+- Documentation: the README now opens with a demo video in place of the screenshot grid.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- adopt the Windows UI language on first run and follow its theme (by @psyattack in 645404d)
+- **gui:** replace the navigation tabs with a search header and dialogs (by @psyattack in 7c1052e)
+- **gui:** replace the settings tabs with searchable blocks (by @psyattack in 759d97d)
+- **logging:** add a setting to stop writing logs to disk (by @psyattack in eb06a3e)
+- **gui:** use rule terminology and refine the rule editor (by @psyattack in ee8ec2d)
+- **gui:** split the token layer and add skins with a custom accent (by @psyattack in ad75b46)
+
+### Changed
+- enable client-area animations before running tests (by @psyattack in 136c326)
+- **readme:** embed the demo video in the header (by @psyattack in e89dc83)
+- **daemon:** block the hotkey listener until a hotkey is registered (by @psyattack in d4b431a)
+
+### Fixed
+- **gui:** stop long content from widening panels and step cards (by @psyattack in 4ffe777)
+- **gui:** unify studio headers and catalog search rounding (by @psyattack in 4148710)
+- **gui:** draw the footer separator on the panel border (by @psyattack in 6e8cc1e)
+- **gui:** show rule tags verbatim in the inspector (by @psyattack in ca794e7)
+- **gui:** reset the guide scroll on chapter change (by @psyattack in 6dc5d13)
+- **gui:** restore system clipboard copy and paste (by @psyattack in 6814aed)
+- **daemon:** keep idle polling loops asleep and gate the webhook server (by @psyattack in af55914)
+
+</details>
+
+
 ## [3.0.1](https://github.com/psyattack/Synector/compare/v3.0.0...v3.0.1) - 2026-11-22
 
 ### Changed
