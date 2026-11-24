@@ -20,6 +20,8 @@ use super::GuiState;
 #[derive(Clone, PartialEq, Eq)]
 pub(super) enum IpcJobKind {
     Sync,
+    /// One analytics dashboard read, polled only while its dialog is open.
+    Analytics,
     Processes,
     SaveRule { rule_id: String },
     /// A cloned rule is saved under a new id; success keeps the editor the clone opened.
@@ -35,7 +37,6 @@ pub(super) enum IpcJobKind {
     ImportShare,
     SetAutorun { enabled: bool },
     StartUpdate,
-    ClearLogs,
     KillProcess { pid: u32, name: String },
     /// Result of an inline step test; stored in egui temp data under the view's own id.
     TestStep { result_id: egui::Id },
@@ -53,6 +54,7 @@ impl IpcJobKind {
     fn label(&self) -> String {
         match self {
             Self::Sync => "GetState".into(),
+            Self::Analytics => "GetAnalytics".into(),
             Self::Processes => "GetProcesses".into(),
             Self::SaveRule { rule_id } => format!("SaveRule '{rule_id}'"),
             Self::CloneRule { rule_id } => format!("CloneRule save '{rule_id}'"),
@@ -67,7 +69,6 @@ impl IpcJobKind {
             Self::ImportShare => "ImportShare".into(),
             Self::SetAutorun { enabled } => format!("SetAutorun ({enabled})"),
             Self::StartUpdate => "StartUpdate".into(),
-            Self::ClearLogs => "ClearLogs".into(),
             Self::KillProcess { pid, .. } => format!("KillProcess #{pid}"),
             Self::TestStep { .. } => "TestStep".into(),
             Self::OverlayPosition { overlay_id } => format!("GetOverlayPosition '{overlay_id}'"),
@@ -232,6 +233,7 @@ fn ipc_response_name(response: &IpcResponse) -> &'static str {
         IpcResponse::Ok => "Ok",
         IpcResponse::Pong => "Pong",
         IpcResponse::State(_) => "State",
+        IpcResponse::Analytics(_) => "Analytics",
         IpcResponse::Processes(_) => "Processes",
         IpcResponse::TestStepResult(_) => "TestStepResult",
         IpcResponse::OverlayPosition(_) => "OverlayPosition",
@@ -326,6 +328,10 @@ pub(super) struct IpcGateway {
     pub(super) overlay_position_in_flight: bool,
     /// When the last process snapshot was requested, to space retries that failed.
     pub(super) last_process_request: Option<Instant>,
+    /// One analytics snapshot request at a time, and when the last one was queued, so the dialog
+    /// polls on a fixed cadence instead of queueing a backlog.
+    pub(super) analytics_in_flight: bool,
+    pub(super) analytics_last_poll: Instant,
     /// Latest frame context, used to schedule a repaint when a request is queued so its result
     /// is applied promptly instead of waiting for the next input event.
     pub(super) frame_ctx: Option<egui::Context>,
@@ -354,12 +360,22 @@ impl IpcGateway {
             processes_in_flight: false,
             overlay_position_in_flight: false,
             last_process_request: None,
+            analytics_in_flight: false,
+            analytics_last_poll: Instant::now(),
             frame_ctx: None,
         }
     }
 
     pub(super) fn attach_frame_ctx(&mut self, ctx: &egui::Context) {
         self.frame_ctx = Some(ctx.clone());
+    }
+
+    /// Wakes the frame loop when a periodic poll is due: the window otherwise repaints on its own
+    /// cadence, which would push the poll past the interval.
+    pub(super) fn request_repaint_after(&self, delay: std::time::Duration) {
+        if let Some(ctx) = &self.frame_ctx {
+            ctx.request_repaint_after(delay);
+        }
     }
 
     /// Queues a request and requests a repaint for its result. Returns `false` when the worker
@@ -447,6 +463,28 @@ impl GuiState {
                     Err(error) => self.note_sync_failure(error),
                 }
             }
+            IpcJobKind::Analytics => {
+                self.ipc.analytics_in_flight = false;
+                match result {
+                    Ok(IpcResponse::Analytics(snapshot)) => self.analytics = Some(snapshot),
+                    Ok(IpcResponse::Error(error)) => crate::logging::debug(
+                        "GUI",
+                        &format!("Analytics snapshot failed: {error}"),
+                    ),
+                    Ok(other) => crate::logging::warn(
+                        "GUI",
+                        &format!(
+                            "Analytics snapshot failed: unexpected {} response",
+                            ipc_response_name(&other)
+                        ),
+                    ),
+                    // The state sync already reports a confirmed outage; a dashboard retry would
+                    // only duplicate that line every second.
+                    Err(error) => {
+                        crate::logging::debug("GUI", &format!("Analytics snapshot failed: {error}"))
+                    }
+                }
+            }
             IpcJobKind::Processes => {
                 self.ipc.processes_in_flight = false;
                 match result {
@@ -496,7 +534,6 @@ impl GuiState {
             IpcJobKind::ImportShare => self.apply_import_result(result),
             IpcJobKind::SetAutorun { enabled } => self.apply_autorun_result(*enabled, result),
             IpcJobKind::StartUpdate => self.apply_start_update_result(result),
-            IpcJobKind::ClearLogs => self.apply_clear_logs_result(result),
             IpcJobKind::KillProcess { pid, name } => self.apply_kill_process_result(*pid, name, result),
             IpcJobKind::TestStep { result_id } => self.apply_test_step_result(*result_id, result),
             IpcJobKind::OverlayPosition { overlay_id } => {
@@ -534,32 +571,6 @@ impl GuiState {
             }
         }
         self.daemon_sync.force();
-    }
-
-    /// Queues the analytics log-buffer reset. The local snapshot is cleared only after the daemon
-    /// confirms it, so a failure cannot be silently undone by the next state sync.
-    pub fn clear_logs(&mut self) {
-        self.enqueue_ipc(IpcJobKind::ClearLogs, IpcRequest::ClearLogs, None);
-    }
-
-    fn apply_clear_logs_result(&mut self, result: Result<IpcResponse, String>) {
-        let loc = self.loc();
-        match result {
-            Ok(IpcResponse::Ok) => {
-                if let Some(daemon) = &mut self.daemon_state {
-                    daemon.logs.clear();
-                }
-                self.set_toast(loc.toast_stream_cleared);
-            }
-            Ok(IpcResponse::Error(error)) | Err(error) => {
-                crate::logging::warn("GUI", &format!("ClearLogs was not applied: {error}"));
-                self.set_toast(loc.toast_clear_logs_failed.replace("{}", &error));
-            }
-            Ok(_) => {
-                crate::logging::warn("GUI", "ClearLogs was not applied: unexpected response");
-                self.set_toast(loc.toast_request_failed_unexpected.to_string());
-            }
-        }
     }
 
     /// Queues a force-terminate for one process. The selection is cleared when the daemon
@@ -910,51 +921,6 @@ mod tests {
             window_title: String::new(),
             memory_bytes: 0,
             cpu_percent: 0.0,
-        }
-    }
-
-    #[test]
-    fn test_clear_logs_failure_toast_is_localized() {
-        let mut state = GuiState::new();
-        state.language = crate::i18n::Language::English;
-        let en = crate::i18n::get(crate::i18n::Language::English);
-        state.apply_ipc_result(IpcJobResult {
-            kind: IpcJobKind::ClearLogs,
-            result: Err("pipe is busy".into()),
-        });
-        let toast = state.toast.as_ref().expect("failure is reported").0.clone();
-        assert_eq!(toast, en.toast_clear_logs_failed.replace("{}", "pipe is busy"));
-        assert!(!toast.contains("{}"), "placeholder must be filled: {toast}");
-
-        state.language = crate::i18n::Language::Russian;
-        let ru = crate::i18n::get(crate::i18n::Language::Russian);
-        state.apply_ipc_result(IpcJobResult {
-            kind: IpcJobKind::ClearLogs,
-            result: Err("pipe is busy".into()),
-        });
-        assert_eq!(
-            state.toast.as_ref().expect("failure is reported").0,
-            ru.toast_clear_logs_failed.replace("{}", "pipe is busy")
-        );
-        assert_ne!(toast, ru.toast_clear_logs_failed.replace("{}", "pipe is busy"));
-    }
-
-    #[test]
-    fn test_clear_logs_unexpected_response_uses_the_localized_generic_line() {
-        let mut state = GuiState::new();
-        for language in [
-            crate::i18n::Language::English,
-            crate::i18n::Language::Russian,
-        ] {
-            state.language = language;
-            state.apply_ipc_result(IpcJobResult {
-                kind: IpcJobKind::ClearLogs,
-                result: Ok(IpcResponse::Pong),
-            });
-            assert_eq!(
-                state.toast.as_ref().expect("failure is reported").0,
-                crate::i18n::get(language).toast_request_failed_unexpected
-            );
         }
     }
 

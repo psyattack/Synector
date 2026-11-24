@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::ipc::IpcRequest;
 
 use super::ipc::IpcJobKind;
-use super::modals::{ActiveView, ProcessPickerTarget};
+use super::modals::ProcessPickerTarget;
 use super::GuiState;
 
 /// Minimum spacing between failed process-snapshot retries: the inspector asks for a snapshot on
@@ -166,7 +166,6 @@ impl GuiState {
         });
         rule.name = format!("{} {}", loc.inspector_rule_track_prefix, proc_name);
         rule.auto_process_icon = true;
-        self.active_view = ActiveView::Rules;
         self.is_creating_new_rule = true;
         self.selected_rule_id = None;
         self.editing_rule = Some(rule);

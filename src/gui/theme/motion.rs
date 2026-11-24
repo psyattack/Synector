@@ -38,52 +38,6 @@ pub fn duration(seconds: f32) -> f32 {
     }
 }
 
-/// Slides a rectangle toward its target with a frame-rate independent ease. Used for the
-/// active-tab pill and the segmented-cell indicator, so switching reads as movement instead of
-/// a jump. With motion disabled by the platform the target is returned immediately.
-pub fn slide_rect(ctx: &egui::Context, id: egui::Id, target: egui::Rect) -> egui::Rect {
-    #[derive(Clone, Copy)]
-    struct Slide {
-        rect: egui::Rect,
-    }
-
-    impl Default for Slide {
-        fn default() -> Self {
-            Self {
-                rect: egui::Rect::ZERO,
-            }
-        }
-    }
-
-    let mut slide = ctx
-        .data(|data| data.get_temp::<Slide>(id))
-        .unwrap_or(Slide { rect: target });
-
-    if animations_enabled() {
-        let dt = ctx.input(|input| input.stable_dt).clamp(0.001, 0.1);
-        let k = (1.0 - (-dt / 0.055).exp()).clamp(0.0, 1.0);
-        let lerp = |from: egui::Pos2, to: egui::Pos2| {
-            egui::pos2(from.x + (to.x - from.x) * k, from.y + (to.y - from.y) * k)
-        };
-        slide.rect = egui::Rect::from_min_max(
-            lerp(slide.rect.min, target.min),
-            lerp(slide.rect.max, target.max),
-        );
-        if (slide.rect.min - target.min).length() > 0.6
-            || (slide.rect.max - target.max).length() > 0.6
-        {
-            ctx.request_repaint();
-        } else {
-            slide.rect = target;
-        }
-    } else {
-        slide.rect = target;
-    }
-
-    ctx.data_mut(|data| data.insert_temp(id, slide));
-    slide.rect
-}
-
 /// Whether the content is scrolling right now. Hover transitions snap during a scroll, so a
 /// highlight cannot appear to travel with the content.
 pub fn scroll_in_progress(ctx: &egui::Context) -> bool {

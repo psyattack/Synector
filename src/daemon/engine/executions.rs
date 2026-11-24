@@ -4,7 +4,7 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 
 use crate::daemon::actions::ActionRunner;
-use crate::models::{Action, Rule};
+use crate::models::{Action, Rule, RunSource};
 
 use super::DaemonEngine;
 
@@ -112,6 +112,18 @@ pub(super) struct RuleCallRuntime {
     pub(super) completion: oneshot::Sender<()>,
 }
 
+/// How one pipeline ended. The shared step loop reports it exactly once, so the analytics
+/// outcome counters do not depend on which spawn path started the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineOutcome {
+    /// Every step succeeded.
+    Completed,
+    /// At least one step failed; a non-stopping error still counts.
+    Failed,
+    /// A step requested a graceful abort of the pipeline.
+    Aborted,
+}
+
 #[derive(Debug)]
 pub enum ActionCompletionEvent {
     Log {
@@ -156,6 +168,19 @@ pub enum ActionCompletionEvent {
     },
     IncrementExecutionCount {
         rule_id: String,
+    },
+    /// One cycle of a recurring (interval or held-hotkey) execution started. Reported at the
+    /// cycle start, so a cycle that fails or is aborted mid-run still counts as a run. The source
+    /// travels with the event because the cycle starts inside the loop, where no engine-side
+    /// origin exists; it is a run-now emulation, so it is never attributed to the rule's
+    /// configured trigger.
+    RecurringCycleStarted {
+        rule_id: String,
+        source: RunSource,
+    },
+    /// One finished pipeline and how it ended. Exit pipelines are never reported.
+    RunOutcome {
+        outcome: PipelineOutcome,
     },
 }
 
@@ -488,12 +513,18 @@ impl DaemonEngine {
     /// Aborts every active execution of `rule_id` and releases its runtime resources without
     /// changing `is_enabled`. The user-facing stop, a rule-to-rule stop, the GUI test emulation
     /// and HoldStop share this path; only [`Self::stop_rule_execution`] persists a pause.
+    ///
+    /// The analytics outcome is not recorded here: every spawn path's `ExecGuard` reports an
+    /// aborted run when it drops without the run having reported its own outcome, which covers a
+    /// live pipeline, a cycle of a recurring loop, a stopped exit pipeline (not counted at all) and
+    /// a loop killed between cycles (nothing to count) in one place.
     pub fn abort_rule_executions(&mut self, rule_id: &str) {
-        // 1. Abort any active recurring test loop
+        // 1. Abort any active recurring test loop and every live pipeline of the rule.
         self.abort_recurring_test(rule_id);
+        let pipeline_aborts = self.executions.abort_rule(rule_id);
 
-        // 2. Abort all execution handles matching rule_id
-        for _ in 0..self.executions.abort_rule(rule_id) {
+        // 2. Log one line per aborted execution, as before.
+        for _ in 0..pipeline_aborts {
             self.log("INFO", "RULE", &format!("Stopped execution of rule: {}", rule_id));
         }
 
@@ -671,8 +702,21 @@ impl DaemonEngine {
                         self.log("INFO", "RULE", &format!("Set custom icon for rule '{}' from process: {}", name, icon_path));
                     }
                 }
+                ActionCompletionEvent::RunOutcome { outcome } => {
+                    let now = chrono::Local::now();
+                    match outcome {
+                        PipelineOutcome::Completed => self.analytics.record_success(now),
+                        PipelineOutcome::Failed => self.analytics.record_failure(now),
+                        PipelineOutcome::Aborted => self.analytics.record_aborts(1, now),
+                    }
+                }
+                ActionCompletionEvent::RecurringCycleStarted { rule_id, source } => {
+                    // The loop reports every cycle, so a draft rule that is only test-run is
+                    // counted too: no config lookup is involved.
+                    self.analytics
+                        .record_run(source, &rule_id, chrono::Local::now());
+                }
                 ActionCompletionEvent::IncrementExecutionCount { rule_id } => {
-                    self.analytics.total_executions += 1;
                     let increment = self.record_quota_increment(&rule_id, chrono::Local::now());
                     if increment.paused {
                         self.persist_rules();

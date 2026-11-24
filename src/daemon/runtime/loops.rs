@@ -182,9 +182,21 @@ pub(super) async fn spawn_runtime_flush_loop(engine_runtime: Arc<Mutex<DaemonEng
     let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
     loop {
         interval.tick().await;
+        // One CPU/RAM sample per second feeds the analytics dashboard's live chart. It reads only
+        // the two counters the chart needs — not the full telemetry snapshot, which also touches
+        // the battery and the COM audio endpoint — and it is taken outside the engine lock, so the
+        // Win32 calls never stall a busy engine. The same tick samples the daemon's own CPU,
+        // memory and disk use for the SYSTEM LOAD card.
+        let metrics = crate::daemon::telemetry::get_cpu_ram_metrics();
+        let daemon_usage = crate::daemon::telemetry::sample_daemon_usage();
+        let sampled_at = std::time::Instant::now();
         let mut eng = engine_runtime.lock().await;
         eng.persist_runtime_if_due();
         eng.persist_overlay_positions_if_due();
+        if let Some((cpu, ram)) = metrics {
+            eng.record_analytics_sample(cpu, ram, sampled_at);
+        }
+        eng.record_daemon_usage(daemon_usage);
     }
 }
 

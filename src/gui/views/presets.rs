@@ -28,6 +28,14 @@ pub(crate) struct PresetPickerOutcome {
     pub delete_id: Option<String>,
 }
 
+/// Case-insensitive match of one preset against an already lowercased query. The picker and the
+/// header search share it, so both list and count the same presets.
+pub(crate) fn preset_matches_query(name: &str, id: &str, needle: &str) -> bool {
+    needle.is_empty()
+        || name.to_lowercase().contains(needle)
+        || id.to_lowercase().contains(needle)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_preset_picker(
     ui: &mut egui::Ui,
@@ -72,7 +80,7 @@ pub(crate) fn render_preset_picker(
     let q = search.trim().to_lowercase();
     let filtered: Vec<_> = rows
         .into_iter()
-        .filter(|row| q.is_empty() || row.name.to_lowercase().contains(&q) || row.id.to_lowercase().contains(&q))
+        .filter(|row| preset_matches_query(&row.name, &row.id, &q))
         .collect();
 
     if filtered.is_empty() {

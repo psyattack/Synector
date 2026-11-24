@@ -6,6 +6,7 @@
 //! one the JSON schema has always published. Serde default helpers stay private to this tree.
 
 mod action;
+mod analytics;
 mod condition;
 mod macros;
 mod overlay;
@@ -21,6 +22,7 @@ mod validation;
 mod tests;
 
 pub use action::*;
+pub use analytics::*;
 pub use condition::*;
 pub use macros::*;
 pub use overlay::*;

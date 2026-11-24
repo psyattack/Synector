@@ -11,7 +11,9 @@ pub use self::engine::{get_engine_telemetry, update_engine_stats};
 pub use self::graph::{get_graph_current_label, get_graph_samples};
 pub use self::keys::{get_active_or_recent_keys, is_vk_pressed};
 pub use self::media::get_system_media_status;
+pub use self::process::{daemon_memory_bytes, sample_daemon_usage};
 pub use self::system::format_telemetry_text;
+pub use self::system::get_cpu_ram_metrics;
 
 #[cfg(test)]
 use std::time::{Duration, Instant};

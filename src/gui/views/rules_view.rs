@@ -84,7 +84,8 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
 
         let total = state.daemon_state.as_ref().map_or(0, |s| s.config.rules.len());
 
-        // 1. Top Bar: Tag Filter ComboBox + Sort ComboBox + Search Box + Import/Export/New Rule
+        // 1. Top Bar: Tag Filter ComboBox + Sort ComboBox + Import/Export/New Rule. The rules
+        // search lives in the window header, not on this page.
         ui.horizontal(|ui| {
             // Tag Filter dropdown (clean text without leading glyph)
             let all_tags = state.all_distinct_tags();
@@ -152,17 +153,6 @@ pub fn render_rules_view(ui: &mut Ui, state: &mut GuiState) {
                 .widget_info(|| {
                     egui::WidgetInfo::labeled(egui::Role::ComboBox, true, loc.rules_sort_accessible)
                 });
-
-            ui.add_space(6.0);
-
-            // Search box (pinned to right of combo-boxes), on the shared field style so it
-            // matches the library modals.
-            widgets::catalog_search_box_sized(
-                ui,
-                &mut state.search_query,
-                loc.rules_search_placeholder,
-                180.0,
-            );
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Primary "+ NEW RULE" Button
@@ -268,7 +258,6 @@ mod tests {
             active_rule_executions: std::collections::HashMap::new(),
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
-            analytics: Default::default(),
             available_update: None,
             update_progress: None,
             update_status: None,

@@ -7,13 +7,6 @@ use super::drafts::PendingMacroSave;
 use super::ipc::{DirectLibraryChange, DirectWrite, IpcJobKind};
 use super::GuiState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActiveView {
-    Rules,
-    Analytics,
-    Settings,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProcessSortColumn {
     #[default]
@@ -384,7 +377,8 @@ impl GuiState {
         self.close_action_catalog();
     }
 
-    /// Whether any modal popup (script editor, action catalog, process picker, or changelog) is currently open.
+    /// Whether any modal dialog is currently open. The header search stays inert while this is
+    /// true: its scrim owns the pointer and the keyboard focus is surrendered on open.
     pub fn is_modal_open(&self) -> bool {
         self.expanded_script_editor.is_some()
             || self.action_catalog.is_some()
@@ -394,8 +388,42 @@ impl GuiState {
             || self.picker_target.is_some()
             || (self.show_changelog_modal && self.available_update.is_some())
             || self.show_guide_modal
+            || self.show_analytics_modal
+            || self.show_settings_modal
             || self.macro_editor.is_some()
             || self.overlay_studio.is_some()
+    }
+
+    /// Opens the analytics dialog. The two header dialogs are mutually exclusive: the scrim
+    /// already blocks the header, and this keeps a programmatic open deterministic.
+    pub fn open_analytics_modal(&mut self) {
+        self.show_settings_modal = false;
+        self.show_analytics_modal = true;
+        self.search_overlay_open = false;
+        self.schedule_analytics_poll();
+    }
+
+    pub fn close_analytics_modal(&mut self) {
+        self.show_analytics_modal = false;
+    }
+
+    /// Opens the settings dialog; see [`Self::open_analytics_modal`].
+    pub fn open_settings_modal(&mut self) {
+        self.show_analytics_modal = false;
+        self.show_settings_modal = true;
+        self.search_overlay_open = false;
+    }
+
+    pub fn close_settings_modal(&mut self) {
+        self.show_settings_modal = false;
+    }
+
+    /// Opens a rule-builder catalog from the global search. A draft is created only when no rule
+    /// is being edited, so a global search never discards unsaved builder work.
+    pub fn ensure_rule_draft(&mut self) {
+        if self.editing_rule.is_none() {
+            self.start_new_rule();
+        }
     }
 }
 
@@ -474,6 +502,16 @@ mod tests {
         state.open_overlay_studio("overlay_crosshair");
         assert!(state.is_modal_open());
         state.close_overlay_studio();
+        assert!(!state.is_modal_open());
+
+        // Header dialogs: analytics and settings count as modals, and opening one closes the other.
+        state.open_analytics_modal();
+        assert!(state.is_modal_open());
+        assert!(state.show_analytics_modal);
+        state.open_settings_modal();
+        assert!(state.show_settings_modal);
+        assert!(!state.show_analytics_modal, "the header dialogs are mutually exclusive");
+        state.close_settings_modal();
         assert!(!state.is_modal_open());
     }
 

@@ -16,9 +16,3 @@ pub struct LogItem {
     pub category: String,
     pub message: String,
 }
-
-#[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct AnalyticsSummary {
-    #[serde(default)]
-    pub total_executions: u64,
-}

@@ -21,6 +21,10 @@ impl DaemonEngine {
                 IpcResponse::State(state)
             }
 
+            // Narrow answer for the analytics dialog: the collector's rolling snapshot, without
+            // projecting the whole config and log stream on every dashboard refresh.
+            IpcRequest::GetAnalytics => IpcResponse::Analytics(self.analytics_snapshot()),
+
             // Narrow answer for the standalone update-progress overlay: two updater fields, no
             // `DaemonState` projection (config and logs stay where they are).
             IpcRequest::GetUpdateProgress => {
@@ -183,11 +187,6 @@ impl DaemonEngine {
             IpcRequest::UpdateWindowState(ws) => {
                 self.config.window = Some(ws);
                 self.persist_settings();
-                IpcResponse::Ok
-            }
-
-            IpcRequest::ClearLogs => {
-                self.logs.clear();
                 IpcResponse::Ok
             }
 

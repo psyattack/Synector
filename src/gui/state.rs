@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::ipc::DaemonState;
 use crate::models::{ProcessSnapshotItem, Rule};
 
+mod analytics;
 mod drafts;
 mod filter;
 mod ipc;
@@ -26,8 +27,9 @@ use self::share::ShareExports;
 use self::sync::DaemonSync;
 use self::updates::Updates;
 
+pub use self::analytics::AnalyticsLogFilter;
 pub use self::modals::{
-    ActionCatalogModalState, ActiveView, ConditionCatalogState, ConditionCatalogTarget,
+    ActionCatalogModalState, ConditionCatalogState, ConditionCatalogTarget,
     ElementCatalogModalState, ExpandedScriptEditorState, IfElseCatalogTarget,
     MacroEditorModalState, ProcessCategoryFilter, ProcessPickerTarget, ProcessSortColumn,
     RuleSortMode, TriggerCatalogState,
@@ -38,7 +40,7 @@ pub(crate) use self::filter::rule_matches_visible_filters;
 pub(crate) use self::undo::push_if_new;
 
 pub struct GuiState {
-    pub(crate) active_view: ActiveView,
+    /// Query of the header search field: it filters the rules list.
     pub(crate) search_query: String,
     pub(crate) daemon_state: Option<DaemonState>,
     pub(crate) cached_processes: Vec<ProcessSnapshotItem>,
@@ -86,6 +88,17 @@ pub struct GuiState {
     pub(crate) update_download_progress: f32,
     pub(crate) show_changelog_modal: bool,
     pub(crate) show_guide_modal: bool,
+    /// The analytics dashboard dialog, opened from the header glyph.
+    pub(crate) show_analytics_modal: bool,
+    /// The settings dialog, opened from the header glyph.
+    pub(crate) show_settings_modal: bool,
+    /// The header global search results panel. It is shown while the header field holds a query
+    /// and is open; applying a result closes it or opens the target surface.
+    pub(crate) search_overlay_open: bool,
+    /// Latest analytics snapshot from the daemon, refreshed while the dialog is open.
+    pub(crate) analytics: Option<crate::models::AnalyticsSnapshot>,
+    /// Level filter of the analytics activity log; a global-search handoff resets it to `All`.
+    pub(crate) analytics_log_level: self::analytics::AnalyticsLogFilter,
     pub(crate) guide_selected_topic: usize,
     /// Set when the guide switches chapter, so its content scroll area returns to the top.
     pub(crate) guide_scroll_to_top: bool,
@@ -93,7 +106,7 @@ pub struct GuiState {
     pub(crate) group_full_presses: bool,
     pub(crate) undo_stack: Vec<Rule>,
     pub(crate) redo_stack: Vec<Rule>,
-    /// Query of the settings page search field: it filters the setting rows by their own text.
+    /// Query of the settings dialog search field: it filters the setting rows by their own text.
     pub(crate) settings_search_query: String,
     pub(crate) active_test_overlays: std::collections::HashSet<String>,
     pub(crate) active_test_runs: std::collections::HashMap<String, Instant>,
@@ -129,7 +142,6 @@ impl GuiState {
     pub fn new() -> Self {
         let settings = crate::config::Settings::read();
         Self {
-            active_view: ActiveView::Rules,
             search_query: String::new(),
             daemon_state: None,
             cached_processes: Vec::new(),
@@ -177,6 +189,11 @@ impl GuiState {
             update_download_progress: 0.0,
             show_changelog_modal: false,
             show_guide_modal: false,
+            show_analytics_modal: false,
+            show_settings_modal: false,
+            search_overlay_open: false,
+            analytics: None,
+            analytics_log_level: Default::default(),
             guide_selected_topic: 0,
             guide_scroll_to_top: false,
             analytics_log_filter: String::new(),

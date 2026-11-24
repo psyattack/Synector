@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::{mpsc, oneshot};
@@ -8,15 +10,26 @@ use crate::daemon::rule_call;
 use crate::daemon::watcher::ProcessWatcher;
 use crate::models::{Action, ProcessMatchMode, Rule, ScheduleType, Trigger};
 
-use super::executions::{next_execution_id, ActionCompletionEvent, BoundOverlay, BoundProcess, ExecutionOrigin, RuleCallRuntime, RuleCallStart, RuleSkip};
+use super::executions::{next_execution_id, ActionCompletionEvent, BoundOverlay, BoundProcess, ExecutionOrigin, PipelineOutcome, RuleCallRuntime, RuleCallStart, RuleSkip};
 use super::DaemonEngine;
 
+/// Progress flag shared by one spawn path's guard and observer. The observer clears it when a
+/// pipeline (or one recurring cycle) starts and sets it when the run reports its outcome, so the
+/// guard knows whether the run ended on its own or was aborted.
+type RunFinished = Arc<AtomicBool>;
+
 /// Drop guard shared by every pipeline spawn path. It reports the execution as finished even when
-/// the task is aborted, releases simulated inputs and resolves a `wait: true` rule call.
+/// the task is aborted, releases simulated inputs and resolves a `wait: true` rule call. A run with
+/// no reported outcome died before finishing, so the guard records the abort here: that is the one
+/// place that sees every stop path, including a task abort and a daemon shutdown.
 struct ExecGuard {
     id: u64,
     rule_id: String,
     is_manual: bool,
+    /// Whether this execution is a rule run at all: an exit pipeline is not counted in the
+    /// analytics counters, exactly like its outcome.
+    counts_as_run: bool,
+    finished: RunFinished,
     tx: mpsc::UnboundedSender<ActionCompletionEvent>,
     /// Resolves a `wait: true` rule call when the pipeline ends or is aborted.
     completion: Option<oneshot::Sender<()>>,
@@ -26,6 +39,11 @@ impl Drop for ExecGuard {
     fn drop(&mut self) {
         crate::daemon::actions::release_all_simulated_inputs();
         crate::daemon::rule_activity::mark_finished(&self.rule_id);
+        if self.counts_as_run && !self.finished.load(Ordering::Relaxed) {
+            let _ = self.tx.send(ActionCompletionEvent::RunOutcome {
+                outcome: PipelineOutcome::Aborted,
+            });
+        }
         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
             execution_id: self.id,
             _rule_id: self.rule_id.clone(),
@@ -57,6 +75,9 @@ pub(super) struct PipelineRun<'a> {
     pub(super) error_label: &'a str,
     /// The recurring loop stops when a cycle halts; the other callers ignore the answer.
     pub(super) warn_on_error_halt: bool,
+    /// Cleared at the first step of a run and set when the run reports its outcome, so an
+    /// `ExecGuard` can tell a finished run from an aborted one.
+    pub(super) finished: Option<&'a AtomicBool>,
 }
 
 /// Owned input of one spawned action pipeline. [`PipelineRun`] borrows these fields, so the task
@@ -73,6 +94,7 @@ struct OwnedPipelineRun {
     label: &'static str,
     error_label: &'static str,
     warn_on_error_halt: bool,
+    finished: RunFinished,
 }
 
 /// Progress sink for [`run_step_loop`]. The engine turns these callbacks into
@@ -86,6 +108,9 @@ pub(crate) trait PipelineObserver {
     fn step_failed(&mut self, step_index: usize, error: &str, stopping: bool);
     /// The run halted early: `abort_reason` is set for a graceful `AbortPipeline`.
     fn pipeline_halted(&mut self, step_index: usize, abort_reason: Option<&str>);
+    /// The run ended; called exactly once after the last step. The engine records the analytics
+    /// outcome here, so a failure that does not halt the pipeline still counts as one.
+    fn pipeline_finished(&mut self, outcome: PipelineOutcome);
 }
 
 /// Runs the shared action step loop used by every pipeline path: pipes `PrevOutput` and
@@ -100,6 +125,7 @@ pub(crate) async fn run_step_loop<O: PipelineObserver>(
     use crate::daemon::actions::ActionOutcome;
 
     let total_steps = actions.len();
+    let mut had_error = false;
     for (step_idx, action) in actions.iter().enumerate() {
         observer.step_started(step_idx, total_steps);
 
@@ -113,17 +139,25 @@ pub(crate) async fn run_step_loop<O: PipelineObserver>(
             }
             Ok(ActionOutcome::AbortPipeline { reason }) => {
                 observer.pipeline_halted(step_idx, Some(&reason));
+                observer.pipeline_finished(PipelineOutcome::Aborted);
                 return true;
             }
             Err(err) => {
+                had_error = true;
                 observer.step_failed(step_idx, &err, stop_on_error);
                 if stop_on_error {
                     observer.pipeline_halted(step_idx, None);
+                    observer.pipeline_finished(PipelineOutcome::Failed);
                     return true;
                 }
             }
         }
     }
+    observer.pipeline_finished(if had_error {
+        PipelineOutcome::Failed
+    } else {
+        PipelineOutcome::Completed
+    });
     false
 }
 
@@ -140,10 +174,18 @@ struct EnginePipelineObserver<'a> {
     label: &'a str,
     error_label: &'a str,
     warn_on_error_halt: bool,
+    finished: Option<&'a AtomicBool>,
 }
 
 impl PipelineObserver for EnginePipelineObserver<'_> {
     fn step_started(&mut self, step_index: usize, total_steps: usize) {
+        // A new run (or the next recurring cycle) is in flight again, so an abort from here on is
+        // a run stopped before it finished.
+        if step_index == 0 {
+            if let Some(finished) = self.finished {
+                finished.store(false, Ordering::Relaxed);
+            }
+        }
         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionStep {
             execution_id: self.execution_id,
             _rule_id: self.rule_id.to_string(),
@@ -194,6 +236,20 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
                 step_index + 1
             ),
         });
+    }
+
+    fn pipeline_finished(&mut self, outcome: PipelineOutcome) {
+        // Marked before the exit check: the guard must never report an abort for a run that
+        // reported an outcome, whatever that outcome is.
+        if let Some(finished) = self.finished {
+            finished.store(true, Ordering::Relaxed);
+        }
+        // Exit pipelines are not rule activity: they run only after the primary pipeline and
+        // would skew the success rate.
+        if self.is_exit {
+            return;
+        }
+        let _ = self.tx.send(ActionCompletionEvent::RunOutcome { outcome });
     }
 
     fn pipeline_halted(&mut self, step_index: usize, abort_reason: Option<&str>) {
@@ -247,6 +303,7 @@ pub(super) async fn run_action_pipeline(
         label: run.label,
         error_label: run.error_label,
         warn_on_error_halt: run.warn_on_error_halt,
+        finished: run.finished,
     };
     run_step_loop(run.actions, ctx, run.stop_on_error, &mut observer).await
 }
@@ -366,21 +423,27 @@ impl DaemonEngine {
     }
 
     /// Builds the drop guard for `execution_id`. Callers construct it only once a runtime is known
-    /// to exist, and before spawning, so an abort before the first poll still reports the run.
+    /// to exist, and before spawning, so an abort before the first poll still reports the run. The
+    /// returned flag is the one the observer sets when the run reports its own outcome.
     fn exec_guard(
         execution_id: u64,
         rule_id: &str,
         is_manual: bool,
+        counts_as_run: bool,
         tx: &mpsc::UnboundedSender<ActionCompletionEvent>,
         completion: Option<oneshot::Sender<()>>,
-    ) -> ExecGuard {
-        ExecGuard {
+    ) -> (ExecGuard, RunFinished) {
+        let finished: RunFinished = Arc::new(AtomicBool::new(false));
+        let guard = ExecGuard {
             id: execution_id,
             rule_id: rule_id.to_string(),
             is_manual,
+            counts_as_run,
+            finished: Arc::clone(&finished),
             tx: tx.clone(),
             completion,
-        }
+        };
+        (guard, finished)
     }
 
     /// Spawns one one-shot pipeline body on `handle` and registers its abort handle.
@@ -410,6 +473,7 @@ impl DaemonEngine {
                 label: body.label,
                 error_label: body.error_label,
                 warn_on_error_halt: body.warn_on_error_halt,
+                finished: Some(&body.finished),
             };
             run_action_pipeline(run, &mut ctx, &tx).await;
         });
@@ -511,7 +575,8 @@ impl DaemonEngine {
         let call_chain = call.as_ref().map(|c| c.chain.clone()).unwrap_or_default();
         let completion = call.map(|c| c.completion);
 
-        let increment = self.record_quota_increment(&rule.id, chrono::Local::now());
+        let now = chrono::Local::now();
+        let increment = self.record_quota_increment(&rule.id, now);
         if increment.paused {
             self.persist_rules();
         }
@@ -520,7 +585,13 @@ impl DaemonEngine {
             self.log(level, "RULE", message);
         }
 
-        self.analytics.total_executions += 1;
+        // Analytics counts the run before the pipeline is spawned, so a very short run is never
+        // lost. A manual run or a rule call overrides the rule's configured trigger kind.
+        self.analytics.record_run(
+            crate::daemon::analytics::source_for_run(rule.trigger.as_ref(), Some(origin)),
+            &rule.id,
+            now,
+        );
 
         let (execution_id, tx) = self.begin_pipeline(&rule_id, actions.len(), false, call_chain);
         ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
@@ -528,7 +599,8 @@ impl DaemonEngine {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             // Built before the task is spawned and moved into it, so an abort before the first
             // poll drops the future together with the guard: the caller is always notified.
-            let guard = Self::exec_guard(execution_id, &rule_id, is_manual, &tx, completion);
+            let (guard, finished) =
+                Self::exec_guard(execution_id, &rule_id, is_manual, true, &tx, completion);
             let body = OwnedPipelineRun {
                 actions,
                 rule_id,
@@ -541,6 +613,7 @@ impl DaemonEngine {
                 label: "Pipeline",
                 error_label: "Action",
                 warn_on_error_halt: true,
+                finished,
             };
             Ok(Some(self.spawn_pipeline(handle, execution_id, tx, guard, body, ctx)))
         } else {
@@ -683,7 +756,9 @@ impl DaemonEngine {
         ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let guard = Self::exec_guard(execution_id, &rule_id, false, &tx, None);
+            // An exit pipeline is never a rule run, so its guard reports no outcome either.
+            let (guard, finished) =
+                Self::exec_guard(execution_id, &rule_id, false, false, &tx, None);
             let body = OwnedPipelineRun {
                 actions,
                 rule_id,
@@ -696,6 +771,7 @@ impl DaemonEngine {
                 label: "Exit pipeline",
                 error_label: "Exit action",
                 warn_on_error_halt: false,
+                finished,
             };
             Some(self.spawn_pipeline(handle, execution_id, tx, guard, body, ctx))
         } else {
@@ -838,6 +914,12 @@ impl DaemonEngine {
         let rule_id = rule.id.clone();
         let context_name = context_name.to_string();
         let live_rules = std::sync::Arc::clone(&self.live_rules);
+        // The loop is only reached from the run-now emulation, so every cycle is a manual run
+        // regardless of the trigger the rule carries.
+        let source = crate::daemon::analytics::source_for_run(
+            rule.trigger.as_ref(),
+            Some(ExecutionOrigin::Test),
+        );
         let now = chrono::Local::now();
         let mut current_runs = self.config.rules.iter().find(|r| r.id == rule.id)
             .map(|stored| stored.quota_used(now))
@@ -847,7 +929,11 @@ impl DaemonEngine {
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let task_rule_id = rule_id.clone();
-            let guard = Self::exec_guard(execution_id, &rule_id, false, &tx, None);
+            let (guard, finished) =
+                Self::exec_guard(execution_id, &rule_id, false, true, &tx, None);
+            // No cycle has started yet, so stopping the loop before the first one has nothing to
+            // count as aborted.
+            finished.store(true, Ordering::Relaxed);
             let join_handle = handle.spawn(async move {
                 let _guard = guard;
 
@@ -881,6 +967,13 @@ impl DaemonEngine {
 
                         Self::insert_window_title(&mut ctx);
 
+                        // Count the cycle as a run before it executes, so a cycle that fails or
+                        // is aborted mid-run still appears in the activity window.
+                        let _ = tx.send(ActionCompletionEvent::RecurringCycleStarted {
+                            rule_id: task_rule_id.clone(),
+                            source,
+                        });
+
                         let run = PipelineRun {
                             actions: &current.actions,
                             execution_id,
@@ -894,6 +987,7 @@ impl DaemonEngine {
                             label: "Pipeline",
                             error_label: "Action",
                             warn_on_error_halt: true,
+                            finished: Some(&finished),
                         };
                         if run_action_pipeline(run, &mut ctx, &tx).await {
                             break;

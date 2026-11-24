@@ -97,6 +97,20 @@ pub(crate) fn filter_catalog_entries<T: CatalogEntry>(
         .collect()
 }
 
+/// Titles of the entries a query matches, for the header global search. It applies the same
+/// category-0 filter as the dialog itself, so applying a result opens the catalog already
+/// narrowed to the entries the result promised.
+pub(crate) fn catalog_search_titles<T: CatalogEntry>(
+    items: &[T],
+    query: &str,
+    loc: &Strings,
+) -> Vec<&'static str> {
+    filter_catalog_entries(items, 0, query, loc, false)
+        .into_iter()
+        .map(|index| items[index].title(loc))
+        .collect()
+}
+
 /// A catalog click only commits while its modal is open. `Modal` keeps painting (and accepting
 /// pointer input on) its contents through the 160 ms close animation, so an unguarded commit
 /// inserted the same action twice on a double click (U04-002).

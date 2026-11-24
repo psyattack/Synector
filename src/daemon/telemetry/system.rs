@@ -120,18 +120,20 @@ pub(super) fn filetime_to_u64(ft: FILETIME) -> u64 {
     ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64)
 }
 
-pub fn sample_system_cpu() -> f32 {
+/// One CPU reading, or `None` on the very first call: a CPU percentage needs two
+/// `GetSystemTimes` samples, so the seeding call can only return a placeholder.
+fn sample_system_cpu_measured() -> Option<f32> {
     #[cfg(windows)]
     {
         let mut sampler_lock = match CPU_SAMPLER.lock() {
             Ok(g) => g,
-            Err(_) => return 15.0,
+            Err(_) => return Some(15.0),
         };
 
         let now = Instant::now();
         if let Some(ref mut state) = *sampler_lock {
             if now.duration_since(state.last_sample).as_millis() < 300 {
-                return state.cached_cpu;
+                return Some(state.cached_cpu);
             }
 
             let mut idle = FILETIME::default();
@@ -162,7 +164,7 @@ pub fn sample_system_cpu() -> f32 {
             state.last_kernel = kernel_u64;
             state.last_user = user_u64;
             state.cached_cpu = cpu;
-            cpu
+            Some(cpu)
         } else {
             let mut idle = FILETIME::default();
             let mut kernel = FILETIME::default();
@@ -177,8 +179,31 @@ pub fn sample_system_cpu() -> f32 {
                 last_user: filetime_to_u64(user),
                 cached_cpu: 12.0,
             });
-            12.0
+            None
         }
+    }
+}
+
+/// CPU percentage for the telemetry overlays. The first call seeds the sampler and reports the
+/// historical placeholder, which the overlays always showed; callers that must not display a
+/// placeholder use [`get_cpu_ram_metrics`] instead.
+pub fn sample_system_cpu() -> f32 {
+    sample_system_cpu_measured().unwrap_or(12.0)
+}
+
+/// CPU and RAM only, for the analytics live chart. It skips the battery read, the network table,
+/// the per-process probe and the COM audio endpoint the full telemetry snapshot needs, and reports
+/// `None` until a real CPU delta exists so the chart never starts on the seeding placeholder.
+pub fn get_cpu_ram_metrics() -> Option<(f32, f32)> {
+    #[cfg(windows)]
+    {
+        let cpu = sample_system_cpu_measured()?;
+        let mut mem = MEMORYSTATUSEX::default();
+        mem.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        unsafe {
+            let _ = GlobalMemoryStatusEx(&mut mem);
+        }
+        Some((cpu, mem.dwMemoryLoad as f32))
     }
 }
 

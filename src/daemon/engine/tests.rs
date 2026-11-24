@@ -2657,6 +2657,7 @@ async fn test_offline_runner_produces_the_same_step_tokens_as_the_engine_pipelin
         label: "Pipeline",
         error_label: "Action",
         warn_on_error_halt: true,
+        finished: None,
     };
     let halted = run_action_pipeline(run, &mut engine_ctx, &tx).await;
     assert!(!halted);
@@ -3042,7 +3043,11 @@ async fn test_state_projector_aggregates_status_telemetry_and_logs() {
     config.rules.push(notify_rule("companion", "Companion"));
     config.rules.push(notify_rule("overlay_rule", "Overlay Rule"));
     let mut engine = DaemonEngine::new(config);
-    engine.analytics.total_executions = 4;
+    engine.analytics.record_run(
+        crate::models::RunSource::Schedule,
+        "running",
+        chrono::Local::now(),
+    );
     engine.log("INFO", "TEST", "projector probe");
     engine.executions.record_started(1, tracked_execution("running", Vec::new()));
     engine.executions.add_bound_process(BoundProcess {
@@ -3066,7 +3071,9 @@ async fn test_state_projector_aggregates_status_telemetry_and_logs() {
 
     assert_eq!(state.total_rules_count, 3);
     assert_eq!(state.active_rules_count, 3);
-    assert_eq!(state.analytics.total_executions, 4);
+    // The analytics payload is no longer part of the state snapshot; it is a narrow query.
+    assert_eq!(engine.analytics_snapshot().session_executions, 1);
+    assert_eq!(engine.analytics_snapshot().top_rules[0].rule_id, "running");
     assert!(state.logs.iter().any(|log| log.message == "projector probe"));
     assert_eq!(state.active_rule_executions["running"].active_count, 1);
     assert_eq!(state.active_rule_executions["running"].total_steps, 2);
@@ -3082,6 +3089,119 @@ async fn test_state_projector_aggregates_status_telemetry_and_logs() {
     assert_eq!(state.update_status.as_deref(), Some("Downloading"));
     assert!(state.pending_open_update_modal);
     assert_eq!(state.config.rules.len(), 3);
+}
+
+#[tokio::test]
+async fn test_get_analytics_answers_with_the_collector_snapshot() {
+    let mut engine = DaemonEngine::new(AppConfig::default());
+    let now = chrono::Local::now();
+    engine.analytics.record_run(
+        crate::models::RunSource::Manual,
+        "rule_x",
+        now,
+    );
+    engine.analytics.record_success(now);
+
+    match engine.handle_request(IpcRequest::GetAnalytics).await {
+        IpcResponse::Analytics(snapshot) => {
+            assert_eq!(snapshot.session_executions, 1);
+            assert_eq!(snapshot.window_executions, 1);
+            assert_eq!(snapshot.outcomes.succeeded, 1);
+            assert_eq!(snapshot.top_rules.len(), 1);
+            assert_eq!(snapshot.top_rules[0].rule_id, "rule_x");
+            assert_eq!(snapshot.sources.len(), 1);
+        }
+        other => panic!("wrong response variant: {other:?}"),
+    }
+
+    // The ordinary state snapshot no longer carries analytics: the dialog's narrow query is the
+    // only reader of the collector.
+    let state_json = serde_json::to_string(&engine.get_current_state()).unwrap();
+    assert!(
+        !state_json.contains("\"analytics\""),
+        "analytics must not ride on every state poll"
+    );
+}
+
+/// A run stopped before it finishes is reported exactly once as aborted, by its execution guard:
+/// the stop path itself no longer counts handles, so a stop and a finished run cannot double count.
+#[tokio::test]
+async fn test_a_stopped_run_is_counted_once_as_aborted() {
+    let mut config = AppConfig::default();
+    config.rules.push(Rule {
+        actions: vec![timer_wait(30.0)],
+        ..notify_rule("stopped_analytics_rule", "Stopped Analytics Rule")
+    });
+    let mut engine = DaemonEngine::new(config);
+    let rule = engine.config.rules[0].clone();
+
+    let handle = engine
+        .trigger(&rule, ExecutionOrigin::Process, "Proc", 0, HashMap::new())
+        .await;
+    assert!(handle.is_some(), "the run starts");
+    engine.drain_action_events();
+
+    engine.abort_rule_executions("stopped_analytics_rule");
+    // The aborted task drops its guard on the next scheduler pass and reports through the
+    // completion channel.
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    engine.drain_action_events();
+
+    let snapshot = engine.analytics_snapshot();
+    assert_eq!(snapshot.window_executions, 1, "the run was counted when it started");
+    assert_eq!(snapshot.outcomes.aborted, 1, "a stopped run is exactly one abort");
+    assert_eq!(snapshot.outcomes.succeeded, 0);
+    assert_eq!(snapshot.outcomes.failed, 0);
+}
+
+/// Stopping a recurring test loop while it sleeps between cycles has nothing to abort: no phantom
+/// aborted outcome may be recorded for a cycle that never started.
+#[tokio::test]
+async fn test_stopping_an_idle_recurring_loop_records_no_abort() {
+    let mut config = AppConfig::default();
+    config.rules.push(Rule {
+        trigger: Some(Trigger::Schedule {
+            schedule_type: ScheduleType::Interval,
+            interval_sec: 60,
+            daily_time: None,
+            days_of_week: Vec::new(),
+            day_of_month: None,
+            target_datetime: None,
+        }),
+        actions: vec![timer_wait(0.01)],
+        ..notify_rule("recurring_analytics_rule", "Recurring Analytics Rule")
+    });
+    let mut engine = DaemonEngine::new(config);
+    let rule = engine.config.rules[0].clone();
+
+    let handle = engine.emulate_rule_trigger(&rule).await;
+    assert!(handle.is_some(), "the recurring loop starts");
+    // Wait for the first cycle's outcome; the loop is sleeping until the next interval after it.
+    let mut waited_ms = 0;
+    while engine.analytics_snapshot().outcomes.total() == 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        engine.drain_action_events();
+        waited_ms += 20;
+        assert!(waited_ms < 5_000, "the first cycle must report its outcome");
+    }
+
+    engine.abort_rule_executions("recurring_analytics_rule");
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    engine.drain_action_events();
+
+    let snapshot = engine.analytics_snapshot();
+    assert_eq!(snapshot.window_executions, 1, "exactly one cycle ran");
+    assert_eq!(snapshot.outcomes.aborted, 0, "an idle loop has nothing to abort");
+    assert_eq!(snapshot.outcomes.succeeded, 1, "the finished cycle counts as a success");
+    assert_eq!(
+        snapshot
+            .sources
+            .iter()
+            .map(|entry| entry.source)
+            .collect::<Vec<_>>(),
+        vec![crate::models::RunSource::Manual],
+        "a run-now emulation is a manual run, whatever trigger the rule carries"
+    );
 }
 
 #[tokio::test]

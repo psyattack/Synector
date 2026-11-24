@@ -1,12 +1,15 @@
 use serde::{Deserialize, Serialize};
 use crate::config::{AppConfig, Settings};
-use crate::models::{Action, AnalyticsSummary, LogItem, ProcessSnapshotItem, Rule};
+use crate::models::{Action, AnalyticsSnapshot, LogItem, ProcessSnapshotItem, Rule};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload")]
 pub enum IpcRequest {
     Ping,
     GetState,
+    /// Narrow answer for the analytics dialog: one snapshot instead of a full `DaemonState`
+    /// projection, polled only while the dialog is open.
+    GetAnalytics,
     SaveSettings(Settings),
     SaveRule(Rule),
     ReorderRules(Vec<String>),
@@ -24,7 +27,6 @@ pub enum IpcRequest {
     KillProcess { pid: u32, force: bool },
     SetAutorun(bool),
     UpdateWindowState(crate::config::WindowState),
-    ClearLogs,
     ShutdownDaemon,
     ImportRules(Vec<Rule>),
     /// Apply a decoded share code: add its rules plus the library presets/overlays they
@@ -62,6 +64,7 @@ pub enum IpcResponse {
     Ok,
     Pong,
     State(DaemonState),
+    Analytics(AnalyticsSnapshot),
     Processes(Vec<ProcessSnapshotItem>),
     TestStepResult(Result<(), String>),
     OverlayPosition(Option<(f32, f32)>),
@@ -98,8 +101,6 @@ pub struct DaemonState {
     pub active_overlay_ids: std::collections::HashSet<String>,
     #[serde(default)]
     pub active_test_rule_ids: std::collections::HashSet<String>,
-    #[serde(default)]
-    pub analytics: AnalyticsSummary,
     #[serde(default)]
     pub available_update: Option<crate::updater::ReleaseInfo>,
     #[serde(default)]
@@ -322,7 +323,6 @@ mod tests {
             active_rule_executions: std::collections::HashMap::new(),
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
-            analytics: AnalyticsSummary::default(),
             available_update: Some(release),
             update_progress: Some(0.75),
             update_status: Some("75%".to_string()),
@@ -376,6 +376,50 @@ mod tests {
                 status: None
             }
         ));
+    }
+
+    /// The analytics query is a narrow answer too: one collector snapshot, never the config or
+    /// the log stream the ordinary state poll carries.
+    #[test]
+    fn test_ipc_analytics_query_round_trip_is_narrow() {
+        let request = IpcRequest::GetAnalytics;
+        let request_json = serde_json::to_string(&request).unwrap();
+        assert!(request_json.contains("GetAnalytics"));
+        assert!(
+            matches!(
+                serde_json::from_str::<IpcRequest>(&request_json).unwrap(),
+                IpcRequest::GetAnalytics
+            ),
+            "the narrow query must survive a round trip"
+        );
+
+        let snapshot = crate::models::AnalyticsSnapshot {
+            session_executions: 3,
+            window_executions: 2,
+            hours: vec![crate::models::AnalyticsHour {
+                hour_start_unix: 1_700_000_000,
+                executions: 2,
+                failures: 0,
+                aborted: 0,
+            }],
+            top_rules: vec![crate::models::RuleRuns {
+                rule_id: "rule_a".to_string(),
+                executions: 2,
+            }],
+            ..Default::default()
+        };
+        let response = IpcResponse::Analytics(snapshot.clone());
+        let json = serde_json::to_string(&response).unwrap();
+        match serde_json::from_str::<IpcResponse>(&json).unwrap() {
+            IpcResponse::Analytics(decoded) => assert_eq!(decoded, snapshot),
+            other => panic!("wrong response variant: {other:?}"),
+        }
+        for forbidden in ["\"config\"", "\"logs\"", "\"rules\"", "\"overlays\""] {
+            assert!(
+                !json.contains(forbidden),
+                "the narrow analytics answer must not carry {forbidden}: {json}"
+            );
+        }
     }
 
     /// The overlay query must stay narrow: its wire form carries exactly the two updater

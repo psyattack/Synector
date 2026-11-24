@@ -1,10 +1,22 @@
 use crate::i18n::Strings;
 
 pub static STRINGS: Strings = Strings {
-    // Navigation Tabs (header_bar.rs)
-    tab_automations: "RULES",
-    tab_analytics: "ANALYTICS",
-    tab_settings: "SETTINGS",
+    // Header Navigation (header_bar.rs)
+    header_analytics_tip: "Analytics dashboard",
+    header_settings_tip: "Settings",
+    header_search_placeholder: "SEARCH RULES, SETTINGS, ACTIONS...",
+
+    // Global Search Overlay (global_search.rs)
+    search_group_rules: "RULES",
+    search_group_settings: "SETTINGS",
+    search_group_activity: "ACTIVITY LOG",
+    search_group_actions: "ACTIONS",
+    search_group_triggers: "TRIGGERS",
+    search_group_conditions: "CONDITIONS",
+    search_group_overlays: "OVERLAY PRESETS",
+    search_group_macros: "MACRO PRESETS",
+    search_no_results: "NO MATCHES FOR \"{}\"",
+    search_activity_preview: "{} {} · {}",
 
     // Window Chrome & Title Bar (widgets.rs, header_bar.rs)
     win_btn_minimize: "Minimize",
@@ -25,7 +37,6 @@ pub static STRINGS: Strings = Strings {
 
     // Rules View (rules_view.rs)
     rules_btn_new: "+ NEW RULE",
-    rules_search_placeholder: "SEARCH RULES...",
     rules_empty_title: "NO RULES CONFIGURED",
     rules_btn_create_first: "CREATE FIRST RULE",
     rules_badge_manual: "MANUAL",
@@ -108,12 +119,12 @@ pub static STRINGS: Strings = Strings {
     logs_cell_daemon_tip: "Show internal daemon and system operations",
     logs_cell_errors: "ERRORS",
     logs_cell_errors_tip: "Show failed actions and system errors",
-    logs_btn_clear: "CLEAR LOGS",
     logs_search_placeholder: "FILTER LOG STREAM...",
     logs_empty_title: "NO EVENT TELEMETRY LOGGED",
     logs_empty_subtitle: "RULE TRIGGERS, ACTIONS AND PROCESS HOOKS WILL STREAM HERE",
 
-    // Settings View (settings_view.rs)
+    // Settings Dialog (settings_modal.rs)
+    settings_title: "SETTINGS",
     settings_daemon_offline: "BACKGROUND DAEMON IS OFFLINE",
     settings_search_placeholder: "SEARCH SETTINGS...",
     settings_search_empty: "NO SETTINGS MATCH THE SEARCH",
@@ -514,13 +525,13 @@ pub static STRINGS: Strings = Strings {
 
     // Script Modal (script_modal.rs)
     modal_tip_close: "Close canvas (Esc)",
+    modal_tip_dismiss: "Close (Esc)",
     modal_lines: "LINES",
     modal_chars: "CHARS",
     modal_btn_copy_script: "COPY SCRIPT",
 
     // Toasts
     toast_script_copied: "Script copied to clipboard",
-    toast_stream_cleared: "Activity stream cleared",
     toast_config_saved: "Configuration saved",
     toast_rule_saved: "Rule saved successfully",
     toast_rule_deleted: "Rule deleted",
@@ -536,7 +547,7 @@ pub static STRINGS: Strings = Strings {
     toast_import_invalid: "Failed to import rule",
     toast_import_clipboard_err: "Could not read clipboard",
 
-    // Settings Updates (settings_view.rs)
+    // Settings Updates (settings_modal.rs)
     settings_btn_check_updates: "CHECK FOR UPDATES",
     settings_btn_checking_updates: "CHECKING FOR UPDATES...",
 
@@ -630,10 +641,56 @@ pub static STRINGS: Strings = Strings {
     inspector_badge_execute_script: "SCRIPT",
     inspector_badge_macro: "MACRO",
 
-    // Analytics Dashboard
+    // Analytics Dashboard (analytics_modal.rs)
+    analytics_title: "ANALYTICS",
     analytics_kpi_total_executions: "TOTAL EXECUTIONS",
+    analytics_kpi_session: "THIS SESSION",
     analytics_kpi_active_rules: "RUNNING NOW",
-    analytics_kpi_uptime: "SYSTEM UPTIME",
+    analytics_kpi_success: "SUCCESS · 24 H",
+    analytics_kpi_uptime: "DAEMON UPTIME",
+    analytics_caption_rule_counters: "SUM OF RULE COUNTERS",
+    analytics_unit_days: "d",
+    analytics_unit_hours: "h",
+    analytics_unit_minutes: "m",
+    analytics_unit_seconds: "s",
+    analytics_overlays: "OVERLAYS: {}",
+    analytics_card_system: "SYSTEM LOAD · 60 S",
+    analytics_card_sources: "EXECUTIONS BY SOURCE",
+    analytics_card_activity: "ACTIVITY · LAST 24 H",
+    analytics_card_top_rules: "TOP RULES · 24 H",
+    analytics_card_attention: "NEEDS ATTENTION",
+    analytics_collecting: "COLLECTING SAMPLES...",
+    analytics_no_runs: "NO RUNS IN THE LAST 24 HOURS",
+    analytics_cpu: "CPU",
+    analytics_ram: "RAM",
+    analytics_daemon_usage: "DAEMON {} MB · {} · {}",
+    analytics_daemon_cpu: "{}% CPU",
+    analytics_daemon_disk: "DISK {} KB/s",
+    analytics_runs: "RUNS",
+    analytics_tooltip_runs: "RUNS: {}",
+    analytics_tooltip_errors: "ERRORS: {}",
+    analytics_outcome_ok: "OK",
+    analytics_outcome_failed: "FAILED",
+    analytics_outcome_aborted: "ABORTED",
+    analytics_attention_quota: "EXECUTION QUOTA EXHAUSTED",
+    analytics_attention_never_ran: "NEVER RAN",
+    analytics_attention_clear: "ALL ENABLED RULES ARE HEALTHY",
+    analytics_attention_more: "AND {} MORE",
+    analytics_rule_never: "NEVER",
+    analytics_ago_now: "JUST NOW",
+    analytics_ago_minutes: "{}M AGO",
+    analytics_ago_hours: "{}H AGO",
+    analytics_ago_days: "{}D AGO",
+    analytics_source_process: "PROCESSES",
+    analytics_source_window: "WINDOWS",
+    analytics_source_resource: "RESOURCES",
+    analytics_source_hotkey: "HOTKEYS",
+    analytics_source_schedule: "SCHEDULE",
+    analytics_source_system: "SYSTEM EVENTS",
+    analytics_source_file: "FILES",
+    analytics_source_webhook: "WEBHOOK",
+    analytics_source_manual: "MANUAL",
+    analytics_source_rule_call: "RULE CALLS",
 
     // Inspector Additions & Hotkey / Power / Audio
     inspector_runs_remaining: "{} of {} left",
@@ -1553,7 +1610,6 @@ pub static STRINGS: Strings = Strings {
     settings_mask_restart_required: "Daemon masking updated. Restart Synector to apply it.",
     toast_settings_save_failed: "Failed to save settings: {}",
     settings_tray_icon_invalid: "Invalid icon path. Choose an existing .ico, .exe or .dll file.",
-    toast_clear_logs_failed: "Failed to clear the activity log: {}",
 
     // Macro studio (U03-008 / U05-010)
     macro_studio_custom_preset_name: "Custom Macro",

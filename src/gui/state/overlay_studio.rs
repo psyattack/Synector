@@ -74,6 +74,13 @@ impl GuiState {
             .find(|o| o.id == overlay_id)
             .cloned()
             .unwrap_or_else(|| default_overlay_for(overlay_id));
+        self.open_overlay_studio_with(overlay);
+    }
+
+    /// Opens the studio on a definition the caller already resolved (the daemon's library, for
+    /// example), so the surface that listed it edits exactly the entry it showed instead of
+    /// re-reading a cache that may not contain it.
+    pub fn open_overlay_studio_with(&mut self, overlay: crate::models::OverlayDefinition) {
         self.show_overlay_studio(OverlayStudioState::new(overlay, None, false, String::new()));
     }
 

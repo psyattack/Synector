@@ -476,8 +476,8 @@ fn render_overlay_card_panel(
         match target {
             ColorPickerTarget::CardBg => inline_color_editor(ui, &mut overlay.style.bg_color, true, t, loc),
             ColorPickerTarget::CardBorder => inline_color_editor(ui, &mut overlay.style.border_color, true, t, loc),
-            _ => {}
-        }
+            _ => false,
+        };
     }
 
     // Border Width & Corner Radius in 2 columns
@@ -1003,8 +1003,8 @@ fn render_shape_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, c
     match active_element_slot(*ctx.active_color_target, elem_idx) {
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) if is_fillable => inline_color_editor(ui, fill_color, true, t, loc),
-        _ => {}
-    }
+        _ => false,
+    };
 
     let can_round = *shape_type == ShapeKind::Rectangle || *shape_type == ShapeKind::Line;
     if can_round {
@@ -1110,8 +1110,8 @@ fn render_graph_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, c
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, fill_color, true, t, loc),
         Some(ElementColorSlot::Tertiary) => inline_color_editor(ui, bg_color, true, t, loc),
-        None => {}
-    }
+        None => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
 
@@ -1191,8 +1191,8 @@ fn render_clock_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, c
     match active_element_slot(*ctx.active_color_target, elem_idx) {
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, bg_color, true, t, loc),
-        _ => {}
-    }
+        _ => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
 
@@ -1319,8 +1319,8 @@ fn render_control_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement,
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, bg_color, true, t, loc),
         Some(ElementColorSlot::Tertiary) => inline_color_editor(ui, active_color, true, t, loc),
-        None => {}
-    }
+        None => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
 
@@ -1388,8 +1388,8 @@ fn render_telemetry_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElemen
     match active_element_slot(*ctx.active_color_target, elem_idx) {
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, bg_color, true, t, loc),
-        _ => {}
-    }
+        _ => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, PANEL_SIZE_LIMITS, ("", ""), loc, t);
 
@@ -1420,8 +1420,8 @@ fn render_media_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayElement, c
     match active_element_slot(*ctx.active_color_target, elem_idx) {
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, bg_color, true, t, loc),
-        _ => {}
-    }
+        _ => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, MEDIA_SIZE_LIMITS, ("", ""), loc, t);
 
@@ -1517,8 +1517,8 @@ fn render_key_visualizer_panel(ui: &mut Ui, elem_idx: usize, elem: &mut OverlayE
         Some(ElementColorSlot::Primary) => inline_color_editor(ui, color, true, t, loc),
         Some(ElementColorSlot::Secondary) => inline_color_editor(ui, bg_color, true, t, loc),
         Some(ElementColorSlot::Tertiary) => inline_color_editor(ui, active_color, true, t, loc),
-        None => {}
-    }
+        None => false,
+    };
 
     render_size_rows(ui, width, height, None, ctx.canvas_w, ctx.canvas_h, KEYVISUALIZER_SIZE_LIMITS, ("", ""), loc, t);
 

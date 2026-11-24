@@ -20,8 +20,9 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
+use crate::daemon::analytics::AnalyticsCollector;
 use crate::daemon::watcher::ProcessWatcher;
-use crate::models::{AnalyticsSummary, LogItem, Rule};
+use crate::models::{AnalyticsSnapshot, LogItem, Rule};
 
 use executions::ExecutionTracker;
 use quota::QuotaLedger;
@@ -44,7 +45,8 @@ pub struct DaemonEngine {
     /// running loop re-reads its rule instead of executing a stale captured pipeline.
     live_rules: std::sync::Arc<std::sync::RwLock<Vec<Rule>>>,
     active_rule_pids: HashMap<String, HashSet<u32>>,
-    analytics: AnalyticsSummary,
+    /// Rolling analytics: run sources, outcomes, hourly buckets and live CPU/RAM samples.
+    analytics: AnalyticsCollector,
     last_foreground_pid: Option<u32>,
     hotkey_handle: Option<crate::daemon::hotkeys::HotkeyHandle>,
     /// Updater display state shared by the tray download task and the state projection.
@@ -86,7 +88,7 @@ impl DaemonEngine {
             rule_last_triggered: HashMap::new(),
             live_rules,
             active_rule_pids: HashMap::new(),
-            analytics: AnalyticsSummary::default(),
+            analytics: AnalyticsCollector::new(),
             last_foreground_pid: None,
             hotkey_handle: None,
             update: UpdateStatus::new(),
@@ -104,6 +106,23 @@ impl DaemonEngine {
 
     pub(crate) fn watcher(&self) -> &ProcessWatcher {
         &self.watcher
+    }
+
+    /// One analytics read for the dashboard. The ordinary state poll stays lean; the GUI asks
+    /// for this only while its analytics dialog is open.
+    pub fn analytics_snapshot(&self) -> AnalyticsSnapshot {
+        self.analytics.snapshot(chrono::Local::now())
+    }
+
+    /// Pushes one system sample into the live chart series. Called from the one-second runtime
+    /// flush loop with metrics sampled outside the engine lock.
+    pub(crate) fn record_analytics_sample(&mut self, cpu_pct: f32, ram_pct: f32, now: Instant) {
+        self.analytics.sample_system(cpu_pct, ram_pct, now);
+    }
+
+    /// Stores the daemon's own CPU/memory/disk sample for the dashboard line.
+    pub(crate) fn record_daemon_usage(&mut self, usage: crate::models::DaemonUsage) {
+        self.analytics.record_daemon_usage(usage);
     }
 
     pub(crate) fn set_hotkey_handle(&mut self, handle: crate::daemon::hotkeys::HotkeyHandle) {

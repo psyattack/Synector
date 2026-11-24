@@ -1,10 +1,22 @@
 use crate::i18n::Strings;
 
 pub static STRINGS: Strings = Strings {
-    // Navigation Tabs (header_bar.rs)
-    tab_automations: "ПРАВИЛА",
-    tab_analytics: "АНАЛИТИКА",
-    tab_settings: "НАСТРОЙКИ",
+    // Header Navigation (header_bar.rs)
+    header_analytics_tip: "Панель аналитики",
+    header_settings_tip: "Настройки",
+    header_search_placeholder: "ПОИСК: ПРАВИЛА, НАСТРОЙКИ, ДЕЙСТВИЯ...",
+
+    // Global Search Overlay (global_search.rs)
+    search_group_rules: "ПРАВИЛА",
+    search_group_settings: "НАСТРОЙКИ",
+    search_group_activity: "ЖУРНАЛ СОБЫТИЙ",
+    search_group_actions: "ДЕЙСТВИЯ",
+    search_group_triggers: "ТРИГГЕРЫ",
+    search_group_conditions: "УСЛОВИЯ",
+    search_group_overlays: "ПРЕСЕТЫ ОВЕРЛЕЕВ",
+    search_group_macros: "ПРЕСЕТЫ МАКРОСОВ",
+    search_no_results: "НЕТ СОВПАДЕНИЙ ПО «{}»",
+    search_activity_preview: "{} {} · {}",
 
     // Window Chrome & Title Bar (widgets.rs, header_bar.rs)
     win_btn_minimize: "Свернуть",
@@ -25,7 +37,6 @@ pub static STRINGS: Strings = Strings {
 
     // Rules View (rules_view.rs)
     rules_btn_new: "+ НОВОЕ ПРАВИЛО",
-    rules_search_placeholder: "ПОИСК ПРАВИЛ...",
     rules_empty_title: "НЕТ НАСТРОЕННЫХ ПРАВИЛ",
     rules_btn_create_first: "СОЗДАТЬ ПЕРВОЕ ПРАВИЛО",
     rules_badge_manual: "РУЧНОЙ",
@@ -108,12 +119,12 @@ pub static STRINGS: Strings = Strings {
     logs_cell_daemon_tip: "События и внутренние действия службы",
     logs_cell_errors: "ОШИБКИ",
     logs_cell_errors_tip: "Показать сбои действий и системные ошибки",
-    logs_btn_clear: "ОЧИСТИТЬ ЛОГИ",
     logs_search_placeholder: "ФИЛЬТР ПОТОКА ЛОГОВ...",
     logs_empty_title: "НЕТ ЗАПИСЕЙ ТЕЛЕМЕТРИИ",
     logs_empty_subtitle: "ЗДЕСЬ БУДУТ ОТОБРАЖАТЬСЯ ТРИГГЕРЫ, ДЕЙСТВИЯ И СОБЫТИЯ ПРОЦЕССОВ",
 
-    // Settings View (settings_view.rs)
+    // Settings Dialog (settings_modal.rs)
+    settings_title: "НАСТРОЙКИ",
     settings_daemon_offline: "ФОНОВЫЙ ДЕМОН НЕ В СЕТИ",
     settings_search_placeholder: "ПОИСК ПО НАСТРОЙКАМ...",
     settings_search_empty: "НИ ОДНА НАСТРОЙКА НЕ СОВПАЛА С ПОИСКОМ",
@@ -514,13 +525,13 @@ pub static STRINGS: Strings = Strings {
 
     // Script Modal (script_modal.rs)
     modal_tip_close: "Закрыть холст (Esc)",
+    modal_tip_dismiss: "Закрыть (Esc)",
     modal_lines: "СТРОК",
     modal_chars: "СИМВОЛОВ",
     modal_btn_copy_script: "СКОПИРОВАТЬ СКРИПТ",
 
     // Toasts
     toast_script_copied: "Скрипт скопирован в буфер обмена",
-    toast_stream_cleared: "Поток активности очищен",
     toast_config_saved: "Конфигурация сохранена",
     toast_rule_saved: "Правило успешно сохранено",
     toast_rule_deleted: "Правило удалено",
@@ -536,7 +547,7 @@ pub static STRINGS: Strings = Strings {
     toast_import_invalid: "Ошибка импорта правила",
     toast_import_clipboard_err: "Не удалось прочитать буфер обмена",
 
-    // Settings Updates (settings_view.rs)
+    // Settings Updates (settings_modal.rs)
     settings_btn_check_updates: "ПРОВЕРИТЬ ОБНОВЛЕНИЯ",
     settings_btn_checking_updates: "ПРОВЕРКА ОБНОВЛЕНИЙ...",
 
@@ -630,10 +641,56 @@ pub static STRINGS: Strings = Strings {
     inspector_badge_execute_script: "СКРИПТ",
     inspector_badge_macro: "МАКРОС",
 
-    // Analytics Dashboard
+    // Analytics Dashboard (analytics_modal.rs)
+    analytics_title: "АНАЛИТИКА",
     analytics_kpi_total_executions: "ВСЕГО ВЫПОЛНЕНИЙ",
+    analytics_kpi_session: "ЗА СЕССИЮ",
     analytics_kpi_active_rules: "ВЫПОЛНЯЕТСЯ СЕЙЧАС",
-    analytics_kpi_uptime: "ВРЕМЯ РАБОТЫ",
+    analytics_kpi_success: "УСПЕШНОСТЬ · 24 Ч",
+    analytics_kpi_uptime: "ВРЕМЯ ДЕМОНА",
+    analytics_caption_rule_counters: "СУММА СЧЁТЧИКОВ ПРАВИЛ",
+    analytics_unit_days: "д",
+    analytics_unit_hours: "ч",
+    analytics_unit_minutes: "м",
+    analytics_unit_seconds: "с",
+    analytics_overlays: "ОВЕРЛЕЕВ: {}",
+    analytics_card_system: "НАГРУЗКА · 60 С",
+    analytics_card_sources: "ВЫПОЛНЕНИЯ ПО ИСТОЧНИКАМ",
+    analytics_card_activity: "АКТИВНОСТЬ · 24 Ч",
+    analytics_card_top_rules: "ТОП ПРАВИЛ · 24 Ч",
+    analytics_card_attention: "ТРЕБУЮТ ВНИМАНИЯ",
+    analytics_collecting: "СБОР ДАННЫХ...",
+    analytics_no_runs: "ЗА ПОСЛЕДНИЕ 24 ЧАСА ЗАПУСКОВ НЕТ",
+    analytics_cpu: "ЦП",
+    analytics_ram: "ОЗУ",
+    analytics_daemon_usage: "ДЕМОН {} МБ · {} · {}",
+    analytics_daemon_cpu: "{}% ЦП",
+    analytics_daemon_disk: "ДИСК {} КБ/с",
+    analytics_runs: "ЗАПУСКИ",
+    analytics_tooltip_runs: "ЗАПУСКОВ: {}",
+    analytics_tooltip_errors: "ОШИБОК: {}",
+    analytics_outcome_ok: "ОК",
+    analytics_outcome_failed: "С ОШИБКАМИ",
+    analytics_outcome_aborted: "ПРЕРВАНО",
+    analytics_attention_quota: "КВОТА ВЫПОЛНЕНИЙ ИСЧЕРПАНА",
+    analytics_attention_never_ran: "НИ РАЗУ НЕ ЗАПУСКАЛОСЬ",
+    analytics_attention_clear: "ВСЕ ВКЛЮЧЁННЫЕ ПРАВИЛА В НОРМЕ",
+    analytics_attention_more: "И ЕЩЁ {}",
+    analytics_rule_never: "НИКОГДА",
+    analytics_ago_now: "ТОЛЬКО ЧТО",
+    analytics_ago_minutes: "{} МИН НАЗАД",
+    analytics_ago_hours: "{} Ч НАЗАД",
+    analytics_ago_days: "{} ДН НАЗАД",
+    analytics_source_process: "ПРОЦЕССЫ",
+    analytics_source_window: "ОКНА",
+    analytics_source_resource: "РЕСУРСЫ",
+    analytics_source_hotkey: "ХОТКЕИ",
+    analytics_source_schedule: "РАСПИСАНИЕ",
+    analytics_source_system: "СОБЫТИЯ",
+    analytics_source_file: "ФАЙЛЫ",
+    analytics_source_webhook: "ВЕБХУК",
+    analytics_source_manual: "ВРУЧНУЮ",
+    analytics_source_rule_call: "ВЫЗОВЫ ПРАВИЛ",
 
     // Inspector Additions & Hotkey / Power / Audio
     inspector_runs_remaining: "осталось {}/{}",
@@ -1553,7 +1610,6 @@ pub static STRINGS: Strings = Strings {
     settings_mask_restart_required: "Маскировка демона изменена. Перезапустите Synector, чтобы применить.",
     toast_settings_save_failed: "Не удалось сохранить настройки: {}",
     settings_tray_icon_invalid: "Неверный путь к иконке. Укажите существующий файл .ico, .exe или .dll.",
-    toast_clear_logs_failed: "Не удалось очистить журнал активности: {}",
 
     // Macro studio (U03-008 / U05-010)
     macro_studio_custom_preset_name: "Свой макрос",

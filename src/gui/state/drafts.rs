@@ -601,7 +601,6 @@ mod tests {
             active_rule_executions: std::collections::HashMap::new(),
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
-            analytics: Default::default(),
             available_update: None,
             update_progress: None,
             update_status: None,

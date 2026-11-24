@@ -11,7 +11,7 @@
 //!
 //! Views read [`Tokens`] for roles and metrics instead of hardcoding colours, radii or control
 //! heights, so a new visual generation is a new metrics value rather than a second view tree.
-//! The few surfaces that genuinely compose differently per generation — the header tabs, the
+//! The few surfaces that genuinely compose differently per generation — the filter cells, the
 //! appearance previews — read `Metrics::skin` for that one branch, never to pick a colour.
 
 mod fonts;

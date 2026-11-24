@@ -126,3 +126,151 @@ fn cpu_core_count() -> u32 {
         .map(|cores| cores.get() as u32)
         .unwrap_or(1)
 }
+
+/// Previous sample of the daemon's own counters, so the next one can be reported as a rate.
+#[cfg(windows)]
+struct DaemonUsageSampler {
+    sampled_at: Instant,
+    cpu_100ns: u64,
+    io_read: u64,
+    io_write: u64,
+}
+
+#[cfg(windows)]
+static DAEMON_USAGE: Mutex<Option<DaemonUsageSampler>> = Mutex::new(None);
+
+/// Private working set of this process: the memory figure Task Manager reports, not
+/// `WorkingSetSize`, which also counts shared DLL pages.
+pub fn daemon_memory_bytes() -> u64 {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
+        };
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut pmc: PROCESS_MEMORY_COUNTERS_EX2 = std::mem::zeroed();
+        pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32;
+        let counters = (&mut pmc as *mut PROCESS_MEMORY_COUNTERS_EX2).cast::<PROCESS_MEMORY_COUNTERS>();
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), counters, pmc.cb).as_bool() {
+            if pmc.PrivateWorkingSetSize > 0 {
+                return pmc.PrivateWorkingSetSize as u64;
+            }
+            if pmc.PrivateUsage > 0 {
+                return pmc.PrivateUsage as u64;
+            }
+            return pmc.WorkingSetSize as u64;
+        }
+        // Older builds may not answer the EX2 size; the base structure still reports the working
+        // set, which is better than the fallback constant.
+        let mut base: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        base.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut base, base.cb).as_bool() {
+            return base.WorkingSetSize as u64;
+        }
+    }
+    2 * 1024 * 1024 // ~2MB default
+}
+
+/// One sample of the daemon's own resource use: CPU over the interval since the previous sample,
+/// the private working set and the disk throughput derived from the process I/O counters. The
+/// first call only records the baseline and reports no CPU percentage and no disk rate.
+pub fn sample_daemon_usage() -> crate::models::DaemonUsage {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{
+            GetCurrentProcess, GetProcessIoCounters, GetProcessTimes, IO_COUNTERS,
+        };
+
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let mut io = IO_COUNTERS::default();
+        let process = unsafe { GetCurrentProcess() };
+        let times_ok = unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) }.is_ok();
+        let io_ok = unsafe { GetProcessIoCounters(process, &mut io) }.is_ok();
+
+        let cpu_100ns = filetime_to_u64(kernel).saturating_add(filetime_to_u64(user));
+        let io_read = io.ReadTransferCount;
+        let io_write = io.WriteTransferCount;
+        let now = Instant::now();
+
+        let mut lock = match DAEMON_USAGE.lock() {
+            Ok(lock) => lock,
+            Err(_) => {
+                return crate::models::DaemonUsage {
+                    ram_bytes: daemon_memory_bytes(),
+                    ..Default::default()
+                };
+            }
+        };
+        let usage = match lock.as_ref() {
+            Some(previous) if times_ok && io_ok => {
+                let elapsed = now.duration_since(previous.sampled_at);
+                let seconds = elapsed.as_secs_f64();
+                let per_second = |total: u64, previous: u64| -> u64 {
+                    if seconds <= 0.0 {
+                        return 0;
+                    }
+                    ((total.saturating_sub(previous)) as f64 / seconds).round() as u64
+                };
+                crate::models::DaemonUsage {
+                    cpu_pct: process_cpu_percent(
+                        cpu_100ns.saturating_sub(previous.cpu_100ns),
+                        elapsed,
+                        cpu_core_count(),
+                    ),
+                    ram_bytes: daemon_memory_bytes(),
+                    disk_read_bps: per_second(io_read, previous.io_read),
+                    disk_write_bps: per_second(io_write, previous.io_write),
+                }
+            }
+            _ => crate::models::DaemonUsage {
+                ram_bytes: daemon_memory_bytes(),
+                ..Default::default()
+            },
+        };
+        if times_ok && io_ok {
+            *lock = Some(DaemonUsageSampler {
+                sampled_at: now,
+                cpu_100ns,
+                io_read,
+                io_write,
+            });
+        }
+        usage
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The first sample only seeds the interval, so it reports the memory it can read and no CPU
+    /// or disk rate; the next one has an interval and answers all three.
+    #[test]
+    fn test_daemon_usage_needs_an_interval_before_it_reports_cpu() {
+        #[cfg(windows)]
+        {
+            *DAEMON_USAGE.lock().expect("the sampler lock is not poisoned") = None;
+        }
+
+        let first = sample_daemon_usage();
+        assert!(first.ram_bytes > 0, "the private working set is always known");
+        assert!(first.cpu_pct.is_none(), "no interval yet: no CPU percentage");
+        assert_eq!(first.disk_bps(), 0, "no interval yet: no disk rate");
+
+        std::thread::sleep(Duration::from_millis(30));
+        let second = sample_daemon_usage();
+        assert!(second.ram_bytes > 0);
+        let cpu = second.cpu_pct.expect("a second sample has an interval");
+        assert!((0.0..=100.0).contains(&cpu), "was {cpu}");
+    }
+
+    #[test]
+    fn test_daemon_memory_reads_a_plausible_private_working_set() {
+        let bytes = daemon_memory_bytes();
+        assert!(bytes >= 1024 * 1024, "was {bytes}");
+        assert!(bytes < 8 * 1024 * 1024 * 1024, "was {bytes}");
+    }
+}

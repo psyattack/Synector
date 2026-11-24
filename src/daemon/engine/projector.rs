@@ -44,7 +44,7 @@ impl<'a> StateProjector<'a> {
         DaemonState {
             autorun_enabled: crate::autorun::is_autorun_enabled(crate::autorun::APP_NAME),
             uptime_secs: self.engine.start_time.elapsed().as_secs(),
-            daemon_memory_bytes: Self::daemon_memory(),
+            daemon_memory_bytes: crate::daemon::telemetry::daemon_memory_bytes(),
             active_rules_count: active_rules,
             total_rules_count: total_rules,
             config: self.engine.config.clone(),
@@ -52,7 +52,6 @@ impl<'a> StateProjector<'a> {
             active_rule_executions,
             active_overlay_ids,
             active_test_rule_ids,
-            analytics: self.engine.analytics.clone(),
             available_update: self.engine.update.available().cloned(),
             update_progress,
             update_status,
@@ -205,19 +204,5 @@ impl<'a> StateProjector<'a> {
         }
 
         active_rule_executions
-    }
-
-    fn daemon_memory() -> u64 {
-        #[cfg(windows)]
-        unsafe {
-            use windows::Win32::System::Threading::GetCurrentProcess;
-            use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
-            let mut pmc: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
-            pmc.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-            if K32GetProcessMemoryInfo(GetCurrentProcess(), &mut pmc, pmc.cb).as_bool() {
-                return pmc.WorkingSetSize as u64;
-            }
-        }
-        2 * 1024 * 1024 // ~2MB default
     }
 }

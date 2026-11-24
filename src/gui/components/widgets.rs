@@ -665,6 +665,10 @@ pub enum Glyph {
     Shortcut,
     Trash,
     Question,
+    /// The header analytics dialog trigger.
+    Analytics,
+    /// The header settings dialog trigger.
+    Settings,
 }
 
 impl Glyph {
@@ -680,6 +684,8 @@ impl Glyph {
             Self::Shortcut => Some(egui_phosphor::regular::ARROW_SQUARE_OUT),
             Self::Trash => Some(egui_phosphor::regular::TRASH),
             Self::Question => Some(egui_phosphor::regular::QUESTION_MARK),
+            Self::Analytics => Some(egui_phosphor::regular::CHART_DONUT),
+            Self::Settings => Some(egui_phosphor::regular::GEAR_SIX),
             Self::Close | Self::Minimize | Self::Clone | Self::Expand => None,
         }
     }
@@ -725,10 +731,9 @@ fn paint_box_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, co
     }
 }
 
-/// Draws every icon-font glyph in one pass.
-fn paint_font_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, size: f32, color: Color32) {
+/// Draws every icon-font glyph in one pass at an explicit icon size.
+fn paint_font_glyph(p: &egui::Painter, glyph: Glyph, m: egui::Pos2, font_size: f32, color: Color32) {
     let Some(text) = glyph.phosphor() else { return };
-    let font_size = (size * 0.48).clamp(12.0, 15.0);
     p.text(
         m,
         egui::Align2::CENTER_CENTER,
@@ -753,20 +758,44 @@ pub fn glyph_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
 /// headers and title bars, where a column of grey squares would compete with the content.
 pub fn glyph_button_quiet(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
     let size = Tokens::get(ui.ctx()).metrics().control_h;
-    glyph_button_impl(ui, glyph, size, false, true, tip)
+    glyph_button_impl(ui, glyph, size, None, false, GlyphChrome::Quiet, tip)
+}
+
+/// An outlined icon button with an explicit icon size and no fill at all: only the border marks
+/// the button in both skins. The header navigation uses it, so the glyph pair sits on the same
+/// surface as the title bar instead of on two grey slabs.
+pub fn glyph_button_outlined(
+    ui: &mut Ui,
+    glyph: Glyph,
+    size: f32,
+    icon_size: f32,
+    tip: &str,
+) -> Response {
+    glyph_button_impl(ui, glyph, size, Some(icon_size), false, GlyphChrome::Outlined, tip)
+}
+
+#[derive(Clone, Copy)]
+enum GlyphChrome {
+    /// The standard button surface.
+    Framed,
+    /// No chrome at rest; only the hover paints.
+    Quiet,
+    /// Transparent at every state; a hairline border is the only surface.
+    Outlined,
 }
 
 /// Icon button with custom size and active state.
 pub fn glyph_button_custom(ui: &mut Ui, glyph: Glyph, size: f32, active: bool, tip: &str) -> Response {
-    glyph_button_impl(ui, glyph, size, active, false, tip)
+    glyph_button_impl(ui, glyph, size, None, active, GlyphChrome::Framed, tip)
 }
 
 fn glyph_button_impl(
     ui: &mut Ui,
     glyph: Glyph,
     size: f32,
+    icon_size: Option<f32>,
     active: bool,
-    quiet: bool,
+    chrome: GlyphChrome,
     tip: &str,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
@@ -774,8 +803,19 @@ fn glyph_button_impl(
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
     let hovered = resp.hovered();
     let p = ui.painter();
-    let (fill, stroke, c) = if metrics.skin == UiSkin::Modern {
-        if quiet {
+    let (fill, stroke, c) = match chrome {
+        // No fill in either skin: the border alone marks the button, and hover only strengthens
+        // the outline and the ink.
+        GlyphChrome::Outlined => (
+            Color32::TRANSPARENT,
+            if hovered {
+                Stroke::new(metrics.hairline_w, t.line_strong)
+            } else {
+                t.hairline()
+            },
+            if hovered { t.ink_strong } else { t.ink },
+        ),
+        GlyphChrome::Quiet if metrics.skin == UiSkin::Modern => {
             // No resting chrome at all; the hover supplies both the tint and the outline.
             if hovered {
                 (
@@ -786,26 +826,27 @@ fn glyph_button_impl(
             } else {
                 (Color32::TRANSPARENT, Stroke::NONE, t.ink)
             }
-        } else if active {
-            (
-                t.glass_button(1.0),
-                Stroke::new(metrics.hairline_w, t.line_strong),
-                t.ink_strong,
-            )
-        } else {
-            (
-                t.glass_button(if hovered { 1.0 } else { 0.0 }),
-                Stroke::new(
-                    metrics.hairline_w,
-                    t.line.lerp_to_gamma(t.line_strong, if hovered { 1.0 } else { 0.0 }),
-                ),
-                if hovered { t.ink_strong } else { t.ink },
-            )
         }
-    } else if active || hovered {
-        (t.invert_bg, Stroke::NONE, t.invert_fg)
-    } else {
-        (t.bg, Stroke::new(metrics.hairline_w, t.line_strong), t.ink)
+        GlyphChrome::Framed if metrics.skin == UiSkin::Modern => {
+            if active {
+                (
+                    t.glass_button(1.0),
+                    Stroke::new(metrics.hairline_w, t.line_strong),
+                    t.ink_strong,
+                )
+            } else {
+                (
+                    t.glass_button(if hovered { 1.0 } else { 0.0 }),
+                    Stroke::new(
+                        metrics.hairline_w,
+                        t.line.lerp_to_gamma(t.line_strong, if hovered { 1.0 } else { 0.0 }),
+                    ),
+                    if hovered { t.ink_strong } else { t.ink },
+                )
+            }
+        }
+        _ if active || hovered => (t.invert_bg, Stroke::NONE, t.invert_fg),
+        _ => (t.bg, Stroke::new(metrics.hairline_w, t.line_strong), t.ink),
     };
     p.rect(
         rect,
@@ -819,7 +860,13 @@ fn glyph_button_impl(
         Glyph::Close => paint_line_glyph(p, glyph, m, (size * 0.15).clamp(3.5, 4.5), Stroke::new(1.5, c)),
         Glyph::Minimize => paint_line_glyph(p, glyph, m, (size * 0.18).clamp(4.0, 5.0), Stroke::new(1.5, c)),
         Glyph::Clone | Glyph::Expand => paint_box_glyph(p, glyph, m, size, c),
-        _ => paint_font_glyph(p, glyph, m, size, c),
+        _ => paint_font_glyph(
+            p,
+            glyph,
+            m,
+            icon_size.unwrap_or_else(|| (size * 0.48).clamp(12.0, 15.0)),
+            c,
+        ),
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tip));
     let resp = if !tip.trim().is_empty() {
@@ -948,13 +995,31 @@ pub fn checkbox_row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> 
     ret
 }
 
-/// A sleek, rounded catalog search input with an embedded magnifying glass icon at the start,
-/// a field radius from the active skin metrics, an integrated clear button, and subtle focus
-/// highlighting. It fills the available width.
+/// Height of the header search: it matches the analytics/settings glyph buttons next to it.
+pub const HEADER_SEARCH_H: f32 = 34.0;
+
+/// The TextEdit id of the header search. It is stable and explicit so the field keeps focus
+/// across frames and so the header can clear it on Escape before the edit sees the key.
+pub fn header_search_id() -> egui::Id {
+    egui::Id::unique("header-rules-search")
+}
+
+/// A catalog search input in the shared visual language: an embedded magnifying glass, a field
+/// radius from the active skin metrics, an integrated clear button, a background-free outlined
+/// field and subtle focus highlighting. It fills the available width.
 pub fn catalog_search_box(ui: &mut Ui, query: &mut String, hint_text: &str) -> Response {
-    let corner = Tokens::get(ui.ctx()).field_corner();
+    let t = Tokens::get(ui.ctx());
     let search_w = ui.available_width().max(60.0);
-    catalog_search_box_in(ui, query, hint_text, search_w, corner)
+    let field_h = t.metrics().control_h.max(24.0);
+    search_field(
+        ui,
+        query,
+        hint_text,
+        search_w,
+        field_h,
+        t.field_corner(),
+        None,
+    )
 }
 
 /// The same search field with an explicit width, for toolbars that must not stretch. The height
@@ -965,8 +1030,17 @@ pub fn catalog_search_box_sized(
     hint_text: &str,
     search_w: f32,
 ) -> Response {
-    let corner = Tokens::get(ui.ctx()).field_corner();
-    catalog_search_box_in(ui, query, hint_text, search_w, corner)
+    let t = Tokens::get(ui.ctx());
+    let field_h = t.metrics().control_h.max(24.0);
+    search_field(
+        ui,
+        query,
+        hint_text,
+        search_w,
+        field_h,
+        t.field_corner(),
+        None,
+    )
 }
 
 /// The same search field with an explicit corner radius, so a catalog whose cards keep one radius
@@ -977,73 +1051,69 @@ pub fn catalog_search_box_with_corner(
     hint_text: &str,
     corner: egui::CornerRadius,
 ) -> Response {
+    let t = Tokens::get(ui.ctx());
     let search_w = ui.available_width().max(60.0);
-    catalog_search_box_in(ui, query, hint_text, search_w, corner)
+    let field_h = t.metrics().control_h.max(24.0);
+    search_field(ui, query, hint_text, search_w, field_h, corner, None)
 }
 
-/// Shared body of the search field variants: chrome, icon, text edit and clear button.
-fn catalog_search_box_in(
+/// The header rules search: the shared search field without a background, with an explicit width.
+/// Escape is handled by the header, which knows whether the global results panel is open and can
+/// close it before clearing the query.
+pub fn header_search_box(ui: &mut Ui, query: &mut String, hint_text: &str, search_w: f32) -> Response {
+    let corner = Tokens::get(ui.ctx()).field_corner();
+    search_field(
+        ui,
+        query,
+        hint_text,
+        search_w,
+        HEADER_SEARCH_H,
+        corner,
+        Some(header_search_id()),
+    )
+}
+
+/// Shared body of the search field variants: outline, icon, text edit and clear button.
+fn search_field(
     ui: &mut Ui,
     query: &mut String,
     hint_text: &str,
     search_w: f32,
+    field_h: f32,
     corner: egui::CornerRadius,
+    explicit_id: Option<egui::Id>,
 ) -> Response {
     let t = Tokens::get(ui.ctx());
-    let search_id = ui.scope_id().with("catalog_search_box_input");
+    let search_id = explicit_id.unwrap_or_else(|| ui.scope_id().with("catalog_search_box_input"));
     let is_focused = ui.ctx().memory(|m| m.has_focus(search_id));
-    let field_h = t.metrics().control_h.max(24.0);
     let (box_rect, box_resp) = ui.allocate_exact_size(vec2(search_w, field_h), Sense::click());
     if box_resp.clicked() {
         ui.ctx().memory_mut(|m| m.request_focus(search_id));
     }
 
     let is_hovered = box_resp.hovered();
-    let modern = t.metrics().skin == UiSkin::Modern;
-    let border_stroke = if is_focused {
-        if modern {
-            // A wider focus ring instead of a colour-only change: the ring stays readable on
-            // the layered surface.
-            Stroke::new(2.0, t.accent.gamma_multiply(0.65))
-        } else {
-            Stroke::new(1.0, t.accent_ink)
-        }
+    // Every search field is background-free: a default-weight outline is the only chrome. The
+    // same hairline answers the pointer and the accent answers focus, so no field grows a
+    // thicker ring or a fill in either skin.
+    let border = if is_focused {
+        Stroke::new(t.metrics().hairline_w, t.accent_ink)
     } else if is_hovered {
         Stroke::new(t.metrics().hairline_w, t.line_strong)
     } else {
-        // The same resting border as a secondary button, so a field reads as the same material.
-        Stroke::new(
-            t.metrics().hairline_w,
-            t.line.lerp_to_gamma(t.line_strong, if modern { 0.55 } else { 0.0 }),
-        )
+        t.hairline()
     };
-
-    let radius = corner;
-    let fill = if modern {
-        // Exactly the secondary-button tint: a field and a button are the same material.
-        t.glass_button(if is_focused { 0.9 } else if is_hovered { 0.45 } else { 0.0 })
-    } else {
-        t.bg
-    };
-    ui.painter().rect_filled(box_rect, radius, fill);
-    ui.painter().rect_stroke(box_rect, radius, border_stroke, egui::StrokeKind::Inside);
-    if modern {
-        let inset = (t.metrics().field_radius as f32 * 0.6).min(6.0);
-        ui.painter().hline(
-            box_rect.x_range().shrink(inset),
-            box_rect.top() + 1.0,
-            Stroke::new(1.0, t.surface_highlight()),
-        );
-    }
+    ui.painter()
+        .rect_stroke(box_rect, corner, border, egui::StrokeKind::Inside);
 
     // Magnifying glass icon on left, perfectly centered vertically
     let icon_pos = pos2(box_rect.left() + 11.0, box_rect.center().y);
     let icon_color = if is_focused { t.accent_ink } else { t.muted };
+    let icon_size = 15.0;
     ui.painter().text(
         icon_pos,
         egui::Align2::LEFT_CENTER,
         egui_phosphor::regular::MAGNIFYING_GLASS,
-        egui::FontId::new(15.0, theme::phosphor()),
+        egui::FontId::new(icon_size, theme::phosphor()),
         icon_color,
     );
 
@@ -1061,10 +1131,14 @@ fn catalog_search_box_in(
             .max_rect(text_rect)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    // `add_sized` forces the edit to the text area's size, so its own layout cannot make it
-    // taller than the field and drag the line downwards.
-    let edit_resp = edit_ui.add_sized(
-        text_rect.size(),
+    // The style sets a control-height floor on every widget. A search field shorter than that
+    // floor would otherwise contain a full-height edit whose text row sits below the magnifying
+    // glass, so the child layout gets the field's own row height.
+    edit_ui.spacing_mut().interact_size.y = field_h;
+    // The edit keeps its natural row height and the child layout centres that row in the field.
+    // Forcing the widget to the full field height with `add_sized` pinned the text several pixels
+    // below the magnifying glass in the short header field.
+    let edit_resp = edit_ui.add(
         egui::TextEdit::singleline(query)
             .id(search_id)
             .hint_text(
@@ -1087,7 +1161,7 @@ fn catalog_search_box_in(
             pos2(box_rect.right() - 15.0, box_rect.center().y),
             vec2(18.0, 18.0),
         );
-        let clear_resp = ui.interact(clear_rect, ui.scope_id().with("catalog_search_clear"), Sense::click());
+        let clear_resp = ui.interact(clear_rect, search_id.with("clear"), Sense::click());
         let clear_hovered = clear_resp.hovered();
         if clear_hovered {
             ui.painter().rect_filled(clear_rect, t.chip_corner(), t.sunken);
@@ -1157,6 +1231,95 @@ mod tests {
         assert!(seen, "the hint must be rendered");
     }
 
+    /// The header field is shorter than a control row, but its text must still share the exact
+    /// centre line with the magnifying glass: the hint and the typed text are both checked.
+    #[test]
+    fn header_search_text_is_vertically_centred() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::install_fonts(&ctx);
+        crate::gui::theme::apply_theme(
+            &ctx,
+            crate::config::AppTheme::Dark,
+            crate::config::UiSkin::Modern,
+            None,
+        );
+
+        let render = |query: &mut String| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(500.0, 80.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    let _ = super::header_search_box(ui, query, "search rules", 420.0);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+
+        for query in [String::new(), "macro".to_string()] {
+            let mut query = query;
+            let output = render(&mut query);
+            let field_centre_y = super::HEADER_SEARCH_H * 0.5;
+            let mut seen = false;
+            for clipped in &output.shapes {
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    let label = text.galley.text().to_lowercase();
+                    if label.contains("search rules") || label.contains("macro") {
+                        let centre = text.pos.y + text.galley.size().y * 0.5;
+                        assert!(
+                            (centre - field_centre_y).abs() <= 2.0,
+                            "text centre {centre} is not the field centre {field_centre_y} for {query:?}"
+                        );
+                        seen = true;
+                    }
+                }
+            }
+            assert!(seen, "the text must be rendered for {query:?}");
+        }
+    }
+
+    /// The header glyph has a larger mark than a dense toolbar button; the mark must still sit on
+    /// the button's centre, not drift with the size.
+    #[test]
+    fn sized_glyph_icon_stays_on_the_button_centre() {
+        let ctx = egui::Context::default();
+        crate::gui::theme::install_fonts(&ctx);
+        crate::gui::theme::apply_theme(
+            &ctx,
+            crate::config::AppTheme::Dark,
+            crate::config::UiSkin::Modern,
+            None,
+        );
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(120.0, 120.0))),
+                ..Default::default()
+            },
+            |ui| {
+                let _ = super::glyph_button_outlined(ui, Glyph::Settings, 34.0, 18.0, "settings");
+            },
+        );
+        output.textures_delta.clear();
+
+        let mut seen = false;
+        for clipped in &output.shapes {
+            if let egui::Shape::Text(text) = &clipped.shape {
+                let centre = text.pos + text.galley.size() * 0.5;
+                assert!(
+                    (centre.x - 17.0).abs() <= 1.0 && (centre.y - 17.0).abs() <= 1.0,
+                    "the icon centre {centre:?} is not the button centre"
+                );
+                seen = true;
+            }
+        }
+        assert!(seen, "the icon must be painted");
+    }
+
     #[test]
     fn modern_primary_reacts_to_hover_in_both_palettes() {
         for theme in [
@@ -1213,6 +1376,8 @@ mod tests {
             Glyph::Shortcut,
             Glyph::Trash,
             Glyph::Question,
+            Glyph::Analytics,
+            Glyph::Settings,
         ] {
             assert!(glyph.phosphor().is_some(), "{glyph:?} should use the icon font");
         }

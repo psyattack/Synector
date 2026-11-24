@@ -1,6 +1,7 @@
-pub mod analytics_view;
+pub mod analytics_modal;
 pub mod catalogs;
 pub mod changelog_modal;
+pub mod global_search;
 pub mod guide_modal;
 pub mod header_bar;
 pub mod inspector;
@@ -11,4 +12,4 @@ pub mod process_picker_modal;
 pub mod rule_summary;
 pub mod rules_view;
 pub mod script_modal;
-pub mod settings_view;
+pub mod settings_modal;

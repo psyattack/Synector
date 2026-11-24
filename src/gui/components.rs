@@ -1,4 +1,5 @@
 pub mod catalog_modal;
+pub mod charts;
 pub mod chips;
 pub mod color_picker;
 pub mod dnd;

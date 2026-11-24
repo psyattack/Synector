@@ -342,6 +342,28 @@ impl Tokens {
         self.palette
     }
 
+    /// Categorical chart series colour. The values are derived from the semantic roles, so both
+    /// palettes and a user-chosen accent stay coherent and no chart hardcodes a hex value. The
+    /// index wraps; charts pass stable category indices, never list positions.
+    pub fn series(&self, index: usize) -> Color32 {
+        let p = self.palette;
+        // Every arm is an opaque colour derived from the semantic roles: a translucent text role
+        // would let the card surface bleed through a chart mark, and the series would stop being
+        // comparable across the two palettes.
+        match index % 10 {
+            0 => p.accent_ink,
+            1 => p.good,
+            2 => p.warn,
+            3 => mix(p.good, p.accent_ink, 0.5),
+            4 => mix(p.warn, p.bad, 0.5),
+            5 => mix(p.accent_ink, p.ink_strong, 0.8),
+            6 => mix(p.accent_ink, p.ink_strong, 0.45),
+            7 => mix(p.good, p.warn, 0.5),
+            8 => mix(p.bad, p.accent_ink, 0.5),
+            _ => mix(p.good, p.bad, 0.55),
+        }
+    }
+
     /// The page surface a panel paints over the backdrop.
     pub fn surface(&self) -> Color32 {
         with_alpha(self.palette.bg, self.metrics.surface_alpha)

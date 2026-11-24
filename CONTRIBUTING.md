@@ -67,9 +67,11 @@ cargo run -- --status        # print daemon status over IPC and exit
 | GUI state, drafts, undo, IPC calls | `src/gui/state/` (facade `src/gui/state.rs`) |
 | Preset library writes shared by the overlay and macro studios | `src/gui/state/library_write.rs` |
 | Views and inspectors | `src/gui/views/`; the inspector, rules view, overlay studio and macro studio are module trees: `src/gui/views/inspector/` (facade `src/gui/views/inspector.rs`), `src/gui/views/rules_view/` (facade `src/gui/views/rules_view.rs`), `src/gui/views/overlay_modal/` (facade `src/gui/views/overlay_modal.rs`), `src/gui/views/macro_modal/` (facade `src/gui/views/macro_modal.rs`) |
+| Window header, global search and header dialogs | `src/gui/views/header_bar.rs` (the one rules search and the analytics/settings glyphs), `src/gui/views/global_search.rs` (grouped results overlay and the query handoff), `src/gui/views/analytics_modal.rs`, `src/gui/views/settings_modal.rs` |
+| Analytics collector and chart primitives | `src/daemon/analytics.rs` (rolling window, outcomes, live CPU/RAM), `src/models/analytics.rs` (wire snapshot), `src/gui/components/charts.rs` (line, donut, bars, sparkline) |
 | Shared widgets and renderers | `src/gui/components/`; the rule-card and condition glyph tables shared by the rules list and the inspector live in `src/gui/views/rule_summary.rs` |
 | Catalog modal shell (entry definition, chrome, filtering, lifecycle) | `src/gui/components/catalog_modal.rs`; per-kind tables and commit adapters stay in `src/gui/views/catalogs/` |
-| Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header, HSVA colour editor, tag pills) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs`, `src/gui/components/color_picker.rs`, `src/gui/components/chips.rs` |
+| Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header, HSVA colour editor, tag pills, charts) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs`, `src/gui/components/color_picker.rs`, `src/gui/components/chips.rs`, `src/gui/components/charts.rs` |
 | Studio preset picker shared by the overlay and macro studios | `src/gui/views/presets.rs` (each studio keeps its own modal shell, data source and load/delete/save effects) |
 | Localization | `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |

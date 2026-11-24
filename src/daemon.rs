@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod analytics;
 pub mod conditions;
 pub mod discord_rpc;
 pub mod engine;

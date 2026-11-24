@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::models::{Action, Rule, Trigger};
 
-use super::{run_step_loop, PipelineObserver};
+use super::{run_step_loop, PipelineObserver, PipelineOutcome};
 use super::quota::QuotaDecision;
 use super::DaemonEngine;
 
@@ -67,6 +67,8 @@ impl PipelineObserver for OfflineRunObserver {
             self.abort = Some((step_index + 1, reason.to_string()));
         }
     }
+
+    fn pipeline_finished(&mut self, _outcome: PipelineOutcome) {}
 }
 
 /// Runs one rule without a daemon, the way `--run-rule` does when no daemon is reachable.

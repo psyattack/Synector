@@ -20,8 +20,8 @@ Related documents: [documentation map](README.md) · [rule authoring](RULE_AUTHO
 |  - Hardware accelerated, high-DPI                            |
 |  - Dark and light palettes                                   |
 |  - English and Russian locales (src/i18n)                    |
-|  - Rule Builder, Macro Studio, Overlay Studio, Inspector,    |
-|    Analytics                                                 |
+|  - Rule Builder, Macro Studio, Overlay Studio, Inspector     |
+|  - Global search, Analytics and Settings dialogs             |
 +--------------------------+----------------------------------+
                            | Windows named pipe
                            | \\.\pipe\Synector_Daemon
@@ -99,13 +99,13 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 
 | Area | Responsibility |
 |---|---|
-| `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the rules view (`src/gui/views/rules_view/` behind `src/gui/views/rules_view.rs`), the overlay studio (`src/gui/views/overlay_modal/` behind `src/gui/views/overlay_modal.rs`) and macro studio (`src/gui/views/macro_modal/` behind `src/gui/views/macro_modal.rs`) module trees, the catalog modals (`src/gui/views/catalogs/`), the preset-picker body shared by both studios (`src/gui/views/presets.rs`), the shared catalog shell and GUI primitives (`src/gui/components/`, including the colour editor in `src/gui/components/color_picker.rs` and tag pills in `src/gui/components/chips.rs`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
+| `src/gui/` | egui views and inspectors (`src/gui/views/inspector/`), the rules view (`src/gui/views/rules_view/` behind `src/gui/views/rules_view.rs`), the overlay studio (`src/gui/views/overlay_modal/` behind `src/gui/views/overlay_modal.rs`) and macro studio (`src/gui/views/macro_modal/` behind `src/gui/views/macro_modal.rs`) module trees, the catalog modals (`src/gui/views/catalogs/`), the preset-picker body shared by both studios (`src/gui/views/presets.rs`), the header bar and its global search overlay (`src/gui/views/header_bar.rs`, `src/gui/views/global_search.rs`), the analytics and settings dialogs (`src/gui/views/analytics_modal.rs`, `src/gui/views/settings_modal.rs`), the shared catalog shell and GUI primitives (`src/gui/components/`, including the colour editor in `src/gui/components/color_picker.rs`, tag pills in `src/gui/components/chips.rs` and the hand-painted charts in `src/gui/components/charts.rs`), overlay renderer, macro recorder, and the GUI state hub (`src/gui/state.rs` facade over `src/gui/state/`) with its IPC synchronization |
 | `src/daemon.rs`, `src/daemon/runtime/` | Daemon tier entry: the module list and `run_daemon`, with the start-up/loop/shutdown wiring split into `bootstrap` (runtime creation and fixed install/spawn order), `loops` (process, window, system-event, schedule, hotkey, file, webhook, coalesced-flush and update-check loops), `shutdown` (the signal and the coordinated sequence) and `launch` (the `--gui-exe` path) |
 | `src/daemon/engine/` | Rule runtime split by owner: `scheduler`, `quota`, `executions`, `pipeline` (the one pipeline launcher), `projector`, `triggers`, `state`, `ipc`, `offline`, `update` (the updater display state), `rule_call` (the rule-control dispatcher) and `activity` (the rule-activity registry), plus the engine suite; `src/daemon/engine.rs` is the `DaemonEngine` facade |
 | `src/daemon/actions/` | One module per action family (`process`, `window`, `input`, `macro`, `audio`, `script`, `filesystem`, `webhook`, `system`, `overlay`, `tokens`) over the shared bounded runner in `src/command.rs` and the MTA COM guard in `src/win_com.rs`; `src/daemon/actions.rs` is the facade, the control-flow dispatcher and the exhaustive standard-action family dispatcher; command-line/PowerShell quoting lives in `src/win_args.rs` |
 | `src/daemon/conditions.rs` | Condition evaluation and process/window/device matching shared by the engine ticks and the action handlers (`evaluate_condition`, `matches_process`, `device_filter_matches`, `strip_exe_suffix`, foreground-process probe); action code no longer reaches the engine for these |
 | `src/daemon/overlay_manager/` | Overlay child supervision split into `supervisor`, `job`, `text`, `monitors` and `update`; `src/daemon/overlay_manager.rs` re-exports the unchanged surface |
-| `src/daemon/` services | Process watcher, hotkeys, system events, telemetry (`src/daemon/telemetry/`), tray (`src/daemon/tray/`), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC |
+| `src/daemon/` services | Process watcher, hotkeys, system events, telemetry (`src/daemon/telemetry/`), the rolling analytics collector (`src/daemon/analytics.rs`), tray (`src/daemon/tray/`), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC |
 | `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
 | `src/win_args.rs` | One Windows command-line helper set: UTF-16-equivalent argument splitting/quoting/joining, PowerShell single-quoted literal escaping and the no-window spawn flag shared by the daemon, the app tier, updater, autorun and shortcuts |
 | `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `syn.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling) |
@@ -113,7 +113,7 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/daemon/engine/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher; the historical `crate::daemon::rule_call` module path is kept as a re-export |
 | `src/daemon/engine/activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions; the historical `crate::daemon::rule_activity` module path is kept as a re-export |
 | `src/ipc/` | Named-pipe client, the shared request/response protocol, the one framing implementation both sides use, and the overlay wire encoding |
-| `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation, the shared action-tree visitor (`Rule::visit_actions`) and the generated rule schema (`src/models.rs` is the facade) |
+| `src/models/` | Domain model: `Rule`, `Trigger`, `Action`, conditions, overlays, macro presets, quotas, raw-key/schedule validation, the shared action-tree visitor (`Rule::visit_actions`), the analytics snapshot wire types (`src/models/analytics.rs`) and the generated rule schema (`src/models.rs` is the facade) |
 | `src/validation.rs` | Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path |
 | `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection in `src/cli/target.rs`, which also owns the one IPC round-trip adapter behind the command-specific `*_via_daemon` functions and the one post-snapshot offline→daemon transition helper (`src/cli.rs` is the facade) |
 | `src/config/` | Split configuration persistence: storage policy, caches and the four section modules (`src/config.rs` is the facade) |
@@ -137,7 +137,7 @@ The palette and the skin are independent axes: switching one never changes the o
 asks for a role (`t.sunken`), a helper (`t.hairline()`) or a metric (`t.metrics().card_radius`)
 rather than branching on either, which is what lets a second visual generation ship as a new
 metrics value instead of a second view tree. The few surfaces that genuinely compose differently
-per generation — the header tabs, the appearance previews — read `Metrics::skin` for that one
+per generation — the filter cells, the appearance previews — read `Metrics::skin` for that one
 branch, never to pick a colour.
 
 A skin owns geometry (radii, control and bar heights), strokes, elevation (`Shadow`) and motion
@@ -145,8 +145,8 @@ A skin owns geometry (radii, control and bar heights), strokes, elevation (`Shad
 Archivo display face, and both palettes are orthogonal to the skin, so both skins must stay
 readable in both. The generations differ in how they compose chrome: the classic one keeps flat,
 opaque panels with square cards, while the modern one lifts tinted translucent surfaces
-(`Tokens::raised`, `Tokens::surface`) and marks the active tab with one sliding pill instead of an
-inverted block. The modern generation is the default; the classic one stays selectable from
+(`Tokens::raised`, `Tokens::surface`) and draws the selected filter cell as a lifted pill instead
+of an inverted block. The modern generation is the default; the classic one stays selectable from
 Settings (`ui_skin`).
 
 A user accent (`settings.accent`) re-tints `Palette::accent`, derives a readable `accent_ink` from
@@ -172,6 +172,47 @@ paints the flat page colour; the modern skin paints a quiet two-stop wash derive
 which its translucent panels (`surface_alpha`) let through. Nothing decorative is painted on top of
 it.
 
+## Window shell, dialogs and global search
+
+The main window has no navigation tabs: the rules list is the only page, and the header owns the
+one rules search field, centered between the wordmark and the window caption buttons. The field is
+deliberately background-free with only an outline, and sized to the glyph buttons beside it, so it
+reads as title-bar chrome rather than as a form; every other search field in the app (settings,
+catalogs, process picker, analytics logs) reuses the same outlined chrome, while widths and heights
+stay per call site. The analytics and settings surfaces are base-class dialogs
+(`src/gui/components/modal.rs`) opened from two glyph buttons right of the field. A dialog joins
+`GuiState::is_modal_open()`, opens with the shared scrim and animation, and opening one surrenders
+the search focus so typing cannot land in the field behind the scrim.
+
+Typing a query opens the global search overlay instead of a plain dropdown: a scrim `Area` covers
+everything below the header while a results panel groups matches by the surface that can consume
+them — rules, settings, the activity log, actions, triggers, conditions, overlay presets and macro
+presets — with a count and up to three previews each. Applying a group keeps the query in the
+header for rules (which are already filtered behind the panel) and transfers it into the target's
+own search field for every other surface: the settings dialog, the analytics log filter, a
+rule-builder catalog over a fresh or current draft, the overlay studio's preset picker, or the
+Macro Studio opened on a draft rule with the matched preset attached and its preset picker filtered.
+The overlay is not a `Modal`: the header field stays visible and editable, and Escape closes the
+results first, then clears the query.
+
+The analytics dashboard reads daemon-owned data. `src/daemon/analytics.rs` keeps a rolling
+24-hour window bucketed by local wall-clock hour — the current hour plus the 24 before it — with
+runs, outcomes, per-source and per-rule counts, and the last two minutes of CPU/RAM samples. The
+one-second runtime flush loop takes those two numbers with a CPU/RAM-only probe (no battery read,
+no COM audio endpoint) outside the engine lock, and the dashboard draws the last minute of them.
+The same tick samples the daemon's own CPU share, private working set and disk throughput from the
+process I/O counters (`DaemonUsage`), shown as one line in the SYSTEM LOAD card; network and GPU
+are deliberately absent because Windows exposes no cheap per-process counter for either and a
+daemon's share of them is effectively zero.
+The shared step loop reports every finished non-exit pipeline once (`PipelineOutcome`), so an error
+that does not halt a pipeline still counts; a run that never reports an outcome is recorded as
+aborted by its execution guard, so a user stop, a replaced run and a stopped recurring cycle are
+counted in one place and an exit pipeline is never counted at all. The GUI polls one narrow
+`GetAnalytics` request per second only while its dialog is open; the ordinary state snapshot does
+not carry the analytics payload. The dashboard paints charts with
+`src/gui/components/charts.rs` on `Tokens` roles and `Tokens::series`, so there is no plotting
+dependency and both palettes and a custom accent stay coherent.
+
 ## Data flow
 
 1. The GUI reads state over IPC and holds an editable draft with undo/redo history.
@@ -179,9 +220,9 @@ it.
    validates them, applies them to its in-memory `AppConfig` aggregate and persists only the
    affected config section under `%LOCALAPPDATA%\Synector\`. The editable draft is discarded only
    after the daemon confirms the mutation; a rejected or failed mutation keeps the draft open and
-   reports the error. Every other GUI round-trip goes through the same worker too — clearing the
-   log buffer, testing a step, terminating a process, saving settings, preset-library writes,
-   overlay-preview show/hide and the calibration position poll — so the render loop never blocks on
+   reports the error. Every other GUI round-trip goes through the same worker too — testing a step,
+   terminating a process, saving settings, preset-library writes, overlay-preview show/hide, the
+   calibration position poll and the analytics dashboard poll — so the render loop never blocks on
    the named pipe; the frame thread only enqueues and applies results, and the latest result wins.
 3. The daemon executes rules and streams status, telemetry and execution snapshots back, so the GUI
    reflects engine state without owning it. A sustained daemon outage (three failed polls plus a

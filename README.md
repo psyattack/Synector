@@ -77,7 +77,8 @@ pretending otherwise.
 * **Macro Studio** — keyboard and mouse recording through low-level Windows hooks, DirectInput-compatible scan-code playback, humanized motion, Raw Input camera turns, Run/Stop/Toggle operations and reusable presets.
 * **Scripting and CLI automation** — embedded Lua 5.4.9 with the `syn` API, PowerShell and Batch actions; JSON rule authoring via `--rules-apply`/`--rules-sync` with schema, template and reference discovery ([CLI reference](docs/RULE_AUTHORING.md)); `SYN1:` share codes, desktop `.lnk` shortcuts and `--run-rule`.
 * **System and device control** — working-set trimming, CPU priority and affinity, firewall toggles, window actions, master/per-app volume, channel balance, audio format and default playback/recording device switching.
-* **Observability** — analytics dashboard with KPI cards, real-time in-app log stream, and daily rotating log files with configurable verbosity.
+* **Observability** — an analytics dialog with rule-counter, session, live-load and success-rate KPIs, a live 60-second CPU/RAM chart with the daemon's own CPU/memory/disk use, executions by source, 24-hour activity, top rules, rules that need attention and the in-app log stream, plus daily rotating log files with configurable verbosity.
+* **Global search** — one header field searches rules, settings, the activity log, overlay and macro presets and the rule-builder catalogs; results are grouped with counts and open the matching surface with the query already in place.
 * **Installer and portable builds** — a native Windows installer with an uninstaller, Start Menu shortcut and `App Paths` integration, or a single portable executable. Both update themselves through daemon-managed GitHub release checks with SHA-256 verification, tray progress and optional auto-install.
 
 ## Installation

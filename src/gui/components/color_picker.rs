@@ -4,13 +4,17 @@ use egui::{pos2, vec2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, Ui};
 
 use crate::gui::theme::{self, Tokens};
 
+/// HSVA colour editor shared by the GUI views. Returns `true` when the user changed the colour
+/// this frame: the editor writes its own state back into `color`, so a caller that persists the
+/// value (the settings accent) must not treat the write-back as an edit.
 pub(crate) fn inline_color_editor(
     ui: &mut Ui,
     color: &mut [u8; 4],
     has_alpha: bool,
     t: &Tokens,
     loc: &crate::i18n::Strings,
-) {
+) -> bool {
+    let before = *color;
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(Stroke::new(1.0, t.accent_ink))
@@ -242,4 +246,5 @@ pub(crate) fn inline_color_editor(
                 d.insert_temp(last_rgba_id, *color);
             });
         });
+    *color != before
 }

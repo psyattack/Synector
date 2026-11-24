@@ -11,6 +11,7 @@ use crate::gui::components::catalog_modal::{
 };
 use crate::gui::state::GuiState;
 use crate::gui::theme::Tokens;
+use crate::i18n::Strings;
 use crate::models::{
     ProcessMatchMode, ScheduleType, SystemEventType, Trigger,
 };
@@ -383,6 +384,15 @@ pub fn render_trigger_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
     } else if outcome.fully_closed {
         state.last_trigger_catalog = None;
     }
+}
+
+/// Titles of the triggers a global header query matches, for the search overlay.
+pub(crate) fn search_titles(query: &str, loc: &Strings) -> Vec<&'static str> {
+    crate::gui::components::catalog_modal::catalog_search_titles(
+        TRIGGER_CATALOG_ITEMS,
+        query,
+        loc,
+    )
 }
 
 #[cfg(test)]

@@ -1,8 +1,21 @@
 pub struct Strings {
-    // Navigation Tabs (header_bar.rs)
-    pub tab_automations: &'static str,
-    pub tab_analytics: &'static str,
-    pub tab_settings: &'static str,
+    // Header Navigation (header_bar.rs)
+    pub header_analytics_tip: &'static str,
+    pub header_settings_tip: &'static str,
+    pub header_search_placeholder: &'static str,
+
+    // Global Search Overlay (global_search.rs)
+    pub search_group_rules: &'static str,
+    pub search_group_settings: &'static str,
+    pub search_group_activity: &'static str,
+    pub search_group_actions: &'static str,
+    pub search_group_triggers: &'static str,
+    pub search_group_conditions: &'static str,
+    pub search_group_overlays: &'static str,
+    pub search_group_macros: &'static str,
+    pub search_no_results: &'static str,
+    /// One activity-log preview line: level, category and the trimmed message.
+    pub search_activity_preview: &'static str,
 
     // Window Chrome & Title Bar (widgets.rs, header_bar.rs)
     pub win_btn_minimize: &'static str,
@@ -23,7 +36,6 @@ pub struct Strings {
 
     // Rules View (rules_view.rs)
     pub rules_btn_new: &'static str,
-    pub rules_search_placeholder: &'static str,
     pub rules_empty_title: &'static str,
     pub rules_btn_create_first: &'static str,
     pub rules_badge_manual: &'static str,
@@ -106,12 +118,12 @@ pub struct Strings {
     pub logs_cell_daemon_tip: &'static str,
     pub logs_cell_errors: &'static str,
     pub logs_cell_errors_tip: &'static str,
-    pub logs_btn_clear: &'static str,
     pub logs_search_placeholder: &'static str,
     pub logs_empty_title: &'static str,
     pub logs_empty_subtitle: &'static str,
 
-    // Settings View (settings_view.rs)
+    // Settings Dialog (settings_modal.rs)
+    pub settings_title: &'static str,
     pub settings_daemon_offline: &'static str,
     pub settings_search_placeholder: &'static str,
     pub settings_search_empty: &'static str,
@@ -509,13 +521,14 @@ pub struct Strings {
 
     // Script Modal (script_modal.rs)
     pub modal_tip_close: &'static str,
+    /// Close tooltip of a header dialog (analytics, settings), where "canvas" would be wrong.
+    pub modal_tip_dismiss: &'static str,
     pub modal_lines: &'static str,
     pub modal_chars: &'static str,
     pub modal_btn_copy_script: &'static str,
 
     // Toasts
     pub toast_script_copied: &'static str,
-    pub toast_stream_cleared: &'static str,
     pub toast_config_saved: &'static str,
     pub toast_rule_saved: &'static str,
     pub toast_rule_deleted: &'static str,
@@ -531,7 +544,7 @@ pub struct Strings {
     pub toast_import_invalid: &'static str,
     pub toast_import_clipboard_err: &'static str,
 
-    // Settings Updates (settings_view.rs)
+    // Settings Updates (settings_modal.rs)
     pub settings_btn_check_updates: &'static str,
     pub settings_btn_checking_updates: &'static str,
 
@@ -625,10 +638,56 @@ pub struct Strings {
     pub inspector_badge_execute_script: &'static str,
     pub inspector_badge_macro: &'static str,
 
-    // Analytics Dashboard
+    // Analytics Dashboard (analytics_modal.rs)
+    pub analytics_title: &'static str,
     pub analytics_kpi_total_executions: &'static str,
+    pub analytics_kpi_session: &'static str,
     pub analytics_kpi_active_rules: &'static str,
+    pub analytics_kpi_success: &'static str,
     pub analytics_kpi_uptime: &'static str,
+    pub analytics_caption_rule_counters: &'static str,
+    pub analytics_unit_days: &'static str,
+    pub analytics_unit_hours: &'static str,
+    pub analytics_unit_minutes: &'static str,
+    pub analytics_unit_seconds: &'static str,
+    pub analytics_overlays: &'static str,
+    pub analytics_card_system: &'static str,
+    pub analytics_card_sources: &'static str,
+    pub analytics_card_activity: &'static str,
+    pub analytics_card_top_rules: &'static str,
+    pub analytics_card_attention: &'static str,
+    pub analytics_collecting: &'static str,
+    pub analytics_no_runs: &'static str,
+    pub analytics_cpu: &'static str,
+    pub analytics_ram: &'static str,
+    pub analytics_daemon_usage: &'static str,
+    pub analytics_daemon_cpu: &'static str,
+    pub analytics_daemon_disk: &'static str,
+    pub analytics_runs: &'static str,
+    pub analytics_tooltip_runs: &'static str,
+    pub analytics_tooltip_errors: &'static str,
+    pub analytics_outcome_ok: &'static str,
+    pub analytics_outcome_failed: &'static str,
+    pub analytics_outcome_aborted: &'static str,
+    pub analytics_attention_quota: &'static str,
+    pub analytics_attention_never_ran: &'static str,
+    pub analytics_attention_clear: &'static str,
+    pub analytics_attention_more: &'static str,
+    pub analytics_rule_never: &'static str,
+    pub analytics_ago_now: &'static str,
+    pub analytics_ago_minutes: &'static str,
+    pub analytics_ago_hours: &'static str,
+    pub analytics_ago_days: &'static str,
+    pub analytics_source_process: &'static str,
+    pub analytics_source_window: &'static str,
+    pub analytics_source_resource: &'static str,
+    pub analytics_source_hotkey: &'static str,
+    pub analytics_source_schedule: &'static str,
+    pub analytics_source_system: &'static str,
+    pub analytics_source_file: &'static str,
+    pub analytics_source_webhook: &'static str,
+    pub analytics_source_manual: &'static str,
+    pub analytics_source_rule_call: &'static str,
 
     // Inspector Additions & Hotkey / Power / Audio
     pub inspector_runs_remaining: &'static str,
@@ -1339,7 +1398,7 @@ pub struct Strings {
 
     // ------------------------------------------------------------------
     // Localization prep B: strings the remaining localization pass needs in
-    // rules_view, overlay_modal, guide_modal, settings_view, macro_modal,
+    // rules_view, overlay_modal, guide_modal, settings_modal, macro_modal,
     // GuiState and script_highlighter. Field-by-field mapping (call site and
     // placeholder order) is in .agents/3.0(rename to audit)/i18n-map-*.md.
     // ------------------------------------------------------------------
@@ -1552,7 +1611,6 @@ pub struct Strings {
     pub settings_mask_restart_required: &'static str,
     pub toast_settings_save_failed: &'static str,
     pub settings_tray_icon_invalid: &'static str,
-    pub toast_clear_logs_failed: &'static str,
 
     // Macro studio (U03-008 / U05-010)
     pub macro_studio_custom_preset_name: &'static str,

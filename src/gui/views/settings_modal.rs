@@ -1,8 +1,10 @@
-//! Preferences and System Settings:
-//! One scrolling page of untitled setting blocks in a fixed order — no tabs. A search field
-//! spanning the page sits above it and filters the rows by the text they show.
+//! Preferences and System Settings dialog:
+//! One scrolling body of untitled setting blocks in a fixed order, rendered in the shared modal
+//! base. A search field spanning the body sits above the blocks and filters the rows by the text
+//! they show.
 
 use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
+use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::widgets::{self, Kind};
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Metrics, Palette, Tokens};
@@ -171,7 +173,60 @@ impl SettingsFilter {
     }
 }
 
-pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
+/// The settings dialog, opened from the header gear glyph. The settings page keeps its own
+/// search; the modal supplies the card, the header, the scrim and Escape/backdrop dismissal.
+pub fn render_settings_modal(ctx: &egui::Context, state: &mut GuiState) {
+    let t = Tokens::get(ctx);
+    let loc = state.loc();
+
+    let Some(response) = Modal::new("settings-modal", state.show_settings_modal)
+        .width_fraction(0.72)
+        .height_fraction(0.82)
+        .min_size(vec2(620.0, 420.0))
+        .max_size(vec2(980.0, 760.0))
+        .header_height(56.0)
+        .show(ctx, &t, |frame| {
+            frame.header(|ui, close_requested| {
+                render_modal_header(
+                    ui,
+                    close_requested,
+                    &t,
+                    ModalHeader {
+                        glyph: Some(egui_phosphor::regular::GEAR_SIX),
+                        glyph_size: 16.0,
+                        close_tip: loc.modal_tip_dismiss,
+                        left_pad: 20.0,
+                        glyph_pad: 10.0,
+                        right_pad: 20.0,
+                        item_spacing_x: Some(10.0),
+                    },
+                    |ui| {
+                        widgets::hud(ui, loc.settings_title, t.ink_strong);
+                    },
+                    |_ui| {},
+                );
+            });
+
+            frame.body(|ui| {
+                let rect = ui.max_rect().shrink2(vec2(20.0, 16.0));
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    ui.set_width(rect.width());
+                    ui.set_height(rect.height());
+                    render_settings_body(ui, state);
+                });
+            });
+        })
+    else {
+        return;
+    };
+
+    if response.close_requested {
+        state.close_settings_modal();
+    }
+}
+
+/// The settings page itself, without the dialog chrome. Tests render this body directly.
+pub(crate) fn render_settings_body(ui: &mut Ui, state: &mut GuiState) {
     let t = Tokens::get(ui.ctx());
     let loc = state.loc();
 
@@ -251,6 +306,40 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
     }
 }
 
+/// Rows of one block the filter keeps. The block's name stays searchable even though the card
+/// itself is untitled: a query that names the block keeps all of its rows. The dialog and the
+/// header search both use this, so their row sets cannot drift apart.
+fn matching_rows(
+    section: SettingsSection,
+    filter: &SettingsFilter,
+    loc: &Strings,
+) -> Vec<SettingsRow> {
+    if filter.matches(section.heading(loc)) {
+        return section.rows().to_vec();
+    }
+    section
+        .rows()
+        .iter()
+        .copied()
+        .filter(|row| filter.matches_row(*row, loc))
+        .collect()
+}
+
+/// Rows whose own text matches `query`, for the header global search. It applies the same filter
+/// as the settings dialog, including the block-name alias, and returns the row titles and
+/// descriptions as previews.
+pub(crate) fn search_settings(query: &str, loc: &Strings) -> Vec<(&'static str, String)> {
+    let filter = SettingsFilter::new(query);
+    let mut rows = Vec::new();
+    for section in SETTINGS_SECTIONS {
+        for row in matching_rows(section, &filter, loc) {
+            let (title, description) = row.text(loc);
+            rows.push((title, description));
+        }
+    }
+    rows
+}
+
 /// Key of the unsaved settings draft in egui's temporary data.
 fn pending_settings_id() -> egui::Id {
     egui::Id::unique("settings_unsaved_draft")
@@ -299,15 +388,7 @@ fn render_section(
     any_shown: &mut bool,
 ) {
     let t = ctx.t;
-    // The block's name stays searchable even though the card itself is untitled: a query that
-    // names the block keeps all of its rows.
-    let show_all = filter.matches(section.heading(ctx.loc));
-    let rows: Vec<SettingsRow> = section
-        .rows()
-        .iter()
-        .copied()
-        .filter(|row| show_all || filter.matches_row(*row, ctx.loc))
-        .collect();
+    let rows = matching_rows(section, filter, ctx.loc);
     if rows.is_empty() {
         return;
     }
@@ -903,9 +984,12 @@ fn render_accent_editor(
     let mut rgba = accent
         .map(|[r, g, b]| [r, g, b, 255])
         .unwrap_or([0x2d, 0x81, 0xff, 255]);
-    crate::gui::components::color_picker::inline_color_editor(ui, &mut rgba, false, t, loc);
+    let edited =
+        crate::gui::components::color_picker::inline_color_editor(ui, &mut rgba, false, t, loc);
     let rgb = [rgba[0], rgba[1], rgba[2]];
-    if accent != Some(rgb) {
+    // Only a real interaction commits: the editor writes its own state back every frame, so
+    // opening CUSTOM must not pin the palette accent as a custom colour.
+    if edited && accent != Some(rgb) {
         let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
         state.set_accent(Some(hex.clone()));
         cfg.accent = Some(hex);
@@ -1009,7 +1093,6 @@ mod tests {
             active_rule_executions: std::collections::HashMap::new(),
             active_overlay_ids: std::collections::HashSet::new(),
             active_test_rule_ids: std::collections::HashSet::new(),
-            analytics: Default::default(),
             available_update: None,
             update_progress: None,
             update_status: None,
@@ -1017,6 +1100,64 @@ mod tests {
             pending_auto_start_update: false,
         });
         state
+    }
+
+    /// Opening the custom-accent editor must not pin the palette accent as a custom colour: the
+    /// editor writes its own state back every frame, so only a real interaction may commit.
+    #[test]
+    fn test_opening_the_accent_editor_does_not_commit_a_custom_colour() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = settings_state();
+        state.accent = None;
+        ctx.data_mut(|data| data.insert_temp(accent_editor_id(), true));
+
+        let _ = page_texts(&ctx, &mut state, vec2(1000.0, 3000.0));
+
+        assert!(
+            state.accent.is_none(),
+            "opening CUSTOM must not commit the palette accent as a custom colour"
+        );
+    }
+
+    /// The settings page is a dialog now: the shared modal chrome paints the title and the body
+    /// rows inside it, instead of a full-window page. Areas are drained on the following pass, so
+    /// the dialog is rendered twice and the second frame is inspected.
+    #[test]
+    fn test_settings_modal_renders_title_and_rows() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = settings_state();
+        state.show_settings_modal = true;
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+        let mut output = None;
+        for time in [0.0, 0.1] {
+            let mut frame = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(1180.0, 760.0))),
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    render_settings_modal(ui.ctx(), &mut state);
+                },
+            );
+            frame.textures_delta.clear();
+            output = Some(frame);
+        }
+        let output = output.expect("two frames were rendered");
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, &mut texts);
+        }
+        assert!(
+            text_index(&texts, loc.settings_title).is_some(),
+            "the dialog title must be painted: {texts:?}"
+        );
+        assert!(
+            text_index(&texts, loc.settings_autorun_title).is_some(),
+            "the settings body must be painted inside the dialog"
+        );
     }
 
     /// Every text run the page painted, in paint order, with its top edge.
@@ -1030,7 +1171,7 @@ mod tests {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| render_settings_view(ui, state));
+            egui::CentralPanel::default().show(ctx, |ui| render_settings_body(ui, state));
         });
         output.textures_delta.clear();
         let mut texts = Vec::new();
@@ -1153,6 +1294,46 @@ mod tests {
         }
     }
 
+    /// The header search and the dialog share one row filter: a block name keeps the whole block
+    /// in both languages, a substring keeps one row, and a query without a match keeps nothing.
+    #[test]
+    fn test_search_settings_matches_rows_and_block_aliases() {
+        for language in [
+            crate::i18n::Language::English,
+            crate::i18n::Language::Russian,
+        ] {
+            let loc = crate::i18n::get(language);
+
+            let by_block = search_settings(loc.settings_section_appearance, loc);
+            assert_eq!(
+                by_block.len(),
+                SettingsSection::Appearance.rows().len(),
+                "a block name keeps every row of that block"
+            );
+            assert!(
+                by_block
+                    .iter()
+                    .any(|(title, _)| *title == loc.settings_theme_title),
+                "the appearance block includes its theme row"
+            );
+
+            let by_row = search_settings(&loc.settings_autorun_title.to_lowercase(), loc);
+            assert!(
+                by_row.iter().any(|(title, _)| *title == loc.settings_autorun_title),
+                "a row title matches by substring"
+            );
+            assert!(
+                !by_row.iter().any(|(title, _)| *title == loc.settings_theme_title),
+                "a row of another block must not match"
+            );
+
+            assert!(
+                search_settings("no such setting", loc).is_empty(),
+                "a query without a match keeps nothing"
+            );
+        }
+    }
+
     /// The row table is the single source of truth for the search and the page: every row sits in
     /// exactly one block and carries catalog text in both languages.
     #[test]
@@ -1257,7 +1438,7 @@ mod tests {
         let ru = crate::i18n::get(crate::i18n::Language::Russian);
         assert_eq!(en.settings_tray_icon_filter, concat!("Icons & ", "Executables"));
         assert_ne!(en.settings_tray_icon_filter, ru.settings_tray_icon_filter);
-        let source = include_str!("settings_view.rs");
+        let source = include_str!("settings_modal.rs");
         assert!(
             !source.contains(concat!("\"Icons & ", "Executables\"")),
             "the native dialog filter literal is back in the view"
@@ -1271,7 +1452,7 @@ mod tests {
     /// (the row's explanatory comment names the request).
     #[test]
     fn test_mask_setting_never_requests_a_daemon_shutdown() {
-        let source = include_str!("settings_view.rs");
+        let source = include_str!("settings_modal.rs");
         let production = source
             .split_once("#[cfg(test)]")
             .map(|(production, _)| production)

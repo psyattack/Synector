@@ -26,6 +26,8 @@ internals see [ARCHITECTURE.md](ARCHITECTURE.md).
   - [How do I record and replay a macro?](#how-do-i-record-and-replay-a-macro)
 - [Interface](#interface)
   - [Where do I find a setting?](#where-do-i-find-a-setting)
+  - [Where did the tabs go, and how do I search?](#where-did-the-tabs-go-and-how-do-i-search)
+  - [What does the analytics dialog show?](#what-does-the-analytics-dialog-show)
   - [How do I change the appearance?](#how-do-i-change-the-appearance)
 - [Rules and triggers](#rules-and-triggers)
   - [My rule does not fire](#my-rule-does-not-fire)
@@ -204,19 +206,47 @@ humanized timing, so it also registers in DirectInput games.
 
 ### Where do I find a setting?
 
-The Settings page is one scrollable column of untitled blocks — general, appearance and update
-settings — with a search field across the top of the page. The field keeps only the rows whose title
-or description contains the query, case-insensitively, and a query that names a block (`appearance`,
-`updates`, `general`) keeps that whole block. A block left without matching rows disappears instead
-of leaving an empty frame, and a query that matches nothing says so in place of the blocks. The page
-scrolls with the wheel and keyboard and does not show a scrollbar. Every switch and picker saves as
-you change it: there is no Save button and no restart unless a row says otherwise.
+Settings is a dialog opened from the gear glyph in the window header. It is one scrollable column of
+untitled blocks — general, appearance and update settings — with its own search field across the top
+of the dialog. The field keeps only the rows whose title or description contains the query,
+case-insensitively, and a query that names a block (`appearance`, `updates`, `general`) keeps that
+whole block. A block left without matching rows disappears instead of leaving an empty frame, and a
+query that matches nothing says so in place of the blocks. The dialog scrolls with the wheel and
+keyboard and does not show a scrollbar. Every switch and picker saves as you change it: there is no
+Save button and no restart unless a row says otherwise.
+
+### Where did the tabs go, and how do I search?
+
+The window no longer has navigation tabs: the rules list is the only page. The header center holds a
+search field, and the chart and gear glyphs to its right open the analytics and settings dialogs.
+Typing opens a dimmed results panel grouped by surface — rules, settings, the activity log, actions,
+triggers, conditions, overlay presets and macro presets — with a count and a few previews per group.
+Choosing the rules group simply closes the panel and keeps the filtered list (the query stays in the
+field); choosing any other group opens that surface with the query already typed into its own search
+field. A macro preset has no standalone editor, so choosing it starts a draft rule with a Macro step
+carrying that preset and opens the Macro Studio on it.
+Escape closes the panel first and clears the field on the next press.
+
+### What does the analytics dialog show?
+
+It is one scrolling page: the activity log comes first — the level/category filters and one
+stretched text filter above the stream — followed by the metrics: the sum of the per-rule execution
+counters, session executions, what is running now and the 24-hour success rate; a live 60-second
+CPU/RAM chart with one line under its title for the daemon's own CPU share, memory and disk
+throughput; executions grouped by their source (process, window, resource, hotkey, schedule,
+system event, file, webhook, manual run, rule call); a 24-hour activity chart with failures marked;
+the most active rules; and a list of enabled rules that need attention (execution quota exhausted or
+never ran). Analytics history is kept in the daemon's memory for the last 24 hours and restarts with
+it; each rule's execution counter is persisted in `runtime.json` and a periodic quota restarts it
+together with its window, so the top counter sums those counters rather than a lifetime history.
+Applying an activity-log result from the header search clears the level filter, so the stream shows
+every match the result counted.
 
 ### How do I change the appearance?
 
 **Settings → Appearance** holds three independent controls. The palette swatches switch between the
 **Dark** and **Light** themes — only colours change. The **skin tiles** choose the interface
-generation: the modern look (rounded, layered surfaces, one sliding pill for the active tab) or the
+generation: the modern look (rounded, layered surfaces, lifted filter cells) or the
 original studio one (hard edges, hairline rules, square chrome); the palette stays whatever you
 picked. **Accent colour** offers a few presets and a custom colour picker for selection, focus rings
 and active controls; **Reset** clears the custom accent back to the palette's own. All three choices

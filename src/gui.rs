@@ -8,14 +8,15 @@ pub mod views;
 use eframe::App;
 use egui::{Color32, CornerRadius, Stroke, Ui, vec2};
 use components::widgets;
-use state::{ActiveView, GuiState};
+use state::GuiState;
 use theme::{Tokens, apply_theme};
-use views::analytics_view::render_analytics_view;
+use views::analytics_modal::render_analytics_modal;
 use views::catalogs::action::render_action_catalog_modal;
 use views::catalogs::condition::render_condition_catalog_modal;
 use views::catalogs::element::render_element_catalog_modal;
 use views::catalogs::trigger::render_trigger_catalog_modal;
 use views::changelog_modal::render_changelog_modal;
+use views::global_search::render_global_search;
 use views::guide_modal::render_guide_modal;
 use views::header_bar::render_header_bar;
 use views::inspector::render_inspector_drawer;
@@ -24,7 +25,7 @@ use views::overlay_modal::{render_overlay_modal, render_overlay_presets_modal};
 use views::process_picker_modal::render_process_picker_modal;
 use views::rules_view::render_rules_view;
 use views::script_modal::render_script_editor_canvas;
-use views::settings_view::render_settings_view;
+use views::settings_modal::render_settings_modal;
 use crate::config::{Settings, WindowState};
 
 /// Window geometry is streamed by every frame of a drag/resize; writing it that often would
@@ -209,8 +210,10 @@ impl App for SynectorApp {
             self.current_accent = accent;
         }
 
-        // Sync with daemon state
+        // Sync with daemon state. The analytics dashboard is a separate narrow poll, queued only
+        // while its dialog is open.
         self.state.sync_with_daemon();
+        self.state.poll_analytics();
         // Background share-code compression finishes on a worker thread; collect it here.
         self.state.poll_share_events(&ctx);
 
@@ -277,7 +280,7 @@ impl App for SynectorApp {
         // the modern skin paints a quiet wash that its translucent surfaces show through.
         theme::paint_backdrop(&ctx, &tokens);
 
-        // 1. Top Header Bar (Title Bar & Navigation)
+        // 1. Top Header Bar (title bar, rules search, analytics/settings glyphs)
         egui::Panel::top("header")
             .exact_size(tokens.metrics().header_h)
             .resizable(false)
@@ -303,11 +306,8 @@ impl App for SynectorApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(tokens.surface()).inner_margin(egui::Margin { left: 24, right: 24, top: 18, bottom: 8 }))
             .show(ui, |ui| {
-                match self.state.active_view {
-                    ActiveView::Rules => render_rules_view(ui, &mut self.state),
-                    ActiveView::Analytics => render_analytics_view(ui, &mut self.state),
-                    ActiveView::Settings => render_settings_view(ui, &mut self.state),
-                }
+                // The rules list is the only page; analytics and settings are dialogs.
+                render_rules_view(ui, &mut self.state);
 
                 // Toast notification
                 self.render_toast(ui, &tokens);
@@ -315,6 +315,9 @@ impl App for SynectorApp {
 
         // 4. Sliding Inspector Drawer (slides in from right with cubic easing)
         render_inspector_drawer(&ctx, &mut self.state);
+
+        // 4.0. Header global search results, above the page and the drawer, below every dialog
+        render_global_search(&ctx, &mut self.state);
 
         // 4.1. Trigger Catalog Modal (library for selecting rule trigger)
         render_trigger_catalog_modal(&ctx, &mut self.state);
@@ -345,6 +348,10 @@ impl App for SynectorApp {
 
         // 8.2. Process Picker Modal (Hunter inside studio modal for selecting a running process)
         render_process_picker_modal(&ctx, &mut self.state);
+
+        // 8.3. Header dialogs: the analytics dashboard and the settings page
+        render_settings_modal(&ctx, &mut self.state);
+        render_analytics_modal(&ctx, &mut self.state);
 
         // 9. Centered Changelog & Release Notes Modal
         render_changelog_modal(&ctx, &mut self.state);

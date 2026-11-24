@@ -3,8 +3,8 @@
 //! A view reads the resolved [`Tokens`](super::Tokens) and its metrics, so the classic
 //! generation (the original studio identity: hard edges, hairline rules, square chrome) and the
 //! modern one share one code path. [`Metrics::of`] is the only mapping from [`UiSkin`] to
-//! values; a component that genuinely composes an element differently per generation (a tab, a
-//! toggle, a badge) reads `Metrics::skin` for that one branch, never to pick a colour.
+//! values; a component that genuinely composes an element differently per generation (a toggle, a
+//! filter cell, a badge) reads `Metrics::skin` for that one branch, never to pick a colour.
 
 use crate::config::UiSkin;
 
@@ -58,8 +58,8 @@ pub struct Motion {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
     /// Which generation these metrics describe; components use it only where the two
-    /// generations genuinely compose an element differently (a tab, a toggle), never to pick a
-    /// colour.
+    /// generations genuinely compose an element differently (a toggle, a filter cell), never to
+    /// pick a colour.
     pub skin: UiSkin,
     /// Outer card and preview-tile radius.
     pub card_radius: u8,
