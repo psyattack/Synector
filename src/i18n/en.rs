@@ -115,9 +115,11 @@ pub static STRINGS: Strings = Strings {
 
     // Settings View (settings_view.rs)
     settings_daemon_offline: "BACKGROUND DAEMON IS OFFLINE",
-    settings_tab_general: "GENERAL",
-    settings_tab_appearance: "APPEARANCE",
-    settings_tab_updates: "UPDATES",
+    settings_search_placeholder: "SEARCH SETTINGS...",
+    settings_search_empty: "NO SETTINGS MATCH THE SEARCH",
+    settings_section_general: "General",
+    settings_section_appearance: "Appearance",
+    settings_section_updates: "Updates",
     settings_autorun_title: "Start with Windows",
     settings_autorun_desc: "Launch background service on system login",
     settings_tray_icon_title: "System Tray Icon",

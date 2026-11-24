@@ -1,11 +1,175 @@
 //! Preferences and System Settings:
-//! Modern Master-Detail layout with clean sidebar categories, toggle switches,
-//! palette preview swatches, live tray icon preview, and direct configuration folder access.
+//! One scrolling page of untitled setting blocks in a fixed order — no tabs. A search field
+//! spanning the page sits above it and filters the rows by the text they show.
 
 use egui::{Color32, Rect, Sense, Stroke, Ui, pos2, vec2};
 use crate::gui::components::widgets::{self, Kind};
-use crate::gui::state::{GuiState, SettingsTab};
+use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Metrics, Palette, Tokens};
+use crate::i18n::Strings;
+
+/// One row of the settings page. The search field matches the text [`SettingsRow::text`] returns
+/// and the page renders that same text, so a row can never be searchable while hidden: a new
+/// variant forces both matches below to be filled in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsRow {
+    Autorun,
+    TrayIcon,
+    HideTrayIcon,
+    MaskDaemon,
+    DiskLogging,
+    ConfigFolder,
+    Language,
+    Theme,
+    Skin,
+    Accent,
+    UpdatesOnStartup,
+    AutoInstallUpdates,
+    InstalledVersion,
+}
+
+impl SettingsRow {
+    /// Every row exactly once, for the page-order and catalog-text guards in the tests.
+    #[cfg(test)]
+    const ALL: [Self; 13] = [
+        Self::Autorun,
+        Self::TrayIcon,
+        Self::HideTrayIcon,
+        Self::MaskDaemon,
+        Self::DiskLogging,
+        Self::ConfigFolder,
+        Self::Language,
+        Self::Theme,
+        Self::Skin,
+        Self::Accent,
+        Self::UpdatesOnStartup,
+        Self::AutoInstallUpdates,
+        Self::InstalledVersion,
+    ];
+
+    /// Title and description the row shows, both from the catalog. The installed-version row
+    /// formats its own description, so the running version is searchable too.
+    fn text(self, loc: &Strings) -> (&'static str, String) {
+        match self {
+            Self::Autorun => (loc.settings_autorun_title, loc.settings_autorun_desc.to_string()),
+            Self::TrayIcon => (
+                loc.settings_tray_icon_title,
+                loc.settings_tray_icon_desc.to_string(),
+            ),
+            Self::HideTrayIcon => (
+                loc.settings_hide_tray_icon_title,
+                loc.settings_hide_tray_icon_desc.to_string(),
+            ),
+            Self::MaskDaemon => (
+                loc.settings_mask_daemon_title,
+                loc.settings_mask_daemon_desc.to_string(),
+            ),
+            Self::DiskLogging => (
+                loc.settings_logging_title,
+                loc.settings_logging_desc.to_string(),
+            ),
+            Self::ConfigFolder => (
+                loc.settings_config_folder_title,
+                loc.settings_config_folder_desc.to_string(),
+            ),
+            Self::Language => (loc.settings_language_title, loc.settings_language_desc.to_string()),
+            Self::Theme => (loc.settings_theme_title, loc.settings_theme_desc.to_string()),
+            Self::Skin => (loc.settings_skin_title, loc.settings_skin_desc.to_string()),
+            Self::Accent => (loc.settings_accent_title, loc.settings_accent_desc.to_string()),
+            Self::UpdatesOnStartup => (
+                loc.settings_updates_startup_title,
+                loc.settings_updates_startup_desc.to_string(),
+            ),
+            Self::AutoInstallUpdates => (
+                loc.settings_updates_auto_install_title,
+                loc.settings_updates_auto_install_desc.to_string(),
+            ),
+            Self::InstalledVersion => (
+                loc.settings_updates_check_title,
+                updates_version_subtitle(loc),
+            ),
+        }
+    }
+}
+
+/// The page's blocks, in order. A block is one card of rows; a search that empties every row of
+/// a block removes the whole card.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SettingsSection {
+    General,
+    Appearance,
+    Updates,
+}
+
+/// The page order the renderer walks. The search field walks the same table.
+const SETTINGS_SECTIONS: [SettingsSection; 3] = [
+    SettingsSection::General,
+    SettingsSection::Appearance,
+    SettingsSection::Updates,
+];
+
+impl SettingsSection {
+    /// Name of the block. The cards themselves stay untitled; the name is the block's identity and
+    /// a search alias, so a query that names the block keeps all of its rows.
+    fn heading(self, loc: &Strings) -> &'static str {
+        match self {
+            Self::General => loc.settings_section_general,
+            Self::Appearance => loc.settings_section_appearance,
+            Self::Updates => loc.settings_section_updates,
+        }
+    }
+
+    fn rows(self) -> &'static [SettingsRow] {
+        match self {
+            Self::General => &[
+                SettingsRow::Autorun,
+                SettingsRow::TrayIcon,
+                SettingsRow::HideTrayIcon,
+                SettingsRow::MaskDaemon,
+                SettingsRow::DiskLogging,
+                SettingsRow::ConfigFolder,
+            ],
+            Self::Appearance => &[
+                SettingsRow::Language,
+                SettingsRow::Theme,
+                SettingsRow::Skin,
+                SettingsRow::Accent,
+            ],
+            Self::Updates => &[
+                SettingsRow::UpdatesOnStartup,
+                SettingsRow::AutoInstallUpdates,
+                SettingsRow::InstalledVersion,
+            ],
+        }
+    }
+}
+
+/// Query of the settings search field, matched case-insensitively against the text a row shows.
+struct SettingsFilter {
+    needle: String,
+}
+
+impl SettingsFilter {
+    fn new(query: &str) -> Self {
+        Self {
+            needle: query.trim().to_lowercase(),
+        }
+    }
+
+    fn is_active(&self) -> bool {
+        !self.needle.is_empty()
+    }
+
+    /// An empty query keeps everything; otherwise the text must contain the query.
+    fn matches(&self, text: &str) -> bool {
+        !self.is_active() || text.to_lowercase().contains(&self.needle)
+    }
+
+    fn matches_row(&self, row: SettingsRow, loc: &Strings) -> bool {
+        let (title, description) = row.text(loc);
+        self.matches(title) || self.matches(&description)
+    }
+}
 
 pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
     let t = Tokens::get(ui.ctx());
@@ -32,79 +196,41 @@ pub fn render_settings_view(ui: &mut Ui, state: &mut GuiState) {
 
     let mut changes = SettingsChanges::default();
 
+    // The field spans the page and sits above the scroll area, so it stays reachable while a
+    // long page is scrolled.
+    widgets::catalog_search_box(
+        ui,
+        &mut state.settings_search_query,
+        loc.settings_search_placeholder,
+    );
+    ui.add_space(14.0);
+
+    let filter = SettingsFilter::new(&state.settings_search_query);
+    let mut ctx = RowContext {
+        state: &mut *state,
+        cfg: &mut cfg,
+        changes: &mut changes,
+        current_autorun,
+        t: &t,
+        loc,
+    };
+
     egui::ScrollArea::vertical()
         .id_salt("settings_scroll_area")
         .auto_shrink([false, false])
+        // The page scrolls with the wheel and keyboard; the bar itself is kept out of the design
+        // like on the other views.
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
-            let available_w = ui.available_width();
-            let is_wide = available_w >= 620.0;
-
-            if is_wide {
-                let start_top = ui.cursor().top();
-                let initial_avail_h = ui.available_height();
-
-                let mut sidebar_rect = Rect::NOTHING;
-                let mut content_rect = Rect::NOTHING;
-
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 24.0;
-
-                    // Left Column: Navigation Sidebar
-                    let sidebar_w = 190.0;
-                    let resp_side = ui.allocate_ui_with_layout(
-                        vec2(sidebar_w, ui.available_height()),
-                        egui::Layout::top_down(egui::Align::LEFT),
-                        |ui| {
-                            ui.spacing_mut().item_spacing.y = 4.0;
-                            render_sidebar(ui, state, loc, &t, sidebar_w);
-                        },
-                    );
-                    sidebar_rect = resp_side.response.rect;
-
-                    // Space reserved for the vertical divider
-                    ui.add_space(1.0);
-
-                    // Right Column: Active Content Panel
-                    let content_w = ui.available_width();
-                    let resp_content = ui.allocate_ui_with_layout(
-                        vec2(content_w, ui.available_height()),
-                        egui::Layout::top_down(egui::Align::LEFT),
-                        |ui| {
-                            ui.spacing_mut().item_spacing.y = 12.0;
-                            render_content_panel(ui, state, &mut cfg, &mut changes, current_autorun, &t, loc);
-                        },
-                    );
-                    content_rect = resp_content.response.rect;
-                });
-
-                // Vertical divider from header edge to footer edge (exact 1px filled rect, DPI-independent)
-                let div_x = sidebar_rect.right() + 12.0;
-                let top_y = t.metrics().header_h;
-                let bottom_y = (ui.ctx().content_rect().bottom() - t.metrics().footer_h)
-                    .max(content_rect.bottom())
-                    .max(start_top + initial_avail_h);
-
-                if bottom_y > top_y {
-                    let v_divider = Rect::from_min_max(
-                        pos2(div_x, top_y),
-                        pos2(div_x + 1.0, bottom_y),
-                    );
-                    ui.painter()
-                        .with_clip_rect(ui.ctx().content_rect())
-                        .rect_filled(v_divider, t.inset_corner(), t.hairline().color);
-                }
-            } else {
-                // Narrow / Compact Responsive Fallback: Top segmented tabs + panel
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 12.0;
-                    let tab_options = [
-                        (SettingsTab::General, widgets::Cell::new(loc.settings_tab_general, "")),
-                        (SettingsTab::Appearance, widgets::Cell::new(loc.settings_tab_appearance, "")),
-                        (SettingsTab::Updates, widgets::Cell::new(loc.settings_tab_updates, "")),
-                    ];
-                    widgets::cells(ui, &mut state.settings_tab, &tab_options);
-                    widgets::hrule(ui);
-                    render_content_panel(ui, state, &mut cfg, &mut changes, current_autorun, &t, loc);
+            ui.spacing_mut().item_spacing.y = 16.0;
+            let mut any_shown = false;
+            for section in SETTINGS_SECTIONS {
+                render_section(ui, section, &mut ctx, &filter, &mut any_shown);
+            }
+            if !any_shown {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(24.0);
+                    widgets::hud(ui, loc.settings_search_empty, t.muted);
                 });
             }
         });
@@ -130,6 +256,11 @@ fn pending_settings_id() -> egui::Id {
     egui::Id::unique("settings_unsaved_draft")
 }
 
+/// Key of the expanded accent editor state in egui's temporary data.
+fn accent_editor_id() -> egui::Id {
+    egui::Id::unique("settings-accent-editor")
+}
+
 /// Which settings edits a frame produced: `config` asks for a write at the end of the frame,
 /// `mask` additionally asks for the restart notice (masking is applied only when the daemon
 /// starts).
@@ -147,72 +278,41 @@ struct PendingSettingsDraft {
     settings: crate::config::Settings,
 }
 
-fn render_sidebar(ui: &mut Ui, state: &mut GuiState, loc: &crate::i18n::Strings, t: &Tokens, w: f32) {
-    let tabs = [
-        (SettingsTab::General, "01", loc.settings_tab_general),
-        (SettingsTab::Appearance, "02", loc.settings_tab_appearance),
-        (SettingsTab::Updates, "03", loc.settings_tab_updates),
-    ];
-
-    for (tab, idx, label) in tabs {
-        let is_active = state.settings_tab == tab;
-        let (rect, resp) = ui.allocate_exact_size(vec2(w, 40.0), Sense::click());
-        if resp.clicked() {
-            state.settings_tab = tab;
-        }
-        let enabled = ui.is_enabled();
-        let hovered = resp.hovered() && enabled;
-
-        let bg_fill = if is_active {
-            t.sunken
-        } else if hovered {
-            t.sunken.gamma_multiply(0.6)
-        } else {
-            Color32::TRANSPARENT
-        };
-
-        ui.painter().rect_filled(rect, t.control_corner(), bg_fill);
-
-        if is_active {
-            let bar_rect = Rect::from_min_size(rect.min, vec2(3.0, rect.height()));
-            ui.painter().rect_filled(bar_rect, t.card_corner(), t.accent);
-        }
-
-        let text_y = rect.center().y;
-        let idx_color = if is_active { t.accent_ink } else { t.faint };
-        let idx_galley = widgets::caps(ui, idx, 10.0, theme::mono(), 1.0, idx_color);
-        let sep_galley = widgets::caps(ui, " / ", 10.0, theme::mono(), 1.0, t.faint);
-        let label_color = if is_active {
-            t.ink_strong
-        } else if hovered {
-            t.ink
-        } else {
-            t.muted
-        };
-        let label_galley = widgets::caps(ui, label, 11.0, theme::mono_bold(), theme::BUTTON_SPACING, label_color);
-
-        let mut x = rect.left() + 14.0;
-        widgets::paint_left(ui, Rect::from_min_size(pos2(x, text_y - idx_galley.size().y / 2.0), idx_galley.size()), idx_galley.clone(), idx_color);
-        x += idx_galley.size().x;
-        widgets::paint_left(ui, Rect::from_min_size(pos2(x, text_y - sep_galley.size().y / 2.0), sep_galley.size()), sep_galley.clone(), t.faint);
-        x += sep_galley.size().x;
-        widgets::paint_left(ui, Rect::from_min_size(pos2(x, text_y - label_galley.size().y / 2.0), label_galley.size()), label_galley, label_color);
-
-        if enabled {
-            resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-        }
-    }
+/// Everything a setting row reads or writes this frame. Passing one context instead of six
+/// arguments keeps the row dispatcher and its helpers readable.
+struct RowContext<'a> {
+    state: &'a mut GuiState,
+    cfg: &'a mut crate::config::Settings,
+    changes: &'a mut SettingsChanges,
+    current_autorun: bool,
+    t: &'a Tokens,
+    loc: &'a Strings,
 }
 
-fn render_content_panel(
+/// Renders one block: the rows the filter kept, in page order, inside their card. A block with
+/// no surviving row paints nothing at all, so a search cannot leave an empty card behind.
+fn render_section(
     ui: &mut Ui,
-    state: &mut GuiState,
-    cfg: &mut crate::config::Settings,
-    changes: &mut SettingsChanges,
-    current_autorun: bool,
-    t: &Tokens,
-    loc: &crate::i18n::Strings,
+    section: SettingsSection,
+    ctx: &mut RowContext<'_>,
+    filter: &SettingsFilter,
+    any_shown: &mut bool,
 ) {
+    let t = ctx.t;
+    // The block's name stays searchable even though the card itself is untitled: a query that
+    // names the block keeps all of its rows.
+    let show_all = filter.matches(section.heading(ctx.loc));
+    let rows: Vec<SettingsRow> = section
+        .rows()
+        .iter()
+        .copied()
+        .filter(|row| show_all || filter.matches_row(*row, ctx.loc))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
+    *any_shown = true;
+
     egui::Frame::new()
         .fill(t.sunken)
         .stroke(t.hairline())
@@ -222,15 +322,23 @@ fn render_content_panel(
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 12.0;
 
-            match state.settings_tab {
-                SettingsTab::General => {
-                    render_general_content(ui, state, cfg, changes, current_autorun, t, loc);
+            for (index, row) in rows.iter().enumerate() {
+                if index > 0 {
+                    widgets::hrule(ui);
                 }
-                SettingsTab::Appearance => {
-                    render_appearance_content(ui, state, cfg, &mut changes.config, t, loc);
-                }
-                SettingsTab::Updates => {
-                    render_updates_content(ui, state, cfg, &mut changes.config, t, loc);
+                let (title, description) = row.text(ctx.loc);
+                render_setting_row(ui, title, &description, t, |ui| {
+                    render_row_control(ui, *row, ctx);
+                });
+                if *row == SettingsRow::Accent {
+                    render_accent_editor(
+                        ui,
+                        ctx.state,
+                        ctx.cfg,
+                        &mut ctx.changes.config,
+                        t,
+                        ctx.loc,
+                    );
                 }
             }
         });
@@ -271,6 +379,78 @@ fn render_setting_row<F: FnOnce(&mut Ui)>(
             add_control(ui);
         });
     });
+}
+
+/// The control a row puts on the right of its line.
+fn render_row_control(ui: &mut Ui, row: SettingsRow, ctx: &mut RowContext<'_>) {
+    match row {
+        SettingsRow::Autorun => {
+            let mut autorun_val = ctx.current_autorun;
+            if widgets::toggle_switch(ui, &mut autorun_val).changed() {
+                ctx.state.toggle_autorun(autorun_val);
+            }
+        }
+        SettingsRow::TrayIcon => {
+            render_tray_icon_control(ui, ctx.state, ctx.cfg, ctx.changes, ctx.t, ctx.loc)
+        }
+        SettingsRow::HideTrayIcon => {
+            if widgets::toggle_switch(ui, &mut ctx.cfg.hide_tray_icon).changed() {
+                ctx.changes.config = true;
+            }
+        }
+        // The daemon applies masking deployment only at start-up, and `ShutdownDaemon` also posts
+        // WM_CLOSE to this GUI window (dropping unsaved drafts). The view therefore persists the
+        // preference through the normal commit path and tells the user a restart is required; it
+        // never stops the daemon from the frame thread.
+        SettingsRow::MaskDaemon => {
+            if widgets::toggle_switch(ui, &mut ctx.cfg.mask_daemon_process).changed() {
+                ctx.changes.config = true;
+                ctx.changes.mask = true;
+            }
+        }
+        // Disabling takes effect in this process immediately and in the daemon when it saves the
+        // section; the log files already written are left alone, and turning the switch back on
+        // resumes appending to the same day's file.
+        SettingsRow::DiskLogging => {
+            if widgets::toggle_switch(ui, &mut ctx.cfg.log_to_disk).changed() {
+                ctx.changes.config = true;
+                crate::logging::set_disk_logging_enabled(ctx.cfg.log_to_disk);
+            }
+        }
+        SettingsRow::ConfigFolder => {
+            let open = widgets::button(ui, ctx.loc.settings_btn_open_folder, Kind::Secondary, 0.0);
+            if open.clicked() {
+                let dir = crate::config::AppConfig::config_dir();
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+                }
+            }
+        }
+        SettingsRow::Language => {
+            render_language_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.loc)
+        }
+        SettingsRow::Theme => {
+            render_theme_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.t, ctx.loc)
+        }
+        SettingsRow::Skin => {
+            render_skin_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.t, ctx.loc)
+        }
+        SettingsRow::Accent => {
+            render_accent_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.t, ctx.loc)
+        }
+        SettingsRow::UpdatesOnStartup => {
+            if widgets::toggle_switch(ui, &mut ctx.cfg.check_updates_on_startup).changed() {
+                ctx.changes.config = true;
+            }
+        }
+        SettingsRow::AutoInstallUpdates => {
+            if widgets::toggle_switch(ui, &mut ctx.cfg.auto_install_updates).changed() {
+                ctx.changes.config = true;
+            }
+        }
+        SettingsRow::InstalledVersion => render_update_check_control(ui, ctx.state, ctx.loc),
+    }
 }
 
 /// Editable text and validation state of the tray-icon path field, kept in egui's temporary
@@ -314,463 +494,440 @@ fn validate_tray_icon_path(raw: &str) -> Result<Option<String>, TrayIconPathErro
     Ok(Some(trimmed.to_string()))
 }
 
-fn render_general_content(
+/// Tray-icon row: a live thumbnail of the effective icon, the editable path and the reset button.
+fn render_tray_icon_control(
     ui: &mut Ui,
     state: &mut GuiState,
     cfg: &mut crate::config::Settings,
     changes: &mut SettingsChanges,
-    current_autorun: bool,
     t: &Tokens,
-    loc: &crate::i18n::Strings,
+    loc: &Strings,
 ) {
-    // 1. Windows Startup Toggle
-    render_setting_row(ui, loc.settings_autorun_title, loc.settings_autorun_desc, t, |ui| {
-        let mut autorun_val = current_autorun;
-        if widgets::toggle_switch(ui, &mut autorun_val).changed() {
-            state.toggle_autorun(autorun_val);
-        }
-    });
+    let edit_id = egui::Id::unique("settings_tray_icon_edit");
+    let input_id = egui::Id::unique("settings_tray_icon_input");
+    let mut edit = ui.data(|d| d.get_temp::<TrayIconPathEdit>(edit_id)).unwrap_or_default();
 
-    widgets::hrule(ui);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
 
-    // 2. Custom Tray Icon with live thumbnail preview
-    render_setting_row(ui, loc.settings_tray_icon_title, loc.settings_tray_icon_desc, t, |ui| {
-        let edit_id = egui::Id::unique("settings_tray_icon_edit");
-        let input_id = egui::Id::unique("settings_tray_icon_input");
-        let mut edit = ui.data(|d| d.get_temp::<TrayIconPathEdit>(edit_id)).unwrap_or_default();
+        // Live preview button matching the exact size of the input line next to it.
+        let control_h = theme::control_height(ui);
+        let preview_size = vec2(control_h, control_h);
+        let (p_rect, p_resp) = ui.allocate_exact_size(preview_size, Sense::click());
+        let p_hovered = p_resp.hovered();
+        let p_stroke = if p_hovered { Stroke::new(1.0, t.line_strong) } else { t.hairline() };
+        ui.painter().rect(p_rect, t.card_corner(), t.bg, p_stroke, egui::StrokeKind::Inside);
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-
-            // Live preview button matching the exact size of the input line next to it.
-            let control_h = theme::control_height(ui);
-            let preview_size = vec2(control_h, control_h);
-            let (p_rect, p_resp) = ui.allocate_exact_size(preview_size, Sense::click());
-            let p_hovered = p_resp.hovered();
-            let p_stroke = if p_hovered { Stroke::new(1.0, t.line_strong) } else { t.hairline() };
-            ui.painter().rect(p_rect, t.card_corner(), t.bg, p_stroke, egui::StrokeKind::Inside);
-
-            let mut icon_rendered = false;
-            if let Some(ref path) = cfg.tray_icon_path {
-                if let Some(tex) = state.icon_cache.get_icon_from_path(ui.ctx(), path) {
-                    let img_rect = Rect::from_center_size(p_rect.center(), vec2(22.0, 22.0));
-                    ui.painter().image(
-                        tex.id(),
-                        img_rect,
-                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    icon_rendered = true;
-                }
-            }
-
-            // By default, display the official application logo icon (not a simple glyph)
-            if !icon_rendered {
-                if let Some(app_tex) = state.icon_cache.get_app_icon(ui.ctx()) {
-                    let img_rect = Rect::from_center_size(p_rect.center(), vec2(22.0, 22.0));
-                    ui.painter().image(
-                        app_tex.id(),
-                        img_rect,
-                        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
-                        Color32::WHITE,
-                    );
-                    icon_rendered = true;
-                }
-            }
-
-            if !icon_rendered {
-                let icon_glyph = egui_phosphor::regular::APP_WINDOW;
-                let galley = egui::WidgetText::from(
-                    egui::RichText::new(icon_glyph)
-                        .font(egui::FontId::new(16.0, theme::phosphor()))
-                        .color(t.muted),
-                ).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::FontSelection::Default);
-                widgets::paint_centred(ui, p_rect, galley, t.muted);
-            }
-
-            // Clicking the preview box opens the file picker
-            if p_resp
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                if let Some(file) = rfd::FileDialog::new()
-                    .add_filter(loc.settings_tray_icon_filter, &["ico", "exe", "dll"])
-                    .pick_file()
-                {
-                    let picked = file.to_string_lossy().to_string();
-                    cfg.tray_icon_path = Some(picked.clone());
-                    edit.text = picked;
-                    edit.invalid = false;
-                    changes.config = true;
-                }
-            }
-
-            let has_reset = cfg.tray_icon_path.is_some();
-            let reset_w = if has_reset {
-                widgets::button_width(ui, loc.settings_btn_reset, 0.0) + 8.0
-            } else {
-                0.0
-            };
-            let input_w = (ui.available_width() - reset_w - 8.0).clamp(60.0, 240.0);
-
-            // The typed path is committed on focus loss / Enter instead of on every keystroke:
-            // each keystroke used to persist settings.json and reload the tray icon. The draft
-            // lives in egui's temporary data so the field does not jump back while being typed.
-            let focused = ui.memory(|m| m.has_focus(input_id));
-            let stored = cfg.tray_icon_path.clone().unwrap_or_default();
-            let mut path = if focused || edit.invalid { edit.text.clone() } else { stored.clone() };
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut path)
-                    .id(input_id)
-                    .hint_text(loc.settings_tray_icon_placeholder)
-                    .desired_width(input_w)
-                    .min_size(vec2(input_w, control_h))
-                    .align(egui::Align2::LEFT_CENTER)
-                    .margin(vec2(8.0, 6.0)),
-            );
-            if response.changed() {
-                edit.text = path.clone();
-                edit.invalid = false;
-            }
-            if response.lost_focus() {
-                match validate_tray_icon_path(&path) {
-                    Ok(next) if next != cfg.tray_icon_path => {
-                        cfg.tray_icon_path = next;
-                        edit.invalid = false;
-                        changes.config = true;
-                    }
-                    Ok(_) => edit.invalid = false,
-                    Err(_) => {
-                        // Keep the rejected text in the field (outlined in red) so the user can
-                        // correct it, and report why it was not stored.
-                        edit.text = path.clone();
-                        edit.invalid = true;
-                        crate::logging::warn("GUI", "Rejected an invalid tray icon path");
-                        state.set_toast(loc.settings_tray_icon_invalid);
-                    }
-                }
-            }
-            if !focused && !edit.invalid {
-                edit.text = stored;
-            }
-            if edit.invalid {
-                ui.painter().rect_stroke(
-                    response.rect,
-                    t.card_corner(),
-                    Stroke::new(1.0, t.bad),
-                    egui::StrokeKind::Inside,
+        let mut icon_rendered = false;
+        if let Some(ref path) = cfg.tray_icon_path {
+            if let Some(tex) = state.icon_cache.get_icon_from_path(ui.ctx(), path) {
+                let img_rect = Rect::from_center_size(p_rect.center(), vec2(22.0, 22.0));
+                ui.painter().image(
+                    tex.id(),
+                    img_rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
                 );
+                icon_rendered = true;
             }
+        }
 
-            if has_reset && widgets::button(ui, loc.settings_btn_reset, Kind::Secondary, 0.0).clicked() {
-                cfg.tray_icon_path = None;
-                edit.text.clear();
+        // By default, display the official application logo icon (not a simple glyph)
+        if !icon_rendered {
+            if let Some(app_tex) = state.icon_cache.get_app_icon(ui.ctx()) {
+                let img_rect = Rect::from_center_size(p_rect.center(), vec2(22.0, 22.0));
+                ui.painter().image(
+                    app_tex.id(),
+                    img_rect,
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+                icon_rendered = true;
+            }
+        }
+
+        if !icon_rendered {
+            let icon_glyph = egui_phosphor::regular::APP_WINDOW;
+            let galley = egui::WidgetText::from(
+                egui::RichText::new(icon_glyph)
+                    .font(egui::FontId::new(16.0, theme::phosphor()))
+                    .color(t.muted),
+            ).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::FontSelection::Default);
+            widgets::paint_centred(ui, p_rect, galley, t.muted);
+        }
+
+        // Clicking the preview box opens the file picker
+        if p_resp
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            if let Some(file) = rfd::FileDialog::new()
+                .add_filter(loc.settings_tray_icon_filter, &["ico", "exe", "dll"])
+                .pick_file()
+            {
+                let picked = file.to_string_lossy().to_string();
+                cfg.tray_icon_path = Some(picked.clone());
+                edit.text = picked;
                 edit.invalid = false;
                 changes.config = true;
             }
-        });
-
-        ui.data_mut(|d| d.insert_temp(edit_id, edit));
-    });
-
-    widgets::hrule(ui);
-
-    // 3. Hide Tray Icon Toggle
-    render_setting_row(ui, loc.settings_hide_tray_icon_title, loc.settings_hide_tray_icon_desc, t, |ui| {
-        if widgets::toggle_switch(ui, &mut cfg.hide_tray_icon).changed() {
-            changes.config = true;
         }
-    });
 
-    widgets::hrule(ui);
+        let has_reset = cfg.tray_icon_path.is_some();
+        let reset_w = if has_reset {
+            widgets::button_width(ui, loc.settings_btn_reset, 0.0) + 8.0
+        } else {
+            0.0
+        };
+        let input_w = (ui.available_width() - reset_w - 8.0).clamp(60.0, 240.0);
 
-    // 4. Mask Daemon as System Service Toggle
-    //
-    // The daemon applies masking deployment only at start-up, and `ShutdownDaemon` also posts
-    // WM_CLOSE to this GUI window (dropping unsaved drafts). The view therefore persists the
-    // preference through the normal commit path and tells the user a restart is required; it
-    // never stops the daemon from the frame thread.
-    render_setting_row(ui, loc.settings_mask_daemon_title, loc.settings_mask_daemon_desc, t, |ui| {
-        if widgets::toggle_switch(ui, &mut cfg.mask_daemon_process).changed() {
-            changes.config = true;
-            changes.mask = true;
+        // The typed path is committed on focus loss / Enter instead of on every keystroke:
+        // each keystroke used to persist settings.json and reload the tray icon. The draft
+        // lives in egui's temporary data so the field does not jump back while being typed.
+        let focused = ui.memory(|m| m.has_focus(input_id));
+        let stored = cfg.tray_icon_path.clone().unwrap_or_default();
+        let mut path = if focused || edit.invalid { edit.text.clone() } else { stored.clone() };
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut path)
+                .id(input_id)
+                .hint_text(loc.settings_tray_icon_placeholder)
+                .desired_width(input_w)
+                .min_size(vec2(input_w, control_h))
+                .align(egui::Align2::LEFT_CENTER)
+                .margin(vec2(8.0, 6.0)),
+        );
+        if response.changed() {
+            edit.text = path.clone();
+            edit.invalid = false;
         }
-    });
-
-    widgets::hrule(ui);
-
-    // 5. Disk Logging Toggle
-    //
-    // Disabling takes effect in this process immediately and in the daemon when it saves the
-    // section; the log files already written are left alone, and turning the switch back on
-    // resumes appending to the same day's file.
-    render_setting_row(ui, loc.settings_logging_title, loc.settings_logging_desc, t, |ui| {
-        if widgets::toggle_switch(ui, &mut cfg.log_to_disk).changed() {
-            changes.config = true;
-            crate::logging::set_disk_logging_enabled(cfg.log_to_disk);
-        }
-    });
-
-    widgets::hrule(ui);
-
-    // 6. Open Configuration and Storage Folder
-    render_setting_row(ui, loc.settings_config_folder_title, loc.settings_config_folder_desc, t, |ui| {
-        if widgets::button(ui, loc.settings_btn_open_folder, Kind::Secondary, 0.0).clicked() {
-            let dir = crate::config::AppConfig::config_dir();
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+        if response.lost_focus() {
+            match validate_tray_icon_path(&path) {
+                Ok(next) if next != cfg.tray_icon_path => {
+                    cfg.tray_icon_path = next;
+                    edit.invalid = false;
+                    changes.config = true;
+                }
+                Ok(_) => edit.invalid = false,
+                Err(_) => {
+                    // Keep the rejected text in the field (outlined in red) so the user can
+                    // correct it, and report why it was not stored.
+                    edit.text = path.clone();
+                    edit.invalid = true;
+                    crate::logging::warn("GUI", "Rejected an invalid tray icon path");
+                    state.set_toast(loc.settings_tray_icon_invalid);
+                }
             }
         }
+        if !focused && !edit.invalid {
+            edit.text = stored;
+        }
+        if edit.invalid {
+            ui.painter().rect_stroke(
+                response.rect,
+                t.card_corner(),
+                Stroke::new(1.0, t.bad),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        if has_reset && widgets::button(ui, loc.settings_btn_reset, Kind::Secondary, 0.0).clicked() {
+            cfg.tray_icon_path = None;
+            edit.text.clear();
+            edit.invalid = false;
+            changes.config = true;
+        }
     });
+
+    ui.data_mut(|d| d.insert_temp(edit_id, edit));
 }
 
-fn render_appearance_content(
+/// Interface language row.
+fn render_language_control(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    cfg: &mut crate::config::Settings,
+    changed: &mut bool,
+    loc: &Strings,
+) {
+    let mut lang_idx = match state.language {
+        crate::i18n::Language::English => 0usize,
+        crate::i18n::Language::Russian => 1usize,
+    };
+    // A language is always named in its own language (endonym), so the option labels stay
+    // from `Language::label()`; only the descriptions follow the UI language.
+    let lang_options = [
+        (
+            0usize,
+            widgets::Cell::new(
+                crate::i18n::Language::English.label(),
+                loc.settings_language_en_desc,
+            ),
+        ),
+        (
+            1usize,
+            widgets::Cell::new(
+                crate::i18n::Language::Russian.label(),
+                loc.settings_language_ru_desc,
+            ),
+        ),
+    ];
+
+    if widgets::cells(ui, &mut lang_idx, &lang_options) {
+        let new_lang = if lang_idx == 1 {
+            crate::i18n::Language::Russian
+        } else {
+            crate::i18n::Language::English
+        };
+        state.set_language(new_lang);
+        cfg.language = new_lang;
+        *changed = true;
+    }
+}
+
+/// Colour theme row as palette preview swatches: each tile is a miniature window — a thin accent
+/// strip over a content well — so the palette previews itself instead of carrying a caption. The
+/// name stays as the tooltip and as the accessibility label.
+fn render_theme_control(
     ui: &mut Ui,
     state: &mut GuiState,
     cfg: &mut crate::config::Settings,
     changed: &mut bool,
     t: &Tokens,
-    loc: &crate::i18n::Strings,
+    loc: &Strings,
 ) {
-    // 1. Interface Language
-    render_setting_row(ui, loc.settings_language_title, loc.settings_language_desc, t, |ui| {
-        let mut lang_idx = match state.language {
-            crate::i18n::Language::English => 0usize,
-            crate::i18n::Language::Russian => 1usize,
-        };
-        // A language is always named in its own language (endonym), so the option labels stay
-        // from `Language::label()`; only the descriptions follow the UI language.
-        let lang_options = [
-            (
-                0usize,
-                widgets::Cell::new(
-                    crate::i18n::Language::English.label(),
-                    loc.settings_language_en_desc,
-                ),
-            ),
-            (
-                1usize,
-                widgets::Cell::new(
-                    crate::i18n::Language::Russian.label(),
-                    loc.settings_language_ru_desc,
-                ),
-            ),
-        ];
+    let themes = [
+        (crate::config::AppTheme::Dark, loc.settings_theme_dark),
+        (crate::config::AppTheme::Light, loc.settings_theme_light),
+    ];
 
-        if widgets::cells(ui, &mut lang_idx, &lang_options) {
-            let new_lang = if lang_idx == 1 {
-                crate::i18n::Language::Russian
-            } else {
-                crate::i18n::Language::English
-            };
-            state.set_language(new_lang);
-            cfg.language = new_lang;
-            *changed = true;
-        }
-    });
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
 
-    widgets::hrule(ui);
-
-    // 2. Colour theme as palette preview swatches: each tile is a miniature window — a thin
-    // accent strip over a content well — so the palette previews itself instead of carrying a
-    // caption. The name stays as the tooltip and as the accessibility label.
-    render_setting_row(ui, loc.settings_theme_title, loc.settings_theme_desc, t, |ui| {
-        let themes = [
-            (crate::config::AppTheme::Dark, loc.settings_theme_dark),
-            (crate::config::AppTheme::Light, loc.settings_theme_light),
-        ];
-
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-
-            for (thm, label) in themes {
-                // The preview comes from the live palette, so a Tokens change cannot
-                // desynchronize the swatches from the theme the user actually gets.
-                let palette = Tokens::of(thm, t.metrics().skin);
-                let is_selected = state.theme == thm;
-                let (rect, resp) =
-                    ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
-                if resp.clicked() && !is_selected {
-                    state.set_theme(thm);
-                    cfg.theme = thm;
-                    *changed = true;
-                }
-
-                let well = paint_preview_tile(
-                    ui,
-                    rect,
-                    t,
-                    palette.palette(),
-                    t.metrics(),
-                    is_selected,
-                    resp.hovered(),
-                );
-                // Two faint lines read as content rows inside the miniature window.
-                for row in 0..2 {
-                    let y = well.top() + 7.0 + row as f32 * 7.0;
-                    if y + 1.0 < well.bottom() {
-                        ui.painter().hline(
-                            egui::Rangef::new(well.left() + 5.0, well.right() - 5.0),
-                            y,
-                            Stroke::new(1.0, palette.line),
-                        );
-                    }
-                }
-
-                resp.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
-                });
-                resp.on_hover_text(label)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-            }
-        });
-    });
-
-    widgets::hrule(ui);
-
-    // 3. Skin generation: preview tiles, mirroring the palette swatches above, so a third or
-    // fourth generation can be added as one more tile.
-    render_setting_row(ui, loc.settings_skin_title, loc.settings_skin_desc, t, |ui| {
-        let skins = [
-            (crate::config::UiSkin::Modern, loc.settings_skin_modern),
-            (crate::config::UiSkin::Classic, loc.settings_skin_classic),
-        ];
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            for (skin, label) in skins {
-                let metrics = Metrics::of(skin);
-                let palette = Tokens::of(state.theme, skin);
-                let is_selected = state.ui_skin == skin;
-                let (rect, resp) =
-                    ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
-                if resp.clicked() && !is_selected {
-                    state.set_ui_skin(skin);
-                    cfg.ui_skin = skin;
-                    *changed = true;
-                }
-
-                // The miniature shows the generation's own geometry: strip, content well and a
-                // control whose corner radius is the skin's.
-                let well = paint_preview_tile(
-                    ui,
-                    rect,
-                    t,
-                    palette.palette(),
-                    metrics,
-                    is_selected,
-                    resp.hovered(),
-                );
-                let painter = ui.painter();
-                let control_h = (well.height() - 10.0).clamp(6.0, 10.0);
-                let control = Rect::from_min_size(
-                    well.min + vec2(5.0, 5.0),
-                    vec2((well.width() * 0.5).max(18.0), control_h),
-                );
-                painter.rect_filled(
-                    control,
-                    egui::CornerRadius::same(metrics.control_radius.min(8)),
-                    palette.accent_ink.gamma_multiply(0.7),
-                );
-                let dot = Rect::from_center_size(
-                    pos2(control.right() + 8.0, control.center().y),
-                    vec2(8.0, 8.0),
-                );
-                if dot.right() < well.right() && dot.bottom() < well.bottom() {
-                    painter.rect_filled(
-                        dot,
-                        egui::CornerRadius::same(metrics.control_radius.min(4)),
-                        palette.sunken,
-                    );
-                }
-
-                resp.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
-                });
-                resp.on_hover_text(label)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-            }
-        });
-    });
-
-    widgets::hrule(ui);
-
-    // 4. Accent colour: a few presets plus the shared HSVA editor for anything custom.
-    let accent = crate::gui::theme::parse_accent(state.accent.as_deref());
-    let accent_editor_id = egui::Id::unique("settings-accent-editor");
-    render_setting_row(ui, loc.settings_accent_title, loc.settings_accent_desc, t, |ui| {
-        const PRESETS: [(&str, [u8; 3]); 6] = [
-            ("#2d81ff", [0x2d, 0x81, 0xff]),
-            ("#8b7bd8", [0x8b, 0x7b, 0xd8]),
-            ("#4fb3a0", [0x4f, 0xb3, 0xa0]),
-            ("#d9a04a", [0xd9, 0xa0, 0x4a]),
-            ("#e06a86", [0xe0, 0x6a, 0x86]),
-            ("#9aa0aa", [0x9a, 0xa0, 0xaa]),
-        ];
-        // The presets and the two buttons share one wrapped row: in a narrow settings panel the
-        // buttons drop to a second line instead of being clipped.
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
-            for (hex, rgb) in PRESETS {
-                let selected = accent == Some(rgb);
-                let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
-                ui.painter().circle_filled(
-                    rect.center(),
-                    9.0,
-                    Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
-                );
-                if selected {
-                    ui.painter().circle_stroke(rect.center(), 11.0, Stroke::new(2.0, t.ink_strong));
-                } else if resp.hovered() {
-                    ui.painter().circle_stroke(rect.center(), 11.0, t.hairline());
-                }
-                if resp.clicked() && !selected {
-                    state.set_accent(Some(hex.to_string()));
-                    cfg.accent = Some(hex.to_string());
-                    *changed = true;
-                }
-                resp.widget_info(|| {
-                    egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, hex)
-                });
-                resp.on_hover_text(hex);
-            }
-
-            let button_h = t.metrics().control_h;
-            if widgets::compact_button(ui, loc.settings_accent_custom, Kind::Secondary, button_h)
-                .clicked()
-            {
-                let open = ui.data(|d| d.get_temp::<bool>(accent_editor_id)).unwrap_or(false);
-                ui.data_mut(|d| d.insert_temp(accent_editor_id, !open));
-            }
-
-            if accent.is_some()
-                && widgets::compact_button(ui, loc.settings_btn_reset, Kind::Secondary, button_h)
-                    .clicked()
-            {
-                // Clearing the override brings back the palette accent. The editor closes with
-                // it, otherwise the next frame would write the old custom colour straight back.
-                state.set_accent(None);
-                cfg.accent = None;
-                ui.data_mut(|d| d.insert_temp(accent_editor_id, false));
+        for (thm, label) in themes {
+            // The preview comes from the live palette, so a Tokens change cannot
+            // desynchronize the swatches from the theme the user actually gets.
+            let palette = Tokens::of(thm, t.metrics().skin);
+            let is_selected = state.theme == thm;
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
+            if resp.clicked() && !is_selected {
+                state.set_theme(thm);
+                cfg.theme = thm;
                 *changed = true;
             }
-        });
-    });
 
-    if ui.data(|d| d.get_temp::<bool>(accent_editor_id)).unwrap_or(false) {
-        let mut rgba = accent
-            .map(|[r, g, b]| [r, g, b, 255])
-            .unwrap_or([0x2d, 0x81, 0xff, 255]);
-        crate::gui::components::color_picker::inline_color_editor(ui, &mut rgba, false, t, loc);
-        let rgb = [rgba[0], rgba[1], rgba[2]];
-        if accent != Some(rgb) {
-            let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
-            state.set_accent(Some(hex.clone()));
-            cfg.accent = Some(hex);
+            let well = paint_preview_tile(
+                ui,
+                rect,
+                t,
+                palette.palette(),
+                t.metrics(),
+                is_selected,
+                resp.hovered(),
+            );
+            // Two faint lines read as content rows inside the miniature window.
+            for row in 0..2 {
+                let y = well.top() + 7.0 + row as f32 * 7.0;
+                if y + 1.0 < well.bottom() {
+                    ui.painter().hline(
+                        egui::Rangef::new(well.left() + 5.0, well.right() - 5.0),
+                        y,
+                        Stroke::new(1.0, palette.line),
+                    );
+                }
+            }
+
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
+            });
+            resp.on_hover_text(label)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+    });
+}
+
+/// Skin generation row: preview tiles, mirroring the palette swatches above, so a third or
+/// fourth generation can be added as one more tile.
+fn render_skin_control(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    cfg: &mut crate::config::Settings,
+    changed: &mut bool,
+    t: &Tokens,
+    loc: &Strings,
+) {
+    let skins = [
+        (crate::config::UiSkin::Modern, loc.settings_skin_modern),
+        (crate::config::UiSkin::Classic, loc.settings_skin_classic),
+    ];
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        for (skin, label) in skins {
+            let metrics = Metrics::of(skin);
+            let palette = Tokens::of(state.theme, skin);
+            let is_selected = state.ui_skin == skin;
+            let (rect, resp) =
+                ui.allocate_exact_size(vec2(96.0, t.metrics().control_h), Sense::click());
+            if resp.clicked() && !is_selected {
+                state.set_ui_skin(skin);
+                cfg.ui_skin = skin;
+                *changed = true;
+            }
+
+            // The miniature shows the generation's own geometry: strip, content well and a
+            // control whose corner radius is the skin's.
+            let well = paint_preview_tile(
+                ui,
+                rect,
+                t,
+                palette.palette(),
+                metrics,
+                is_selected,
+                resp.hovered(),
+            );
+            let painter = ui.painter();
+            let control_h = (well.height() - 10.0).clamp(6.0, 10.0);
+            let control = Rect::from_min_size(
+                well.min + vec2(5.0, 5.0),
+                vec2((well.width() * 0.5).max(18.0), control_h),
+            );
+            painter.rect_filled(
+                control,
+                egui::CornerRadius::same(metrics.control_radius.min(8)),
+                palette.accent_ink.gamma_multiply(0.7),
+            );
+            let dot = Rect::from_center_size(
+                pos2(control.right() + 8.0, control.center().y),
+                vec2(8.0, 8.0),
+            );
+            if dot.right() < well.right() && dot.bottom() < well.bottom() {
+                painter.rect_filled(
+                    dot,
+                    egui::CornerRadius::same(metrics.control_radius.min(4)),
+                    palette.sunken,
+                );
+            }
+
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::RadioButton, true, is_selected, label)
+            });
+            resp.on_hover_text(label)
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+    });
+}
+
+/// Accent colour row: a few presets plus the shared HSVA editor for anything custom.
+fn render_accent_control(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    cfg: &mut crate::config::Settings,
+    changed: &mut bool,
+    t: &Tokens,
+    loc: &Strings,
+) {
+    let accent = crate::gui::theme::parse_accent(state.accent.as_deref());
+    let editor_id = accent_editor_id();
+
+    const PRESETS: [(&str, [u8; 3]); 6] = [
+        ("#2d81ff", [0x2d, 0x81, 0xff]),
+        ("#8b7bd8", [0x8b, 0x7b, 0xd8]),
+        ("#4fb3a0", [0x4f, 0xb3, 0xa0]),
+        ("#d9a04a", [0xd9, 0xa0, 0x4a]),
+        ("#e06a86", [0xe0, 0x6a, 0x86]),
+        ("#9aa0aa", [0x9a, 0xa0, 0xaa]),
+    ];
+    // The presets and the two buttons share one wrapped row: in a narrow settings panel the
+    // buttons drop to a second line instead of being clipped.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(6.0, 6.0);
+        for (hex, rgb) in PRESETS {
+            let selected = accent == Some(rgb);
+            let (rect, resp) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+            ui.painter().circle_filled(
+                rect.center(),
+                9.0,
+                Color32::from_rgb(rgb[0], rgb[1], rgb[2]),
+            );
+            if selected {
+                ui.painter().circle_stroke(rect.center(), 11.0, Stroke::new(2.0, t.ink_strong));
+            } else if resp.hovered() {
+                ui.painter().circle_stroke(rect.center(), 11.0, t.hairline());
+            }
+            if resp.clicked() && !selected {
+                state.set_accent(Some(hex.to_string()));
+                cfg.accent = Some(hex.to_string());
+                *changed = true;
+            }
+            resp.widget_info(|| {
+                egui::WidgetInfo::selected(egui::Role::RadioButton, true, selected, hex)
+            });
+            resp.on_hover_text(hex);
+        }
+
+        let button_h = t.metrics().control_h;
+        if widgets::compact_button(ui, loc.settings_accent_custom, Kind::Secondary, button_h)
+            .clicked()
+        {
+            let open = ui.data(|d| d.get_temp::<bool>(editor_id)).unwrap_or(false);
+            ui.data_mut(|d| d.insert_temp(editor_id, !open));
+        }
+
+        if accent.is_some()
+            && widgets::compact_button(ui, loc.settings_btn_reset, Kind::Secondary, button_h)
+                .clicked()
+        {
+            // Clearing the override brings back the palette accent. The editor closes with
+            // it, otherwise the next frame would write the old custom colour straight back.
+            state.set_accent(None);
+            cfg.accent = None;
+            ui.data_mut(|d| d.insert_temp(editor_id, false));
             *changed = true;
         }
-        ui.add_space(6.0);
+    });
+}
+
+/// The expanded accent editor, shown under the accent row while its CUSTOM button is on.
+fn render_accent_editor(
+    ui: &mut Ui,
+    state: &mut GuiState,
+    cfg: &mut crate::config::Settings,
+    changed: &mut bool,
+    t: &Tokens,
+    loc: &Strings,
+) {
+    if !ui.data(|d| d.get_temp::<bool>(accent_editor_id())).unwrap_or(false) {
+        return;
     }
+    let accent = crate::gui::theme::parse_accent(state.accent.as_deref());
+    let mut rgba = accent
+        .map(|[r, g, b]| [r, g, b, 255])
+        .unwrap_or([0x2d, 0x81, 0xff, 255]);
+    crate::gui::components::color_picker::inline_color_editor(ui, &mut rgba, false, t, loc);
+    let rgb = [rgba[0], rgba[1], rgba[2]];
+    if accent != Some(rgb) {
+        let hex = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+        state.set_accent(Some(hex.clone()));
+        cfg.accent = Some(hex);
+        *changed = true;
+    }
+    ui.add_space(6.0);
+}
+
+/// Installed-version row: the manual check button; the description carries the running version.
+fn render_update_check_control(ui: &mut Ui, state: &mut GuiState, loc: &Strings) {
+    let btn_label = if state.is_checking_update {
+        loc.settings_btn_checking_updates
+    } else {
+        loc.settings_btn_check_updates
+    };
+
+    let can_click = !state.is_checking_update && !state.is_downloading_update;
+    ui.add_enabled_ui(can_click, |ui| {
+        if widgets::button(ui, btn_label, Kind::Secondary, 0.0).clicked() {
+            state.check_for_updates(true);
+        }
+    });
 }
 
 /// Paints the chrome every appearance preview tile shares: the selection border, the page
@@ -829,63 +986,17 @@ fn paint_preview_tile(
 
 /// Installed-version subtitle of the updates row. The catalog supplies the product name and
 /// `{}`; the build version comes from `CARGO_PKG_VERSION`.
-fn updates_version_subtitle(loc: &crate::i18n::Strings) -> String {
+fn updates_version_subtitle(loc: &Strings) -> String {
     loc.settings_updates_version
         .replace("{}", env!("CARGO_PKG_VERSION"))
-}
-
-fn render_updates_content(
-    ui: &mut Ui,
-    state: &mut GuiState,
-    cfg: &mut crate::config::Settings,
-    changed: &mut bool,
-    t: &Tokens,
-    loc: &crate::i18n::Strings,
-) {
-    // 1. Check on Startup Toggle
-    render_setting_row(ui, loc.settings_updates_startup_title, loc.settings_updates_startup_desc, t, |ui| {
-        if widgets::toggle_switch(ui, &mut cfg.check_updates_on_startup).changed() {
-            *changed = true;
-        }
-    });
-
-    widgets::hrule(ui);
-
-    // 2. Automatic Updates Toggle
-    render_setting_row(ui, loc.settings_updates_auto_install_title, loc.settings_updates_auto_install_desc, t, |ui| {
-        if widgets::toggle_switch(ui, &mut cfg.auto_install_updates).changed() {
-            *changed = true;
-        }
-    });
-
-    widgets::hrule(ui);
-
-    // 3. Installed Version & Manual Check
-    let version_subtitle = updates_version_subtitle(loc);
-    render_setting_row(ui, loc.settings_updates_check_title, &version_subtitle, t, |ui| {
-        let btn_label = if state.is_checking_update {
-            loc.settings_btn_checking_updates
-        } else {
-            loc.settings_btn_check_updates
-        };
-
-        let can_click = !state.is_checking_update && !state.is_downloading_update;
-        ui.add_enabled_ui(can_click, |ui| {
-            if widgets::button(ui, btn_label, Kind::Secondary, 0.0).clicked() {
-                state.check_for_updates(true);
-            }
-        });
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_settings_tabs_rendering() {
-        let ctx = egui::Context::default();
-        theme::install_fonts(&ctx);
+    /// A GUI state with a daemon snapshot, so the page renders instead of the offline notice.
+    fn settings_state() -> GuiState {
         let mut state = GuiState::new();
         state.daemon_state = Some(crate::ipc::DaemonState {
             autorun_enabled: true,
@@ -905,51 +1016,174 @@ mod tests {
             pending_open_update_modal: false,
             pending_auto_start_update: false,
         });
-
-        // Test rendering across all 3 tabs
-        let all_tabs = [
-            SettingsTab::General,
-            SettingsTab::Appearance,
-            SettingsTab::Updates,
-        ];
-
-        for tab in all_tabs {
-            state.settings_tab = tab;
-            let mut out = ctx.run_ui(Default::default(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.set_width(900.0);
-                    render_settings_view(ui, &mut state);
-                });
-            });
-            out.textures_delta.clear();
-        }
-
-        // Test responsive compact layout (< 620px width)
-        let mut out_compact = ctx.run_ui(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.set_width(500.0);
-                render_settings_view(ui, &mut state);
-            });
-        });
-        out_compact.textures_delta.clear();
-
-        assert_eq!(state.settings_tab, SettingsTab::Updates);
-
-        // Verify General tab renders full card height without being clipped
-        state.settings_tab = SettingsTab::General;
-        let mut general_height = 0.0;
-        let mut out = ctx.run_ui(Default::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.set_width(900.0);
-                let initial_top = ui.cursor().top();
-                render_settings_view(ui, &mut state);
-                general_height = ui.cursor().top() - initial_top;
-            });
-        });
-        out.textures_delta.clear();
-        assert!(general_height > 250.0, "Settings content card should not be clipped; was {general_height}");
+        state
     }
 
+    /// Every text run the page painted, in paint order, with its top edge.
+    fn page_texts(
+        ctx: &egui::Context,
+        state: &mut GuiState,
+        size: egui::Vec2,
+    ) -> Vec<(String, f32)> {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), size)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| render_settings_view(ui, state));
+        });
+        output.textures_delta.clear();
+        let mut texts = Vec::new();
+        for clipped in &output.shapes {
+            collect_text(&clipped.shape, &mut texts);
+        }
+        texts
+    }
+
+    fn collect_text(shape: &egui::Shape, out: &mut Vec<(String, f32)>) {
+        match shape {
+            egui::Shape::Text(text) => out.push((text.galley.text().to_string(), text.pos.y)),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect_text(shape, out)),
+            _ => {}
+        }
+    }
+
+    fn text_index(texts: &[(String, f32)], needle: &str) -> Option<usize> {
+        texts.iter().position(|(text, _)| text == needle)
+    }
+
+    fn text_top(texts: &[(String, f32)], needle: &str) -> Option<f32> {
+        texts
+            .iter()
+            .find(|(text, _)| text == needle)
+            .map(|(_, top)| *top)
+    }
+
+    /// SETTINGS-BLOCKS: the page is one column of untitled blocks in a fixed order — the sections
+    /// are no longer tabs, so every block renders on the same page, and no block repeats its name
+    /// inside the card.
+    #[test]
+    fn test_settings_blocks_render_as_one_untitled_page() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = settings_state();
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+
+        let texts = page_texts(&ctx, &mut state, vec2(1000.0, 3000.0));
+
+        for row in SettingsRow::ALL {
+            let (title, _) = row.text(loc);
+            assert!(
+                text_index(&texts, title).is_some(),
+                "row {row:?} ({title:?}) was not painted"
+            );
+        }
+        for section in SETTINGS_SECTIONS {
+            let heading = section.heading(loc).to_uppercase();
+            assert!(
+                text_index(&texts, &heading).is_none(),
+                "block heading {heading:?} must not be painted inside its card"
+            );
+        }
+
+        // The blocks stack top to bottom: the first row of each block is the top edge of that
+        // block, and every row of the block sits between that edge and the next block's.
+        let tops: Vec<f32> = SETTINGS_SECTIONS
+            .iter()
+            .map(|section| {
+                let first = section.rows()[0];
+                text_top(&texts, first.text(loc).0)
+                    .unwrap_or_else(|| panic!("block {section:?} was not painted"))
+            })
+            .collect();
+        assert!(
+            tops.windows(2).all(|pair| pair[0] < pair[1]),
+            "blocks must follow the page order: {tops:?}"
+        );
+        for (index, section) in SETTINGS_SECTIONS.iter().enumerate() {
+            let bottom = tops.get(index + 1).copied().unwrap_or(f32::INFINITY);
+            for row in section.rows() {
+                let row_top = text_top(&texts, row.text(loc).0)
+                    .unwrap_or_else(|| panic!("row {row:?} was not painted"));
+                assert!(
+                    row_top >= tops[index] && row_top < bottom,
+                    "row {row:?} is outside block {section:?}"
+                );
+            }
+        }
+    }
+
+    /// SETTINGS-SEARCH: the field spanning the page keeps only the rows whose own text matches,
+    /// and a query naming a block keeps that whole block.
+    #[test]
+    fn test_settings_search_filters_the_blocks() {
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = settings_state();
+        let loc = crate::i18n::get(crate::i18n::Language::English);
+
+        // A substring of one description keeps exactly that row.
+        state.settings_search_query = "system login".to_string();
+        let texts = page_texts(&ctx, &mut state, vec2(1000.0, 3000.0));
+        assert!(text_index(&texts, loc.settings_autorun_title).is_some());
+        assert!(
+            text_index(&texts, loc.settings_theme_title).is_none(),
+            "a row outside the query must not be painted"
+        );
+        assert!(text_index(&texts, loc.settings_updates_startup_title).is_none());
+
+        // A block name still finds every row of that block, even though the card shows no title.
+        state.settings_search_query = loc.settings_section_appearance.to_string();
+        let texts = page_texts(&ctx, &mut state, vec2(1000.0, 3000.0));
+        assert!(text_index(&texts, loc.settings_theme_title).is_some());
+        assert!(text_index(&texts, loc.settings_skin_title).is_some());
+        assert!(text_index(&texts, loc.settings_autorun_title).is_none());
+        assert!(text_index(&texts, loc.settings_updates_startup_title).is_none());
+
+        // Nothing matches: the page reports it instead of showing empty blocks.
+        state.settings_search_query = "no such setting".to_string();
+        let texts = page_texts(&ctx, &mut state, vec2(1000.0, 3000.0));
+        assert!(text_index(&texts, loc.settings_search_empty).is_some());
+        for row in SettingsRow::ALL {
+            let (title, _) = row.text(loc);
+            assert!(
+                text_index(&texts, title).is_none(),
+                "row {row:?} must not survive a query that matches nothing"
+            );
+        }
+    }
+
+    /// The row table is the single source of truth for the search and the page: every row sits in
+    /// exactly one block and carries catalog text in both languages.
+    #[test]
+    fn test_every_row_sits_in_one_block_with_catalog_text() {
+        let rows: Vec<SettingsRow> = SETTINGS_SECTIONS
+            .iter()
+            .flat_map(|section| section.rows().iter().copied())
+            .collect();
+        assert_eq!(rows.len(), SettingsRow::ALL.len());
+        for row in SettingsRow::ALL {
+            assert_eq!(
+                rows.iter().filter(|candidate| **candidate == row).count(),
+                1,
+                "row {row:?} must appear in exactly one block"
+            );
+        }
+
+        for loc in [
+            crate::i18n::get(crate::i18n::Language::English),
+            crate::i18n::get(crate::i18n::Language::Russian),
+        ] {
+            for row in SettingsRow::ALL {
+                let (title, description) = row.text(loc);
+                assert!(!title.is_empty(), "row {row:?} has no title");
+                assert!(!description.is_empty(), "row {row:?} has no description");
+            }
+            for section in SETTINGS_SECTIONS {
+                assert!(!section.heading(loc).is_empty());
+            }
+        }
+    }
 
     /// U03-004: the updates-row subtitle is the catalog template with the real product name
     /// ("Synector", not "Process Handler"), and the language-picker descriptions come from
@@ -974,7 +1208,6 @@ mod tests {
         assert_ne!(en.settings_language_en_desc, ru.settings_language_en_desc);
         assert_ne!(en.settings_language_ru_desc, ru.settings_language_ru_desc);
     }
-
 
     /// U03-007: typing is not persisted; only an existing icon file with a supported extension
     /// is accepted on commit.

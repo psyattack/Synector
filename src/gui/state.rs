@@ -30,7 +30,7 @@ pub use self::modals::{
     ActionCatalogModalState, ActiveView, ConditionCatalogState, ConditionCatalogTarget,
     ElementCatalogModalState, ExpandedScriptEditorState, IfElseCatalogTarget,
     MacroEditorModalState, ProcessCategoryFilter, ProcessPickerTarget, ProcessSortColumn,
-    RuleSortMode, SettingsTab, TriggerCatalogState,
+    RuleSortMode, TriggerCatalogState,
 };
 pub use self::overlay_studio::{ColorPickerTarget, OverlayStudioState};
 
@@ -93,7 +93,8 @@ pub struct GuiState {
     pub(crate) group_full_presses: bool,
     pub(crate) undo_stack: Vec<Rule>,
     pub(crate) redo_stack: Vec<Rule>,
-    pub(crate) settings_tab: SettingsTab,
+    /// Query of the settings page search field: it filters the setting rows by their own text.
+    pub(crate) settings_search_query: String,
     pub(crate) active_test_overlays: std::collections::HashSet<String>,
     pub(crate) active_test_runs: std::collections::HashMap<String, Instant>,
     pub(crate) rule_sort_mode: RuleSortMode,
@@ -182,7 +183,7 @@ impl GuiState {
             group_full_presses: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            settings_tab: SettingsTab::General,
+            settings_search_query: String::new(),
             active_test_overlays: std::collections::HashSet::new(),
             active_test_runs: std::collections::HashMap::new(),
             rule_sort_mode: RuleSortMode::Default,

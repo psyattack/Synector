@@ -115,9 +115,11 @@ pub static STRINGS: Strings = Strings {
 
     // Settings View (settings_view.rs)
     settings_daemon_offline: "ФОНОВЫЙ ДЕМОН НЕ В СЕТИ",
-    settings_tab_general: "ОБЩИЕ",
-    settings_tab_appearance: "ВНЕШНИЙ ВИД",
-    settings_tab_updates: "ОБНОВЛЕНИЯ",
+    settings_search_placeholder: "ПОИСК ПО НАСТРОЙКАМ...",
+    settings_search_empty: "НИ ОДНА НАСТРОЙКА НЕ СОВПАЛА С ПОИСКОМ",
+    settings_section_general: "Общие",
+    settings_section_appearance: "Внешний вид",
+    settings_section_updates: "Обновления",
     settings_autorun_title: "Автозапуск с Windows",
     settings_autorun_desc: "Запускать фоновую службу Synector при входе в систему",
     settings_tray_icon_title: "Иконка в системном трее",

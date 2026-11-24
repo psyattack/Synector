@@ -101,14 +101,6 @@ pub struct ElementCatalogModalState {
     pub selected_category: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SettingsTab {
-    #[default]
-    General,
-    Appearance,
-    Updates,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum RuleSortMode {
     #[default]

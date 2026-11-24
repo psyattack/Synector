@@ -25,6 +25,7 @@ internals see [ARCHITECTURE.md](ARCHITECTURE.md).
   - [How do I create or change an overlay?](#how-do-i-create-or-change-an-overlay)
   - [How do I record and replay a macro?](#how-do-i-record-and-replay-a-macro)
 - [Interface](#interface)
+  - [Where do I find a setting?](#where-do-i-find-a-setting)
   - [How do I change the appearance?](#how-do-i-change-the-appearance)
 - [Rules and triggers](#rules-and-triggers)
   - [My rule does not fire](#my-rule-does-not-fire)
@@ -200,6 +201,16 @@ an optional preset stored in `library.json`. Playback uses hardware scan codes w
 humanized timing, so it also registers in DirectInput games.
 
 ## Interface
+
+### Where do I find a setting?
+
+The Settings page is one scrollable column of untitled blocks — general, appearance and update
+settings — with a search field across the top of the page. The field keeps only the rows whose title
+or description contains the query, case-insensitively, and a query that names a block (`appearance`,
+`updates`, `general`) keeps that whole block. A block left without matching rows disappears instead
+of leaving an empty frame, and a query that matches nothing says so in place of the blocks. The page
+scrolls with the wheel and keyboard and does not show a scrollbar. Every switch and picker saves as
+you change it: there is no Save button and no restart unless a row says otherwise.
 
 ### How do I change the appearance?
 

@@ -113,9 +113,11 @@ pub struct Strings {
 
     // Settings View (settings_view.rs)
     pub settings_daemon_offline: &'static str,
-    pub settings_tab_general: &'static str,
-    pub settings_tab_appearance: &'static str,
-    pub settings_tab_updates: &'static str,
+    pub settings_search_placeholder: &'static str,
+    pub settings_search_empty: &'static str,
+    pub settings_section_general: &'static str,
+    pub settings_section_appearance: &'static str,
+    pub settings_section_updates: &'static str,
     pub settings_autorun_title: &'static str,
     pub settings_autorun_desc: &'static str,
     pub settings_tray_icon_title: &'static str,
