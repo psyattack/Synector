@@ -33,6 +33,17 @@ use crate::config::{Settings, WindowState};
 /// and persisted at this rate, and `on_exit`/`Drop` always write the exact final geometry.
 const WINDOW_STATE_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How often the Windows palette is re-read while the settings ask the interface to follow it.
+/// The registry value changes a few times a day at most, so a probe per GUI frame (the window
+/// paints at 300 ms) would be pure overhead.
+const SYSTEM_THEME_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Whether this frame is due to re-read the Windows palette: only while the preference is on, and
+/// at most once per [`SYSTEM_THEME_POLL_INTERVAL`].
+fn system_theme_poll_due(follow_system_theme: bool, since_poll: std::time::Duration) -> bool {
+    follow_system_theme && since_poll >= SYSTEM_THEME_POLL_INTERVAL
+}
+
 /// Whether this frame must report a confirmed daemon outage once. Kept as a pure decision so the
 /// "log once, keep the window" contract is testable without a GUI.
 fn should_report_daemon_outage(
@@ -54,6 +65,8 @@ pub struct SynectorApp {
     /// Geometry that is already on disk; compared against to decide what needs a write.
     persisted_window_state: Option<WindowState>,
     last_window_persist: std::time::Instant,
+    /// When the Windows colour scheme was last read while the interface follows it.
+    last_system_theme_poll: std::time::Instant,
     startup_focused_frames: u8,
     /// Set after the shutdown flush ran, so `Drop` does not repeat it after `on_exit`.
     exit_flushed: bool,
@@ -69,19 +82,26 @@ impl SynectorApp {
         let mut state = GuiState::new();
         state.sync_with_daemon();
         let config = Settings::read();
+        // A window that follows the Windows colour scheme opens in the palette Windows is using
+        // right now, so the first frame never flashes the persisted fallback.
+        if state.follow_system_theme {
+            state.adopt_system_theme();
+        }
         let accent = theme::parse_accent(config.accent.as_deref());
-        theme::apply_theme(&cc.egui_ctx, config.theme, config.ui_skin, accent);
+        let theme = state.theme;
+        theme::apply_theme(&cc.egui_ctx, theme, config.ui_skin, accent);
         let last_window_state = config.window;
         Self {
             state,
             fonts_ready: false,
-            current_theme: Some(config.theme),
+            current_theme: Some(theme),
             current_skin: Some(config.ui_skin),
             current_accent: accent,
             persisted_window_state: last_window_state.clone(),
             last_window_state,
             // Persist the first change immediately instead of waiting out the first window.
             last_window_persist: std::time::Instant::now() - WINDOW_STATE_SAVE_INTERVAL,
+            last_system_theme_poll: std::time::Instant::now(),
             startup_focused_frames: 0,
             exit_flushed: false,
             daemon_outage_reported: false,
@@ -189,6 +209,20 @@ impl SynectorApp {
             }
         }
     }
+
+    /// Re-reads the Windows colour scheme while the interface follows it. A switch Windows made
+    /// is applied silently as the new effective palette; nothing is written to `settings.json`,
+    /// because only the preference and the explicit fallback live there.
+    fn poll_system_theme(&mut self) {
+        if !system_theme_poll_due(
+            self.state.follow_system_theme,
+            self.last_system_theme_poll.elapsed(),
+        ) {
+            return;
+        }
+        self.last_system_theme_poll = std::time::Instant::now();
+        self.state.adopt_system_theme();
+    }
 }
 
 impl App for SynectorApp {
@@ -199,6 +233,7 @@ impl App for SynectorApp {
             ctx.request_repaint();
             return;
         }
+        self.poll_system_theme();
         let accent = theme::parse_accent(self.state.accent.as_deref());
         if self.current_theme != Some(self.state.theme)
             || self.current_skin != Some(self.state.ui_skin)
@@ -523,5 +558,18 @@ mod tests {
             !should_report_daemon_outage(true, true, false),
             "a live daemon is not an outage"
         );
+    }
+
+    #[test]
+    fn test_the_windows_palette_is_probed_only_when_followed_and_throttled() {
+        assert!(
+            !system_theme_poll_due(false, std::time::Duration::from_secs(60)),
+            "an interface with its own palette must not read the Windows preference"
+        );
+        assert!(
+            !system_theme_poll_due(true, std::time::Duration::from_millis(500)),
+            "a probe per frame would be pure overhead: one a second is enough"
+        );
+        assert!(system_theme_poll_due(true, SYSTEM_THEME_POLL_INTERVAL));
     }
 }

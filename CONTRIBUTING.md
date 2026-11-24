@@ -73,7 +73,8 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Catalog modal shell (entry definition, chrome, filtering, lifecycle) | `src/gui/components/catalog_modal.rs`; per-kind tables and commit adapters stay in `src/gui/views/catalogs/` |
 | Shared GUI primitives (positional `{}` fill, drag-and-drop math/painters, modal header, HSVA colour editor, tag pills, charts) | `src/gui/components/text.rs`, `src/gui/components/dnd.rs`, `src/gui/components/modal.rs`, `src/gui/components/color_picker.rs`, `src/gui/components/chips.rs`, `src/gui/components/charts.rs` |
 | Studio preset picker shared by the overlay and macro studios | `src/gui/views/presets.rs` (each studio keeps its own modal shell, data source and load/delete/save effects) |
-| Localization | `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
+| Design tokens, palettes and skins | `src/gui/theme/` (facade `src/gui/theme.rs`; `tokens`, `skin`, `style`, `motion`, `paint`, `fonts`); the `AppTheme` type, its defaults and the Windows palette lookup live in `src/config/sections/settings.rs` |
+| Localization | `src/i18n.rs` (catalogs, `Language`, Windows UI-language detection), `src/i18n/strings.rs`, `src/i18n/en.rs`, `src/i18n/ru.rs` |
 | In-app guide | `src/gui/views/guide_modal.rs` |
 | CLI rule authoring | `src/cli/` (facade `src/cli.rs`); one daemon IPC round-trip adapter and the post-snapshot offline→daemon transition helper in `src/cli/target.rs` |
 | Process entry, runtime dispatch and argv vocabulary | `src/app/` (facade `src/app.rs`); cross-process flag spellings in `src/arg_spellings.rs` |

@@ -27,7 +27,7 @@ pub(super) const IDM_EXIT: usize = 1003;
 #[cfg(windows)]
 pub(super) unsafe fn show_tray_menu(hwnd: HWND) {
     let config = crate::config::Settings::read();
-    let is_dark = config.theme != crate::config::AppTheme::Light;
+    let is_dark = config.effective_theme() != crate::config::AppTheme::Light;
     apply_menu_theme(Some(hwnd), is_dark);
 
     let loc = crate::i18n::get(config.language);

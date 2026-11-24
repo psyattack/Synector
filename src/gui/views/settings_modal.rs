@@ -22,6 +22,7 @@ enum SettingsRow {
     DiskLogging,
     ConfigFolder,
     Language,
+    FollowSystemTheme,
     Theme,
     Skin,
     Accent,
@@ -33,7 +34,7 @@ enum SettingsRow {
 impl SettingsRow {
     /// Every row exactly once, for the page-order and catalog-text guards in the tests.
     #[cfg(test)]
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::Autorun,
         Self::TrayIcon,
         Self::HideTrayIcon,
@@ -41,6 +42,7 @@ impl SettingsRow {
         Self::DiskLogging,
         Self::ConfigFolder,
         Self::Language,
+        Self::FollowSystemTheme,
         Self::Theme,
         Self::Skin,
         Self::Accent,
@@ -75,6 +77,10 @@ impl SettingsRow {
                 loc.settings_config_folder_desc.to_string(),
             ),
             Self::Language => (loc.settings_language_title, loc.settings_language_desc.to_string()),
+            Self::FollowSystemTheme => (
+                loc.settings_theme_follow_title,
+                loc.settings_theme_follow_desc.to_string(),
+            ),
             Self::Theme => (loc.settings_theme_title, loc.settings_theme_desc.to_string()),
             Self::Skin => (loc.settings_skin_title, loc.settings_skin_desc.to_string()),
             Self::Accent => (loc.settings_accent_title, loc.settings_accent_desc.to_string()),
@@ -133,6 +139,7 @@ impl SettingsSection {
             ],
             Self::Appearance => &[
                 SettingsRow::Language,
+                SettingsRow::FollowSystemTheme,
                 SettingsRow::Theme,
                 SettingsRow::Skin,
                 SettingsRow::Accent,
@@ -511,6 +518,18 @@ fn render_row_control(ui: &mut Ui, row: SettingsRow, ctx: &mut RowContext<'_>) {
         SettingsRow::Language => {
             render_language_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.loc)
         }
+        SettingsRow::FollowSystemTheme => {
+            let mut follow = ctx.cfg.follow_system_theme;
+            if widgets::toggle_switch(ui, &mut follow).changed() {
+                ctx.state.set_follow_system_theme(follow);
+                ctx.cfg.follow_system_theme = follow;
+                // Whichever way the switch moves, the palette on screen becomes the explicit
+                // choice, so a later launch starts from what the user is looking at now instead
+                // of a stale fallback.
+                ctx.cfg.theme = ctx.state.theme;
+                ctx.changes.config = true;
+            }
+        }
         SettingsRow::Theme => {
             render_theme_control(ui, ctx.state, ctx.cfg, &mut ctx.changes.config, ctx.t, ctx.loc)
         }
@@ -767,7 +786,9 @@ fn render_language_control(
 
 /// Colour theme row as palette preview swatches: each tile is a miniature window — a thin accent
 /// strip over a content well — so the palette previews itself instead of carrying a caption. The
-/// name stays as the tooltip and as the accessibility label.
+/// name stays as the tooltip and as the accessibility label. While the interface follows the
+/// Windows colour scheme, the selected tile is the palette Windows dictates and picking the other
+/// one takes over, which turns the follow switch off.
 fn render_theme_control(
     ui: &mut Ui,
     state: &mut GuiState,
@@ -794,6 +815,9 @@ fn render_theme_control(
             if resp.clicked() && !is_selected {
                 state.set_theme(thm);
                 cfg.theme = thm;
+                // An explicit palette is a choice of its own, so it replaces the Windows one.
+                state.set_follow_system_theme(false);
+                cfg.follow_system_theme = false;
                 *changed = true;
             }
 

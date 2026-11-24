@@ -23,6 +23,25 @@ fn test_language_serde_roundtrip() {
     assert_eq!(parsed_ru, Language::Russian);
 }
 
+/// Automatic detection is limited to the shipped catalogs: the Russian Windows UI language picks
+/// the Russian catalog and every other UI language picks English. The `LANGID` arrives with the
+/// sublanguage bits set, so they are masked off before the mapping.
+#[test]
+fn test_system_language_maps_windows_primary_ids() {
+    assert_eq!(Language::from_primary_id(0x19), Language::Russian);
+    assert_eq!(Language::from_primary_id(0x09), Language::English);
+    assert_eq!(
+        Language::from_primary_id(0x07),
+        Language::English,
+        "a German Windows UI has no catalog of its own and falls back to English"
+    );
+    assert_eq!(
+        Language::from_primary_id(0x22),
+        Language::English,
+        "Ukrainian is not a shipped catalog either"
+    );
+}
+
 #[test]
 fn test_get_language_catalogs() {
     let en = get(Language::English);

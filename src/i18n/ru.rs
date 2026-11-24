@@ -158,6 +158,8 @@ pub static STRINGS: Strings = Strings {
     settings_tray_icon_placeholder: "C:\\Путь\\К\\иконке.ico или файлу с иконкой",
     settings_theme_dark: "Тёмная",
     settings_theme_light: "Светлая",
+    settings_theme_follow_title: "Тема как в Windows",
+    settings_theme_follow_desc: "Переключать светлую и тёмную тему вслед за Windows; выбор палитры отключает синхронизацию",
     settings_skin_title: "Скин интерфейса",
     settings_skin_desc: "Выберите стиль интерфейса",
     settings_skin_modern: "Современный",

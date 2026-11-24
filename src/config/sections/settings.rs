@@ -1,7 +1,8 @@
 //! `settings.json`: rarely written host preferences.
 //!
-//! Window geometry, tray, disk logging, language, theme and update behaviour. Reads are served
-//! through the process cache; every successful save invalidates it.
+//! Window geometry, tray, disk logging, language, theme (including following the Windows colour
+//! scheme) and update behaviour. Reads are served through the process cache; every successful
+//! save invalidates it.
 
 use std::path::{Path, PathBuf};
 
@@ -58,6 +59,53 @@ pub enum AppTheme {
     Light,
 }
 
+/// Subkey Windows stores the personalization values in.
+const PERSONALIZE_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize";
+/// `AppsUseLightTheme`: `1` when Windows apps use the light palette, `0` the dark one.
+const APPS_USE_LIGHT_THEME: &str = "AppsUseLightTheme";
+
+/// Maps the raw `AppsUseLightTheme` value onto a palette. Anything but `0`/`1` is not a preference
+/// this build understands, so the caller keeps the palette it already renders with.
+fn palette_from_value(value: Option<u32>) -> Option<AppTheme> {
+    match value {
+        Some(0) => Some(AppTheme::Dark),
+        Some(1) => Some(AppTheme::Light),
+        _ => None,
+    }
+}
+
+fn apps_use_light_theme() -> Option<u32> {
+    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+    let subkey = windows::core::HSTRING::from(PERSONALIZE_KEY);
+    let value = windows::core::HSTRING::from(APPS_USE_LIGHT_THEME);
+    let mut data: u32 = 0;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::PCWSTR(subkey.as_ptr()),
+            windows::core::PCWSTR(value.as_ptr()),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut data as *mut u32 as *mut std::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    (status == ERROR_SUCCESS).then_some(data)
+}
+
+impl AppTheme {
+    /// The palette Windows uses for its own applications, or `None` when the preference cannot be
+    /// read (a locked-down key, a value of an unexpected type). While `follow_system_theme` is on,
+    /// the GUI renders with it and the daemon shades the tray menu with it; a `None` keeps the
+    /// configured palette.
+    pub fn system() -> Option<Self> {
+        palette_from_value(apps_use_light_theme())
+    }
+}
+
 /// The visual generation of the interface: its geometry, density, strokes and type voice.
 ///
 /// Independent of [`AppTheme`]: switching the skin never changes the palette and switching the
@@ -77,7 +125,7 @@ pub enum UiSkin {
 // ---------------------------------------------------------------------------
 
 /// Rarely written host preferences: window geometry, tray, disk logging, language, theme,
-/// skin and update behaviour.
+/// skin, the Windows colour-scheme sync and update behaviour.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     #[serde(default = "default_version")]
@@ -102,6 +150,11 @@ pub struct Settings {
     pub auto_install_updates: bool,
     #[serde(default)]
     pub theme: AppTheme,
+    /// Render the palette Windows uses for its own apps instead of `theme`, and keep following it
+    /// while the GUI runs. A manual palette choice turns the preference off, so `theme` stays the
+    /// explicit fallback.
+    #[serde(default)]
+    pub follow_system_theme: bool,
     #[serde(default)]
     pub ui_skin: UiSkin,
     /// Custom accent colour as #RRGGBB; absent means the palette's default accent.
@@ -122,6 +175,7 @@ impl Default for Settings {
             check_updates_on_startup: true,
             auto_install_updates: false,
             theme: AppTheme::Dark,
+            follow_system_theme: false,
             ui_skin: UiSkin::default(),
             accent: None,
         }
@@ -173,6 +227,17 @@ impl Settings {
             ws.sanitize();
         }
         Some(settings)
+    }
+
+    /// The palette the app's own surfaces render with: the Windows colour scheme while
+    /// `follow_system_theme` is on, otherwise the configured palette. A machine where the
+    /// preference cannot be read keeps the configured palette.
+    pub fn effective_theme(&self) -> AppTheme {
+        if self.follow_system_theme {
+            AppTheme::system().unwrap_or(self.theme)
+        } else {
+            self.theme
+        }
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -373,6 +438,50 @@ mod tests {
         assert!(
             decoded.log_to_disk,
             "a section written before the field existed must keep logging to disk"
+        );
+    }
+
+    #[test]
+    fn follow_system_theme_defaults_to_off_for_an_older_section() {
+        let decoded: Settings =
+            serde_json::from_str(r#"{"version":1,"theme":"light"}"#).expect("settings decode");
+        assert!(
+            !decoded.follow_system_theme,
+            "an existing section keeps its explicit palette instead of adopting the Windows one"
+        );
+    }
+
+    #[test]
+    fn only_the_two_windows_values_map_onto_a_palette() {
+        assert_eq!(palette_from_value(Some(0)), Some(AppTheme::Dark));
+        assert_eq!(palette_from_value(Some(1)), Some(AppTheme::Light));
+        assert_eq!(
+            palette_from_value(None),
+            None,
+            "a missing value must leave the configured palette alone"
+        );
+        assert_eq!(
+            palette_from_value(Some(2)),
+            None,
+            "an unknown value is not a preference this build understands"
+        );
+    }
+
+    /// The effective palette is the configured one unless the section asks to follow Windows; the
+    /// Windows side comes from `AppTheme::system`, so the assertion accepts an unreadable value.
+    #[test]
+    fn effective_theme_follows_windows_only_when_the_switch_is_on() {
+        let mut settings = Settings {
+            theme: AppTheme::Light,
+            ..Default::default()
+        };
+        assert_eq!(settings.effective_theme(), AppTheme::Light);
+
+        settings.follow_system_theme = true;
+        assert_eq!(
+            settings.effective_theme(),
+            AppTheme::system().unwrap_or(AppTheme::Light),
+            "while following Windows, the Windows palette is the effective one"
         );
     }
 

@@ -117,7 +117,7 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/validation.rs` | Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path |
 | `src/cli/` | Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection in `src/cli/target.rs`, which also owns the one IPC round-trip adapter behind the command-specific `*_via_daemon` functions and the one post-snapshot offline→daemon transition helper (`src/cli.rs` is the facade) |
 | `src/config/` | Split configuration persistence: storage policy, caches and the four section modules (`src/config.rs` is the facade) |
-| `src/i18n/` | Locale registry, the flat `Strings` declaration (`src/i18n/strings.rs`) and the English/Russian string catalogs |
+| `src/i18n/` | Locale registry and the Windows UI-language detection (`src/i18n.rs`), the flat `Strings` declaration (`src/i18n/strings.rs`) and the English/Russian string catalogs |
 | `src/autorun.rs` | Task Scheduler autostart registration |
 | `src/updater/` | GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/`.old` executable cleanup (`src/updater.rs` is the facade over `release`, `install_mode`, `portable`, `install`, `apply`, `temp` and `util`) |
 | `src/sharing/` | `SYN1:` Brotli + Base64 share codes split by stage (`format`, `payload`, `encode`, `decode`, `import`, `assets`; `src/sharing.rs` is the facade): SHA-256 prefix, library dependency bundling, bounded decode |
@@ -153,6 +153,20 @@ A user accent (`settings.accent`) re-tints `Palette::accent`, derives a readable
 it and tints the selection background; an accent change is applied at once instead of fading,
 because a fade would chase the colour picker's drag. Omitting the value keeps the palette's own
 accent, and the Settings reset button clears the override.
+
+Windows can decide two things here: the interface language once, and the palette continuously if
+asked to. The first launch adopts the Windows UI language (`Language::system` from
+`GetUserDefaultUILanguage`, mapped onto the shipped catalogs: Russian for `LANG_RUSSIAN`, English for
+everything else) and persists it with the section it materializes; every later launch keeps the
+persisted choice. The palette stays the user's unless `follow_system_theme` is on (it is off by
+default): the GUI then renders the palette Windows applies to its own apps and re-reads it at most
+once a second, so a switch made in Windows is picked up without a restart. That palette comes from
+`AppTheme::system` (`AppsUseLightTheme` under `HKCU\…\Themes\Personalize`), the same lookup the
+daemon uses to shade the tray menu, and it is the palette `Settings::effective_theme` reports; a
+missing or unreadable value keeps the configured `theme`. Picking a palette by hand turns the switch
+off, and the switch itself stores the palette currently on screen as `theme` — that field is both the
+explicit fallback and the effective palette. Neither the adopted palette nor the switch raises the
+theme toast: automatic switching is not a user edit and writes nothing to disk.
 
 Motion has two owners: the skin sets the durations, and `theme::motion` asks Windows whether client
 area animations are enabled (`SPI_GETCLIENTAREAANIMATION`, cached for the process). When the system
@@ -266,7 +280,9 @@ downgrade it. A section that fails to parse is moved aside as `<name>.corrupt-<t
 before defaults take over; if the file cannot be moved aside, writes to that section are refused
 until it is moved or repaired by hand. First-run materialization creates only the section files
 that are missing and writes each one from the state already loaded, so an existing `runtime.json`
-keeps its counters even when another section has to be created or quarantined.
+keeps its counters even when another section has to be created or quarantined. A first run — no
+`settings.json` yet — also adopts the Windows UI language before the section is written; from then
+on the persisted `language` is the user's choice and is never re-detected.
 
 Rule-level strictness is separate from section parsing. `rules.json` entries are checked with
 `validate_rule_keys` before deserialization: a rule carrying an unknown key is logged with its rule

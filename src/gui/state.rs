@@ -74,6 +74,9 @@ pub struct GuiState {
     pub(crate) last_element_catalog: Option<ElementCatalogModalState>,
     pub(crate) language: crate::i18n::Language,
     pub(crate) theme: crate::config::AppTheme,
+    /// Whether the palette follows the Windows colour scheme; `theme` is then the effective
+    /// palette and the persisted fallback at once.
+    pub(crate) follow_system_theme: bool,
     pub(crate) ui_skin: crate::config::UiSkin,
     pub(crate) accent: Option<String>,
     pub(crate) toast: Option<(String, Instant)>,
@@ -175,6 +178,7 @@ impl GuiState {
             last_element_catalog: None,
             language: settings.language,
             theme: settings.theme,
+            follow_system_theme: settings.follow_system_theme,
             ui_skin: settings.ui_skin,
             accent: settings.accent,
             toast: None,
@@ -245,6 +249,25 @@ impl GuiState {
         }
     }
 
+    /// Turns the "follow the Windows colour scheme" preference on or off. Turning it on adopts the
+    /// palette Windows uses right now; turning it off keeps the palette on screen, which the
+    /// settings row then stores as the explicit choice.
+    pub fn set_follow_system_theme(&mut self, follow: bool) {
+        self.follow_system_theme = follow;
+        if follow {
+            self.adopt_system_theme();
+        }
+    }
+
+    /// Renders with the palette Windows uses for its own apps. An unreadable preference keeps the
+    /// current palette, and the switch stays silent: nobody clicked a palette, so there is no
+    /// toast and nothing is persisted.
+    pub(crate) fn adopt_system_theme(&mut self) {
+        if let Some(system) = crate::config::AppTheme::system() {
+            self.theme = system;
+        }
+    }
+
     /// Switches the visual generation. The palette is untouched: the two axes are independent.
     pub fn set_ui_skin(&mut self, skin: crate::config::UiSkin) {
         self.ui_skin = skin;
@@ -267,5 +290,43 @@ impl GuiState {
             .as_ref()
             .map(|s| !s.active_rule_executions.is_empty())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Turning the Windows sync on adopts the palette Windows reports and never raises the
+    /// user-facing theme toast; turning it off leaves the palette on screen untouched, because
+    /// the settings row stores that palette as the explicit choice.
+    #[test]
+    fn follow_system_theme_adopts_and_keeps_the_windows_palette() {
+        let mut state = GuiState::new();
+        state.theme = crate::config::AppTheme::Dark;
+        state.toast = None;
+
+        state.set_follow_system_theme(true);
+        assert!(state.follow_system_theme);
+        match crate::config::AppTheme::system() {
+            Some(system) => assert_eq!(state.theme, system),
+            None => assert_eq!(
+                state.theme,
+                crate::config::AppTheme::Dark,
+                "an unreadable Windows preference keeps the current palette"
+            ),
+        }
+        assert!(
+            state.toast.is_none(),
+            "an automatic palette switch is not a user edit"
+        );
+
+        let on_screen = state.theme;
+        state.set_follow_system_theme(false);
+        assert!(!state.follow_system_theme);
+        assert_eq!(
+            state.theme, on_screen,
+            "stopping the sync must not change the palette the user is looking at"
+        );
     }
 }

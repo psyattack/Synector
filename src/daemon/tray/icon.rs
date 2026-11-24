@@ -304,7 +304,7 @@ impl TrayManager {
             TRAY_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
 
             let config = crate::config::Settings::read();
-            let is_dark = config.theme != crate::config::AppTheme::Light;
+            let is_dark = config.effective_theme() != crate::config::AppTheme::Light;
             apply_menu_theme(Some(hwnd), is_dark);
 
             if !hide_tray_icon {

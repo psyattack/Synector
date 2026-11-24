@@ -158,6 +158,8 @@ pub static STRINGS: Strings = Strings {
     settings_tray_icon_placeholder: "C:\\Path\\To\\icon.ico or executable with icon",
     settings_theme_dark: "Dark",
     settings_theme_light: "Light",
+    settings_theme_follow_title: "Follow Windows Theme",
+    settings_theme_follow_desc: "Switch between light and dark with Windows; picking a palette turns this off",
     settings_skin_title: "Interface skin",
     settings_skin_desc: "Choose the interface style",
     settings_skin_modern: "Modern",

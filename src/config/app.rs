@@ -40,6 +40,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub theme: AppTheme,
     #[serde(default)]
+    pub follow_system_theme: bool,
+    #[serde(default)]
     pub ui_skin: UiSkin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
@@ -67,6 +69,7 @@ impl Default for AppConfig {
             check_updates_on_startup: true,
             auto_install_updates: false,
             theme: AppTheme::Dark,
+            follow_system_theme: false,
             ui_skin: UiSkin::default(),
             accent: None,
             rules: Vec::new(),
@@ -109,8 +112,8 @@ impl AppConfig {
         Self::config_dir().join("logs")
     }
 
-    /// Daemon-side load: materialises missing section files and performs the
-    /// first-run autostart registration.
+    /// Daemon-side load: materialises missing section files and performs the one-shot first-run
+    /// initialisation (the Windows UI language and the autostart registration).
     pub fn load() -> Self {
         Self::load_from(&Self::config_dir())
     }
@@ -122,11 +125,32 @@ impl AppConfig {
     /// defaults on a `settings.json`-only first run would zero counters that are already
     /// applied in memory, so a missing or quarantined settings file never touches it.
     fn load_from(dir: &Path) -> Self {
+        Self::load_from_with(dir, crate::i18n::Language::system)
+    }
+
+    /// [`Self::load_from`] with the language a first run adopts as a parameter: production passes
+    /// [`crate::i18n::Language::system`], while tests pass a fixed language so the one-shot
+    /// adoption is verifiable without depending on the host's UI language.
+    fn load_from_with(
+        dir: &Path,
+        first_run_language: impl FnOnce() -> crate::i18n::Language,
+    ) -> Self {
         clean_stale_temp_files(dir);
 
         let settings_path = Settings::path_in(dir);
         let first_run = !settings_path.exists();
-        let config = Self::read_from(dir);
+        let mut config = Self::read_from(dir);
+
+        // First launch: no section records a language choice yet, so the Windows UI language is
+        // adopted once, like the autostart registration below. It is persisted together with the
+        // settings section materialized further down; every later launch keeps the user's choice.
+        if first_run {
+            config.language = first_run_language();
+            crate::logging::info(
+                "CONFIG",
+                "First run: adopting the Windows interface language",
+            );
+        }
 
         // Re-check after the read: a corrupt section was moved aside by then, and the fresh
         // default file still has to be materialised.
@@ -180,6 +204,7 @@ impl AppConfig {
             check_updates_on_startup: settings.check_updates_on_startup,
             auto_install_updates: settings.auto_install_updates,
             theme: settings.theme,
+            follow_system_theme: settings.follow_system_theme,
             ui_skin: settings.ui_skin,
             accent: settings.accent,
             rules,
@@ -201,6 +226,7 @@ impl AppConfig {
             check_updates_on_startup: self.check_updates_on_startup,
             auto_install_updates: self.auto_install_updates,
             theme: self.theme,
+            follow_system_theme: self.follow_system_theme,
             ui_skin: self.ui_skin,
             accent: self.accent.clone(),
         }
@@ -218,6 +244,7 @@ impl AppConfig {
         self.check_updates_on_startup = settings.check_updates_on_startup;
         self.auto_install_updates = settings.auto_install_updates;
         self.theme = settings.theme;
+        self.follow_system_theme = settings.follow_system_theme;
         self.ui_skin = settings.ui_skin;
         self.accent = settings.accent;
     }
@@ -382,6 +409,7 @@ mod tests {
             check_updates_on_startup: false,
             auto_install_updates: true,
             theme: AppTheme::Light,
+            follow_system_theme: true,
             ui_skin: UiSkin::Modern,
             accent: Some("#2d81ff".to_string()),
         };
@@ -413,7 +441,7 @@ mod tests {
         );
         runtime.save_to(&dir).expect("save runtime");
 
-        let config = AppConfig::load_from(&dir);
+        let config = AppConfig::load_from_with(&dir, || crate::i18n::Language::English);
         assert_eq!(config.rules.len(), 1);
         assert_eq!(config.rules[0].execution_count, 9);
         assert!(
@@ -452,11 +480,34 @@ mod tests {
         let foreign = dir.join("notes.tmp");
         fs::write(&foreign, "keep me").expect("write foreign file");
 
-        AppConfig::load_from(&dir);
+        AppConfig::load_from_with(&dir, || crate::i18n::Language::English);
 
         assert!(!stale.exists(), "a stale section temp file must be removed");
         assert!(fresh.exists(), "a fresh temp file may belong to a live writer");
         assert!(foreign.exists(), "unrelated files must not be touched");
+    }
+
+    /// A first run adopts the supplied system language and persists it with the section it
+    /// materializes. Once `settings.json` exists the persisted choice wins, because the detection
+    /// is a one-shot initialization like the autostart registration — never a re-detection.
+    #[test]
+    fn first_run_adopts_the_system_language_once() {
+        let dir = temp_dir("first-run-language");
+
+        let config = AppConfig::load_from_with(&dir, || crate::i18n::Language::Russian);
+        assert_eq!(config.language, crate::i18n::Language::Russian);
+        assert_eq!(
+            Settings::read_from(&dir).language,
+            crate::i18n::Language::Russian,
+            "the adopted language must be persisted with the created settings section"
+        );
+
+        let config = AppConfig::load_from_with(&dir, || crate::i18n::Language::English);
+        assert_eq!(
+            config.language,
+            crate::i18n::Language::Russian,
+            "an existing settings section must keep the recorded choice"
+        );
     }
 
     #[test]

@@ -89,7 +89,10 @@ or that relies on ETW, may not fire.
 
 The daemon registers a Task Scheduler autostart entry on first launch. It can be disabled in
 Settings. The entry is separate from the installer: uninstalling removes it. First launch always
-creates `%LOCALAPPDATA%\Synector\` with the configuration files and logs.
+creates `%LOCALAPPDATA%\Synector\` with the configuration files and logs, and it is also the one
+launch that picks the interface language from Windows: a Russian Windows UI opens Synector in
+Russian, every other UI language in English. The choice is stored in `settings.json` and is never
+re-detected afterwards — change it in **Settings → Appearance**.
 
 ### How do updates work?
 
@@ -244,14 +247,18 @@ every match the result counted.
 
 ### How do I change the appearance?
 
-**Settings → Appearance** holds three independent controls. The palette swatches switch between the
-**Dark** and **Light** themes — only colours change. The **skin tiles** choose the interface
+**Settings → Appearance** holds three independent controls — palette, skin generation and accent —
+plus a switch that lets Windows pick the palette. The palette swatches switch between the
+**Dark** and **Light** themes — only colours change. *Follow Windows Theme* makes the palette
+follow the Windows light/dark setting instead: it is applied when Synector starts and while it
+runs, so a switch made in Windows is picked up without a restart. Picking a swatch by hand turns the
+switch off and freezes that palette as your choice. The **skin tiles** choose the interface
 generation: the modern look (rounded, layered surfaces, lifted filter cells) or the
 original studio one (hard edges, hairline rules, square chrome); the palette stays whatever you
 picked. **Accent colour** offers a few presets and a custom colour picker for selection, focus rings
-and active controls; **Reset** clears the custom accent back to the palette's own. All three choices
-are stored in `settings.json` as `theme`, `ui_skin` and `accent` (omitted while no custom accent is
-set) and apply immediately, without a restart.
+and active controls; **Reset** clears the custom accent back to the palette's own. All choices
+are stored in `settings.json` as `theme`, `follow_system_theme`, `ui_skin` and `accent` (omitted
+while no custom accent is set) and apply immediately, without a restart.
 
 ## Rules and triggers
 

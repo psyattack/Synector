@@ -157,6 +157,8 @@ pub struct Strings {
     pub settings_tray_icon_placeholder: &'static str,
     pub settings_theme_dark: &'static str,
     pub settings_theme_light: &'static str,
+    pub settings_theme_follow_title: &'static str,
+    pub settings_theme_follow_desc: &'static str,
     pub settings_skin_title: &'static str,
     pub settings_skin_desc: &'static str,
     pub settings_skin_modern: &'static str,
