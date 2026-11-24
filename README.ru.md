@@ -31,13 +31,7 @@
 > [!WARNING]
 > Synector напрямую взаимодействует с системными процессами Windows и административными API. Разработчики не несут ответственности за любые ошибки, в том числе вызванные пользователем, как указано в лицензии.
 
-<p align="center">
-  <img src="assets/screenshots/rules.png" alt="Список правил Synector" width="49%">
-  <img src="assets/screenshots/overlay-studio.png" alt="Overlay Studio в Synector" width="49%"><br>
-  <img src="assets/screenshots/macro-studio.png" alt="Macro Studio в Synector" width="49%">
-  <img src="assets/screenshots/analytics.png" alt="Аналитика Synector" width="49%">
-</p>
-<p align="center"><sub>Правила · Overlay Studio · Macro Studio · Аналитика</sub></p>
+https://github.com/user-attachments/assets/841aed68-96a6-44d4-8f72-aa428c25e190
 
 ## Содержание
 
