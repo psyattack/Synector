@@ -111,6 +111,27 @@ instance has exited.</p>
   ]
 }</pre></div>
 <p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Run cleanup when a game exits</h2><a id="run-cleanup-when-a-game-exits" class="anchor" aria-label="Permalink: Run cleanup when a game exits" href="#run-cleanup-when-a-game-exits"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A process trigger fires the same action pipeline on the lifecycle event selected by <code>event</code>. With
+<code>"exited"</code> the rule runs after the game closes; pre-conditions, cooldown and quota apply exactly as
+they do on launch.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_closed_cleanup<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Clean up after the game<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"match_mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>exact<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"event"</span>: <span class="pl-s"><span class="pl-pds">"</span>exited<span class="pl-pds">"</span></span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Game closed<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Session ended<span class="pl-pds">"</span></span>
+    }
+  ]
+}</pre></div>
 <div class="markdown-heading"><h2 class="heading-element">Free memory on a hotkey</h2><a id="free-memory-on-a-hotkey" class="anchor" aria-label="Permalink: Free memory on a hotkey" href="#free-memory-on-a-hotkey"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
 <p>Trims the working set of one process. A cooldown prevents repeated trimming while the hotkey is
 held.</p>
@@ -433,8 +454,9 @@ the process does not appear within 60 seconds; use <code>"continue"</code> to ru
 <li>A <strong>toggle hotkey</strong> uses <code>hold_mode: true</code> to repeat the pipeline while held, or
 <code>repeat_while_held: true</code> without hold mode to loop until pressed again.</li>
 <li>
-<strong>On-exit actions</strong> belong to <code>on_exit_actions</code>; they run after the pipeline, including when a
-bound companion is cleaned up.</li>
+<strong>A process trigger</strong> fires its one action pipeline on <code>event: "started"</code> (the default) or
+<code>event: "exited"</code>; <code>single_instance</code> makes the start run fire for the first instance and the exit
+run for the last one. <code>close_on_exit</code> companions bind only to a start-triggered run.</li>
 <li>
 <strong>Runtime counters</strong> (<code>execution_count</code>, <code>last_executed_at</code>, the custom quota anchor) are owned by
 <code>runtime.json</code>; values in a rule file are ignored when an existing rule is updated.</li>
@@ -465,6 +487,7 @@ alive.</li>
 <p class="docs-toc-title">On this page</p>
 <ul>
 <li><a href="#companion-process-bound-to-a-game">Companion process bound to a game</a></li>
+<li><a href="#run-cleanup-when-a-game-exits">Run cleanup when a game exits</a></li>
 <li><a href="#free-memory-on-a-hotkey">Free memory on a hotkey</a></li>
 <li><a href="#webhook-trigger-with-an-hourly-quota">Webhook trigger with an hourly quota</a></li>
 <li><a href="#archive-a-folder-when-a-new-file-arrives">Archive a folder when a new file arrives</a></li>

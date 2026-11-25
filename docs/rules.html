@@ -192,9 +192,9 @@ the same load with the per-rule validator the GUI Save and apply paths use: a ru
 values (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
 likewise skipped alone with its id and errors, so neither check drops a rule that would otherwise
 be accepted. There is no migration: update the file. The removed fields are <code>schedule.delay_sec</code>,
-the <code>system</code> trigger's <code>idle_duration_sec</code> and the <code>resource</code> condition's <code>duration_sec</code>. The
-<code>resource</code> trigger keeps its own <code>duration_sec</code> (default 5 s), and the <code>event</code> condition keeps a
-rule-authored <code>idle_duration_sec</code>.</p>
+the <code>system</code> trigger's <code>idle_duration_sec</code>, the <code>resource</code> condition's <code>duration_sec</code> and the
+rule-level <code>on_exit_actions</code> pipeline. The <code>resource</code> trigger keeps its own <code>duration_sec</code>
+(default 5 s), and the <code>event</code> condition keeps a rule-authored <code>idle_duration_sec</code>.</p>
 <p>Minimal example:</p>
 <div class="highlight highlight-source-json"><pre>{
   <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_open_notepad<span class="pl-pds">"</span></span>,
@@ -222,6 +222,25 @@ quote is escaped as <code>\"</code> or <code>\"\"</code>. Audio actions address 
 <code>audio_format.device_name</code> must match an active endpoint, and <code>default_device</code> requires the
 AudioDeviceCmdlets PowerShell module — a missing module or device is an action error, not a silent
 no-op.</p>
+<div class="markdown-heading"><h2 class="heading-element">Process trigger events</h2><a id="process-trigger-events" class="anchor" aria-label="Permalink: Process trigger events" href="#process-trigger-events"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A <code>process</code> trigger fires the rule's one action pipeline on the lifecycle event named by <code>event</code>:</p>
+<ul>
+<li><code>"started"</code> (the default) — the target process launches;</li>
+<li><code>"exited"</code> — the target process closes.</li>
+</ul>
+<p>Both choices run the same ordered <code>actions</code> pipeline with the same pre-conditions, cooldown and
+quota. <code>single_instance: true</code> fires the start event for the first matching instance and the exit
+event for the last one. <code>close_on_exit</code> on a <code>start_process</code> action or an <code>overlay</code> action binds the
+companion to the triggering process and is only available when the trigger fires on start; an
+exit-triggered run cannot bind a satellite to a process that is already gone.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_closed<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Clean up after the game<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process<span class="pl-pds">"</span></span>, <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span>, <span class="pl-ent">"event"</span>: <span class="pl-s"><span class="pl-pds">"</span>exited<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"actions"</span>: [
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Game<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Session ended<span class="pl-pds">"</span></span> }
+  ]
+}</pre></div>
 <div class="markdown-heading"><h2 class="heading-element">Quotas</h2><a id="quotas" class="anchor" aria-label="Permalink: Quotas" href="#quotas"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
 <p>A quota that resets on its own sets <code>quota_period</code>:</p>
 <div class="highlight highlight-source-json"><pre>{
@@ -477,6 +496,7 @@ directly.</p>
 <ul>
 <li><a href="#commands">Commands</a></li>
 <li><a href="#file-format">File format</a></li>
+<li><a href="#process-trigger-events">Process trigger events</a></li>
 <li><a href="#quotas">Quotas</a></li>
 <li><a href="#calling-and-stopping-other-rules">Calling and stopping other rules</a></li>
 <li class="is-sub"><a href="#observing-rule-activity">Observing rule activity</a></li>

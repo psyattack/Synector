@@ -5,6 +5,10 @@
   var navToggle = document.querySelector("[data-nav-toggle]");
   var mobileNav = document.getElementById("mobile-nav");
   var langGroup = document.querySelector(".lang");
+  var versionPill = document.querySelector("[data-version-pill]");
+  var latestVersion = versionPill ? versionPill.textContent.trim() : "";
+  var releaseCacheKey = "synector-latest-release";
+  var releaseCacheTtl = 60 * 60 * 1000;
   var titles = {
     en: "Synector - Windows automation suite and process supervisor",
     ru: "Synector - набор автоматизации и супервизор процессов для Windows"
@@ -41,6 +45,7 @@
     document.title = titles[lang] || titles.en;
     setMetaDescription();
     setVideoLabel();
+    setVersionPillLabel();
 
     if (langGroup) {
       langGroup.setAttribute("aria-label", lang === "ru" ? "Язык" : "Language");
@@ -64,6 +69,65 @@
     }
   }
 
+  function setVersionPillLabel() {
+    if (!versionPill || !latestVersion) {
+      return;
+    }
+    var russian = currentLang() === "ru";
+    versionPill.setAttribute(
+      "aria-label",
+      russian ? "Synector " + latestVersion + " — последний релиз" : "Synector " + latestVersion + " latest release"
+    );
+    versionPill.title = russian ? "Открыть последний релиз" : "Open the latest release";
+  }
+
+  function applyLatestRelease(tag, url) {
+    var version = String(tag || "").trim();
+    if (!versionPill || !version) {
+      return;
+    }
+    latestVersion = version;
+    versionPill.textContent = version;
+    if (url) {
+      versionPill.href = url;
+    }
+    setVersionPillLabel();
+  }
+
+  function loadLatestRelease() {
+    if (!versionPill || typeof fetch !== "function") {
+      return;
+    }
+    try {
+      var cached = JSON.parse(localStorage.getItem(releaseCacheKey) || "null");
+      if (cached && cached.tag && Date.now() - cached.at < releaseCacheTtl) {
+        applyLatestRelease(cached.tag, cached.url);
+        return;
+      }
+    } catch (error) {}
+
+    fetch("https://api.github.com/repos/psyattack/Synector/releases/latest", {
+      headers: { Accept: "application/vnd.github+json" }
+    })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (release) {
+        if (!release || !release.tag_name) {
+          return;
+        }
+        applyLatestRelease(release.tag_name, release.html_url);
+        try {
+          localStorage.setItem(releaseCacheKey, JSON.stringify({
+            tag: versionPill.textContent.trim(),
+            url: release.html_url || versionPill.href,
+            at: Date.now()
+          }));
+        } catch (error) {}
+      })
+      .catch(function () {});
+  }
+
   langButtons.forEach(function (button) {
     button.addEventListener("click", function () {
       applyLang(button.dataset.setLang, true);
@@ -71,6 +135,7 @@
   });
 
   applyLang(currentLang(), false);
+  loadLatestRelease();
 
   if (navToggle && mobileNav) {
     navToggle.addEventListener("click", function () {
