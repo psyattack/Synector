@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.1.1](https://github.com/psyattack/Synector/compare/v3.1.0...v3.1.1) - 2026-11-25
+
+### Changed
+- Rule Icon Reset: a rule's custom icon is now cleared by hovering the icon tile and clicking the reset glyph shown over it, instead of a separate reset button next to the rule name.
+
+### Fixed
+- Rule Details Row: rules with a custom icon no longer push the name field past the right edge of the rule-details card.
+
+<details><summary>Detailed Changelog</summary>
+
+### Fixed
+- **gui:** reset a rule's custom icon from the tile itself (by @psyattack in d5f979c)
+
+</details>
+
+
 ## [3.1.0](https://github.com/psyattack/Synector/compare/v3.0.1...v3.1.0) - 2026-11-25
 
 ### Added
