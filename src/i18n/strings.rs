@@ -527,10 +527,8 @@ pub struct Strings {
     pub modal_tip_dismiss: &'static str,
     pub modal_lines: &'static str,
     pub modal_chars: &'static str,
-    pub modal_btn_copy_script: &'static str,
 
     // Toasts
-    pub toast_script_copied: &'static str,
     pub toast_config_saved: &'static str,
     pub toast_rule_saved: &'static str,
     pub toast_rule_deleted: &'static str,

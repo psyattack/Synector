@@ -530,10 +530,8 @@ pub static STRINGS: Strings = Strings {
     modal_tip_dismiss: "Закрыть (Esc)",
     modal_lines: "СТРОК",
     modal_chars: "СИМВОЛОВ",
-    modal_btn_copy_script: "СКОПИРОВАТЬ СКРИПТ",
 
     // Toasts
-    toast_script_copied: "Скрипт скопирован в буфер обмена",
     toast_config_saved: "Конфигурация сохранена",
     toast_rule_saved: "Правило успешно сохранено",
     toast_rule_deleted: "Правило удалено",

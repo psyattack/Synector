@@ -1,11 +1,11 @@
 //! Expanded Script Canvas Modal:
 //! Centered studio canvas for editing PowerShell and CMD scripts
-//! with syntax highlighting, line metrics, clipboard copy, and smooth animations.
+//! with syntax highlighting, line metrics and smooth animations.
 
 use egui::{pos2, vec2, Stroke};
 use crate::gui::components::modal::{render_modal_header, Modal, ModalHeader};
 use crate::gui::components::script_highlighter::create_script_layouter;
-use crate::gui::components::widgets::{self, Kind};
+use crate::gui::components::widgets;
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 use crate::models::Action;
@@ -41,7 +41,6 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
         return;
     }
 
-    let mut copy_clicked = false;
     let mut text_changed = false;
 
     let modal_res = Modal::new("script-canvas-modal", is_open)
@@ -75,12 +74,7 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
                         ui.add_space(8.0);
                         widgets::badge(ui, modal.language.badge_name(loc), t.accent_ink);
                     },
-                    |ui| {
-                        ui.add_space(8.0);
-                        if widgets::button(ui, loc.modal_btn_copy_script, Kind::Secondary, 0.0).clicked() {
-                            copy_clicked = true;
-                        }
-                    },
+                    |_| {},
                 );
             });
 
@@ -126,12 +120,6 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
                 }
             });
         });
-
-    if copy_clicked {
-        ctx.copy_text(script_buffer.clone());
-        let loc = state.loc();
-        state.set_toast(loc.toast_script_copied);
-    }
 
     if text_changed {
         if let Some(rule) = &mut state.editing_rule {
