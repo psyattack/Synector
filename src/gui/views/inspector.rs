@@ -699,6 +699,163 @@ mod tests {
         }
     }
 
+    /// A rule's custom icon is cleared from the icon tile itself: hovering it paints a dimming
+    /// scrim with a centred reset glyph. The old trailing reset button reserved a 36 px slice of
+    /// the name row while the real button was a control-height square, so having a custom icon
+    /// pushed the name field past the rule-details card's right padding. The reset affordance must
+    /// therefore not exist at rest and must not add any layout width.
+    #[test]
+    fn custom_icon_reset_is_a_hover_scrim_over_the_icon_tile() {
+        let reset_glyph = egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE;
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1275.0, 900.0));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        theme::apply_theme(
+            &ctx,
+            crate::config::AppTheme::Dark,
+            crate::config::UiSkin::Modern,
+            None,
+        );
+        let mut state = GuiState::new();
+        state.language = crate::i18n::Language::English;
+        state.editing_rule = Some(Rule {
+            id: "rule_custom_icon".into(),
+            name: "Custom icon".into(),
+            custom_icon_path: Some(r"C:\icons\probe.ico".into()),
+            ..Default::default()
+        });
+
+        let run = |state: &mut GuiState, time: f64, events: Vec<egui::Event>| {
+            let mut frame = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    time: Some(time),
+                    events,
+                    ..Default::default()
+                },
+                |ui| render_inspector_drawer(ui.ctx(), state),
+            );
+            frame.textures_delta.clear();
+            frame
+        };
+
+        let mut settled = None;
+        for time in [0.0, 0.1, 0.3, 0.6, 0.9] {
+            settled = Some(run(&mut state, time, Vec::new()));
+        }
+        let settled = settled.expect("the drawer rendered");
+
+        let glyph_rects = |output: &egui::FullOutput| -> Vec<Rect> {
+            output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Text(text) if text.galley.text() == reset_glyph => {
+                        Some(Rect::from_min_size(text.pos, text.galley.size()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        assert!(
+            glyph_rects(&settled).is_empty(),
+            "the icon reset is painted at rest; it must only appear while the icon tile is hovered"
+        );
+
+        let icon_tile = settled
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if (rect.rect.width() - 38.0).abs() < 0.5
+                        && (rect.rect.height() - 38.0).abs() < 0.5 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .expect("the icon tile is painted");
+
+        let tile_fills = |output: &egui::FullOutput| -> Vec<egui::Color32> {
+            output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(rect)
+                        if (rect.rect.min - icon_tile.min).length() < 0.5
+                            && (rect.rect.size() - icon_tile.size()).length() < 0.5
+                            && rect.fill.a() > 0 =>
+                    {
+                        Some(rect.fill)
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let rest_fills = tile_fills(&settled);
+        assert_eq!(rest_fills.len(), 1, "the tile paints one opaque surface at rest");
+        assert!(rest_fills.iter().all(|fill| fill.a() == 255));
+
+        let _ = run(&mut state, 1.0, vec![egui::Event::PointerMoved(icon_tile.center())]);
+        let hovered = run(&mut state, 1.1, Vec::new());
+        let badges = glyph_rects(&hovered);
+        assert_eq!(
+            badges.len(),
+            1,
+            "hovering the icon tile must paint exactly one reset glyph"
+        );
+        let badge = badges[0];
+        assert!(
+            icon_tile.expand(1.5).contains_rect(badge),
+            "the reset glyph {badge:?} must sit inside the icon tile {icon_tile:?}"
+        );
+        assert!(
+            (badge.center() - icon_tile.center()).length() <= 1.5,
+            "the reset glyph belongs in the tile's centre, got {badge:?} for {icon_tile:?}"
+        );
+
+        let hover_fills = tile_fills(&hovered);
+        assert_eq!(
+            hover_fills.len(),
+            rest_fills.len() + 1,
+            "hovering must add one dimming layer over the tile"
+        );
+        assert!(
+            hover_fills.iter().any(|fill| fill.a() > 0 && fill.a() < 255),
+            "the hovering layer must be a translucent dimming scrim, got {hover_fills:?}"
+        );
+
+        // A click on the hovered tile clears the custom icon instead of opening the picker.
+        let click_pos = icon_tile.center();
+        let _ = run(
+            &mut state,
+            1.2,
+            vec![egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            }],
+        );
+        let _ = run(
+            &mut state,
+            1.3,
+            vec![egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            }],
+        );
+        assert!(
+            state
+                .editing_rule
+                .as_ref()
+                .is_some_and(|rule| rule.custom_icon_path.is_none()),
+            "clicking the hovered icon tile must reset the custom icon"
+        );
+    }
+
     /// The literals the conversion pass moved into the catalog must not come back into the
     /// view. Every needle is assembled from fragments so this test cannot match itself.
     #[test]

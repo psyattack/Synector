@@ -664,7 +664,6 @@ pub enum Glyph {
     Minimize,
     Clone,
     Expand,
-    Reset,
     Play,
     Stop,
     Edit,
@@ -683,7 +682,6 @@ impl Glyph {
     /// primitives. Kept in one place so the studio buttons and title bars cannot drift.
     fn phosphor(self) -> Option<&'static str> {
         match self {
-            Self::Reset => Some(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE),
             Self::Play => Some(egui_phosphor::regular::PLAY),
             Self::Stop => Some(egui_phosphor::regular::STOP),
             Self::Edit => Some(egui_phosphor::regular::PENCIL_SIMPLE),
@@ -1375,7 +1373,6 @@ mod tests {
     #[test]
     fn glyph_phosphor_mapping_covers_icon_font_variants() {
         for glyph in [
-            Glyph::Reset,
             Glyph::Play,
             Glyph::Stop,
             Glyph::Edit,

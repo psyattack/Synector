@@ -80,11 +80,14 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                             let icon_box_size = vec2(38.0, 38.0);
                             let (icon_rect, icon_resp) = ui.allocate_exact_size(icon_box_size, Sense::click());
                             let is_hovered = icon_resp.hovered();
-                            let p = ui.painter();
+                            let has_custom_icon = rule.custom_icon_path.is_some();
 
-                            p.rect_filled(icon_rect, t.chip_corner(), if is_hovered { t.sunken } else { t.bg });
-                            let stroke_color = if is_hovered { t.accent_ink } else { t.line_strong };
-                            p.rect_stroke(icon_rect, t.chip_corner(), Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
+                            {
+                                let p = ui.painter();
+                                p.rect_filled(icon_rect, t.chip_corner(), if is_hovered { t.sunken } else { t.bg });
+                                let stroke_color = if is_hovered { t.accent_ink } else { t.line_strong };
+                                p.rect_stroke(icon_rect, t.chip_corner(), Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
+                            }
 
                             let mut rendered = false;
                             if let Some(path) = &rule.custom_icon_path {
@@ -94,26 +97,57 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                                     let scale = 26.0 / max_dim;
                                     let render_size = vec2((size.x * scale).round().max(1.0), (size.y * scale).round().max(1.0));
                                     let img_rect = Rect::from_center_size(icon_rect.center(), render_size);
-                                    p.image(tex.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
+                                    ui.painter().image(tex.id(), img_rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), egui::Color32::WHITE);
                                     rendered = true;
                                 }
                             }
                             if !rendered {
                                 let glyph = crate::gui::views::rule_summary::default_icon_glyph(rule);
-                                p.text(icon_rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::new(18.0, theme::phosphor()), if is_hovered { t.accent_ink } else { t.ink_strong });
+                                ui.painter().text(icon_rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::new(18.0, theme::phosphor()), if is_hovered { t.accent_ink } else { t.ink_strong });
                             }
 
                             let icon_tooltip = match &rule.custom_icon_path {
                                 Some(p) => {
                                     let fname = std::path::Path::new(p).file_name().unwrap_or_default().to_string_lossy();
-                                    format!("{}: {}\n{}", loc.inspector_icon_custom_label, fname, loc.inspector_icon_browse_tip)
+                                    format!("{}: {}\n{}", loc.inspector_icon_custom_label, fname, loc.inspector_icon_reset_tip)
                                 }
                                 None => format!("{}\n{}", loc.inspector_icon_default_label, loc.inspector_icon_browse_tip),
                             };
                             let icon_resp = icon_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(icon_tooltip);
+                            icon_resp.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::Role::Button,
+                                    true,
+                                    if has_custom_icon {
+                                        loc.inspector_icon_reset_tip
+                                    } else {
+                                        loc.inspector_icon_browse_tip
+                                    },
+                                )
+                            });
+
+                            // A custom icon is removed by hovering the tile: it dims under a
+                            // scrim with a centred reset glyph, and a click clears the icon. The
+                            // old trailing reset button reserved a fixed slice of the row while
+                            // the real button was wider, so it pushed the name field past the
+                            // card's right padding and broke the row for every rule that had a
+                            // custom icon.
+                            if has_custom_icon && is_hovered {
+                                let p = ui.painter();
+                                p.rect_filled(icon_rect, t.chip_corner(), theme::scrim(t, 0.35));
+                                p.text(
+                                    icon_rect.center(),
+                                    egui::Align2::CENTER_CENTER,
+                                    egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+                                    egui::FontId::new(16.0, theme::phosphor()),
+                                    t.ink_strong,
+                                );
+                            }
 
                             if icon_resp.clicked() {
-                                if let Some(picked) = rfd::FileDialog::new()
+                                if has_custom_icon {
+                                    rule.custom_icon_path = None;
+                                } else if let Some(picked) = rfd::FileDialog::new()
                                     .set_title(loc.inspector_dialog_icon_title)
                                     .add_filter(loc.inspector_dialog_filter_image_exe, &["exe", "ico", "png", "jpg", "jpeg", "dll"])
                                     .pick_file()
@@ -125,28 +159,17 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                                 rule.custom_icon_path = None;
                             }
 
-                            // Name Input taking remaining available width
-                            let input_w = if rule.custom_icon_path.is_some() {
-                                (ui.available_width() - 36.0).max(100.0)
-                            } else {
-                                ui.available_width()
-                            };
-
+                            // Name Input taking the remaining width: no trailing control reserves
+                            // a slice of the row any more, so the field fills the card's inset.
                             ui.add(
                                 egui::TextEdit::singleline(&mut rule.name)
                                     .hint_text(loc.rules_default_new_name)
-                                    .desired_width(input_w)
+                                    .desired_width(ui.available_width())
                                     .min_size(vec2(0.0, 38.0))
                                     .font(egui::FontId::new(14.0, theme::semibold()))
                                     .align(egui::Align2::LEFT_CENTER)
                                     .margin(vec2(10.0, 9.0)),
                             );
-
-                            if rule.custom_icon_path.is_some()
-                                && widgets::glyph_button(ui, Glyph::Reset, loc.inspector_icon_reset_tip).clicked()
-                            {
-                                rule.custom_icon_path = None;
-                            }
                         });
 
                         // Tag Manager (Replaces removed description field)

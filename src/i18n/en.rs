@@ -518,7 +518,7 @@ pub static STRINGS: Strings = Strings {
 
     // Inspector Rule Icon (inspector.rs)
     inspector_icon_browse_tip: "Choose an .exe, .ico, or image file for this rule's icon",
-    inspector_icon_reset_tip: "Revert to default action icon",
+    inspector_icon_reset_tip: "Remove the custom icon",
     inspector_icon_auto_process: "Icon from target process",
     inspector_icon_auto_process_tip: "Automatically capture the executable path and icon when the process runs",
     inspector_icon_default_label: "DEFAULT ICON",
