@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::daemon::actions::ActionRunner;
 use crate::daemon::watcher::{ProcessEvent, ProcessWatcher};
-use crate::models::{Action, ProcessMatchMode, Rule, RuleCondition, RuleConditionItem, ScheduleType, SystemEventType, Trigger};
+use crate::models::{Action, ProcessMatchMode, ProcessTriggerEvent, Rule, RuleCondition, RuleConditionItem, ScheduleType, SystemEventType, Trigger};
 
 use super::executions::{BoundProcess, ExecutionOrigin};
 use super::scheduler::Scheduler;
@@ -48,153 +48,169 @@ impl DaemonEngine {
             &format!("Process {} (PID: {}) {}", event.process_name, event.pid, action_str),
         );
 
+        let rules = self.config.rules.clone();
+
         if event.is_started {
-            // Check rules on Process Started
-            let rules = self.config.rules.clone();
             for rule in &rules {
                 if !rule.is_enabled {
                     continue;
                 }
 
-                if let Some(Trigger::Process { process_name, match_mode, single_instance }) = &rule.trigger {
-                    if Self::matches_process(process_name, &event.process_name, *match_mode) {
-                        if *single_instance {
-                            let pids = self.active_rule_pids.entry(rule.id.clone()).or_default();
-                            let is_first = pids.is_empty();
-                            pids.insert(event.pid);
-
-                            if is_first {
-                                if !rule.actions.is_empty() {
-                                    let _ = self.trigger(rule, ExecutionOrigin::Process, &event.process_name, event.pid, HashMap::new()).await;
-                                }
-                            } else if !rule.actions.is_empty() {
-                                self.log(
-                                    "INFO",
-                                    "RULE",
-                                    &format!(
-                                        "Rule '{}' skipped (Single Instance): another instance of {} is already running (PID: {})",
-                                        rule.name, event.process_name, event.pid
-                                    ),
-                                );
-                            }
-                        } else if !rule.actions.is_empty() {
-                            let _ = self.trigger(rule, ExecutionOrigin::Process, &event.process_name, event.pid, HashMap::new()).await;
-                        }
-                    }
-                }
-            }
-        } else {
-            // Process STOPPED:
-            let rules = self.config.rules.clone();
-            let rules_map: HashMap<String, Rule> = rules.iter().map(|r| (r.id.clone(), r.clone())).collect();
-
-            // Track which single_instance rules have completely terminated (all instances closed)
-            let mut single_instance_rules_exited: HashSet<String> = HashSet::new();
-            for rule in &rules {
-                if let Some(Trigger::Process { process_name, match_mode, single_instance }) = &rule.trigger {
-                    if *single_instance && Self::matches_process(process_name, &event.process_name, *match_mode) {
-                        if let Some(pids) = self.active_rule_pids.get_mut(&rule.id) {
-                            pids.remove(&event.pid);
-                            if pids.is_empty() {
-                                single_instance_rules_exited.insert(rule.id.clone());
-                            }
-                        }
-                    }
-                }
-            }
-            for rule_id in &single_instance_rules_exited {
-                self.active_rule_pids.remove(rule_id);
-            }
-
-            // 1. Auto-close any bound processes that were launched for this process (Companion Mode in Rules)
-            let to_kill: Vec<BoundProcess> = self.executions.take_bound_processes_where(|bp| {
-                let is_match = bp.primary_pid == event.pid
-                    || bp.primary_process_name.eq_ignore_ascii_case(&event.process_name);
-                if !is_match {
-                    return false;
-                }
-                // If the rule has single_instance enabled, only kill if all instances have exited
-                if let Some(rule) = rules_map.get(&bp.rule_id) {
-                    if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
-                        return single_instance_rules_exited.contains(&bp.rule_id);
-                    }
-                }
-                true
-            });
-
-            for bp in to_kill {
-                let (target_name, action) = Self::bound_satellite_kill(&bp.target_executable);
-
-                self.log(
-                    "ACTION",
-                    "RULE",
-                    &format!(
-                        "Auto-closing bound process '{}' (rule: {}) because '{}' terminated",
-                        target_name, bp.rule_id, event.process_name
-                    ),
-                );
-
-                let ctx = HashMap::new();
-                let _ = ActionRunner::execute(&action, &ctx).await;
-            }
-
-            // 1.1. Auto-close any bound overlays that were launched for this process (Companion Mode in Rules)
-            let to_close_overlays = self.executions.take_bound_overlays_where(|bo| {
-                let is_match = bo.primary_pid == event.pid
-                    || bo.primary_process_name.eq_ignore_ascii_case(&event.process_name);
-                if !is_match {
-                    return false;
-                }
-                if let Some(rule) = rules_map.get(&bo.rule_id) {
-                    if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
-                        return single_instance_rules_exited.contains(&bo.rule_id);
-                    }
-                }
-                true
-            });
-
-            for bo in to_close_overlays {
-                self.log(
-                    "ACTION",
-                    "RULE",
-                    &format!(
-                        "Auto-closing bound overlay '{}' (rule: {}) because '{}' terminated",
-                        bo.overlay_id, bo.rule_id, event.process_name
-                    ),
-                );
-                crate::daemon::overlay_manager::hide_overlay(&bo.overlay_id);
-            }
-
-            // 1.2. Also signal overlay_manager to auto-close any standalone overlays with close_with_target == true
-            crate::daemon::overlay_manager::check_process_terminated(&event.process_name);
-
-            // 2. Check rules with on_exit_actions
-            for rule in &rules {
-                if !rule.is_enabled || rule.on_exit_actions.is_empty() {
+                let Some(Trigger::Process { process_name, match_mode, single_instance, event: trigger_event }) = &rule.trigger else {
+                    continue;
+                };
+                if !Self::matches_process(process_name, &event.process_name, *match_mode) {
                     continue;
                 }
 
-                if let Some(Trigger::Process { process_name, match_mode, single_instance }) = &rule.trigger {
-                    if Self::matches_process(process_name, &event.process_name, *match_mode) {
-                        if *single_instance {
-                            if single_instance_rules_exited.contains(&rule.id) {
-                                let _ = self.try_execute_exit_actions(rule, &event.process_name, event.pid).await;
-                            }
-                        } else {
-                            let _ = self.try_execute_exit_actions(rule, &event.process_name, event.pid).await;
+                // Every matching process rule tracks the live instances, including rules that
+                // fire on exit: a single-instance exit rule must know when the last one ends.
+                let is_first = if *single_instance {
+                    let pids = self.active_rule_pids.entry(rule.id.clone()).or_default();
+                    let is_first = pids.is_empty();
+                    pids.insert(event.pid);
+                    is_first
+                } else {
+                    true
+                };
+
+                if *trigger_event != ProcessTriggerEvent::Started {
+                    continue;
+                }
+
+                if !is_first {
+                    if !rule.actions.is_empty() {
+                        self.log(
+                            "INFO",
+                            "RULE",
+                            &format!(
+                                "Rule '{}' skipped (Single Instance): another instance of {} is already running (PID: {})",
+                                rule.name, event.process_name, event.pid
+                            ),
+                        );
+                    }
+                    continue;
+                }
+
+                if !rule.actions.is_empty() {
+                    let _ = self.trigger(rule, ExecutionOrigin::Process, &event.process_name, event.pid, HashMap::new()).await;
+                }
+            }
+            return;
+        }
+
+        // Process STOPPED:
+        let rules_map: HashMap<String, Rule> = rules.iter().map(|r| (r.id.clone(), r.clone())).collect();
+
+        // Track which single_instance rules have completely terminated (all instances closed)
+        let mut single_instance_rules_exited: HashSet<String> = HashSet::new();
+        for rule in &rules {
+            if let Some(Trigger::Process { process_name, match_mode, single_instance, .. }) = &rule.trigger {
+                if *single_instance && Self::matches_process(process_name, &event.process_name, *match_mode) {
+                    if let Some(pids) = self.active_rule_pids.get_mut(&rule.id) {
+                        pids.remove(&event.pid);
+                        if pids.is_empty() {
+                            single_instance_rules_exited.insert(rule.id.clone());
                         }
                     }
                 }
             }
+        }
+        for rule_id in &single_instance_rules_exited {
+            self.active_rule_pids.remove(rule_id);
+        }
 
-            // 3. Auto-clear Discord RPC if configured on process rules
-            for rule in &rules {
-                if let Some(Trigger::Process { process_name, match_mode, .. }) = &rule.trigger {
-                    if Self::matches_process(process_name, &event.process_name, *match_mode) {
-                        let has_auto_clear = rule.actions.iter().any(|a| matches!(a, Action::DiscordRpcSet { auto_clear_on_process_exit: true, .. }));
-                        if has_auto_clear {
-                            let _ = crate::daemon::discord_rpc::clear_presence().await;
-                        }
+        // 1. Auto-close any bound processes that were launched for this process (Companion Mode in Rules)
+        let to_kill: Vec<BoundProcess> = self.executions.take_bound_processes_where(|bp| {
+            let is_match = bp.primary_pid == event.pid
+                || bp.primary_process_name.eq_ignore_ascii_case(&event.process_name);
+            if !is_match {
+                return false;
+            }
+            // If the rule has single_instance enabled, only kill if all instances have exited
+            if let Some(rule) = rules_map.get(&bp.rule_id) {
+                if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
+                    return single_instance_rules_exited.contains(&bp.rule_id);
+                }
+            }
+            true
+        });
+
+        for bp in to_kill {
+            let (target_name, action) = Self::bound_satellite_kill(&bp.target_executable);
+
+            self.log(
+                "ACTION",
+                "RULE",
+                &format!(
+                    "Auto-closing bound process '{}' (rule: {}) because '{}' terminated",
+                    target_name, bp.rule_id, event.process_name
+                ),
+            );
+
+            let ctx = HashMap::new();
+            let _ = ActionRunner::execute(&action, &ctx).await;
+        }
+
+        // 1.1. Auto-close any bound overlays that were launched for this process (Companion Mode in Rules)
+        let to_close_overlays = self.executions.take_bound_overlays_where(|bo| {
+            let is_match = bo.primary_pid == event.pid
+                || bo.primary_process_name.eq_ignore_ascii_case(&event.process_name);
+            if !is_match {
+                return false;
+            }
+            if let Some(rule) = rules_map.get(&bo.rule_id) {
+                if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
+                    return single_instance_rules_exited.contains(&bo.rule_id);
+                }
+            }
+            true
+        });
+
+        for bo in to_close_overlays {
+            self.log(
+                "ACTION",
+                "RULE",
+                &format!(
+                    "Auto-closing bound overlay '{}' (rule: {}) because '{}' terminated",
+                    bo.overlay_id, bo.rule_id, event.process_name
+                ),
+            );
+            crate::daemon::overlay_manager::hide_overlay(&bo.overlay_id);
+        }
+
+        // 1.2. Also signal overlay_manager to auto-close any standalone overlays with close_with_target == true
+        crate::daemon::overlay_manager::check_process_terminated(&event.process_name);
+
+        // 2. Fire the rules whose process trigger watches the exit event. A single-instance rule
+        // waits for the last tracked instance, mirroring the launch path's first-instance gate.
+        for rule in &rules {
+            if !rule.is_enabled {
+                continue;
+            }
+
+            let Some(Trigger::Process { process_name, match_mode, single_instance, event: ProcessTriggerEvent::Exited }) = &rule.trigger else {
+                continue;
+            };
+            if !Self::matches_process(process_name, &event.process_name, *match_mode) {
+                continue;
+            }
+            if *single_instance && !single_instance_rules_exited.contains(&rule.id) {
+                continue;
+            }
+            if rule.actions.is_empty() {
+                continue;
+            }
+            let _ = self.trigger(rule, ExecutionOrigin::Process, &event.process_name, event.pid, HashMap::new()).await;
+        }
+
+        // 3. Auto-clear Discord RPC if configured on process rules
+        for rule in &rules {
+            if let Some(Trigger::Process { process_name, match_mode, .. }) = &rule.trigger {
+                if Self::matches_process(process_name, &event.process_name, *match_mode) {
+                    let has_auto_clear = rule.actions.iter().any(|a| matches!(a, Action::DiscordRpcSet { auto_clear_on_process_exit: true, .. }));
+                    if has_auto_clear {
+                        let _ = crate::daemon::discord_rpc::clear_presence().await;
                     }
                 }
             }

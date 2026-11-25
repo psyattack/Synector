@@ -59,7 +59,7 @@ pub struct RuleRuns {
 /// How the finished runs of the tracked window ended.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunOutcomes {
-    /// Finished with every step succeeded (an exit pipeline is not counted).
+    /// Finished with every step succeeded.
     pub succeeded: u32,
     /// Finished, but at least one step failed; non-stopping errors count as a failure.
     pub failed: u32,

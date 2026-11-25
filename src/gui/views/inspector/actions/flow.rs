@@ -12,7 +12,6 @@ pub(crate) fn render_wait_fields(
     let loc = ctx.state.loc();
     let t = ctx.t;
     let idx = ctx.idx;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let default_picker_target = ctx.default_picker_target;
     let Action::Wait { mode, seconds, condition, timeout_sec, timeout_policy } = action else { return; };
     widgets::hud(ui, loc.inspector_wait_mode, t.muted);
@@ -26,7 +25,7 @@ pub(crate) fn render_wait_fields(
         crate::models::WaitMode::Timer => {
             ui.add_space(4.0);
             widgets::hud(ui, loc.inspector_wait_seconds, t.muted);
-            widgets::duration_secs_f64(ui, loc, ("wait_seconds", idx, is_exit_pipeline), seconds, 0.05..=86400.0);
+            widgets::duration_secs_f64(ui, loc, ("wait_seconds", idx), seconds, 0.05..=86400.0);
         }
         crate::models::WaitMode::UntilCondition => {
             ui.add_space(4.0);
@@ -181,7 +180,7 @@ pub(crate) fn render_wait_fields(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 widgets::hud(ui, loc.inspector_wait_timeout, t.muted);
-                widgets::duration_secs_f64(ui, loc, ("wait_timeout", idx, is_exit_pipeline), timeout_sec, 0.0..=3600.0);
+                widgets::duration_secs_f64(ui, loc, ("wait_timeout", idx), timeout_sec, 0.0..=3600.0);
                 ui.label(egui::RichText::new(loc.inspector_wait_timeout_zero_hint).size(11.0).color(t.muted));
             });
 
@@ -266,7 +265,6 @@ pub(crate) fn render_if_else_fields(
 ) {
     let state = ctx.state;
     let idx = ctx.idx;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let loc = ctx.state.loc();
     let t = ctx.t;
     let depth = ctx.depth;
@@ -302,7 +300,6 @@ pub(crate) fn render_if_else_fields(
                     resp.pick_target = Some(crate::gui::state::ProcessPickerTarget::ActionCondition {
                         action_idx: idx,
                         cond_idx: c_idx,
-                        is_exit: is_exit_pipeline,
                     });
                 },
                 state,
@@ -332,14 +329,12 @@ pub(crate) fn render_if_else_fields(
             resp.open_condition_catalog = Some(crate::gui::state::ConditionCatalogTarget::ChangeActionIfElse {
                 action_idx: idx,
                 cond_idx: c_idx,
-                is_exit: is_exit_pipeline,
             });
         }
 
         if render_add_condition_button(ui, loc, t) {
             resp.open_condition_catalog = Some(crate::gui::state::ConditionCatalogTarget::ActionIfElse {
                 action_idx: idx,
-                is_exit: is_exit_pipeline,
             });
         }
 
@@ -358,7 +353,6 @@ pub(crate) fn render_if_else_fields(
             idx,
             &then_branch_salt,
             loc.inspector_ifelse_then_badge,
-            is_exit_pipeline,
             BranchPickerKind::Then,
             loc.inspector_ifelse_add_then,
             t,
@@ -405,7 +399,6 @@ pub(crate) fn render_if_else_fields(
                             action_idx: idx,
                             branch_idx: b_idx,
                             cond_idx: c_idx,
-                            is_exit: is_exit_pipeline,
                         });
                     },
                     state,
@@ -436,7 +429,6 @@ pub(crate) fn render_if_else_fields(
                     action_idx: idx,
                     branch_idx: b_idx,
                     cond_idx: c_idx,
-                    is_exit: is_exit_pipeline,
                 });
             }
 
@@ -444,7 +436,6 @@ pub(crate) fn render_if_else_fields(
                 resp.open_condition_catalog = Some(crate::gui::state::ConditionCatalogTarget::ActionElseIf {
                     action_idx: idx,
                     branch_idx: b_idx,
-                    is_exit: is_exit_pipeline,
                 });
             }
 
@@ -464,7 +455,6 @@ pub(crate) fn render_if_else_fields(
                 idx,
                 &branch_salt,
                 &branch_lbl,
-                is_exit_pipeline,
                 BranchPickerKind::ElseIf(b_idx),
                 loc.inspector_ifelse_add_then,
                 t,
@@ -510,7 +500,6 @@ pub(crate) fn render_if_else_fields(
             idx,
             &else_branch_salt,
             loc.inspector_ifelse_else_badge,
-            is_exit_pipeline,
             BranchPickerKind::Else,
             loc.inspector_ifelse_add_else,
             t,

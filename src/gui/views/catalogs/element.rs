@@ -602,7 +602,6 @@ mod tests {
         state.overlay_studio = Some(crate::gui::state::OverlayStudioState::new(
             crate::models::OverlayDefinition::default_new_overlay(),
             None,
-            false,
             String::new(),
         ));
         let text_item = CATALOG_ITEMS

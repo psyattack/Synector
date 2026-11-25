@@ -11,7 +11,6 @@ pub(crate) fn render_play_sound_fields(
     let loc = ctx.state.loc();
     let t = ctx.t;
     let idx = ctx.idx;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let Action::PlaySound { file_path, play_beep, beep_frequency, beep_duration_ms } = action else { return; };
     let mode_options = [
         (false, Cell::new(loc.inspector_sound_mode_file, "")),
@@ -48,7 +47,7 @@ pub(crate) fn render_play_sound_fields(
 
             ui.add_space(4.0);
             widgets::hud(ui, loc.inspector_sound_beep_duration, t.muted);
-            if widgets::duration_millis_u32(ui, loc, ("beep_duration", idx, is_exit_pipeline), &mut dur, 50.0..=3000.0).changed() {
+            if widgets::duration_millis_u32(ui, loc, ("beep_duration", idx), &mut dur, 50.0..=3000.0).changed() {
                 *beep_duration_ms = Some(dur);
             }
         }

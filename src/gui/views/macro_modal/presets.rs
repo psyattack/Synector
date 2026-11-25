@@ -117,12 +117,7 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
                         if let Some(loaded) = all_presets.get(index).cloned() {
                             if let Some(r) = state.editing_rule.as_mut() {
                                 if let Some(edit_info) = state.macro_editor.as_ref() {
-                                    let actions = if edit_info.is_exit_pipeline {
-                                        &mut r.on_exit_actions
-                                    } else {
-                                        &mut r.actions
-                                    };
-                                    if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = actions.get_mut(edit_info.step_idx) {
+                                    if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = r.actions.get_mut(edit_info.step_idx) {
                                         *events = loaded.events;
                                         *repeat = loaded.repeat;
                                         *speed = loaded.speed;
@@ -146,8 +141,7 @@ pub fn render_macro_presets_modal(ctx: &egui::Context, state: &mut GuiState) {
     if save_requested {
         let current_macro = state.editing_rule.as_ref().and_then(|r| {
             let edit_info = state.macro_editor.as_ref()?;
-            let actions = if edit_info.is_exit_pipeline { &r.on_exit_actions } else { &r.actions };
-            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = actions.get(edit_info.step_idx) {
+            if let Some(crate::models::Action::Macro { events, repeat, speed, infinite, preset_id, .. }) = r.actions.get(edit_info.step_idx) {
                 let name = if state.macro_preset_save_name.trim().is_empty() {
                     if r.name.trim().is_empty() { loc.macro_studio_custom_preset_name.to_string() } else { r.name.trim().to_string() }
                 } else {

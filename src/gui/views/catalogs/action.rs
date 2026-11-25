@@ -587,7 +587,6 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
         let action = (CATALOG_ITEMS[idx].constructor)();
         state.add_action_from_catalog(
             action,
-            modal_state.is_exit_pipeline,
             modal_state.insert_idx,
             modal_state.change_idx,
             modal_state.ifelse_target,
@@ -705,7 +704,7 @@ mod tests {
         crate::gui::theme::install_fonts(&ctx);
 
         let mut state = GuiState::new();
-        state.open_action_catalog(false, None);
+        state.open_action_catalog(None);
 
         for _ in 0..3 {
             let mut out = ctx.run_ui(Default::default(), |ctx| {

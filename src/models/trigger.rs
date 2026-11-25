@@ -17,6 +17,10 @@ pub enum Trigger {
         match_mode: ProcessMatchMode,
         #[serde(default)]
         single_instance: bool,
+        /// Which lifecycle event of the target fires the rule. The same pipeline runs for
+        /// either choice.
+        #[serde(default)]
+        event: ProcessTriggerEvent,
     },
     #[serde(rename = "window_focus")]
     WindowFocus {
@@ -155,6 +159,15 @@ pub enum ProcessMatchMode {
     Exact,
     Wildcard,
     Regex,
+}
+
+/// Which lifecycle event of the target process fires a `process` trigger.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessTriggerEvent {
+    #[default]
+    Started,
+    Exited,
 }
 
 #[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -14,7 +14,6 @@ use super::GuiState;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PendingMacroSave {
     pub(super) step_idx: usize,
-    pub(super) is_exit_pipeline: bool,
     pub(super) preset_id: String,
 }
 
@@ -32,7 +31,6 @@ impl GuiState {
             stop_on_error: true,
             trigger: Some(crate::models::Trigger::Manual),
             actions: Vec::new(),
-            on_exit_actions: Vec::new(),
             custom_icon_path: None,
             auto_process_icon: false,
             conditions: Vec::new(),
@@ -101,7 +99,6 @@ impl GuiState {
                 active_count: 1,
                 current_step,
                 total_steps: total,
-                is_exit: false,
             });
         }
 
@@ -122,7 +119,6 @@ impl GuiState {
             active_count: 1,
             current_step: step_idx,
             total_steps: rule.actions.len(),
-            is_exit: false,
         })
     }
 
@@ -254,7 +250,6 @@ impl GuiState {
             }
         }
         deduplicate_overlay_ids(&mut rule.actions, &mut seen_ids);
-        deduplicate_overlay_ids(&mut rule.on_exit_actions, &mut seen_ids);
 
         // The draft stays in `editing_rule` until the daemon confirms the save; a transport or
         // validation failure must not discard the only copy of the user's rule.
@@ -451,13 +446,8 @@ impl GuiState {
         match (failure, pending) {
             (None, Some(pending)) => {
                 if let Some(rule) = &mut self.editing_rule {
-                    let actions = if pending.is_exit_pipeline {
-                        &mut rule.on_exit_actions
-                    } else {
-                        &mut rule.actions
-                    };
                     if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, .. }) =
-                        actions.get_mut(pending.step_idx)
+                        rule.actions.get_mut(pending.step_idx)
                     {
                         if pid.as_str() == preset_id {
                             events.clear();
@@ -549,7 +539,6 @@ mod tests {
         let preset_id = "macro_demo".to_string();
         state.pending_macro_saves.push(PendingMacroSave {
             step_idx: 0,
-            is_exit_pipeline: false,
             preset_id: preset_id.clone(),
         });
 
@@ -569,7 +558,6 @@ mod tests {
         // Confirmation is the only path that drops the events from the rule.
         state.pending_macro_saves.push(PendingMacroSave {
             step_idx: 0,
-            is_exit_pipeline: false,
             preset_id: preset_id.clone(),
         });
         state.apply_ipc_result(IpcJobResult {

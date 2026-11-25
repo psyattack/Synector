@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 use crate::daemon::rule_call;
 use crate::daemon::watcher::ProcessEvent;
 use crate::ipc::{IpcRequest, IpcResponse};
-use crate::models::{Action, ConditionOperator, ProcessMatchMode, RuleCondition, RuleConditionItem, ScheduleType, Trigger};
+use crate::models::{Action, ConditionOperator, ProcessMatchMode, ProcessTriggerEvent, RuleCondition, RuleConditionItem, ScheduleType, Trigger};
 
 use super::executions::next_execution_id;
 use super::pipeline::{run_action_pipeline, PipelineRun};
@@ -26,6 +26,7 @@ async fn test_bound_overlay_companion_lifecycle() {
             process_name: "mygame.exe".into(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: false,
+            event: Default::default(),
         }),
         actions: vec![
             Action::Overlay {
@@ -178,7 +179,7 @@ fn test_device_filter_matches() {
 }
 
 #[test]
-fn test_rule_with_companion_mode_and_exit_actions_serde() {
+fn test_process_trigger_event_and_companion_mode_serde() {
     let json = r#"{
         "id": "rule_1",
         "name": "Game with Companion",
@@ -186,7 +187,7 @@ fn test_rule_with_companion_mode_and_exit_actions_serde() {
         "trigger": {
             "$trigger_type": "process",
             "process_name": "game.exe",
-            "is_started": true,
+            "event": "exited",
             "match_mode": "exact"
         },
         "actions": [
@@ -196,19 +197,16 @@ fn test_rule_with_companion_mode_and_exit_actions_serde() {
                 "close_on_exit": true,
                 "run_hidden": true
             }
-        ],
-        "on_exit_actions": [
-            {
-                "$action_type": "notification",
-                "title": "Game Over",
-                "message": "Game exited"
-            }
         ]
     }"#;
 
     let rule: Rule = serde_json::from_str(json).expect("deserialize rule");
     assert_eq!(rule.name, "Game with Companion");
     assert_eq!(rule.actions.len(), 1);
+    assert!(matches!(
+        rule.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Exited, .. })
+    ));
     if let Action::StartProcess { close_on_exit, run_hidden, .. } = &rule.actions[0] {
         assert!(*close_on_exit);
         assert!(*run_hidden);
@@ -216,12 +214,31 @@ fn test_rule_with_companion_mode_and_exit_actions_serde() {
         panic!("Expected StartProcess");
     }
 
-    assert_eq!(rule.on_exit_actions.len(), 1);
-    if let Action::Notification { title, .. } = &rule.on_exit_actions[0] {
-        assert_eq!(title, "Game Over");
-    } else {
-        panic!("Expected Notification");
-    }
+    // The event defaults to process start, so existing authored JSON keeps launching semantics.
+    let defaulted: Rule = serde_json::from_str(
+        r#"{
+            "id": "rule_2",
+            "name": "Defaults",
+            "trigger": { "$trigger_type": "process", "process_name": "game.exe" },
+            "actions": [{ "$action_type": "notification", "title": "t", "message": "m" }]
+        }"#,
+    )
+    .expect("deserialize defaulted rule");
+    assert!(matches!(
+        defaulted.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+    ));
+
+    // A rule carrying the removed exit pipeline is rejected by the raw-key validator.
+    let legacy = serde_json::json!({
+        "id": "rule_3",
+        "name": "Legacy",
+        "actions": [],
+        "on_exit_actions": []
+    });
+    let unknown = crate::models::validate_rule_keys(&legacy)
+        .expect_err("the removed on_exit_actions field must be rejected");
+    assert!(unknown.iter().any(|item| item.key == "on_exit_actions"));
 }
 
 #[test]
@@ -348,7 +365,6 @@ async fn test_schedule_trigger_interval() {
             title: "Timer".into(),
             message: "Tick".into(),
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -395,7 +411,6 @@ async fn test_schedule_trigger_daily_with_seconds() {
             title: "Daily".into(),
             message: "Alarm".into(),
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -441,7 +456,6 @@ async fn test_schedule_trigger_oneshot_with_seconds() {
             title: "OneShot".into(),
             message: "Fired".into(),
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -482,7 +496,6 @@ async fn test_schedule_trigger_interval_with_start_datetime() {
             title: "Timer".into(),
             message: "Tick".into(),
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -530,7 +543,6 @@ async fn test_execute_shutdown_rules() {
             title: "Bye".into(),
             message: "Closing".into(),
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -544,141 +556,143 @@ async fn test_execute_shutdown_rules() {
 
 #[tokio::test]
 async fn test_single_instance_process_lifecycle() {
-    let mut config = AppConfig::default();
-    config.rules.push(Rule {
-        id: "si_rule".into(),
-        name: "Single Instance App".into(),
-        description: String::new(),
-        is_enabled: true,
-        cooldown_seconds: 0.0,
+    let process_rule = |id: &str, name: &str, event: ProcessTriggerEvent| Rule {
+        id: id.into(),
+        name: name.into(),
         trigger: Some(Trigger::Process {
             process_name: "testapp.exe".into(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: true,
+            event,
         }),
         actions: vec![Action::Notification {
-            title: "Started".into(),
-            message: "App started".into(),
+            title: name.into(),
+            message: "Triggered".into(),
         }],
-        on_exit_actions: vec![Action::Notification {
-            title: "Exited".into(),
-            message: "All instances exited".into(),
-        }],
-        execution_count: 0,
-        custom_icon_path: None,
-        auto_process_icon: false,
         ..Default::default()
-    });
-
+    };
+    let mut config = AppConfig::default();
+    config.rules.push(process_rule("si_start", "SI Started", ProcessTriggerEvent::Started));
+    config.rules.push(process_rule("si_exit", "SI Exited", ProcessTriggerEvent::Exited));
     let mut engine = DaemonEngine::new(config);
 
-    // 1. First process starts (PID 1000) -> triggers rule
+    let start_count = |engine: &DaemonEngine| {
+        engine.logs.iter()
+            .filter(|l| l.category == "RULE" && l.message.contains("Rule 'SI Started' triggered by testapp.exe"))
+            .count()
+    };
+    let exit_count = |engine: &DaemonEngine| {
+        engine.logs.iter()
+            .filter(|l| l.category == "RULE" && l.message.contains("Rule 'SI Exited' triggered by testapp.exe"))
+            .count()
+    };
+
+    // 1. First instance starts -> the start rule fires, the exit rule stays armed.
     engine.handle_process_event(ProcessEvent {
         pid: 1000,
         process_name: "testapp.exe".into(),
         is_started: true,
     }).await;
+    assert_eq!(start_count(&engine), 1, "First instance must trigger the start rule");
+    assert_eq!(exit_count(&engine), 0, "The exit rule must not fire on launch");
 
-    let start_logs: Vec<_> = engine.logs.iter()
-        .filter(|l| l.category == "RULE" && l.message.contains("triggered by testapp.exe") && !l.message.contains("exit actions"))
-        .collect();
-    assert_eq!(start_logs.len(), 1, "First instance must trigger the rule");
-
-    // 2. Second process of same exe starts (PID 1001) -> must be SKIPPED
+    // 2. Second instance starts -> the start rule is skipped, the exit rule keeps tracking it.
     engine.handle_process_event(ProcessEvent {
         pid: 1001,
         process_name: "testapp.exe".into(),
         is_started: true,
     }).await;
-
-    let start_logs_after_second: Vec<_> = engine.logs.iter()
-        .filter(|l| l.category == "RULE" && l.message.contains("triggered by testapp.exe") && !l.message.contains("exit actions"))
-        .collect();
-    assert_eq!(start_logs_after_second.len(), 1, "Second instance must NOT trigger the rule");
+    assert_eq!(start_count(&engine), 1, "Second instance must not trigger the start rule");
     assert!(engine.logs.iter().any(|l| l.message.contains("skipped (Single Instance)")));
 
-    // 3. First process exits (PID 1000), but second process (PID 1001) is still active
-    // -> on_exit_actions must NOT run yet
+    // 3. First instance exits -> the exit rule waits for the last tracked instance.
     engine.handle_process_event(ProcessEvent {
         pid: 1000,
         process_name: "testapp.exe".into(),
         is_started: false,
     }).await;
+    assert_eq!(exit_count(&engine), 0, "The exit rule must wait for the last instance");
 
-    let exit_logs: Vec<_> = engine.logs.iter()
-        .filter(|l| l.category == "RULE" && l.message.contains("exit actions triggered"))
-        .collect();
-    assert_eq!(exit_logs.len(), 0, "Exit actions must NOT trigger while another instance is running");
-
-    // 4. Second process exits (PID 1001) -> all instances closed -> on_exit_actions MUST trigger!
+    // 4. Second instance exits -> the last instance fires the exit rule once.
     engine.handle_process_event(ProcessEvent {
         pid: 1001,
         process_name: "testapp.exe".into(),
         is_started: false,
     }).await;
+    assert_eq!(exit_count(&engine), 1, "The exit rule fires when the last instance closes");
+    assert_eq!(start_count(&engine), 1, "An exit event must never fire the start pipeline");
 
-    let exit_logs_after_all: Vec<_> = engine.logs.iter()
-        .filter(|l| l.category == "RULE" && l.message.contains("exit actions triggered"))
-        .collect();
-    assert_eq!(exit_logs_after_all.len(), 1, "Exit actions MUST trigger when last instance closes");
-
-    // 5. Subsequent new launch (PID 2000) -> should trigger again as new first instance!
+    // 5. A later launch is a new first instance again.
     engine.handle_process_event(ProcessEvent {
         pid: 2000,
         process_name: "testapp.exe".into(),
         is_started: true,
     }).await;
+    assert_eq!(start_count(&engine), 2, "A launch after all instances closed triggers again");
+}
 
-    let final_start_logs: Vec<_> = engine.logs.iter()
-        .filter(|l| l.category == "RULE" && l.message.contains("triggered by testapp.exe") && !l.message.contains("exit actions"))
-        .collect();
-    assert_eq!(final_start_logs.len(), 2, "Subsequent launch after all instances closed must trigger again");
+#[test]
+fn test_only_start_triggered_process_runs_bind_companions() {
+    let mut rule = notify_rule("bind_companions", "Bind companions");
+    rule.trigger = Some(Trigger::Process {
+        process_name: "game.exe".into(),
+        match_mode: ProcessMatchMode::Exact,
+        single_instance: false,
+        event: ProcessTriggerEvent::Started,
+    });
+    assert!(super::pipeline::binds_companions(&rule));
+
+    rule.trigger = Some(Trigger::Process {
+        process_name: "game.exe".into(),
+        match_mode: ProcessMatchMode::Exact,
+        single_instance: false,
+        event: ProcessTriggerEvent::Exited,
+    });
+    assert!(
+        !super::pipeline::binds_companions(&rule),
+        "an exit-triggered run must not bind satellites to a process that is already gone"
+    );
+
+    rule.trigger = Some(Trigger::Manual);
+    assert!(super::pipeline::binds_companions(&rule));
 }
 
 #[tokio::test]
-async fn test_process_termination_only_rule() {
+async fn test_process_exit_triggered_rule() {
     let mut config = AppConfig::default();
     config.rules.push(Rule {
         id: "exit_only_rule".into(),
         name: "Exit Only".into(),
-        description: String::new(),
-        is_enabled: true,
-        cooldown_seconds: 0.0,
         trigger: Some(Trigger::Process {
             process_name: "exitapp.exe".into(),
             match_mode: ProcessMatchMode::Exact,
-            single_instance: true,
+            single_instance: false,
+            event: ProcessTriggerEvent::Exited,
         }),
-        actions: Vec::new(),
-        on_exit_actions: vec![Action::Notification {
+        actions: vec![Action::Notification {
             title: "Exited".into(),
             message: "Closed".into(),
         }],
-        execution_count: 0,
-        custom_icon_path: None,
-        auto_process_icon: false,
         ..Default::default()
     });
 
     let mut engine = DaemonEngine::new(config);
 
-    // Process starts: actions is empty, so no rule trigger log
+    // Process starts: the rule watches the exit event, so nothing fires.
     engine.handle_process_event(ProcessEvent {
         pid: 500,
         process_name: "exitapp.exe".into(),
         is_started: true,
     }).await;
-
     assert!(!engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("triggered by exitapp.exe")));
 
-    // Process terminates: exit actions trigger!
+    // Process terminates: the one pipeline runs through the ordinary trigger path.
     engine.handle_process_event(ProcessEvent {
         pid: 500,
         process_name: "exitapp.exe".into(),
         is_started: false,
     }).await;
-
-    assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("exit actions triggered by exitapp.exe")));
+    assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("Rule 'Exit Only' triggered by exitapp.exe")));
 }
 
 #[tokio::test]
@@ -704,7 +718,6 @@ async fn test_rule_delay_does_not_block_engine() {
                 message: "Completed".into(),
             },
         ],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -753,7 +766,6 @@ async fn test_concurrent_delays_do_not_block_each_other() {
             timeout_sec: 30.0,
             timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -773,7 +785,6 @@ async fn test_concurrent_delays_do_not_block_each_other() {
             timeout_sec: 30.0,
             timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
         }],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -823,7 +834,6 @@ async fn test_rule_execution_tracking_concurrent_and_step() {
                 timeout_policy: crate::models::WaitTimeoutPolicy::Abort,
             },
         ],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -1005,7 +1015,6 @@ async fn test_overlay_rule_execution_tracking_and_stop() {
                 close_on_exit: false,
             },
         ],
-        on_exit_actions: Vec::new(),
         execution_count: 0,
         custom_icon_path: None,
         auto_process_icon: false,
@@ -1927,7 +1936,6 @@ async fn test_rule_call_exposes_the_direct_caller() {
             rule_id: "caller".into(),
             step_index: 0,
             total_steps: 1,
-            is_exit: false,
             started_at: Instant::now(),
             call_chain: Vec::new(),
         },
@@ -1965,7 +1973,6 @@ async fn test_rule_call_rejects_cycles_and_self_calls() {
             rule_id: "a".into(),
             step_index: 0,
             total_steps: 1,
-            is_exit: false,
             started_at: Instant::now(),
             call_chain: vec!["b".into(), "a".into()],
         },
@@ -1996,7 +2003,6 @@ async fn test_rule_call_skips_disabled_targets_and_depth_overflow() {
             rule_id: "chain".into(),
             step_index: 0,
             total_steps: 1,
-            is_exit: false,
             started_at: Instant::now(),
             call_chain: (0..rule_call::MAX_RULE_CALL_DEPTH)
                 .map(|index| format!("r{index}"))
@@ -2228,23 +2234,15 @@ async fn test_emulate_rule_trigger_aborts_without_disabling() {
     engine.abort_rule_executions("emulated_rule");
 }
 
-/// U08-002: all three spawn paths draw execution ids from one process-wide counter, so
-/// concurrent executions can never share an id. Separate counters would collide (each
-/// starts low) and a later allocation would not be greater than every issued id.
+/// U08-002: every spawn path draws execution ids from one process-wide counter, so concurrent
+/// executions can never share an id. Separate counters would collide (each starts low) and a
+/// later allocation would not be greater than every issued id.
 #[tokio::test]
-async fn test_execution_ids_are_unique_across_the_three_spawn_paths() {
+async fn test_execution_ids_are_unique_across_the_spawn_paths() {
     let mut config = AppConfig::default();
     config.rules.push(Rule {
         actions: vec![timer_wait(30.0)],
         ..notify_rule("triggered_id_rule", "Triggered ID Rule")
-    });
-    config.rules.push(Rule {
-        actions: vec![Action::Notification {
-            title: "exit".into(),
-            message: "x".into(),
-        }],
-        on_exit_actions: vec![timer_wait(30.0)],
-        ..notify_rule("exit_id_rule", "Exit ID Rule")
     });
     config.rules.push(Rule {
         trigger: Some(Trigger::Schedule {
@@ -2260,17 +2258,12 @@ async fn test_execution_ids_are_unique_across_the_three_spawn_paths() {
     });
     let mut engine = DaemonEngine::new(config);
     let triggered_rule = engine.config.rules[0].clone();
-    let exit_rule = engine.config.rules[1].clone();
-    let recurring_rule = engine.config.rules[2].clone();
+    let recurring_rule = engine.config.rules[1].clone();
 
     let triggered_handle = engine
         .trigger(&triggered_rule, ExecutionOrigin::Test, "MANUAL_TEST", 0, HashMap::new())
         .await
         .expect("the triggered spawn path must start");
-    let exit_handle = engine
-        .try_execute_exit_actions(&exit_rule, "MANUAL_TEST", 0)
-        .await
-        .expect("the exit spawn path must start");
     let recurring_handle = engine
         .emulate_rule_trigger(&recurring_rule)
         .await
@@ -2279,7 +2272,6 @@ async fn test_execution_ids_are_unique_across_the_three_spawn_paths() {
 
     let ids = [
         execution_of(&engine, "triggered_id_rule"),
-        execution_of(&engine, "exit_id_rule"),
         execution_of(&engine, "recurring_id_rule"),
     ];
     let mut unique = ids.to_vec();
@@ -2287,10 +2279,10 @@ async fn test_execution_ids_are_unique_across_the_three_spawn_paths() {
     unique.dedup();
     assert_eq!(
         unique.len(),
-        3,
-        "the three spawn paths must not collide on an execution id: {ids:?}"
+        2,
+        "the spawn paths must not collide on an execution id: {ids:?}"
     );
-    let observed_max = *ids.iter().max().expect("three ids were collected");
+    let observed_max = *ids.iter().max().expect("two ids were collected");
     assert!(
         next_execution_id() > observed_max,
         "a later allocation must be greater than every issued id; separate counters would \
@@ -2298,10 +2290,8 @@ async fn test_execution_ids_are_unique_across_the_three_spawn_paths() {
     );
 
     engine.abort_rule_executions("triggered_id_rule");
-    engine.abort_rule_executions("exit_id_rule");
     engine.abort_rule_executions("recurring_id_rule");
     let _ = triggered_handle.await;
-    let _ = exit_handle.await;
     let _ = recurring_handle.await;
 }
 
@@ -2651,12 +2641,8 @@ async fn test_offline_runner_produces_the_same_step_tokens_as_the_engine_pipelin
         rule_name: &rule.name,
         context_name: "Manual Run",
         pid: 0,
-        is_exit: false,
         stop_on_error: true,
         bind_companions: true,
-        label: "Pipeline",
-        error_label: "Action",
-        warn_on_error_halt: true,
         finished: None,
     };
     let halted = run_action_pipeline(run, &mut engine_ctx, &tx).await;
@@ -2924,7 +2910,6 @@ fn tracked_execution(rule_id: &str, call_chain: Vec<String>) -> ActiveExecutionI
         rule_id: rule_id.to_string(),
         step_index: 0,
         total_steps: 2,
-        is_exit: false,
         started_at: Instant::now(),
         call_chain,
     }
@@ -2941,9 +2926,9 @@ async fn test_execution_tracker_keeps_pipelines_and_abort_handles_in_step() {
     assert_eq!(tracker.call_chain(1), vec!["caller".to_string()]);
     assert!(tracker.is_running_rule(1, "rule_a"));
     assert_eq!(tracker.running_rule_id(1), Some("rule_a"));
-    tracker.record_step(1, 1, 2, true);
+    tracker.record_step(1, 1, 2);
     let item = tracker.active_executions().next().expect("one tracked execution");
-    assert_eq!((item.step_index, item.total_steps, item.is_exit), (1, 2, true));
+    assert_eq!((item.step_index, item.total_steps), (1, 2));
 
     // A finished pipeline leaves neither its entry nor its abort handle behind.
     tracker.record_finished(1, "rule_a");

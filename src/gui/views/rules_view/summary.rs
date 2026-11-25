@@ -1,8 +1,8 @@
 use crate::gui::components::text::fill;
 use crate::i18n::Strings;
 use crate::models::{
-    Action, ArchiveFormat, PowerPlanType, RuleCondition, SystemEventType, SystemPowerType, Trigger,
-    WindowActionType,
+    Action, ArchiveFormat, PowerPlanType, ProcessTriggerEvent, RuleCondition, SystemEventType,
+    SystemPowerType, Trigger, WindowActionType,
 };
 
 pub(super) fn trigger_sort_key(trig: &Option<crate::models::Trigger>) -> usize {
@@ -428,11 +428,15 @@ pub(super) fn format_trigger_display(
     loc: &crate::i18n::Strings,
 ) -> (&'static str, String) {
     match trigger {
-        Some(Trigger::Process { process_name, single_instance, .. }) => {
+        Some(Trigger::Process { process_name, single_instance, event, .. }) => {
             let si_suffix = if *single_instance { loc.rules_summary_single_instance } else { "" };
+            let event_label = match event {
+                ProcessTriggerEvent::Started => loc.rules_trigger_proc_start,
+                ProcessTriggerEvent::Exited => loc.rules_trigger_proc_exit,
+            };
             (
                 egui_phosphor::regular::APP_WINDOW,
-                format!("{} {}{}", loc.rules_trigger_proc, process_name, si_suffix),
+                format!("{} {}{}", event_label, process_name, si_suffix),
             )
         }
         Some(Trigger::WindowFocus { process_name, on_focus_gained, on_focus_lost }) => {
@@ -810,6 +814,7 @@ mod tests {
                     process_name: "notepad.exe".into(),
                     match_mode: crate::models::ProcessMatchMode::Exact,
                     single_instance: false,
+                    event: ProcessTriggerEvent::Started,
                 }),
                 loc,
             );
@@ -914,12 +919,26 @@ mod tests {
             process_name: "notepad.exe".into(),
             match_mode: crate::models::ProcessMatchMode::Exact,
             single_instance: false,
+            event: ProcessTriggerEvent::Started,
         });
         let (_, proc_en) = format_trigger_display(&process, en);
         let (_, proc_ru) = format_trigger_display(&process, ru);
-        assert_eq!(proc_en, format!("{} {}", en.rules_trigger_proc, "notepad.exe"));
-        assert_eq!(proc_ru, format!("{} {}", ru.rules_trigger_proc, "notepad.exe"));
+        assert_eq!(proc_en, format!("{} {}", en.rules_trigger_proc_start, "notepad.exe"));
+        assert_eq!(proc_ru, format!("{} {}", ru.rules_trigger_proc_start, "notepad.exe"));
         assert_ne!(proc_en, proc_ru);
+
+        // The firing event is part of the summary, so an exit rule never reads as a launch.
+        let exit_process = Some(Trigger::Process {
+            process_name: "notepad.exe".into(),
+            match_mode: crate::models::ProcessMatchMode::Exact,
+            single_instance: false,
+            event: ProcessTriggerEvent::Exited,
+        });
+        let (_, exit_en) = format_trigger_display(&exit_process, en);
+        let (_, exit_ru) = format_trigger_display(&exit_process, ru);
+        assert_eq!(exit_en, format!("{} {}", en.rules_trigger_proc_exit, "notepad.exe"));
+        assert_eq!(exit_ru, format!("{} {}", ru.rules_trigger_proc_exit, "notepad.exe"));
+        assert_ne!(exit_en, proc_en);
 
         let window = Some(Trigger::WindowFocus {
             process_name: "code.exe".into(),

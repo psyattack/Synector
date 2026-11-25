@@ -27,12 +27,12 @@ fn test_rule_clone_with_new_id() {
             process_name: "game.exe".into(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: true,
+            event: crate::models::ProcessTriggerEvent::Started,
         }),
         actions: vec![Action::Notification {
             title: "Alert".into(),
             message: "Starting".into(),
         }],
-        on_exit_actions: vec![],
         custom_icon_path: Some("C:\\game.exe".into()),
         auto_process_icon: true,
         conditions: vec![],
@@ -186,7 +186,6 @@ fn test_new_actions_and_conditions_serde() {
                 else_actions: vec![],
             },
         ],
-        on_exit_actions: vec![],
         custom_icon_path: None,
         auto_process_icon: true,
         conditions: vec![

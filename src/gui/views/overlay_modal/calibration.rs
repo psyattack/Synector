@@ -95,12 +95,7 @@ pub(super) fn push_calibration_preview(
 pub(super) fn persist_studio_into_rule(state: &mut GuiState, studio: &OverlayStudioState) {
     let Some(target_idx) = studio.action_target_idx else { return };
     let Some(rule) = state.editing_rule.as_mut() else { return };
-    let actions = if studio.is_exit_pipeline {
-        &mut rule.on_exit_actions
-    } else {
-        &mut rule.actions
-    };
-    if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(target_idx) {
+    if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = rule.actions.get_mut(target_idx) {
         if custom_overlay.is_some() {
             *custom_overlay = Some(Box::new(studio.overlay.clone()));
         }

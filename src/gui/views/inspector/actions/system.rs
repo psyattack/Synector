@@ -379,7 +379,6 @@ mod tests {
                         &state,
                         &mut action,
                         0,
-                        false,
                         ProcessPickerTarget::Action(0),
                         &t,
                         0,

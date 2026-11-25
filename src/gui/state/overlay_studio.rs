@@ -21,7 +21,6 @@ pub struct OverlayStudioState {
     pub is_calibrating: bool,
     pub selected_element_idx: Option<usize>,
     pub action_target_idx: Option<usize>,
-    pub is_exit_pipeline: bool,
     pub active_color_target: Option<ColorPickerTarget>,
     pub snap_to_grid: bool,
     pub card_lock_aspect: bool,
@@ -41,7 +40,6 @@ impl OverlayStudioState {
     pub fn new(
         overlay: crate::models::OverlayDefinition,
         action_target_idx: Option<usize>,
-        is_exit_pipeline: bool,
         preset_save_name: String,
     ) -> Self {
         Self {
@@ -49,7 +47,6 @@ impl OverlayStudioState {
             is_calibrating: false,
             selected_element_idx: None,
             action_target_idx,
-            is_exit_pipeline,
             active_color_target: None,
             snap_to_grid: false,
             card_lock_aspect: false,
@@ -81,14 +78,13 @@ impl GuiState {
     /// example), so the surface that listed it edits exactly the entry it showed instead of
     /// re-reading a cache that may not contain it.
     pub fn open_overlay_studio_with(&mut self, overlay: crate::models::OverlayDefinition) {
-        self.show_overlay_studio(OverlayStudioState::new(overlay, None, false, String::new()));
+        self.show_overlay_studio(OverlayStudioState::new(overlay, None, String::new()));
     }
 
-    pub fn open_overlay_studio_for_action(&mut self, action_idx: usize, is_exit: bool) {
+    pub fn open_overlay_studio_for_action(&mut self, action_idx: usize) {
         let studio = {
             let Some(rule) = &self.editing_rule else { return };
-            let actions = if is_exit { &rule.on_exit_actions } else { &rule.actions };
-            let Some(crate::models::Action::Overlay { overlay_id, custom_overlay, .. }) = actions.get(action_idx) else {
+            let Some(crate::models::Action::Overlay { overlay_id, custom_overlay, .. }) = rule.actions.get(action_idx) else {
                 return;
             };
             let overlay = if let Some(cust) = custom_overlay {
@@ -103,7 +99,7 @@ impl GuiState {
                     .unwrap_or_else(|| default_overlay_for(overlay_id))
             };
             let preset_save_name = overlay.name.clone();
-            OverlayStudioState::new(overlay, Some(action_idx), is_exit, preset_save_name)
+            OverlayStudioState::new(overlay, Some(action_idx), preset_save_name)
         };
         self.show_overlay_studio(studio);
     }
@@ -117,17 +113,11 @@ impl GuiState {
         let Some(studio) = self.overlay_studio.as_ref() else { return };
         let overlay = studio.overlay.clone();
         let action_target = studio.action_target_idx;
-        let is_exit_pipeline = studio.is_exit_pipeline;
         self.request_hide_overlay_preview(&overlay.id);
         let mut save_to_library = action_target.is_none();
         if let Some(action_idx) = action_target {
             if let Some(rule) = &mut self.editing_rule {
-                let actions = if is_exit_pipeline {
-                    &mut rule.on_exit_actions
-                } else {
-                    &mut rule.actions
-                };
-                if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = actions.get_mut(action_idx) {
+                if let Some(crate::models::Action::Overlay { custom_overlay, overlay_id, .. }) = rule.actions.get_mut(action_idx) {
                     if custom_overlay.is_some() {
                         // Inline definitions live in the rule action, not in the library.
                         *custom_overlay = Some(Box::new(overlay.clone()));
@@ -187,11 +177,9 @@ mod tests {
         let studio = OverlayStudioState::new(
             crate::models::OverlayDefinition::default_crosshair(),
             Some(3),
-            true,
             "Saved name".into(),
         );
         assert_eq!(studio.action_target_idx, Some(3));
-        assert!(studio.is_exit_pipeline);
         assert_eq!(studio.preset_save_name, "Saved name");
         assert!(studio.undo_stack.is_empty() && studio.redo_stack.is_empty());
         assert!(!studio.is_calibrating);

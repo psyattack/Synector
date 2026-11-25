@@ -63,10 +63,9 @@ When no daemon answers, `--run-rule` runs the rule through the engine's shared s
 It applies the same gates as the GUI Run button: the quota and the rule's preconditions are
 enforced, while the cooldown and `is_enabled` are not, so a disabled rule can be tested. The
 differences are deliberate consequences of there being no daemon: nothing is persisted (analytics,
-runtime counters and a lifetime-quota auto-pause), `on_exit_actions` do not run because their bound
-process exit path is daemon-owned, rule-to-rule control has no dispatcher, and the context carries
-`ProcessId` 0 with no live process path — `ProcessName` is the rule's process/window/resource target
-when it has one and `Manual Run` otherwise.
+runtime counters and a lifetime-quota auto-pause), rule-to-rule control has no dispatcher, and the
+context carries `ProcessId` 0 with no live process path — `ProcessName` is the rule's
+process/window/resource target when it has one and `Manual Run` otherwise.
 
 Synector runs elevated by default (`--no-elevate` opts out). Elevation enables kernel ETW process
 tracing, UIPI-safe input simulation into elevated applications, and silent highest-privilege logon
@@ -218,10 +217,10 @@ The same tick samples the daemon's own CPU share, private working set and disk t
 process I/O counters (`DaemonUsage`), shown as one line in the SYSTEM LOAD card; network and GPU
 are deliberately absent because Windows exposes no cheap per-process counter for either and a
 daemon's share of them is effectively zero.
-The shared step loop reports every finished non-exit pipeline once (`PipelineOutcome`), so an error
-that does not halt a pipeline still counts; a run that never reports an outcome is recorded as
-aborted by its execution guard, so a user stop, a replaced run and a stopped recurring cycle are
-counted in one place and an exit pipeline is never counted at all. The GUI polls one narrow
+The shared step loop reports every finished pipeline once (`PipelineOutcome`), so an error that
+does not halt a pipeline still counts; a run that never reports an outcome is recorded as aborted
+by its execution guard, so a user stop, a replaced run and a stopped recurring cycle are counted in
+one place. The GUI polls one narrow
 `GetAnalytics` request per second only while its dialog is open; the ordinary state snapshot does
 not carry the analytics payload. The dashboard paints charts with
 `src/gui/components/charts.rs` on `Tokens` roles and `Tokens::series`, so there is no plotting
@@ -377,13 +376,13 @@ least one plug-and-play notification, which avoids firing a "device disconnected
 
 ## Rule engine
 
-A rule pairs one optional trigger with preconditions, an ordered action pipeline, `on_exit_actions`,
-and cooldown/quota limits. `src/daemon/engine.rs` is the `DaemonEngine` facade: it schedules
+A rule pairs one optional trigger with preconditions, one ordered action pipeline, and
+cooldown/quota limits. `src/daemon/engine.rs` is the `DaemonEngine` facade: it schedules
 triggered runs, evaluates conditions, enforces quotas and cooldowns, tracks active executions and
 reports analytics. The implementation is split by owner under `src/daemon/engine/`: `scheduler`
 owns admission and tick throttling, `quota` the documented counter semantics, `executions` active
 pipelines, abort handles, recurring test loops and bound satellites, `pipeline` the step loop, the
-single launch machinery behind the triggered/exit/recurring paths and the call/context entry points,
+single launch machinery behind the triggered/recurring paths and the call/context entry points,
 `triggers` the process/window/schedule/resource/system intake, `projector` the read-only
 `DaemonState` snapshot the IPC layer serializes, `state` the log buffer and section persistence,
 `ipc` the request dispatcher and rule writers, `offline` the `--run-rule` fallback, `update` the
@@ -395,8 +394,8 @@ entry point and every caller states the `ExecutionOrigin` explicitly (there is n
 fallback). Condition evaluation and process/window/device matching live in `src/daemon/conditions.rs`,
 which the action handlers call directly; `Rule::visit_actions` in the model is the one read-only
 action-tree traversal used by the engine, sharing, validation and the GUI, including the
-active-overlay branch of `is_rule_executing`, which scans nested `IfElse` branches and the exit
-actions as well as the top-level pipeline.
+active-overlay branch of `is_rule_executing`, which scans nested `IfElse` branches as well as the
+top-level pipeline.
 
 - **Cooldown:** minimum time between two triggered runs. It is seeded from `last_executed_at`
   when the daemon starts, so a restart does not clear a cooldown that is still running; a run the
@@ -509,9 +508,13 @@ starts directly (Run/Test Run, an overlay click target or `--run-rule`) force-te
 bound satellites at start and after the pipeline finishes; scheduled, webhook, hotkey and
 system-event runs leave them tracked while the primary process keeps running.
 
-Process-triggered rules can enable `single_instance`. It does not prevent more copies of the
-application from starting; it makes the rule fire only for the first matching instance and defers
-exit actions and bound-satellite cleanup until every tracked instance has exited.
+Process-triggered rules choose which lifecycle event fires their pipeline with `event`: `started`
+(the default) or `exited`. Both choices run the same ordered pipeline through the ordinary trigger
+path, so pre-conditions, cooldown, quota and analytics apply to either one; a start-triggered run
+can bind `close_on_exit` satellites, an exit-triggered run cannot because its primary process is
+already gone. `single_instance` does not prevent more copies of the application from starting; it
+makes the start pipeline fire only for the first matching instance and the exit pipeline fire only
+when the last tracked instance has exited, and it defers bound-satellite cleanup until then.
 
 ## Input simulation and Macro Studio
 

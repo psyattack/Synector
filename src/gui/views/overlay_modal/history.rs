@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_property_edit_session_pushes_one_snapshot() {
-        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, false, String::new());
+        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, String::new());
         let before = studio.overlay.clone();
 
         // First changed frame of a session: one snapshot of the pre-edit state.

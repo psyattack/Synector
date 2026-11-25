@@ -26,27 +26,24 @@ pub enum ProcessCategoryFilter {
 #[derive(Debug, Clone)]
 pub struct ExpandedScriptEditorState {
     pub step_idx: usize,
-    pub is_exit_pipeline: bool,
     pub language: crate::gui::components::script_highlighter::ScriptLanguage,
 }
 
 #[derive(Debug, Clone)]
 pub struct MacroEditorModalState {
     pub step_idx: usize,
-    pub is_exit_pipeline: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessPickerTarget {
     Trigger,
     Action(usize),
-    ExitAction(usize),
     Condition(usize),
-    ActionCondition { action_idx: usize, cond_idx: usize, is_exit: bool },
-    ActionElseIfCondition { action_idx: usize, branch_idx: usize, cond_idx: usize, is_exit: bool },
-    IfElseThen { parent_idx: usize, sub_idx: usize, is_exit: bool },
-    IfElseElseIf { parent_idx: usize, branch_idx: usize, sub_idx: usize, is_exit: bool },
-    IfElseElse { parent_idx: usize, sub_idx: usize, is_exit: bool },
+    ActionCondition { action_idx: usize, cond_idx: usize },
+    ActionElseIfCondition { action_idx: usize, branch_idx: usize, cond_idx: usize },
+    IfElseThen { parent_idx: usize, sub_idx: usize },
+    IfElseElseIf { parent_idx: usize, branch_idx: usize, sub_idx: usize },
+    IfElseElse { parent_idx: usize, sub_idx: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +60,6 @@ pub enum IfElseCatalogTarget {
 
 #[derive(Debug, Clone)]
 pub struct ActionCatalogModalState {
-    pub is_exit_pipeline: bool,
     pub insert_idx: Option<usize>,
     pub change_idx: Option<usize>,
     pub selected_category: usize,
@@ -75,10 +71,10 @@ pub struct ActionCatalogModalState {
 pub enum ConditionCatalogTarget {
     RulePrecondition,
     ChangeRulePrecondition(usize),
-    ActionIfElse { action_idx: usize, is_exit: bool },
-    ChangeActionIfElse { action_idx: usize, cond_idx: usize, is_exit: bool },
-    ActionElseIf { action_idx: usize, branch_idx: usize, is_exit: bool },
-    ChangeActionElseIf { action_idx: usize, branch_idx: usize, cond_idx: usize, is_exit: bool },
+    ActionIfElse { action_idx: usize },
+    ChangeActionIfElse { action_idx: usize, cond_idx: usize },
+    ActionElseIf { action_idx: usize, branch_idx: usize },
+    ChangeActionElseIf { action_idx: usize, branch_idx: usize, cond_idx: usize },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -131,12 +127,10 @@ impl GuiState {
     pub fn open_script_editor(
         &mut self,
         step_idx: usize,
-        is_exit_pipeline: bool,
         language: crate::gui::components::script_highlighter::ScriptLanguage,
     ) {
         let editor = ExpandedScriptEditorState {
             step_idx,
-            is_exit_pipeline,
             language,
         };
         self.expanded_script_editor = Some(editor.clone());
@@ -147,10 +141,9 @@ impl GuiState {
         self.expanded_script_editor = None;
     }
 
-    pub fn open_macro_editor(&mut self, step_idx: usize, is_exit_pipeline: bool) {
+    pub fn open_macro_editor(&mut self, step_idx: usize) {
         if let Some(rule) = &mut self.editing_rule {
-            let actions = if is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
-            if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(step_idx) {
+            if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = rule.actions.get_mut(step_idx) {
                 if events.is_empty() {
                     let library = crate::config::Library::read();
                     if let Some(preset) = library.find_macro(pid) {
@@ -162,10 +155,7 @@ impl GuiState {
                 }
             }
         }
-        let editor = MacroEditorModalState {
-            step_idx,
-            is_exit_pipeline,
-        };
+        let editor = MacroEditorModalState { step_idx };
         self.macro_editor = Some(editor.clone());
         self.last_macro_editor = Some(editor);
         self.macro_preset_save_name = self
@@ -185,8 +175,7 @@ impl GuiState {
         if let Some(edit_info) = self.macro_editor.take() {
             let mut pending_preset = None;
             if let Some(rule) = &mut self.editing_rule {
-                let actions = if edit_info.is_exit_pipeline { &mut rule.on_exit_actions } else { &mut rule.actions };
-                if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = actions.get_mut(edit_info.step_idx) {
+                if let Some(crate::models::Action::Macro { preset_id: Some(ref pid), events, repeat, speed, infinite, .. }) = rule.actions.get_mut(edit_info.step_idx) {
                     let library = crate::config::Library::read();
                     let preset_name = library.find_macro(pid).map(|p| p.name.clone()).unwrap_or_else(|| pid.clone());
                     // The recorded events stay in the action until the daemon confirms the preset:
@@ -205,7 +194,6 @@ impl GuiState {
             if let Some(preset) = pending_preset {
                 self.pending_macro_saves.push(PendingMacroSave {
                     step_idx: edit_info.step_idx,
-                    is_exit_pipeline: edit_info.is_exit_pipeline,
                     preset_id: preset.id.clone(),
                 });
                 let direct = DirectWrite::Library(DirectLibraryChange::UpsertMacroPreset(Box::new(preset.clone())));
@@ -219,9 +207,8 @@ impl GuiState {
         crate::gui::macro_recorder::set_studio_active(false);
     }
 
-    pub fn open_action_catalog(&mut self, is_exit_pipeline: bool, insert_idx: Option<usize>) {
+    pub fn open_action_catalog(&mut self, insert_idx: Option<usize>) {
         let catalog = ActionCatalogModalState {
-            is_exit_pipeline,
             insert_idx,
             change_idx: None,
             selected_category: 0,
@@ -234,9 +221,8 @@ impl GuiState {
 
     /// Opens the catalog in change mode: the chosen action replaces the step at `change_idx`
     /// instead of being inserted or appended.
-    pub fn open_action_catalog_change(&mut self, is_exit_pipeline: bool, change_idx: usize) {
+    pub fn open_action_catalog_change(&mut self, change_idx: usize) {
         let catalog = ActionCatalogModalState {
-            is_exit_pipeline,
             insert_idx: None,
             change_idx: Some(change_idx),
             selected_category: 0,
@@ -247,9 +233,8 @@ impl GuiState {
         self.last_action_catalog = Some(catalog);
     }
 
-    pub fn open_action_catalog_nested(&mut self, is_exit_pipeline: bool, target: IfElseCatalogTarget) {
+    pub fn open_action_catalog_nested(&mut self, target: IfElseCatalogTarget) {
         let catalog = ActionCatalogModalState {
-            is_exit_pipeline,
             insert_idx: None,
             change_idx: None,
             selected_category: 0,
@@ -328,31 +313,27 @@ impl GuiState {
                         item.condition = condition;
                     }
                 }
-                ConditionCatalogTarget::ActionIfElse { action_idx, is_exit } => {
-                    let actions = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { conditions, .. }) = actions.get_mut(action_idx) {
+                ConditionCatalogTarget::ActionIfElse { action_idx } => {
+                    if let Some(crate::models::Action::IfElse { conditions, .. }) = rule.actions.get_mut(action_idx) {
                         conditions.push(crate::models::RuleConditionItem::new(condition));
                     }
                 }
-                ConditionCatalogTarget::ChangeActionIfElse { action_idx, cond_idx, is_exit } => {
-                    let actions = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { conditions, .. }) = actions.get_mut(action_idx) {
+                ConditionCatalogTarget::ChangeActionIfElse { action_idx, cond_idx } => {
+                    if let Some(crate::models::Action::IfElse { conditions, .. }) = rule.actions.get_mut(action_idx) {
                         if let Some(item) = conditions.get_mut(cond_idx) {
                             item.condition = condition;
                         }
                     }
                 }
-                ConditionCatalogTarget::ActionElseIf { action_idx, branch_idx, is_exit } => {
-                    let actions = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = actions.get_mut(action_idx) {
+                ConditionCatalogTarget::ActionElseIf { action_idx, branch_idx } => {
+                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = rule.actions.get_mut(action_idx) {
                         if let Some(branch) = else_if_branches.get_mut(branch_idx) {
                             branch.conditions.push(crate::models::RuleConditionItem::new(condition));
                         }
                     }
                 }
-                ConditionCatalogTarget::ChangeActionElseIf { action_idx, branch_idx, cond_idx, is_exit } => {
-                    let actions = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = actions.get_mut(action_idx) {
+                ConditionCatalogTarget::ChangeActionElseIf { action_idx, branch_idx, cond_idx } => {
+                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = rule.actions.get_mut(action_idx) {
                         if let Some(branch) = else_if_branches.get_mut(branch_idx) {
                             if let Some(item) = branch.conditions.get_mut(cond_idx) {
                                 item.condition = condition;
@@ -368,7 +349,6 @@ impl GuiState {
     pub fn add_action_from_catalog(
         &mut self,
         action: crate::models::Action,
-        is_exit_pipeline: bool,
         insert_idx: Option<usize>,
         change_idx: Option<usize>,
         ifelse_target: Option<IfElseCatalogTarget>,
@@ -376,11 +356,7 @@ impl GuiState {
         self.push_undo_snapshot();
         if let Some(rule) = &mut self.editing_rule {
             if let Some(target) = ifelse_target {
-                let list = if is_exit_pipeline {
-                    &mut rule.on_exit_actions
-                } else {
-                    &mut rule.actions
-                };
+                let list = &mut rule.actions;
                 match target {
                     IfElseCatalogTarget::Then(parent_idx) => {
                         if let Some(crate::models::Action::IfElse { then_actions, .. }) = list.get_mut(parent_idx) {
@@ -438,11 +414,7 @@ impl GuiState {
                     }
                 }
             } else {
-                let list = if is_exit_pipeline {
-                    &mut rule.on_exit_actions
-                } else {
-                    &mut rule.actions
-                };
+                let list = &mut rule.actions;
                 if let Some(idx) = change_idx {
                     // Change mode replaces the step in place; a stale index falls back to append
                     // so the pick cannot be lost silently.
@@ -530,7 +502,6 @@ mod tests {
 
         // Action catalog
         state.action_catalog = Some(ActionCatalogModalState {
-            is_exit_pipeline: false,
             insert_idx: None,
             change_idx: None,
             search_query: String::new(),
@@ -544,7 +515,6 @@ mod tests {
         // Script editor
         state.expanded_script_editor = Some(ExpandedScriptEditorState {
             step_idx: 0,
-            is_exit_pipeline: false,
             language: crate::gui::components::script_highlighter::ScriptLanguage::PowerShell,
         });
         assert!(state.is_modal_open());
@@ -579,7 +549,7 @@ mod tests {
         assert!(!state.is_modal_open());
 
         // Macro editor
-        state.open_macro_editor(0, false);
+        state.open_macro_editor(0);
         assert!(state.is_modal_open());
         state.close_macro_editor();
         assert!(!state.is_modal_open());
@@ -640,7 +610,6 @@ mod tests {
         state.open_condition_catalog_with_target(ConditionCatalogTarget::ChangeActionIfElse {
             action_idx: 0,
             cond_idx: 0,
-            is_exit: false,
         });
         state.apply_condition_from_catalog(RuleCondition::WindowFocused {
             process_name: "code.exe".into(),
@@ -656,7 +625,6 @@ mod tests {
         // 4. Add condition to primary IfElse
         state.open_condition_catalog_with_target(ConditionCatalogTarget::ActionIfElse {
             action_idx: 0,
-            is_exit: false,
         });
         state.apply_condition_from_catalog(RuleCondition::TimeRange {
             start_time: "10:00".into(),
@@ -675,7 +643,6 @@ mod tests {
             action_idx: 0,
             branch_idx: 0,
             cond_idx: 0,
-            is_exit: false,
         });
         state.apply_condition_from_catalog(RuleCondition::Event {
             event_type: SystemEventType::PowerSourceBattery,
@@ -691,7 +658,6 @@ mod tests {
         state.open_condition_catalog_with_target(ConditionCatalogTarget::ActionElseIf {
             action_idx: 0,
             branch_idx: 0,
-            is_exit: false,
         });
         state.apply_condition_from_catalog(RuleCondition::TimeRange {
             start_time: "13:00".into(),
@@ -740,8 +706,8 @@ mod tests {
         state.editing_rule = Some(rule);
 
         // 1. Insert at the requested index; the modal closes on commit.
-        state.open_action_catalog(false, Some(1));
-        state.add_action_from_catalog(kill("new.exe"), false, Some(1), None, None);
+        state.open_action_catalog(Some(1));
+        state.add_action_from_catalog(kill("new.exe"), Some(1), None, None);
         assert!(state.action_catalog.is_none(), "a commit closes the catalog");
         {
             let actions = &state.editing_rule.as_ref().unwrap().actions;
@@ -750,55 +716,44 @@ mod tests {
         }
 
         // 1b. Change mode replaces the step in place instead of inserting a new one.
-        state.open_action_catalog_change(false, 2);
-        state.add_action_from_catalog(notification("replaced"), false, None, Some(2), None);
+        state.open_action_catalog_change(2);
+        state.add_action_from_catalog(notification("replaced"), None, Some(2), None);
         {
             let actions = &state.editing_rule.as_ref().unwrap().actions;
             assert_eq!(actions.len(), 4, "a change never grows the pipeline");
             assert!(matches!(&actions[2], Action::Notification { title, .. } if title == "replaced"));
         }
 
-        // 2. An out-of-range index is clamped to the end, and the exit pipeline is separate.
-        state.open_action_catalog(false, Some(99));
-        state.add_action_from_catalog(notification("tail"), false, Some(99), None, None);
+        // 2. An out-of-range index is clamped to the end.
+        state.open_action_catalog(Some(99));
+        state.add_action_from_catalog(notification("tail"), Some(99), None, None);
         assert!(matches!(
             state.editing_rule.as_ref().unwrap().actions.last(),
             Some(Action::Notification { title, .. }) if title == "tail"
         ));
 
-        state.open_action_catalog(true, None);
-        state.add_action_from_catalog(notification("exit"), true, None, None, None);
-        assert_eq!(state.editing_rule.as_ref().unwrap().on_exit_actions.len(), 1);
-        assert_eq!(state.editing_rule.as_ref().unwrap().actions.len(), 5);
-
         // 3. Nested targets append inside the If/Else instead of the top level.
         let ifelse = 3;
-        state.open_action_catalog_nested(false, IfElseCatalogTarget::Then(ifelse));
+        state.open_action_catalog_nested(IfElseCatalogTarget::Then(ifelse));
         state.add_action_from_catalog(
             notification("then"),
-            false,
             None,
             None,
             Some(IfElseCatalogTarget::Then(ifelse)),
         );
-        state.open_action_catalog_nested(false, IfElseCatalogTarget::Else(ifelse));
+        state.open_action_catalog_nested(IfElseCatalogTarget::Else(ifelse));
         state.add_action_from_catalog(
             notification("else"),
-            false,
             None,
             None,
             Some(IfElseCatalogTarget::Else(ifelse)),
         );
-        state.open_action_catalog_nested(
-            false,
-            IfElseCatalogTarget::ElseIf {
-                parent_idx: ifelse,
-                branch_idx: 0,
-            },
-        );
+        state.open_action_catalog_nested(IfElseCatalogTarget::ElseIf {
+            parent_idx: ifelse,
+            branch_idx: 0,
+        });
         state.add_action_from_catalog(
             notification("elseif"),
-            false,
             None,
             None,
             Some(IfElseCatalogTarget::ElseIf {
@@ -808,16 +763,12 @@ mod tests {
         );
 
         // 4. Change mode replaces a nested step in place; it never appends or grows the branch.
-        state.open_action_catalog_nested(
-            false,
-            IfElseCatalogTarget::ThenChange {
-                parent_idx: ifelse,
-                change_idx: 0,
-            },
-        );
+        state.open_action_catalog_nested(IfElseCatalogTarget::ThenChange {
+            parent_idx: ifelse,
+            change_idx: 0,
+        });
         state.add_action_from_catalog(
             notification("then-changed"),
-            false,
             None,
             None,
             Some(IfElseCatalogTarget::ThenChange {
@@ -845,9 +796,9 @@ mod tests {
             panic!("expected the IfElse action at index {ifelse}");
         }
 
-        // Every commit pushed exactly one undo snapshot (insert, change, append, exit and the
-        // four nested picks).
-        assert_eq!(state.undo_stack.len(), 8);
+        // Every commit pushed exactly one undo snapshot (insert, change, append and the four
+        // nested picks).
+        assert_eq!(state.undo_stack.len(), 7);
     }
 
     /// Choosing a trigger replaces the draft's trigger and closes the catalog; `None` clears it.
@@ -874,6 +825,7 @@ mod tests {
             process_name: "target.exe".to_string(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: false,
+            event: crate::models::ProcessTriggerEvent::Exited,
         }));
         assert!(matches!(
             &state.editing_rule.as_ref().unwrap().trigger,
@@ -891,14 +843,14 @@ mod tests {
     fn test_macro_preset_default_name_is_localized() {
         let mut state = GuiState::new();
         state.language = crate::i18n::Language::English;
-        state.open_macro_editor(0, false);
+        state.open_macro_editor(0);
         assert_eq!(
             state.macro_preset_save_name,
             crate::i18n::get(crate::i18n::Language::English).macro_studio_custom_preset_name
         );
 
         state.language = crate::i18n::Language::Russian;
-        state.open_macro_editor(0, false);
+        state.open_macro_editor(0);
         assert_eq!(
             state.macro_preset_save_name,
             crate::i18n::get(crate::i18n::Language::Russian).macro_studio_custom_preset_name

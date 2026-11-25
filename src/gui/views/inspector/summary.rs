@@ -493,7 +493,6 @@ pub(crate) fn render_rule_target_picker(
     state: &GuiState,
     rule_id: &mut String,
     idx: usize,
-    is_exit_pipeline: bool,
     t: &Tokens,
 ) {
     let editing_id = state
@@ -509,7 +508,7 @@ pub(crate) fn render_rule_target_picker(
         ui,
         &choices,
         rule_id,
-        ("rule_control_target", idx, is_exit_pipeline),
+        ("rule_control_target", idx),
         state.loc(),
         t,
     );

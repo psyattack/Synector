@@ -410,7 +410,7 @@ fn apply_target(state: &mut GuiState, target: SearchTarget, payload: Option<Stri
         SearchTarget::Actions => {
             state.search_query.clear();
             state.ensure_rule_draft();
-            state.open_action_catalog(false, None);
+            state.open_action_catalog(None);
             if let Some(catalog) = &mut state.action_catalog {
                 catalog.search_query = query;
             }
@@ -501,7 +501,7 @@ fn apply_macro_preset(state: &mut GuiState, payload: Option<String>, query: Stri
             infinite: preset.infinite,
         });
     }
-    state.open_macro_editor(step_idx, false);
+    state.open_macro_editor(step_idx);
     state.show_macro_presets_modal = true;
     state.macro_preset_search_query = query;
 }

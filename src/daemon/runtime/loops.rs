@@ -495,6 +495,7 @@ mod tests {
                 process_name: "game.exe".to_string(),
                 match_mode: Default::default(),
                 single_instance: false,
+                event: Default::default(),
             }),
             ..Default::default()
         }

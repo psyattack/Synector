@@ -83,11 +83,19 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                     render_trigger_info_frame(ui, egui_phosphor::regular::INFO, loc.inspector_manual_desc, t.accent_ink, t);
                 } else {
                     match &mut rule.trigger {
-                    Some(Trigger::Process { process_name, match_mode, single_instance }) => {
+                    Some(Trigger::Process { process_name, match_mode, single_instance, event }) => {
                                 widgets::hud(ui, loc.inspector_field_target_process, t.muted);
                                 if render_process_name_row(ui, loc, process_name, loc.inspector_field_target_process_hint) {
                                     switch_trigger_to_hunter = true;
                                 }
+
+                                ui.add_space(6.0);
+                                widgets::hud(ui, loc.inspector_process_event, t.muted);
+                                let event_options = [
+                                    (ProcessTriggerEvent::Started, Cell::new(loc.inspector_process_event_start, "")),
+                                    (ProcessTriggerEvent::Exited, Cell::new(loc.inspector_process_event_exit, "")),
+                                ];
+                                widgets::cells(ui, event, &event_options);
 
                                 ui.add_space(6.0);
                                 widgets::hud(ui, loc.inspector_field_match_mode, t.muted);

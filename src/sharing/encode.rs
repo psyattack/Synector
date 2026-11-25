@@ -114,6 +114,7 @@ fn is_default_share_field(key: &str, value: &serde_json::Value) -> bool {
         "mode" => is_text("timer"),
         "operation" => is_text("run"),
         "match_mode" => is_text("exact"),
+        "event" => is_text("started"),
         // Empty collections that are optional on deserialization.
         "events" | "days_of_week" => is_empty_array,
         _ => false,
@@ -281,6 +282,7 @@ mod tests {
             process_name: "game.exe".into(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: false,
+            event: Default::default(),
         });
         rule.actions = vec![
             Action::StartProcess {
@@ -334,6 +336,7 @@ mod tests {
             "\"match_mode\"",
             "\"single_instance\"",
             "\"close_on_exit\"",
+            "\"event\"",
         ] {
             assert!(!json.contains(stripped), "{stripped} must be stripped: {json}");
         }

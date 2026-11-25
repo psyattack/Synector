@@ -8,7 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::daemon::actions::ActionRunner;
 use crate::daemon::rule_call;
 use crate::daemon::watcher::ProcessWatcher;
-use crate::models::{Action, ProcessMatchMode, Rule, ScheduleType, Trigger};
+use crate::models::{Action, ProcessMatchMode, ProcessTriggerEvent, Rule, ScheduleType, Trigger};
 
 use super::executions::{next_execution_id, ActionCompletionEvent, BoundOverlay, BoundProcess, ExecutionOrigin, PipelineOutcome, RuleCallRuntime, RuleCallStart, RuleSkip};
 use super::DaemonEngine;
@@ -26,9 +26,6 @@ struct ExecGuard {
     id: u64,
     rule_id: String,
     is_manual: bool,
-    /// Whether this execution is a rule run at all: an exit pipeline is not counted in the
-    /// analytics counters, exactly like its outcome.
-    counts_as_run: bool,
     finished: RunFinished,
     tx: mpsc::UnboundedSender<ActionCompletionEvent>,
     /// Resolves a `wait: true` rule call when the pipeline ends or is aborted.
@@ -39,7 +36,7 @@ impl Drop for ExecGuard {
     fn drop(&mut self) {
         crate::daemon::actions::release_all_simulated_inputs();
         crate::daemon::rule_activity::mark_finished(&self.rule_id);
-        if self.counts_as_run && !self.finished.load(Ordering::Relaxed) {
+        if !self.finished.load(Ordering::Relaxed) {
             let _ = self.tx.send(ActionCompletionEvent::RunOutcome {
                 outcome: PipelineOutcome::Aborted,
             });
@@ -55,8 +52,8 @@ impl Drop for ExecGuard {
     }
 }
 
-/// What one pipeline run needs from its caller. Triggered, exited and recurring runs share one
-/// step loop; the flags below capture the few places where they legitimately differ.
+/// What one pipeline run needs from its caller. Triggered and recurring runs share one step
+/// loop; the flags below capture the few places where they legitimately differ.
 pub(super) struct PipelineRun<'a> {
     pub(super) actions: &'a [Action],
     pub(super) execution_id: u64,
@@ -65,16 +62,9 @@ pub(super) struct PipelineRun<'a> {
     /// Trigger context of the primary run, recorded on the companions it binds to a process.
     pub(super) context_name: &'a str,
     pub(super) pid: u32,
-    pub(super) is_exit: bool,
     pub(super) stop_on_error: bool,
-    /// Only the primary pipeline binds `close_on_exit` companions; exit and recurring runs do not.
+    /// Only the primary pipeline binds `close_on_exit` companions; a recurring run does not.
     pub(super) bind_companions: bool,
-    /// "Pipeline" or "Exit pipeline": the subject of the graceful-halt log line.
-    pub(super) label: &'a str,
-    /// "Action" or "Exit action": the subject of the failure log line.
-    pub(super) error_label: &'a str,
-    /// The recurring loop stops when a cycle halts; the other callers ignore the answer.
-    pub(super) warn_on_error_halt: bool,
     /// Cleared at the first step of a run and set when the run reports its outcome, so an
     /// `ExecGuard` can tell a finished run from an aborted one.
     pub(super) finished: Option<&'a AtomicBool>,
@@ -88,12 +78,8 @@ struct OwnedPipelineRun {
     rule_name: String,
     context_name: String,
     pid: u32,
-    is_exit: bool,
     stop_on_error: bool,
     bind_companions: bool,
-    label: &'static str,
-    error_label: &'static str,
-    warn_on_error_halt: bool,
     finished: RunFinished,
 }
 
@@ -169,11 +155,7 @@ struct EnginePipelineObserver<'a> {
     rule_name: &'a str,
     context_name: &'a str,
     pid: u32,
-    is_exit: bool,
     bind_companions: bool,
-    label: &'a str,
-    error_label: &'a str,
-    warn_on_error_halt: bool,
     finished: Option<&'a AtomicBool>,
 }
 
@@ -191,7 +173,6 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
             _rule_id: self.rule_id.to_string(),
             step_index,
             total_steps,
-            is_exit: self.is_exit,
         });
     }
 
@@ -228,10 +209,9 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
         let _ = self.tx.send(ActionCompletionEvent::SensitiveLog {
             level: "ERROR".to_string(),
             category: "ACTION".to_string(),
-            message: format!("{} failed in '{}': {}", self.error_label, self.rule_name, error),
+            message: format!("Action failed in '{}': {}", self.rule_name, error),
             file_message: format!(
-                "{} failed in '{}' at step {} (details omitted from the file log)",
-                self.error_label,
+                "Action failed in '{}' at step {} (details omitted from the file log)",
                 self.rule_name,
                 step_index + 1
             ),
@@ -239,15 +219,10 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
     }
 
     fn pipeline_finished(&mut self, outcome: PipelineOutcome) {
-        // Marked before the exit check: the guard must never report an abort for a run that
+        // Marked before the event: the guard must never report an abort for a run that
         // reported an outcome, whatever that outcome is.
         if let Some(finished) = self.finished {
             finished.store(true, Ordering::Relaxed);
-        }
-        // Exit pipelines are not rule activity: they run only after the primary pipeline and
-        // would skew the success rate.
-        if self.is_exit {
-            return;
         }
         let _ = self.tx.send(ActionCompletionEvent::RunOutcome { outcome });
     }
@@ -259,8 +234,7 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
                     level: "INFO".to_string(),
                     category: "RULE".to_string(),
                     message: format!(
-                        "{} gracefully halted for rule '{}' at step {}: {}",
-                        self.label,
+                        "Pipeline gracefully halted for rule '{}' at step {}: {}",
                         self.rule_name,
                         step_index + 1,
                         reason
@@ -268,17 +242,15 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
                 });
             }
             None => {
-                if self.warn_on_error_halt {
-                    let _ = self.tx.send(ActionCompletionEvent::Log {
-                        level: "WARN".to_string(),
-                        category: "RULE".to_string(),
-                        message: format!(
-                            "Pipeline stopped for rule '{}' at step {} due to error",
-                            self.rule_name,
-                            step_index + 1
-                        ),
-                    });
-                }
+                let _ = self.tx.send(ActionCompletionEvent::Log {
+                    level: "WARN".to_string(),
+                    category: "RULE".to_string(),
+                    message: format!(
+                        "Pipeline stopped for rule '{}' at step {} due to error",
+                        self.rule_name,
+                        step_index + 1
+                    ),
+                });
             }
         }
     }
@@ -298,14 +270,19 @@ pub(super) async fn run_action_pipeline(
         rule_name: run.rule_name,
         context_name: run.context_name,
         pid: run.pid,
-        is_exit: run.is_exit,
         bind_companions: run.bind_companions,
-        label: run.label,
-        error_label: run.error_label,
-        warn_on_error_halt: run.warn_on_error_halt,
         finished: run.finished,
     };
     run_step_loop(run.actions, ctx, run.stop_on_error, &mut observer).await
+}
+
+/// Whether a run of `rule` may bind `close_on_exit` satellites to its triggering process. A
+/// process-exit run starts after that process is gone, so its companion flag is ignored.
+pub(super) fn binds_companions(rule: &Rule) -> bool {
+    !matches!(
+        rule.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Exited, .. })
+    )
 }
 
 impl DaemonEngine {
@@ -405,7 +382,6 @@ impl DaemonEngine {
         &self,
         rule_id: &str,
         total_steps: usize,
-        is_exit: bool,
         call_chain: Vec<String>,
     ) -> (u64, mpsc::UnboundedSender<ActionCompletionEvent>) {
         let tx = self.action_tx.clone();
@@ -416,7 +392,6 @@ impl DaemonEngine {
             rule_id: rule_id.to_string(),
             step_index: 0,
             total_steps,
-            is_exit,
             call_chain,
         });
         (execution_id, tx)
@@ -429,7 +404,6 @@ impl DaemonEngine {
         execution_id: u64,
         rule_id: &str,
         is_manual: bool,
-        counts_as_run: bool,
         tx: &mpsc::UnboundedSender<ActionCompletionEvent>,
         completion: Option<oneshot::Sender<()>>,
     ) -> (ExecGuard, RunFinished) {
@@ -438,7 +412,6 @@ impl DaemonEngine {
             id: execution_id,
             rule_id: rule_id.to_string(),
             is_manual,
-            counts_as_run,
             finished: Arc::clone(&finished),
             tx: tx.clone(),
             completion,
@@ -467,12 +440,8 @@ impl DaemonEngine {
                 rule_name: &body.rule_name,
                 context_name: &body.context_name,
                 pid: body.pid,
-                is_exit: body.is_exit,
                 stop_on_error: body.stop_on_error,
                 bind_companions: body.bind_companions,
-                label: body.label,
-                error_label: body.error_label,
-                warn_on_error_halt: body.warn_on_error_halt,
                 finished: Some(&body.finished),
             };
             run_action_pipeline(run, &mut ctx, &tx).await;
@@ -571,6 +540,9 @@ impl DaemonEngine {
         let rule_id = rule.id.clone();
         let stop_on_error = rule.stop_on_error;
         let context_name = context_name.to_string();
+        // A pipeline fired by the process-exit event runs after its primary is gone, so a
+        // `close_on_exit` companion could never be bound to a live host; the flag is ignored.
+        let bind_companions = binds_companions(rule);
 
         let call_chain = call.as_ref().map(|c| c.chain.clone()).unwrap_or_default();
         let completion = call.map(|c| c.completion);
@@ -593,26 +565,22 @@ impl DaemonEngine {
             now,
         );
 
-        let (execution_id, tx) = self.begin_pipeline(&rule_id, actions.len(), false, call_chain);
+        let (execution_id, tx) = self.begin_pipeline(&rule_id, actions.len(), call_chain);
         ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             // Built before the task is spawned and moved into it, so an abort before the first
             // poll drops the future together with the guard: the caller is always notified.
             let (guard, finished) =
-                Self::exec_guard(execution_id, &rule_id, is_manual, true, &tx, completion);
+                Self::exec_guard(execution_id, &rule_id, is_manual, &tx, completion);
             let body = OwnedPipelineRun {
                 actions,
                 rule_id,
                 rule_name,
                 context_name,
                 pid,
-                is_exit: false,
                 stop_on_error,
-                bind_companions: true,
-                label: "Pipeline",
-                error_label: "Action",
-                warn_on_error_halt: true,
+                bind_companions,
                 finished,
             };
             Ok(Some(self.spawn_pipeline(handle, execution_id, tx, guard, body, ctx)))
@@ -717,66 +685,6 @@ impl DaemonEngine {
                 );
                 Ok(RuleCallStart::Skipped)
             }
-        }
-    }
-
-    pub async fn try_execute_exit_actions(
-        &mut self,
-        rule: &Rule,
-        context_name: &str,
-        pid: u32,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        self.drain_action_events();
-        self.log("TRIGGER", "RULE", &format!("Rule '{}' exit actions triggered by {}", rule.name, context_name));
-
-        if rule.on_exit_actions.is_empty() {
-            return None;
-        }
-
-        let mut ctx = HashMap::new();
-        ctx.insert("ProcessName".into(), context_name.into());
-        ctx.insert("ProcessId".into(), pid.to_string());
-        ctx.insert("Timestamp".into(), chrono::Local::now().to_rfc3339());
-
-        if pid > 0 {
-            if let Some(path) = ProcessWatcher::get_process_image_path(pid) {
-                ctx.insert("ProcessPath".into(), path.clone());
-                if let Some(dir) = std::path::Path::new(&path).parent().and_then(|p| p.to_str()) {
-                    ctx.insert("ProcessDir".into(), dir.to_string());
-                }
-            }
-        }
-
-        let actions = rule.on_exit_actions.clone();
-        let rule_name = rule.name.clone();
-        let rule_id = rule.id.clone();
-        let stop_on_error = rule.stop_on_error;
-
-        let (execution_id, tx) = self.begin_pipeline(&rule_id, actions.len(), true, Vec::new());
-        ctx.insert(rule_call::EXECUTION_CTX_KEY.to_string(), execution_id.to_string());
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // An exit pipeline is never a rule run, so its guard reports no outcome either.
-            let (guard, finished) =
-                Self::exec_guard(execution_id, &rule_id, false, false, &tx, None);
-            let body = OwnedPipelineRun {
-                actions,
-                rule_id,
-                rule_name,
-                context_name: String::new(),
-                pid: 0,
-                is_exit: true,
-                stop_on_error,
-                bind_companions: false,
-                label: "Exit pipeline",
-                error_label: "Exit action",
-                warn_on_error_halt: false,
-                finished,
-            };
-            Some(self.spawn_pipeline(handle, execution_id, tx, guard, body, ctx))
-        } else {
-            Self::finish_pipeline_without_runtime(&tx, execution_id, rule_id, false);
-            None
         }
     }
 
@@ -925,12 +833,12 @@ impl DaemonEngine {
             .map(|stored| stored.quota_used(now))
             .unwrap_or_else(|| rule.quota_used(now));
 
-        let (execution_id, tx) = self.begin_pipeline(&rule_id, rule.actions.len(), false, Vec::new());
+        let (execution_id, tx) = self.begin_pipeline(&rule_id, rule.actions.len(), Vec::new());
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let task_rule_id = rule_id.clone();
             let (guard, finished) =
-                Self::exec_guard(execution_id, &rule_id, false, true, &tx, None);
+                Self::exec_guard(execution_id, &rule_id, false, &tx, None);
             // No cycle has started yet, so stopping the loop before the first one has nothing to
             // count as aborted.
             finished.store(true, Ordering::Relaxed);
@@ -981,12 +889,8 @@ impl DaemonEngine {
                             rule_name: &rule_name,
                             context_name: "",
                             pid: 0,
-                            is_exit: false,
                             stop_on_error: current.stop_on_error,
                             bind_companions: false,
-                            label: "Pipeline",
-                            error_label: "Action",
-                            warn_on_error_halt: true,
                             finished: Some(&finished),
                         };
                         if run_action_pipeline(run, &mut ctx, &tx).await {

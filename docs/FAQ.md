@@ -267,7 +267,8 @@ while no custom accent is set) and apply immediately, without a restart.
 Check, in order:
 
 1. The rule is enabled and has not hit a lifetime quota.
-2. The trigger target actually matches (process name, window, folder, hotkey, webhook path).
+2. The trigger target actually matches (process name and its selected start/exit event, window,
+   folder, hotkey, webhook path).
 3. Preconditions are satisfied. A false condition prevents the pipeline from starting.
 4. `cooldown_seconds` or a periodic quota is not skipping the run. `--rules-list` shows the counter
    and period.
@@ -277,7 +278,10 @@ Check, in order:
    error.
 
 Process detection uses ETW when elevated and adaptive Toolhelp32 polling otherwise; both feed the
-same trigger surface, so a missing ETW session alone does not disable process rules.
+same trigger surface, so a missing ETW session alone does not disable process rules. A process
+trigger fires the rule's one pipeline on the event selected in the rule builder — On Process Start
+(the default) or On Process Exit — and both choices go through the same preconditions, cooldown and
+quota.
 
 ### What is the difference between a cooldown and a quota?
 

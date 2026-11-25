@@ -37,7 +37,6 @@ pub(crate) fn render_action_card(
     action: &mut Action,
     idx: usize,
     t: &Tokens,
-    is_exit_pipeline: bool,
     is_being_dragged: bool,
     is_executing: bool,
     is_dimmed: bool,
@@ -50,7 +49,7 @@ pub(crate) fn render_action_card(
     let mut step_tested_overlays = Vec::new();
     let mut fields_resp = ActionFieldsResponse::default();
 
-    let ghost_id = ui.scope_id().with(("card_ghost", is_exit_pipeline, idx));
+    let ghost_id = ui.scope_id().with(("card_ghost", idx));
     let ghost_anim = theme::motion::animate_bool(ui.ctx(), ghost_id, is_being_dragged, t.metrics().motion.fast);
 
     let (fill, stroke) = if is_dimmed {
@@ -103,7 +102,7 @@ pub(crate) fn render_action_card(
                                     step_tested_overlays.push(cust.id.clone());
                                 }
                             }
-                            let key = if is_exit_pipeline { idx + 1000 } else { idx };
+                            let key = idx;
                             if let Action::Macro { events, speed, .. } = action {
                                 let (ok, msg) = if events.is_empty() {
                                     (false, loc.inspector_macro_test_empty.to_string())
@@ -122,7 +121,7 @@ pub(crate) fn render_action_card(
                             }
                         }
 
-                        let test_key = if is_exit_pipeline { idx + 1000 } else { idx };
+                        let test_key = idx;
                         if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, Instant)>(Id::unique(("test_step_res", test_key)))) {
                             if at.elapsed().as_secs() < 8 {
                                 let badge_color = if ok { t.good } else { t.bad };
@@ -137,7 +136,7 @@ pub(crate) fn render_action_card(
                                 drag_started = true;
                             }
 
-                            let prefix = if is_exit_pipeline { loc.inspector_exit_prefix } else { loc.inspector_step_prefix };
+                            let prefix = loc.inspector_step_prefix;
                             widgets::hud(ui, &format!("{} {:02}", prefix, idx + 1), if is_dimmed { t.muted } else { t.accent_ink });
 
                             let type_badge = action_type_badge(action, loc);
@@ -169,11 +168,7 @@ pub(crate) fn render_action_card(
 
                 widgets::hrule(ui);
 
-                let default_picker = if is_exit_pipeline {
-                    crate::gui::state::ProcessPickerTarget::ExitAction(idx)
-                } else {
-                    crate::gui::state::ProcessPickerTarget::Action(idx)
-                };
+                let default_picker = crate::gui::state::ProcessPickerTarget::Action(idx);
 
                 // 2. CARD BODY: Full-width stacked parameter fields
                 fields_resp = ui.add_enabled_ui(!is_being_dragged && !is_dimmed, |ui| {
@@ -182,7 +177,6 @@ pub(crate) fn render_action_card(
                         state,
                         action,
                         idx,
-                        is_exit_pipeline,
                         default_picker,
                         t,
                         0,
@@ -222,7 +216,6 @@ pub(crate) fn render_subaction_card(
     branch_salt: &str,
     branch_label: &str,
     default_picker: crate::gui::state::ProcessPickerTarget,
-    is_exit_pipeline: bool,
     is_being_dragged: bool,
     is_dimmed: bool,
     can_remove: bool,
@@ -368,7 +361,6 @@ pub(crate) fn render_subaction_card(
                         state,
                         sub_act,
                         parent_idx * 100 + sub_idx + 500,
-                        is_exit_pipeline,
                         default_picker,
                         t,
                         depth,

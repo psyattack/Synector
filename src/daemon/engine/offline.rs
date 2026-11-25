@@ -80,9 +80,8 @@ impl PipelineObserver for OfflineRunObserver {
 ///
 /// Deliberate offline differences, all consequences of there being no daemon: nothing is
 /// persisted (analytics, runtime counters and a lifetime-quota auto-pause are not written to
-/// disk), `on_exit_actions` do not run (the daemon runs them when the bound process exits, not
-/// as part of a manual run), the rule-to-rule channel has no dispatcher, and only the tokens
-/// available in this process are provided (`ProcessId` stays `0`; no live pid or process path).
+/// disk), the rule-to-rule channel has no dispatcher, and only the tokens available in this
+/// process are provided (`ProcessId` stays `0`; no live pid or process path).
 pub async fn run_rule_offline(rule: &Rule, policy: RuleRunPolicy) -> OfflineRunResult {
     let skipped = |reason: String| OfflineRunResult {
         skipped: Some(reason),

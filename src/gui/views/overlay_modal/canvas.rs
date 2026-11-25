@@ -1237,7 +1237,7 @@ mod tests {
         ));
 
         // Starting a drag applies the selection and exactly one undo snapshot; panning pushes none.
-        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, false, String::new());
+        let mut studio = OverlayStudioState::new(OverlayDefinition::default_crosshair(), None, String::new());
         let mode = begin_canvas_drag(&mut studio, CanvasHit::Element { idx: 0 }, pos2(5.0, 5.0), 0.0, 0.0);
         assert!(matches!(mode, CanvasDragMode::Move { idx: 0, .. }));
         assert_eq!(studio.selected_element_idx, Some(0));

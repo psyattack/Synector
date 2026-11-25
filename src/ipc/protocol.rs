@@ -83,7 +83,6 @@ pub struct ActiveRuleExecutionState {
     pub active_count: usize,
     pub current_step: usize,
     pub total_steps: usize,
-    pub is_exit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,13 +122,11 @@ mod tests {
             active_count: 3,
             current_step: 1,
             total_steps: 4,
-            is_exit: false,
         };
         let copied = state;
         assert_eq!(copied.active_count, 3);
         assert_eq!(copied.current_step, 1);
         assert_eq!(copied.total_steps, 4);
-        assert!(!copied.is_exit);
 
         let json = serde_json::to_string(&state).unwrap();
         let decoded: ActiveRuleExecutionState = serde_json::from_str(&json).unwrap();
@@ -168,7 +165,6 @@ mod tests {
             cooldown_seconds: 0.0,
             trigger: None,
             actions: vec![],
-            on_exit_actions: vec![],
             custom_icon_path: Some("C:\\test.ico".into()),
             auto_process_icon: true,
             ..Default::default()

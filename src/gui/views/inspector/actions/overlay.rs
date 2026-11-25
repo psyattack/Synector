@@ -11,7 +11,6 @@ pub(crate) fn render_overlay_fields(
     let loc = ctx.state.loc();
     let t = ctx.t;
     let idx = ctx.idx;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let state = ctx.state;
     let Action::Overlay { overlay_id, custom_overlay, operation, override_text, duration_ms, close_on_exit, } = action else { return; };
     let all_overlays = state.daemon_state.as_ref()
@@ -206,7 +205,7 @@ pub(crate) fn render_overlay_fields(
         ui.add_space(4.0);
         widgets::hud(ui, loc.inspector_overlay_duration_ms, t.muted);
         let mut d = duration_ms.unwrap_or(3000);
-        if widgets::DurationField::millis(ui, loc, ("overlay_flash", idx, is_exit_pipeline), 200.0..=30_000.0)
+        if widgets::DurationField::millis(ui, loc, ("overlay_flash", idx), 200.0..=30_000.0)
             .default_unit(widgets::TimeUnit::Milliseconds)
             .show_millis_u32(ui, &mut d)
             .changed()
@@ -236,7 +235,7 @@ pub(crate) fn render_overlay_fields(
         widgets::hud(ui, loc.inspector_overlay_fade_title, t.muted);
         ui.columns(2, |cols| {
             let mut fade_in = overlay_def.fade_in_ms.unwrap_or(0);
-            let fade_in_field = widgets::DurationField::millis(&cols[0], loc, ("overlay_fade_in", idx, is_exit_pipeline), 0.0..=5000.0)
+            let fade_in_field = widgets::DurationField::millis(&cols[0], loc, ("overlay_fade_in", idx), 0.0..=5000.0)
                 .default_unit(widgets::TimeUnit::Milliseconds)
                 .prefix(format!("{}: ", loc.inspector_overlay_fade_in));
             if fade_in_field.show_millis_u32(&mut cols[0], &mut fade_in).changed() {
@@ -244,7 +243,7 @@ pub(crate) fn render_overlay_fields(
             }
 
             let mut fade_out = overlay_def.fade_out_ms.unwrap_or(0);
-            let fade_out_field = widgets::DurationField::millis(&cols[1], loc, ("overlay_fade_out", idx, is_exit_pipeline), 0.0..=5000.0)
+            let fade_out_field = widgets::DurationField::millis(&cols[1], loc, ("overlay_fade_out", idx), 0.0..=5000.0)
                 .default_unit(widgets::TimeUnit::Milliseconds)
                 .prefix(format!("{}: ", loc.inspector_overlay_fade_out));
             if fade_out_field.show_millis_u32(&mut cols[1], &mut fade_out).changed() {
@@ -286,8 +285,10 @@ pub(crate) fn render_overlay_fields(
             }
 
             ui.checkbox(&mut overlay_def.hide_from_capture, loc.overlay_studio_hide_from_capture);
-            let is_process_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(r.trigger, Some(Trigger::Process { .. })));
-            let can_companion = is_process_trigger && !is_exit_pipeline;
+            let can_companion = state.editing_rule.as_ref().is_some_and(|r| matches!(
+                r.trigger,
+                Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+            ));
             if !can_companion {
                 *close_on_exit = false;
             }

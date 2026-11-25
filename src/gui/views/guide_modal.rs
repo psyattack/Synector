@@ -350,8 +350,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Анатомия Правила",
             "1. Триггер (Trigger) — единственный источник события (запуск процесса, фокус окна, таймер, горячая клавиша, файл или вебхук).\n\
              2. Предварительные Условия (Pre-conditions) — опциональная цепочка проверок (процесс, окно, время и дни недели, системные события, нагрузка CPU/RAM, файл или папка, активность другого правила) с логикой И / ИЛИ. Если условия не выполнены, запуск правила пропускается.\n\
-             3. Actions Pipeline — последовательная цепочка основных шагов, исполняемых сверху вниз.\n\
-             4. Exit Actions — завершающие шаги, исполняемые при закрытии отслеживаемого процесса.",
+             3. Actions Pipeline — единая последовательная цепочка шагов, исполняемых сверху вниз. У триггера процесса выбор «При запуске / При завершении» задаёт, какое событие её запускает.",
             t,
             true,
         );
@@ -361,7 +360,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (сек)", "Минимальный интервал между повторными срабатываниями (защита от спама и циклов).", t);
         doc_table_row(ui, "Квота выполнений", "Ограничивает число запусков: за всё время (правило встаёт на паузу при исчерпании) либо за период — час, день, неделя, месяц или своё окно от первого запуска; периодическая квота после сброса счётчика продолжает работать.", t);
         doc_table_row(ui, "Остановка при ошибке", "Прерывание цепочки действий, если один из шагов завершился аварийно.", t);
-        doc_table_row(ui, "Single Instance", "Правило срабатывает только для первого экземпляра процесса; остальные экземпляры игнорируются, а Exit Actions и привязанные процессы ждут закрытия всех экземпляров.", t);
+        doc_table_row(ui, "Single Instance", "Правило срабатывает только для первого экземпляра при запуске и для последнего — при завершении; привязанные процессы ждут закрытия всех экземпляров.", t);
         doc_table_row(ui, "Скрытие иконки в трее (Stealth)", "Фоновый демон работает без значка в области уведомлений.", t);
         doc_table_row(ui, "Маскировка (PE Masking)", "Копия демона запускается как WindowsServiceHost.exe со стандартной иконкой Windows; в Диспетчере задач она выглядит как системный процесс.", t);
         doc_table_row(ui, "Test Rule / Step", "Проверка всей цепочки или отдельного шага прямо в редакторе без ожидания триггера.", t);
@@ -374,7 +373,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode (Сопровождение процесса)",
-            "Если триггером выбран процесс, Synector отслеживает его PID, передаёт контекст в токены и выполняет Exit Actions при завершении. Шаг Start Process с флагом close_on_exit и оверлей с close_with_target дополнительно закрываются вместе с основным процессом.",
+            "Если триггером выбран процесс, Synector отслеживает его PID и передаёт контекст в токены. Событие «При завершении» запускает ту же цепочку действий, поэтому общие условия, кулдаун и квота действуют и там. Шаг Start Process с флагом close_on_exit и оверлей с close_with_target доступны только для события «При запуске» и дополнительно закрываются вместе с основным процессом.",
             t,
             false,
         );
@@ -387,8 +386,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
             "Rule Anatomy",
             "1. Trigger — the single origin event (process start, window focus, schedule, hotkey, file, or webhook).\n\
              2. Pre-conditions — optional gating criteria (process running, active window focus, time range & days, system events, sustained CPU/RAM load, file or folder presence, another rule's activity) chained with AND / OR operators. If not met, execution is skipped.\n\
-             3. Actions Pipeline — ordered sequential pipeline of steps executed top-to-bottom.\n\
-             4. Exit Actions — optional clean-up actions executed when the tracked process terminates.",
+             3. Actions Pipeline — the rule's single ordered chain of steps, executed top-to-bottom. A process trigger's On Process Start / On Process Exit choice selects which lifecycle event launches it.",
             t,
             true,
         );
@@ -398,7 +396,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (sec)", "Minimum elapsed time before the rule can trigger again (prevents event flooding).", t);
         doc_table_row(ui, "Execution Quota", "Caps the number of runs: for the rule's lifetime (auto-pauses when spent) or per period — hour, day, week, month, or a custom window that starts with the first run. A periodic quota resumes by itself once the counter resets.", t);
         doc_table_row(ui, "Stop on Error", "Aborts pipeline execution immediately if any action reports a failure.", t);
-        doc_table_row(ui, "Single Instance", "Fires only for the first instance of the tracked process; later instances are ignored, and exit actions plus bound satellites wait until all instances have closed.", t);
+        doc_table_row(ui, "Single Instance", "Fires only for the first instance on process start and for the last instance on process exit; bound satellites wait until all instances have closed.", t);
         doc_table_row(ui, "Hide Tray Icon (Stealth)", "Runs the background daemon without a notification-area icon.", t);
         doc_table_row(ui, "PE Masking", "Runs a daemon copy as WindowsServiceHost.exe with the generic Windows icon, so Task Manager sees it as a system process.", t);
         doc_table_row(ui, "Test Rule / Step", "Test the full pipeline or single actions directly in the studio without waiting for real triggers.", t);
@@ -411,7 +409,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode",
-            "With a Process trigger, Synector tracks the executable's PIDs, exposes them to tokens and runs Exit Actions when the process terminates. Start Process steps with close_on_exit and overlays with close_with_target are also closed together with the primary process.",
+            "With a Process trigger, Synector tracks the executable's PIDs and exposes them to tokens. The On Process Exit event runs the same action pipeline, so pre-conditions, cooldown and quota apply there too. Start Process steps with close_on_exit and overlays with close_with_target are only available for the On Process Start event and close together with the primary process.",
             t,
             false,
         );
@@ -514,7 +512,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_header(ui, "Все Виды Триггеров", t);
         doc_paragraph(ui, "Триггер определяет событие, инициирующее правило. Выбрать нужный триггер можно через встроенную Библиотеку Триггеров с мгновенным поиском по ключевым словам:", t);
 
-        doc_table_row(ui, "PROCESSES", "Process — запуск .exe с режимами Exact / Wildcard / Regex и опцией Single Instance; Window — получение или потеря фокуса окном процесса.", t);
+        doc_table_row(ui, "PROCESSES", "Process — запуск или завершение .exe (событие выбирается в триггере) с режимами Exact / Wildcard / Regex и опцией Single Instance; Window — получение или потеря фокуса окном процесса.", t);
         doc_table_row(ui, "SCHEDULE & TIME", "Interval (каждые N секунд), Daily (время и выбранные дни недели), One-Shot (точная дата и время) и Monthly (заданный день месяца).", t);
         doc_table_row(ui, "SYSTEM & HARDWARE", "Manual (ручной запуск), Global Hotkey (клавиши и кнопки мыши, Hold/repeat), Resource (порог CPU/RAM с выдержкой), File Watcher (папка или отдельный файл) и Webhook.", t);
         doc_table_row(ui, "EVENTS & LIFECYCLE", "Запуск и завершение Synector, блокировка/разблокировка сеанса, сон/пробуждение, питание от сети/батареи, простой/активность пользователя, подключение/отключение устройств, включение/выключение монитора и подключение/отключение сети.", t);
@@ -571,7 +569,7 @@ fn render_triggers_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_header(ui, "Triggers Deep-Dive", t);
         doc_paragraph(ui, "A trigger defines the origin event that initiates a rule. Choose triggers conveniently from the built-in Trigger Catalog with instant search:", t);
 
-        doc_table_row(ui, "PROCESSES", "Process — executable launch with Exact / Wildcard / Regex matching and Single Instance; Window — a process window gains or loses focus.", t);
+        doc_table_row(ui, "PROCESSES", "Process — start or exit of an executable (the firing event is chosen in the trigger) with Exact / Wildcard / Regex matching and Single Instance; Window — a process window gains or loses focus.", t);
         doc_table_row(ui, "SCHEDULE & TIME", "Interval (every N seconds), Daily (time plus selected weekdays), One-Shot (exact date and time), and Monthly (selected day of month).", t);
         doc_table_row(ui, "SYSTEM & HARDWARE", "Manual (on-demand), Global Hotkey (keys and mouse buttons with Hold/repeat), Resource (CPU/RAM threshold sustained for a duration), File Watcher (folder or single file), and Webhook.", t);
         doc_table_row(ui, "EVENTS & LIFECYCLE", "Synector startup and shutdown, session lock/unlock, sleep/resume, AC/battery power, user idle/active, device connect/disconnect, display on/off, and network connect/disconnect.", t);
@@ -888,10 +886,10 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Рецепт: Игровой Турбо-Режим (Game Boost)",
-            "• Триггер: Process (game.exe)\n\
+            "• Правило 1 — Триггер: Process -> game.exe, событие: При запуске\n\
              • Шаг 1: Power Plan -> High Performance\n\
              • Шаг 2: Process Tuning -> Priority: High\n\
-             • Exit Action: Power Plan -> Balanced (автоматически вернет баланс при выходе из игры)",
+             • Правило 2 — Триггер: Process -> game.exe, событие: При завершении: Power Plan -> Balanced (вернёт баланс при выходе из игры)",
             t,
             true,
         );
@@ -971,9 +969,9 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Рецепт: Discord Rich Presence для игры или программы",
-            "• Триггер: Process -> game.exe\n\
-             • Шаг 1: Discord Rich Presence -> Application ID: 1234567890, Details: 'В игре {ProcessName}', State: 'Основная кампания', Таймер: Вкл, Auto-clear при выходе\n\
-             • Exit Action: Clear Discord RPC (автоматически сбросит активность при закрытии)",
+            "• Правило 1 — Триггер: Process -> game.exe, событие: При запуске\n\
+             • Шаг 1: Discord Rich Presence -> Application ID: 1234567890, Details: 'В игре {ProcessName}', State: 'Основная кампания', Таймер: Вкл\n\
+             • Правило 2 — Триггер: Process -> game.exe, событие: При завершении: Clear Discord RPC (сбросит активность при закрытии)",
             t,
             false,
         );
@@ -993,10 +991,9 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Рецепт: Игровой HUD и Кастомный Прицел (Overlay)",
-            "• Триггер: Process -> game.exe (или Global Hotkey для переключения)\n\
+            "• Триггер: Process -> game.exe, событие: При запуске (или Global Hotkey для переключения)\n\
              • Шаг 1: Экранный Оверлей -> Показать кастомный прицел (Crosshair) и бейдж статуса в центре экрана\n\
-             • Опции: Сквозной клик (Click-Through), Защита от захвата экрана (скрыт на стриме OBS)\n\
-             • Exit Action: Экранный Оверлей -> Скрыть (автоматически убирает HUD при выходе из игры)",
+             • Опции: Сквозной клик (Click-Through), Защита от захвата экрана (скрыт на стриме OBS), «Закрывать при выходе процесса» — HUD исчезнет вместе с игрой",
             t,
             false,
         );
@@ -1006,10 +1003,10 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Recipe: Game Booster",
-            "• Trigger: Process (game.exe)\n\
+            "• Rule 1 — Trigger: Process -> game.exe, event: On Process Start\n\
              • Step 1: Power Plan -> High Performance\n\
              • Step 2: Process Tuning -> Priority: High\n\
-             • Exit Action: Power Plan -> Balanced (restores automatically on game exit)",
+             • Rule 2 — Trigger: Process -> game.exe, event: On Process Exit: Power Plan -> Balanced (restores the plan on game exit)",
             t,
             true,
         );
@@ -1089,9 +1086,9 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Recipe: Discord Rich Presence Game Status",
-            "• Trigger: Process -> game.exe\n\
-             • Step 1: Discord Rich Presence -> Application ID: 1234567890, Details: 'Playing {ProcessName}', State: 'Main Campaign', Show elapsed: On, Auto-clear on exit\n\
-             • Exit Action: Clear Discord RPC (cleanly removes activity when process terminates)",
+            "• Rule 1 — Trigger: Process -> game.exe, event: On Process Start\n\
+             • Step 1: Discord Rich Presence -> Application ID: 1234567890, Details: 'Playing {ProcessName}', State: 'Main Campaign', Show elapsed: On\n\
+             • Rule 2 — Trigger: Process -> game.exe, event: On Process Exit: Clear Discord RPC (removes activity when the process terminates)",
             t,
             false,
         );
@@ -1111,10 +1108,9 @@ fn render_recipes_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Recipe: In-Game HUD & Custom Reticle (Overlay)",
-            "• Trigger: Process -> game.exe (or Global Hotkey for on-demand toggle)\n\
+            "• Trigger: Process -> game.exe, event: On Process Start (or Global Hotkey for on-demand toggle)\n\
              • Step 1: Screen Overlay -> Show custom crosshair reticle and status badge anchored to screen center\n\
-             • Options: Click-Through enabled, Hide from Capture active (invisible to OBS stream / screenshots)\n\
-             • Exit Action: Screen Overlay -> Hide overlay (automatically cleans up HUD when game closes)",
+             • Options: Click-Through enabled, Hide from Capture active (invisible to OBS stream / screenshots), Close when process exits — the HUD disappears with the game",
             t,
             false,
         );

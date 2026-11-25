@@ -74,7 +74,6 @@ pub(crate) fn validate_rules(rules: &[Rule]) -> Vec<String> {
             }
         };
         crate::models::visit_action_list(&rule.actions, &mut check);
-        crate::models::visit_action_list(&rule.on_exit_actions, &mut check);
         if has_infinite_macro && !matches!(rule.trigger, Some(Trigger::GlobalHotkey { .. })) {
             errors.push(format!(
                 "rule #{number} ({}): an infinite macro requires a global hotkey trigger, otherwise the rule can never be stopped",
@@ -251,7 +250,6 @@ pub(crate) fn rule_warnings(rules: &[Rule], cfg: &AppConfig) -> Vec<String> {
             _ => {}
         };
         crate::models::visit_action_list(&rule.actions, &mut check);
-        crate::models::visit_action_list(&rule.on_exit_actions, &mut check);
     }
     warnings
 }
@@ -343,6 +341,7 @@ mod tests {
             process_name: "  ".to_string(),
             match_mode: Default::default(),
             single_instance: false,
+            event: Default::default(),
         });
         let errors = validate_rules(&[rule]);
         assert!(
@@ -367,6 +366,7 @@ mod tests {
             process_name: "game.exe".to_string(),
             match_mode: Default::default(),
             single_instance: false,
+            event: Default::default(),
         });
         process_rule.actions = vec![infinite_macro.clone()];
         let errors = validate_rules(&[process_rule]);

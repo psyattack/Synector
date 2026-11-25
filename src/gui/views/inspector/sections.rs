@@ -391,15 +391,8 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
 
             ui.add_space(8.0);
 
-            let is_process_trigger = matches!(rule.trigger, Some(Trigger::Process { .. }));
-
-            // 4. Action Sequence Builder (Execution on trigger)
-            let action_header = if is_process_trigger {
-                loc.inspector_eyebrow_actions_start
-            } else {
-                loc.inspector_eyebrow_actions_pipeline
-            };
-            widgets::section_heading(ui, action_header);
+            // 4. Action Sequence Builder
+            widgets::section_heading(ui, loc.inspector_eyebrow_actions_pipeline);
 
             let exec_opt = state.get_rule_execution_state(rule);
             let step_prefix = loc.inspector_step_prefix;
@@ -407,7 +400,6 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                 let mut host = RulePipelineHost {
                     state,
                     t,
-                    is_exit_pipeline: false,
                     exec_opt,
                     switch_to_hunter: None,
                 };
@@ -423,35 +415,6 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
             };
             if let Some(idx) = switch_to_hunter {
                 state.open_process_picker(crate::gui::state::ProcessPickerTarget::Action(idx));
-            }
-
-            // 5. Actions on Process Exit
-            if is_process_trigger {
-                ui.add_space(8.0);
-                widgets::section_heading(ui, loc.inspector_eyebrow_actions_exit);
-
-                let exit_prefix = loc.inspector_exit_prefix;
-                let switch_to_hunter = {
-                    let mut host = RulePipelineHost {
-                        state,
-                        t,
-                        is_exit_pipeline: true,
-                        exec_opt,
-                        switch_to_hunter: None,
-                    };
-                    render_action_pipeline(
-                        ui,
-                        &mut rule.on_exit_actions,
-                        "exit_actions",
-                        exit_prefix,
-                        t,
-                        &mut host,
-                    );
-                    host.switch_to_hunter
-                };
-                if let Some(idx) = switch_to_hunter {
-                    state.open_process_picker(crate::gui::state::ProcessPickerTarget::ExitAction(idx));
-                }
             }
 
         });

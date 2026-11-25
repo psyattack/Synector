@@ -10,9 +10,9 @@ use crate::gui::components::widgets::{self, Cell, Glyph, Kind};
 use crate::gui::state::GuiState;
 use crate::gui::theme::{self, Tokens};
 use crate::models::{
-    Action, ConditionOperator, PowerPlanType, ProcessMatchMode,
-    ProcessPriorityLevel, ProcessSnapshotItem, QuotaPeriod, QuotaUnit, Rule, RuleCondition, RuleConditionItem, ScheduleType,
-    SystemEventType, SystemPowerType, Trigger, WindowActionType,
+    Action, ConditionOperator, PowerPlanType, ProcessMatchMode, ProcessPriorityLevel,
+    ProcessSnapshotItem, ProcessTriggerEvent, QuotaPeriod, QuotaUnit, Rule, RuleCondition,
+    RuleConditionItem, ScheduleType, SystemEventType, SystemPowerType, Trigger, WindowActionType,
 };
 use chrono::{Datelike, Timelike};
 use std::collections::HashMap;

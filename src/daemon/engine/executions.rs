@@ -37,7 +37,6 @@ pub struct ActiveExecutionItem {
     pub rule_id: String,
     pub step_index: usize,
     pub total_steps: usize,
-    pub is_exit: bool,
     pub started_at: Instant,
     /// Rules that led to this execution, outermost first. Empty for triggered runs; `["a"]`
     /// for a rule-called run, `["a", "b"]` when `a` called `b` which called this one.
@@ -147,7 +146,6 @@ pub enum ActionCompletionEvent {
         rule_id: String,
         step_index: usize,
         total_steps: usize,
-        is_exit: bool,
         call_chain: Vec<String>,
     },
     RuleExecutionStep {
@@ -155,7 +153,6 @@ pub enum ActionCompletionEvent {
         _rule_id: String,
         step_index: usize,
         total_steps: usize,
-        is_exit: bool,
     },
     RuleExecutionFinished {
         execution_id: u64,
@@ -178,7 +175,7 @@ pub enum ActionCompletionEvent {
         rule_id: String,
         source: RunSource,
     },
-    /// One finished pipeline and how it ended. Exit pipelines are never reported.
+    /// One finished pipeline and how it ended.
     RunOutcome {
         outcome: PipelineOutcome,
     },
@@ -263,11 +260,10 @@ impl ExecutionTracker {
         self.active_executions.insert(execution_id, item);
     }
 
-    pub(super) fn record_step(&mut self, execution_id: u64, step_index: usize, total_steps: usize, is_exit: bool) {
+    pub(super) fn record_step(&mut self, execution_id: u64, step_index: usize, total_steps: usize) {
         if let Some(item) = self.active_executions.get_mut(&execution_id) {
             item.step_index = step_index;
             item.total_steps = total_steps;
-            item.is_exit = is_exit;
         }
     }
 
@@ -461,7 +457,7 @@ impl DaemonEngine {
     }
 
     /// True when any overlay action of `rule` targets an id in `active_overlay_ids`. The scan is
-    /// the full [`Rule::visit_actions`] tree, so `IfElse` branches (and `on_exit_actions`) count.
+    /// the full [`Rule::visit_actions`] tree, so `IfElse` branches count.
     pub(super) fn rule_references_active_overlay(
         rule: &Rule,
         active_overlay_ids: &HashSet<String>,
@@ -516,8 +512,8 @@ impl DaemonEngine {
     ///
     /// The analytics outcome is not recorded here: every spawn path's `ExecGuard` reports an
     /// aborted run when it drops without the run having reported its own outcome, which covers a
-    /// live pipeline, a cycle of a recurring loop, a stopped exit pipeline (not counted at all) and
-    /// a loop killed between cycles (nothing to count) in one place.
+    /// live pipeline, a cycle of a recurring loop and a loop killed between cycles (nothing to
+    /// count) in one place.
     pub fn abort_rule_executions(&mut self, rule_id: &str) {
         // 1. Abort any active recurring test loop and every live pipeline of the rule.
         self.abort_recurring_test(rule_id);
@@ -662,18 +658,17 @@ impl DaemonEngine {
                 ActionCompletionEvent::AddBoundOverlay(bo) => {
                     self.executions.add_bound_overlay(bo);
                 }
-                ActionCompletionEvent::RuleExecutionStarted { execution_id, rule_id, step_index, total_steps, is_exit, call_chain } => {
+                ActionCompletionEvent::RuleExecutionStarted { execution_id, rule_id, step_index, total_steps, call_chain } => {
                     self.executions.record_started(execution_id, ActiveExecutionItem {
                         rule_id,
                         step_index,
                         total_steps,
-                        is_exit,
                         started_at: Instant::now(),
                         call_chain,
                     });
                 }
-                ActionCompletionEvent::RuleExecutionStep { execution_id, step_index, total_steps, is_exit, .. } => {
-                    self.executions.record_step(execution_id, step_index, total_steps, is_exit);
+                ActionCompletionEvent::RuleExecutionStep { execution_id, step_index, total_steps, .. } => {
+                    self.executions.record_step(execution_id, step_index, total_steps);
                 }
                 ActionCompletionEvent::RuleExecutionFinished { execution_id, _rule_id, is_manual } => {
                     self.executions.record_finished(execution_id, &_rule_id);

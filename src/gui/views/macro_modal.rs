@@ -70,11 +70,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
 
     let can_toggle_infinite = matches!(rule.trigger, Some(crate::models::Trigger::GlobalHotkey { .. }));
 
-    let action_list = if edit_info.is_exit_pipeline {
-        &mut rule.on_exit_actions
-    } else {
-        &mut rule.actions
-    };
+    let action_list = &mut rule.actions;
 
     let Some(action) = action_list.get_mut(edit_info.step_idx) else { return; };
 
@@ -216,12 +212,7 @@ pub fn render_macro_modal(ctx: &egui::Context, state: &mut GuiState) {
                 let editor_state = state.macro_editor.clone().or_else(|| state.last_macro_editor.clone());
                 if let Some(edit_info) = editor_state {
                     if let Some(rule) = state.editing_rule.as_mut() {
-                        let action_list = if edit_info.is_exit_pipeline {
-                            &mut rule.on_exit_actions
-                        } else {
-                            &mut rule.actions
-                        };
-                        if let Some(Action::Macro { events, .. }) = action_list.get_mut(edit_info.step_idx) {
+                        if let Some(Action::Macro { events, .. }) = rule.actions.get_mut(edit_info.step_idx) {
                             events.extend(more);
                         }
                     }

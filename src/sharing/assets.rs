@@ -58,7 +58,7 @@ pub(super) fn strip_overlay_asset_paths(overlay: &mut OverlayDefinition) -> bool
 /// Drops sender-local asset paths from overlays embedded directly in a rule's actions.
 pub(super) fn strip_rule_overlay_assets(rule: &mut Rule) -> bool {
     let mut dropped = false;
-    for action in rule.actions.iter_mut().chain(rule.on_exit_actions.iter_mut()) {
+    for action in rule.actions.iter_mut() {
         dropped |= strip_action_overlay_assets(action);
     }
     dropped

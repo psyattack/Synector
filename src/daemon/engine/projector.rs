@@ -78,7 +78,6 @@ impl<'a> StateProjector<'a> {
                     active_count,
                     current_step: latest.step_index,
                     total_steps: latest.total_steps,
-                    is_exit: latest.is_exit,
                 });
             }
         }
@@ -98,7 +97,6 @@ impl<'a> StateProjector<'a> {
                             active_count: 1,
                             current_step: step_idx,
                             total_steps: rule.actions.len(),
-                            is_exit: false,
                         },
                     );
                 }
@@ -120,7 +118,6 @@ impl<'a> StateProjector<'a> {
                             active_count: 1,
                             current_step: step_idx,
                             total_steps: rule.actions.len(),
-                            is_exit: false,
                         },
                     );
                 }
@@ -180,7 +177,6 @@ impl<'a> StateProjector<'a> {
                                 active_count: 1,
                                 current_step: step_idx,
                                 total_steps: rule.actions.len(),
-                                is_exit: false,
                             },
                         );
                     }
@@ -198,7 +194,6 @@ impl<'a> StateProjector<'a> {
                     active_count: 1,
                     current_step: 0,
                     total_steps,
-                    is_exit: false,
                 });
             }
         }

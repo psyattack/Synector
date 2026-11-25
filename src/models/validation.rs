@@ -170,10 +170,8 @@ fn check_rule_keys(value: &serde_json::Value, path: &str, errors: &mut Vec<Unkno
     if let Some(conditions) = object.get("conditions") {
         check_condition_items(conditions, &format!("{path}.conditions"), errors);
     }
-    for field in ["actions", "on_exit_actions"] {
-        if let Some(actions) = object.get(field) {
-            check_action_list(actions, &format!("{path}.{field}"), errors);
-        }
+    if let Some(actions) = object.get("actions") {
+        check_action_list(actions, &format!("{path}.actions"), errors);
     }
     if let Some(tags) = object.get("tags").and_then(serde_json::Value::as_array) {
         for (index, tag) in tags.iter().enumerate() {
@@ -425,7 +423,6 @@ const RULE_KEYS: &[&str] = &[
     "trigger",
     "conditions",
     "actions",
-    "on_exit_actions",
     "custom_icon_path",
     "auto_process_icon",
     "last_executed_at",
@@ -443,7 +440,13 @@ const TRIGGER_VARIANTS: &[(&str, &[&str])] = &[
     ("manual", &["$trigger_type"]),
     (
         "process",
-        &["$trigger_type", "process_name", "match_mode", "single_instance"],
+        &[
+            "$trigger_type",
+            "process_name",
+            "match_mode",
+            "single_instance",
+            "event",
+        ],
     ),
     (
         "window_focus",

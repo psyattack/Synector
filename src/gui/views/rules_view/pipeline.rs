@@ -72,34 +72,19 @@ pub(super) fn render_track_pipeline(
                 widgets::hud(ui, "➔", t.faint);
             }
 
-            let is_current = exec_opt.is_some_and(|e| !e.is_exit && e.current_step == a_idx);
+            let is_current = exec_opt.is_some_and(|e| e.current_step == a_idx);
             render_action_chip(ui, action, is_current, t.ink, loc, t);
         }
     }
 
-    // 5. On-Exit Actions (if any)
-    if !rule.on_exit_actions.is_empty() {
-        widgets::hud(ui, "➔", t.faint);
-        widgets::hud(ui, loc.rules_summary_on_exit, t.accent_ink);
-
-        for (e_idx, action) in rule.on_exit_actions.iter().enumerate() {
-            if e_idx > 0 {
-                widgets::hud(ui, "➔", t.faint);
-            }
-
-            let is_current = exec_opt.is_some_and(|e| e.is_exit && e.current_step == e_idx);
-            render_action_chip(ui, action, is_current, t.faint, loc, t);
-        }
-    }
-
-    // 6. Companion mode
+    // 5. Companion mode
     let has_companion = rule.actions.iter().any(|a| matches!(a, Action::StartProcess { close_on_exit: true, .. }));
     if has_companion {
         widgets::badge(ui, loc.rules_summary_bound_satellite, t.good);
     }
 }
 
-/// One action-step chip; the main and on-exit pipelines differ only in the non-current ink (U04-009).
+/// One action-step chip.
 fn render_action_chip(
     ui: &mut Ui,
     action: &Action,

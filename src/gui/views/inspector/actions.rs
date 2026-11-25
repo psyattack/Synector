@@ -100,7 +100,6 @@ pub(crate) struct ActionFieldsCtx<'a> {
     pub(crate) state: &'a GuiState,
     pub(crate) t: &'a Tokens,
     pub(crate) idx: usize,
-    pub(crate) is_exit_pipeline: bool,
     pub(crate) default_picker_target: crate::gui::state::ProcessPickerTarget,
     pub(crate) depth: usize,
 }
@@ -124,7 +123,6 @@ pub(crate) fn render_action_parameter_fields(
     state: &GuiState,
     action: &mut Action,
     idx: usize,
-    is_exit_pipeline: bool,
     default_picker_target: crate::gui::state::ProcessPickerTarget,
     t: &Tokens,
     depth: usize,
@@ -133,7 +131,6 @@ pub(crate) fn render_action_parameter_fields(
         state,
         t,
         idx,
-        is_exit_pipeline,
         default_picker_target,
         depth,
     };
@@ -189,7 +186,6 @@ pub(crate) fn render_rule_control_fields(
     let state = ctx.state;
     let t = ctx.t;
     let idx = ctx.idx;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let Action::RuleControl { rule_id, operation, wait } = action else { return; };
     widgets::hud(ui, loc.inspector_rule_operation, t.muted);
     let operation_options = [
@@ -205,7 +201,7 @@ pub(crate) fn render_rule_control_fields(
     widgets::cells(ui, operation, &operation_options);
 
     ui.add_space(4.0);
-    render_rule_target_picker(ui, state, rule_id, idx, is_exit_pipeline, t);
+    render_rule_target_picker(ui, state, rule_id, idx, t);
 
     if *operation == crate::models::RuleControlOperation::Call {
         ui.add_space(4.0);
@@ -274,7 +270,6 @@ mod tests {
                             &state,
                             &mut action,
                             0,
-                            false,
                             ProcessPickerTarget::Action(0),
                             &t,
                             0,

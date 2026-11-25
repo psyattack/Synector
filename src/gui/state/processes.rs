@@ -70,27 +70,20 @@ impl GuiState {
                         apply_process_to_action(action, proc_name);
                     }
                 }
-                Some(ProcessPickerTarget::ExitAction(idx)) => {
-                    if let Some(action) = rule.on_exit_actions.get_mut(idx) {
-                        apply_process_to_action(action, proc_name);
-                    }
-                }
                 Some(ProcessPickerTarget::Condition(idx)) => {
                     if let Some(item) = rule.conditions.get_mut(idx) {
                         apply_process_to_condition(&mut item.condition, proc_name);
                     }
                 }
-                Some(ProcessPickerTarget::ActionCondition { action_idx, cond_idx, is_exit }) => {
-                    let list = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { conditions, .. }) = list.get_mut(action_idx) {
+                Some(ProcessPickerTarget::ActionCondition { action_idx, cond_idx }) => {
+                    if let Some(crate::models::Action::IfElse { conditions, .. }) = rule.actions.get_mut(action_idx) {
                         if let Some(item) = conditions.get_mut(cond_idx) {
                             apply_process_to_condition(&mut item.condition, proc_name);
                         }
                     }
                 }
-                Some(ProcessPickerTarget::ActionElseIfCondition { action_idx, branch_idx, cond_idx, is_exit }) => {
-                    let list = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = list.get_mut(action_idx) {
+                Some(ProcessPickerTarget::ActionElseIfCondition { action_idx, branch_idx, cond_idx }) => {
+                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = rule.actions.get_mut(action_idx) {
                         if let Some(branch) = else_if_branches.get_mut(branch_idx) {
                             if let Some(item) = branch.conditions.get_mut(cond_idx) {
                                 apply_process_to_condition(&mut item.condition, proc_name);
@@ -98,17 +91,15 @@ impl GuiState {
                         }
                     }
                 }
-                Some(ProcessPickerTarget::IfElseThen { parent_idx, sub_idx, is_exit }) => {
-                    let list = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { then_actions, .. }) = list.get_mut(parent_idx) {
+                Some(ProcessPickerTarget::IfElseThen { parent_idx, sub_idx }) => {
+                    if let Some(crate::models::Action::IfElse { then_actions, .. }) = rule.actions.get_mut(parent_idx) {
                         if let Some(sub_action) = then_actions.get_mut(sub_idx) {
                             apply_process_to_action(sub_action, proc_name);
                         }
                     }
                 }
-                Some(ProcessPickerTarget::IfElseElseIf { parent_idx, branch_idx, sub_idx, is_exit }) => {
-                    let list = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = list.get_mut(parent_idx) {
+                Some(ProcessPickerTarget::IfElseElseIf { parent_idx, branch_idx, sub_idx }) => {
+                    if let Some(crate::models::Action::IfElse { else_if_branches, .. }) = rule.actions.get_mut(parent_idx) {
                         if let Some(branch) = else_if_branches.get_mut(branch_idx) {
                             if let Some(sub_action) = branch.actions.get_mut(sub_idx) {
                                 apply_process_to_action(sub_action, proc_name);
@@ -116,9 +107,8 @@ impl GuiState {
                         }
                     }
                 }
-                Some(ProcessPickerTarget::IfElseElse { parent_idx, sub_idx, is_exit }) => {
-                    let list = if is_exit { &mut rule.on_exit_actions } else { &mut rule.actions };
-                    if let Some(crate::models::Action::IfElse { else_actions, .. }) = list.get_mut(parent_idx) {
+                Some(ProcessPickerTarget::IfElseElse { parent_idx, sub_idx }) => {
+                    if let Some(crate::models::Action::IfElse { else_actions, .. }) = rule.actions.get_mut(parent_idx) {
                         if let Some(sub_action) = else_actions.get_mut(sub_idx) {
                             apply_process_to_action(sub_action, proc_name);
                         }
@@ -140,6 +130,7 @@ impl GuiState {
                                 process_name: proc_name.to_string(),
                                 match_mode: crate::models::ProcessMatchMode::Exact,
                                 single_instance: false,
+                                event: crate::models::ProcessTriggerEvent::Started,
                             });
                         }
                     }
@@ -163,6 +154,7 @@ impl GuiState {
             process_name: proc_name.to_string(),
             match_mode: crate::models::ProcessMatchMode::Exact,
             single_instance: false,
+            event: crate::models::ProcessTriggerEvent::Started,
         });
         rule.name = format!("{} {}", loc.inspector_rule_track_prefix, proc_name);
         rule.auto_process_icon = true;
@@ -270,6 +262,7 @@ mod tests {
                 process_name: "seed.exe".to_string(),
                 match_mode: ProcessMatchMode::Exact,
                 single_instance: false,
+                event: crate::models::ProcessTriggerEvent::Started,
             }),
             ..Rule::default()
         };
@@ -284,7 +277,6 @@ mod tests {
             }],
             else_actions: vec![kill("seed.exe")],
         });
-        rule.on_exit_actions.push(kill("seed.exe"));
 
         let mut state = GuiState::new();
         state.editing_rule = Some(rule);
@@ -296,14 +288,12 @@ mod tests {
 
         pick(&mut state, ProcessPickerTarget::Trigger, "trigger.exe");
         pick(&mut state, ProcessPickerTarget::Action(0), "action.exe");
-        pick(&mut state, ProcessPickerTarget::ExitAction(0), "exit.exe");
         pick(&mut state, ProcessPickerTarget::Condition(0), "condition.exe");
         pick(
             &mut state,
             ProcessPickerTarget::ActionCondition {
                 action_idx: 1,
                 cond_idx: 0,
-                is_exit: false,
             },
             "ifelse_cond.exe",
         );
@@ -313,7 +303,6 @@ mod tests {
                 action_idx: 1,
                 branch_idx: 0,
                 cond_idx: 0,
-                is_exit: false,
             },
             "elseif_cond.exe",
         );
@@ -322,7 +311,6 @@ mod tests {
             ProcessPickerTarget::IfElseThen {
                 parent_idx: 1,
                 sub_idx: 0,
-                is_exit: false,
             },
             "then.exe",
         );
@@ -332,7 +320,6 @@ mod tests {
                 parent_idx: 1,
                 branch_idx: 0,
                 sub_idx: 0,
-                is_exit: false,
             },
             "elseif_action.exe",
         );
@@ -341,7 +328,6 @@ mod tests {
             ProcessPickerTarget::IfElseElse {
                 parent_idx: 1,
                 sub_idx: 0,
-                is_exit: false,
             },
             "else.exe",
         );
@@ -354,10 +340,6 @@ mod tests {
         assert!(matches!(
             &rule.actions[0],
             Action::KillProcess { process_name, .. } if process_name == "action.exe"
-        ));
-        assert!(matches!(
-            &rule.on_exit_actions[0],
-            Action::KillProcess { process_name, .. } if process_name == "exit.exe"
         ));
         assert!(matches!(
             &rule.conditions[0].condition,
@@ -393,6 +375,6 @@ mod tests {
             Action::KillProcess { process_name, .. } if process_name == "else.exe"
         ));
         assert!(rule.auto_process_icon, "a picked process keeps the auto icon on");
-        assert_eq!(state.undo_stack.len(), 9, "each pick is one undo step");
+        assert_eq!(state.undo_stack.len(), 8, "each pick is one undo step");
     }
 }

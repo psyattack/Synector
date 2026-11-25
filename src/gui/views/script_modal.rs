@@ -25,12 +25,7 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
     let mut script_buffer = String::new();
     let mut found = false;
     if let Some(rule) = &state.editing_rule {
-        let actions = if modal.is_exit_pipeline {
-            &rule.on_exit_actions
-        } else {
-            &rule.actions
-        };
-        if let Some(Action::ExecuteScript { script, .. }) = actions.get(modal.step_idx) {
+        if let Some(Action::ExecuteScript { script, .. }) = rule.actions.get(modal.step_idx) {
             script_buffer = script.clone();
             found = true;
         }
@@ -69,8 +64,7 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
                         item_spacing_x: None,
                     },
                     |ui| {
-                        let prefix = if modal.is_exit_pipeline { loc.inspector_exit_prefix } else { loc.inspector_step_prefix };
-                        widgets::hud(ui, &format!("{} {:02}", prefix, modal.step_idx + 1), t.accent_ink);
+                        widgets::hud(ui, &format!("{} {:02}", loc.inspector_step_prefix, modal.step_idx + 1), t.accent_ink);
                         ui.add_space(8.0);
                         widgets::badge(ui, modal.language.badge_name(loc), t.accent_ink);
                     },
@@ -123,12 +117,7 @@ pub fn render_script_editor_canvas(ctx: &egui::Context, state: &mut GuiState) {
 
     if text_changed {
         if let Some(rule) = &mut state.editing_rule {
-            let actions = if modal.is_exit_pipeline {
-                &mut rule.on_exit_actions
-            } else {
-                &mut rule.actions
-            };
-            if let Some(Action::ExecuteScript { ref mut script, .. }) = actions.get_mut(modal.step_idx) {
+            if let Some(Action::ExecuteScript { ref mut script, .. }) = rule.actions.get_mut(modal.step_idx) {
                 *script = script_buffer;
             }
         }

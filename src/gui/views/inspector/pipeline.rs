@@ -7,7 +7,6 @@ pub(crate) fn render_add_action_button(
     ui: &mut Ui,
     state: &mut GuiState,
     loc: &crate::i18n::Strings,
-    is_exit_pipeline: bool,
     t: &Tokens,
 ) {
     ui.add_space(2.0);
@@ -45,13 +44,13 @@ pub(crate) fn render_add_action_button(
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     if resp.clicked() {
-        state.open_action_catalog(is_exit_pipeline, None);
+        state.open_action_catalog(None);
     }
 }
 
-/// Renders one drag-and-drop action pipeline. The rule's main/exit pipelines and the nested
-/// If/Else branches share it, so drop slots, edge auto-scroll, the floating preview, the
-/// infinite-macro warning and unreachable-step dimming behave identically everywhere.
+/// Renders one drag-and-drop action pipeline. The rule's pipeline and the nested If/Else
+/// branches share it, so drop slots, edge auto-scroll, the floating preview, the infinite-macro
+/// warning and unreachable-step dimming behave identically everywhere.
 pub(crate) fn render_action_pipeline(
     ui: &mut Ui,
     actions: &mut Vec<Action>,
@@ -208,11 +207,10 @@ pub(crate) fn render_action_pipeline(
     host.render_add_button(ui);
 }
 
-/// Host for the rule's own main and exit pipelines.
+/// Host for the rule's own pipeline.
 pub(crate) struct RulePipelineHost<'a> {
     pub(crate) state: &'a mut GuiState,
     pub(crate) t: &'a Tokens,
-    pub(crate) is_exit_pipeline: bool,
     pub(crate) exec_opt: Option<crate::ipc::protocol::ActiveRuleExecutionState>,
     pub(crate) switch_to_hunter: Option<usize>,
 }
@@ -239,14 +237,13 @@ impl PipelineHost for RulePipelineHost<'_> {
             _ => false,
         };
         let is_executing = is_overlay_active
-            || self.exec_opt.is_some_and(|e| e.is_exit == self.is_exit_pipeline && e.current_step == idx);
+            || self.exec_opt.is_some_and(|e| e.current_step == idx);
         render_action_card(
             ui,
             &*self.state,
             action,
             idx,
             self.t,
-            self.is_exit_pipeline,
             is_ghost,
             is_executing,
             is_dimmed,
@@ -255,16 +252,16 @@ impl PipelineHost for RulePipelineHost<'_> {
 
     fn apply(&mut self, outcome: PipelineCardOutcome, idx: usize) {
         if outcome.change_clicked {
-            self.state.open_action_catalog_change(self.is_exit_pipeline, idx);
+            self.state.open_action_catalog_change(idx);
         }
         if let Some(lang) = outcome.expand_script {
-            self.state.open_script_editor(idx, self.is_exit_pipeline, lang);
+            self.state.open_script_editor(idx, lang);
         }
         if outcome.expand_macro {
-            self.state.open_macro_editor(idx, self.is_exit_pipeline);
+            self.state.open_macro_editor(idx);
         }
         if let Some(act_idx) = outcome.expand_overlay_action {
-            self.state.open_overlay_studio_for_action(act_idx, self.is_exit_pipeline);
+            self.state.open_overlay_studio_for_action(act_idx);
         } else if let Some(ov_id) = outcome.expand_overlay {
             self.state.open_overlay_studio(&ov_id);
         }
@@ -272,7 +269,7 @@ impl PipelineHost for RulePipelineHost<'_> {
             self.switch_to_hunter = Some(idx);
         }
         if let Some(target) = outcome.open_catalog_nested {
-            self.state.open_action_catalog_nested(self.is_exit_pipeline, target);
+            self.state.open_action_catalog_nested(target);
         }
         if let Some(target) = outcome.open_condition_catalog {
             self.state.open_condition_catalog_with_target(target);
@@ -291,7 +288,7 @@ impl PipelineHost for RulePipelineHost<'_> {
 
     fn render_add_button(&mut self, ui: &mut Ui) {
         let loc = self.state.loc();
-        render_add_action_button(ui, &mut *self.state, loc, self.is_exit_pipeline, self.t);
+        render_add_action_button(ui, &mut *self.state, loc, self.t);
     }
 
     fn render_infinite_warning(&mut self, ui: &mut Ui) {
@@ -371,11 +368,11 @@ pub(crate) enum BranchPickerKind {
 }
 
 impl BranchPickerKind {
-    fn make_target(self, parent_idx: usize, sub_idx: usize, is_exit: bool) -> crate::gui::state::ProcessPickerTarget {
+    fn make_target(self, parent_idx: usize, sub_idx: usize) -> crate::gui::state::ProcessPickerTarget {
         match self {
-            BranchPickerKind::Then => crate::gui::state::ProcessPickerTarget::IfElseThen { parent_idx, sub_idx, is_exit },
-            BranchPickerKind::ElseIf(branch_idx) => crate::gui::state::ProcessPickerTarget::IfElseElseIf { parent_idx, branch_idx, sub_idx, is_exit },
-            BranchPickerKind::Else => crate::gui::state::ProcessPickerTarget::IfElseElse { parent_idx, sub_idx, is_exit },
+            BranchPickerKind::Then => crate::gui::state::ProcessPickerTarget::IfElseThen { parent_idx, sub_idx },
+            BranchPickerKind::ElseIf(branch_idx) => crate::gui::state::ProcessPickerTarget::IfElseElseIf { parent_idx, branch_idx, sub_idx },
+            BranchPickerKind::Else => crate::gui::state::ProcessPickerTarget::IfElseElse { parent_idx, sub_idx },
         }
     }
 
@@ -420,7 +417,6 @@ pub(crate) struct NestedPipelineHost<'a> {
     pub(crate) branch_salt: &'a str,
     pub(crate) branch_label: &'a str,
     pub(crate) picker_kind: BranchPickerKind,
-    pub(crate) is_exit_pipeline: bool,
     pub(crate) depth: usize,
     pub(crate) add_btn_label: &'a str,
     pub(crate) catalog_target: Option<crate::gui::state::IfElseCatalogTarget>,
@@ -439,7 +435,7 @@ impl PipelineHost for NestedPipelineHost<'_> {
         is_ghost: bool,
         is_dimmed: bool,
     ) -> PipelineCardOutcome {
-        let default_picker = self.picker_kind.make_target(self.parent_idx, idx, self.is_exit_pipeline);
+        let default_picker = self.picker_kind.make_target(self.parent_idx, idx);
         render_subaction_card(
             ui,
             self.state,
@@ -449,7 +445,6 @@ impl PipelineHost for NestedPipelineHost<'_> {
             self.branch_salt,
             self.branch_label,
             default_picker,
-            self.is_exit_pipeline,
             is_ghost,
             is_dimmed,
             true,
@@ -506,7 +501,6 @@ pub(crate) fn render_subactions_branch_pipeline(
     parent_idx: usize,
     branch_key: &str,
     branch_label: &str,
-    is_exit_pipeline: bool,
     picker_kind: BranchPickerKind,
     add_btn_label: &str,
     t: &Tokens,
@@ -514,12 +508,7 @@ pub(crate) fn render_subactions_branch_pipeline(
     resp: &mut ActionFieldsResponse,
     catalog_target: Option<crate::gui::state::IfElseCatalogTarget>,
 ) {
-    let pipeline_id = format!(
-        "sub_{}_{}_{}",
-        parent_idx,
-        branch_key,
-        if is_exit_pipeline { "exit" } else { "main" }
-    );
+    let pipeline_id = format!("sub_{}_{}", parent_idx, branch_key);
     let mut host = NestedPipelineHost {
         state,
         resp,
@@ -528,7 +517,6 @@ pub(crate) fn render_subactions_branch_pipeline(
         branch_salt: branch_key,
         branch_label,
         picker_kind,
-        is_exit_pipeline,
         depth,
         add_btn_label,
         catalog_target,

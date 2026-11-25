@@ -45,6 +45,32 @@ instance has exited.
 
 Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
+## Run cleanup when a game exits
+
+A process trigger fires the same action pipeline on the lifecycle event selected by `event`. With
+`"exited"` the rule runs after the game closes; pre-conditions, cooldown and quota apply exactly as
+they do on launch.
+
+```json
+{
+  "id": "rule_game_closed_cleanup",
+  "name": "Clean up after the game",
+  "trigger": {
+    "$trigger_type": "process",
+    "process_name": "game.exe",
+    "match_mode": "exact",
+    "event": "exited"
+  },
+  "actions": [
+    {
+      "$action_type": "notification",
+      "title": "Game closed",
+      "message": "Session ended"
+    }
+  ]
+}
+```
+
 ## Free memory on a hotkey
 
 Trims the working set of one process. A cooldown prevents repeated trimming while the hotkey is
@@ -428,8 +454,9 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
 
 - A **toggle hotkey** uses `hold_mode: true` to repeat the pipeline while held, or
   `repeat_while_held: true` without hold mode to loop until pressed again.
-- **On-exit actions** belong to `on_exit_actions`; they run after the pipeline, including when a
-  bound companion is cleaned up.
+- A **process trigger** fires its one action pipeline on `event: "started"` (the default) or
+  `event: "exited"`; `single_instance` makes the start run fire for the first instance and the exit
+  run for the last one. `close_on_exit` companions bind only to a start-triggered run.
 - **Runtime counters** (`execution_count`, `last_executed_at`, the custom quota anchor) are owned by
   `runtime.json`; values in a rule file are ignored when an existing rule is updated.
 - **Share codes** (`SYN1:`) bundle the presets and overlays a rule references; imported rules are

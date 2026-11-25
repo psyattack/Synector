@@ -51,11 +51,12 @@ const TRIGGER_CATALOG_ITEMS: &[TriggerEntry] = &[
         description: |loc| loc.catalog_trigger_process_desc,
         glyph: egui_phosphor::regular::CPU,
         tint: |t| t.good,
-        keywords: &["process", "launch", "start", "run", "exe", "app", "процесс", "запуск", "старт", "приложение"],
+        keywords: &["process", "launch", "start", "run", "exe", "app", "exit", "close", "termination", "процесс", "запуск", "старт", "приложение", "завершение", "закрытие", "выход"],
         constructor: || Some(Trigger::Process {
             process_name: String::new(),
             match_mode: ProcessMatchMode::Exact,
             single_instance: false,
+            event: crate::models::ProcessTriggerEvent::Started,
         }),
     },
     CatalogEntryDef {

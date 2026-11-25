@@ -264,7 +264,6 @@ fn remap_library_refs(
         }
     }
     remap_actions(&mut rule.actions, overlay_map, preset_map);
-    remap_actions(&mut rule.on_exit_actions, overlay_map, preset_map);
 }
 
 fn fresh_id(prefix: &str) -> String {
@@ -350,7 +349,6 @@ fn canonicalize_library_refs(
         }
     }
     canonicalize_actions(&mut rule.actions, overlay_hashes, preset_hashes);
-    canonicalize_actions(&mut rule.on_exit_actions, overlay_hashes, preset_hashes);
 }
 
 fn overlay_content_index(overlays: &[OverlayDefinition]) -> HashMap<String, String> {

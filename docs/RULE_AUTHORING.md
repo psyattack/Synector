@@ -64,9 +64,9 @@ the same load with the per-rule validator the GUI Save and apply paths use: a ru
 values (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
 likewise skipped alone with its id and errors, so neither check drops a rule that would otherwise
 be accepted. There is no migration: update the file. The removed fields are `schedule.delay_sec`,
-the `system` trigger's `idle_duration_sec` and the `resource` condition's `duration_sec`. The
-`resource` trigger keeps its own `duration_sec` (default 5 s), and the `event` condition keeps a
-rule-authored `idle_duration_sec`.
+the `system` trigger's `idle_duration_sec`, the `resource` condition's `duration_sec` and the
+rule-level `on_exit_actions` pipeline. The `resource` trigger keeps its own `duration_sec`
+(default 5 s), and the `event` condition keeps a rule-authored `idle_duration_sec`.
 
 Minimal example:
 
@@ -104,6 +104,30 @@ quote is escaped as `\"` or `\"\"`. Audio actions address endpoints by display n
 `audio_format.device_name` must match an active endpoint, and `default_device` requires the
 AudioDeviceCmdlets PowerShell module — a missing module or device is an action error, not a silent
 no-op.
+
+## Process trigger events
+
+A `process` trigger fires the rule's one action pipeline on the lifecycle event named by `event`:
+
+- `"started"` (the default) — the target process launches;
+- `"exited"` — the target process closes.
+
+Both choices run the same ordered `actions` pipeline with the same pre-conditions, cooldown and
+quota. `single_instance: true` fires the start event for the first matching instance and the exit
+event for the last one. `close_on_exit` on a `start_process` action or an `overlay` action binds the
+companion to the triggering process and is only available when the trigger fires on start; an
+exit-triggered run cannot bind a satellite to a process that is already gone.
+
+```json
+{
+  "id": "rule_game_closed",
+  "name": "Clean up after the game",
+  "trigger": { "$trigger_type": "process", "process_name": "game.exe", "event": "exited" },
+  "actions": [
+    { "$action_type": "notification", "title": "Game", "message": "Session ended" }
+  ]
+}
+```
 
 ## Quotas
 

@@ -65,7 +65,7 @@ fn visible_rule_order(
             order.sort_by_key(|&idx| trigger_sort_key(&rules[idx].trigger));
         }
         RuleSortMode::ActionCount => {
-            order.sort_by_key(|&idx| std::cmp::Reverse(rules[idx].actions.len() + rules[idx].on_exit_actions.len()));
+            order.sort_by_key(|&idx| std::cmp::Reverse(rules[idx].actions.len()));
         }
         RuleSortMode::Status => {
             order.sort_by_key(|&idx| (!rules[idx].is_enabled, rules[idx].name.to_lowercase()));
@@ -292,6 +292,7 @@ mod tests {
                 process_name: "notepad.exe".into(),
                 match_mode: crate::models::ProcessMatchMode::Exact,
                 single_instance: false,
+                event: crate::models::ProcessTriggerEvent::Started,
             }),
             actions: vec![wait_action()],
             ..Default::default()

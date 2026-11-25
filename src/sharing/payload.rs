@@ -85,6 +85,7 @@ pub(crate) mod fixtures {
                 process_name: "game.exe".into(),
                 match_mode: ProcessMatchMode::Exact,
                 single_instance: true,
+                event: crate::models::ProcessTriggerEvent::Started,
             }),
             actions: vec![Action::StartProcess {
                 file_path: "C:\\tools\\companion.exe".into(),
@@ -94,10 +95,6 @@ pub(crate) mod fixtures {
                 only_if_not_running: true,
                 run_hidden: true,
                 close_on_exit: true,
-            }],
-            on_exit_actions: vec![Action::Notification {
-                title: "Game Exited".into(),
-                message: "Cleaning up".into(),
             }],
             custom_icon_path: Some("C:\\games\\game.exe".into()),
             auto_process_icon: true,

@@ -72,8 +72,6 @@ pub struct Rule {
     pub conditions: Vec<RuleConditionItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub on_exit_actions: Vec<Action>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_icon_path: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -102,7 +100,6 @@ impl Default for Rule {
             trigger: Some(Trigger::Manual),
             conditions: Vec::new(),
             actions: Vec::new(),
-            on_exit_actions: Vec::new(),
             custom_icon_path: None,
             auto_process_icon: false,
             last_executed_at: None,
@@ -159,9 +156,6 @@ impl Rule {
         for action in cloned.actions.iter_mut() {
             action.refresh_overlay_ids();
         }
-        for action in cloned.on_exit_actions.iter_mut() {
-            action.refresh_overlay_ids();
-        }
 
         cloned
     }
@@ -183,16 +177,15 @@ impl Rule {
 
     /// Normalizes every action definition of the rule (currently overlay ids).
     pub fn normalize(&mut self) {
-        for action in self.actions.iter_mut().chain(self.on_exit_actions.iter_mut()) {
+        for action in self.actions.iter_mut() {
             action.normalize_overlay_ids();
         }
     }
 
-    /// Visits every action of the rule read-only, in execution order: the `actions` pipeline
-    /// first, then `on_exit_actions`, each depth-first through nested `if_else` branches.
+    /// Visits every action of the rule read-only, in execution order, depth-first through
+    /// nested `if_else` branches.
     pub fn visit_actions(&self, visit: &mut impl FnMut(&Action)) {
         visit_action_list(&self.actions, visit);
-        visit_action_list(&self.on_exit_actions, visit);
     }
 }
 

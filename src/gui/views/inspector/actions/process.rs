@@ -11,7 +11,6 @@ pub(crate) fn render_start_process_fields(
     let loc = ctx.state.loc();
     let state = ctx.state;
     let t = ctx.t;
-    let is_exit_pipeline = ctx.is_exit_pipeline;
     let Action::StartProcess { file_path, arguments, working_directory, run_as_admin, only_if_not_running, run_hidden, close_on_exit, } = action else { return; };
     widgets::hud(ui, loc.inspector_field_executable_path, t.muted);
     ui.horizontal(|ui| {
@@ -75,20 +74,21 @@ pub(crate) fn render_start_process_fields(
         ui.checkbox(run_hidden, loc.inspector_checkbox_run_hidden);
         ui.checkbox(only_if_not_running, loc.inspector_checkbox_only_if_not_running);
         ui.checkbox(run_as_admin, loc.inspector_checkbox_run_as_admin);
-        if !is_exit_pipeline {
-            let is_process_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(r.trigger, Some(Trigger::Process { .. })));
-            if !is_process_trigger {
-                *close_on_exit = false;
-            }
-            let resp = ui.add_enabled(
-                is_process_trigger,
-                egui::Checkbox::new(close_on_exit, loc.inspector_checkbox_close_on_exit),
-            );
-            if !is_process_trigger {
-                resp.on_disabled_hover_text(loc.inspector_companion_disabled_tip);
-            } else {
-                resp.on_hover_text(loc.inspector_checkbox_close_on_exit_tip);
-            }
+        let can_companion = state.editing_rule.as_ref().is_some_and(|r| matches!(
+            r.trigger,
+            Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+        ));
+        if !can_companion {
+            *close_on_exit = false;
+        }
+        let resp = ui.add_enabled(
+            can_companion,
+            egui::Checkbox::new(close_on_exit, loc.inspector_checkbox_close_on_exit),
+        );
+        if !can_companion {
+            resp.on_disabled_hover_text(loc.inspector_companion_disabled_tip);
+        } else {
+            resp.on_hover_text(loc.inspector_checkbox_close_on_exit_tip);
         }
     });
 }
