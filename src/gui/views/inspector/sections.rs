@@ -213,6 +213,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                                 egui::Frame::new()
                                     .fill(t.bg)
                                     .stroke(t.hairline())
+                                    .corner_radius(t.inset_corner())
                                     .inner_margin(egui::Margin::symmetric(10, 8))
                                     .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
