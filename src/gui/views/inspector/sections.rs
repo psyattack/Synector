@@ -74,7 +74,7 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                         ui.spacing_mut().item_spacing.y = 8.0;
 
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 10.0;
+                            ui.spacing_mut().item_spacing.x = 8.0;
 
                             // Interactive Icon Avatar Box (38x38)
                             let icon_box_size = vec2(38.0, 38.0);
@@ -85,8 +85,14 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                             {
                                 let p = ui.painter();
                                 p.rect_filled(icon_rect, t.chip_corner(), if is_hovered { t.sunken } else { t.bg });
-                                let stroke_color = if is_hovered { t.accent_ink } else { t.line_strong };
-                                p.rect_stroke(icon_rect, t.chip_corner(), Stroke::new(1.0, stroke_color), egui::StrokeKind::Inside);
+                                // The tile wears the same border as the name field beside it at
+                                // rest, and the accent ink on hover.
+                                let stroke = if is_hovered {
+                                    Stroke::new(t.metrics().hairline_w, t.accent_ink)
+                                } else {
+                                    t.field_stroke()
+                                };
+                                p.rect_stroke(icon_rect, t.chip_corner(), stroke, egui::StrokeKind::Inside);
                             }
 
                             let mut rendered = false;
@@ -175,192 +181,202 @@ pub(crate) fn render_rule_editor(ui: &mut Ui, state: &mut GuiState, rule: &mut R
                         // Tag Manager (Replaces removed description field)
                         render_inspector_tag_section(ui, state, rule, loc, t);
 
-                        // Cooldown row
-                        ui.add_space(-3.0);
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().interact_size.y = 24.0;
-                            let cooldown_label = widgets::hud(ui, loc.inspector_field_cooldown, t.muted);
-                            // The model stores any finite non-negative cooldown (`validate_rules`),
-                            // so the field must not impose a lower cap than the CLI/daemon accept.
-                            widgets::duration_secs_f64(ui, loc, "rule_cooldown", &mut rule.cooldown_seconds, 0.0..=f64::MAX)
-                                .labelled_by(cooldown_label.id);
-                        });
+                        // Run behaviour: the cooldown and the execution cap share one panel, so the
+                        // two rate controls fill the row instead of each trailing an empty stretch
+                        // of the card. The run switches share the left column with the cooldown.
+                        let mut reset_clicked = false;
+                        egui::Frame::new()
+                            .stroke(t.hairline())
+                            .corner_radius(t.inset_corner())
+                            .inner_margin(egui::Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                // Every control in the panel uses the same height so the labels and
+                                // the fields line up vertically.
+                                ui.spacing_mut().interact_size.y = theme::framed_control_height(ui);
+                                ui.columns(2, |cols| {
+                                    // Left: the rule's switches.
+                                    widgets::checkbox_group(&mut cols[0], |ui| {
+                                        ui.checkbox(&mut rule.auto_process_icon, loc.inspector_icon_auto_process)
+                                            .on_hover_text(loc.inspector_icon_auto_process_tip);
+                                        ui.checkbox(&mut rule.stop_on_error, loc.inspector_field_stop_on_error)
+                                            .on_hover_text(loc.inspector_field_stop_on_error_tip);
+                                        if is_manual {
+                                            rule.is_enabled = true;
+                                        }
+                                        let cb = egui::Checkbox::new(&mut rule.is_enabled, loc.inspector_checkbox_rule_active);
+                                        let resp = ui.add_enabled(!is_manual, cb);
+                                        if is_manual {
+                                            resp.on_disabled_hover_text(loc.inspector_checkbox_rule_active_manual_tip);
+                                        }
+                                    });
 
-                        ui.add_space(4.0);
-
-                        // Unified compact options group
-                        widgets::checkbox_group(ui, |ui| {
-                            // Icon from target process (separate line below cooldown)
-                            ui.checkbox(&mut rule.auto_process_icon, loc.inspector_icon_auto_process)
-                                .on_hover_text(loc.inspector_icon_auto_process_tip);
-
-                            // Execution quota: the limit and the period its counter resets on.
-                            widgets::checkbox_row(ui, |ui| {
-                                let mut has_quota = rule.max_executions.is_some();
-                                if ui.checkbox(&mut has_quota, loc.inspector_field_max_executions).changed() {
-                                    if has_quota {
-                                        rule.max_executions = Some(10);
-                                    } else {
-                                        rule.max_executions = None;
-                                        rule.quota_period = None;
-                                        rule.clear_quota_runtime();
+                                    // Right: the run limits, each switched on by its own compact
+                                    // checkbox and configured on the rows below. Both toggles borrow
+                                    // the run switches' 4 px group rhythm, so the two columns read
+                                    // with the same checkbox spacing. A zero cooldown is the
+                                    // model's "off", so the checkbox reads the value itself instead
+                                    // of storing a second flag.
+                                    let mut has_cooldown = rule.cooldown_seconds > 0.0;
+                                    let cooldown_changed = widgets::checkbox_group(&mut cols[1], |ui| {
+                                        ui.checkbox(&mut has_cooldown, loc.inspector_field_cooldown).changed()
+                                    });
+                                    if cooldown_changed {
+                                        rule.cooldown_seconds = if has_cooldown { 5.0 } else { 0.0 };
                                     }
+                                    if rule.cooldown_seconds > 0.0 {
+                                        cols[1].horizontal(|ui| {
+                                            let cooldown_label = quota_form_label(ui, loc.inspector_field_cooldown, t);
+                                            // The model stores any finite non-negative cooldown
+                                            // (`validate_rules`), so the field must not impose a
+                                            // lower cap than the CLI/daemon accept.
+                                            widgets::duration_secs_f64(ui, loc, "rule_cooldown", &mut rule.cooldown_seconds, 0.0..=f64::MAX)
+                                                .labelled_by(cooldown_label.id);
+                                        });
+                                    }
+
+                                    // Execution quota: the limit and the period its counter resets on.
+                                    let mut has_quota = rule.max_executions.is_some();
+                                    let quota_changed = widgets::checkbox_group(&mut cols[1], |ui| {
+                                        ui.checkbox(&mut has_quota, loc.inspector_field_max_executions).changed()
+                                    });
+                                    if quota_changed {
+                                        if has_quota {
+                                            rule.max_executions = Some(10);
+                                        } else {
+                                            rule.max_executions = None;
+                                            rule.quota_period = None;
+                                            rule.clear_quota_runtime();
+                                        }
+                                    }
+
+                                    if rule.max_executions.is_some() {
+                                        cols[1].horizontal(|ui| {
+                                            let limit_label = quota_form_label(ui, loc.inspector_quota_limit, t);
+                                            if let Some(limit) = &mut rule.max_executions {
+                                                ui.add(
+                                                    egui::DragValue::new(limit)
+                                                        .range(1..=100_000)
+                                                        .suffix(" runs"),
+                                                )
+                                                .labelled_by(limit_label.id);
+                                            }
+                                        });
+
+                                        cols[1].horizontal(|ui| {
+                                            let period_label = quota_form_label(ui, loc.inspector_quota_period, t);
+                                            let mut period = rule.quota_period;
+                                            let period_combo = egui::ComboBox::from_id_salt("inspector_quota_period")
+                                                .selected_text(quota_period_label(period, loc))
+                                                // The combo takes the rest of the half column.
+                                                .width((ui.available_width() - 4.0).max(110.0))
+                                                // Seven full-height rows; the 200 px default would
+                                                // hide the last option below a scrollbar.
+                                                .height(300.0)
+                                                .show_ui(ui, |ui| {
+                                                    ui.selectable_value(&mut period, None, loc.inspector_quota_period_total);
+                                                    ui.selectable_value(&mut period, Some(QuotaPeriod::Minute), loc.inspector_quota_period_minute);
+                                                    ui.selectable_value(&mut period, Some(QuotaPeriod::Hour), loc.inspector_quota_period_hour);
+                                                    ui.selectable_value(&mut period, Some(QuotaPeriod::Day), loc.inspector_quota_period_day);
+                                                    ui.selectable_value(&mut period, Some(QuotaPeriod::Week), loc.inspector_quota_period_week);
+                                                    ui.selectable_value(&mut period, Some(QuotaPeriod::Month), loc.inspector_quota_period_month);
+                                                    ui.selectable_value(
+                                                        &mut period,
+                                                        Some(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Hours }),
+                                                        loc.inspector_quota_period_custom,
+                                                    );
+                                                });
+                                            period_combo.response.labelled_by(period_label.id);
+                                            rule.quota_period = period;
+                                        });
+
+                                        if let Some(QuotaPeriod::Custom { value, unit }) = &mut rule.quota_period {
+                                            cols[1].horizontal(|ui| {
+                                                let window_label = quota_form_label(ui, loc.inspector_quota_period, t)
+                                                    .on_hover_text(loc.inspector_quota_custom_tip);
+                                                ui.add(
+                                                    egui::DragValue::new(value)
+                                                        .range(1..=100_000)
+                                                        .speed(1.0),
+                                                )
+                                                .labelled_by(window_label.id);
+                                                egui::ComboBox::from_id_salt("inspector_quota_unit")
+                                                    .selected_text(quota_unit_label(*unit, loc))
+                                                    .width(64.0)
+                                                    .height(220.0)
+                                                    .show_ui(ui, |ui| {
+                                                        for option in QuotaUnit::ALL {
+                                                            ui.selectable_value(unit, option, quota_unit_label(option, loc));
+                                                        }
+                                                    })
+                                                    .response
+                                                    .labelled_by(window_label.id);
+                                            });
+                                        }
+                                    }
+                                });
+
+                                // Footer across the panel: the remaining budget and the counter
+                                // reset, so a long status never has to fit a half column.
+                                if rule.max_executions.is_some() {
+                                    ui.add_space(2.0);
+                                    ui.separator();
+                                    ui.add_space(2.0);
+                                    let now = chrono::Local::now();
+                                    let exhausted = rule.quota_exhausted(now);
+                                    let limit = rule.max_executions.unwrap_or(0);
+                                    let remaining = rule.quota_remaining(now).unwrap_or(0);
+                                    let mut status = loc
+                                        .inspector_runs_remaining
+                                        .replacen("{}", &remaining.to_string(), 1)
+                                        .replacen("{}", &limit.to_string(), 1);
+                                    if exhausted {
+                                        if let Some(reset) = rule.quota_next_reset(now) {
+                                            status.push_str(" · ");
+                                            status.push_str(
+                                                &loc.inspector_quota_resets_at
+                                                    .replacen("{}", &reset.format("%H:%M").to_string(), 1),
+                                            );
+                                        }
+                                    }
+                                    ui.allocate_ui_with_layout(
+                                        vec2(ui.available_width(), ui.spacing().interact_size.y),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.spacing_mut().item_spacing.x = 8.0;
+                                            // The counter reset is a bare glyph, not a framed
+                                            // button: it only reacts to hover.
+                                            let (reset_rect, reset_response) =
+                                                ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                                            let reset_color = if reset_response.hovered() { t.accent_ink } else { t.faint };
+                                            ui.painter().text(
+                                                reset_rect.center(),
+                                                egui::Align2::CENTER_CENTER,
+                                                egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
+                                                egui::FontId::new(15.0, theme::phosphor()),
+                                                reset_color,
+                                            );
+                                            reset_response.widget_info(|| {
+                                                egui::WidgetInfo::labeled(
+                                                    egui::Role::Button,
+                                                    true,
+                                                    loc.inspector_btn_reset,
+                                                )
+                                            });
+                                            let reset_response = reset_response
+                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                .on_hover_text(loc.inspector_btn_reset);
+                                            if reset_response.clicked() {
+                                                reset_clicked = true;
+                                            }
+                                            widgets::hud(ui, &status, if exhausted { t.warn } else { t.faint });
+                                        },
+                                    );
                                 }
                             });
-
-                            if rule.max_executions.is_some() {
-                                let mut reset_clicked = false;
-                                egui::Frame::new()
-                                    .fill(t.bg)
-                                    .stroke(t.hairline())
-                                    .corner_radius(t.inset_corner())
-                                    .inner_margin(egui::Margin::symmetric(10, 8))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        // Every control in the panel uses the same height so the
-                                        // labels and the fields line up vertically.
-                                        ui.spacing_mut().interact_size.y = theme::framed_control_height(ui);
-                                        egui::Grid::new("inspector_quota_grid")
-                                            .num_columns(2)
-                                            .spacing(vec2(10.0, 6.0))
-                                            .show(ui, |ui| {
-                                                let limit_label = quota_form_label(ui, loc.inspector_quota_limit, t);
-                                                if let Some(limit) = &mut rule.max_executions {
-                                                    ui.add(
-                                                        egui::DragValue::new(limit)
-                                                            .range(1..=100_000)
-                                                            .suffix(" runs"),
-                                                    )
-                                                    .labelled_by(limit_label.id);
-                                                }
-                                                ui.end_row();
-
-                                                let period_label = quota_form_label(ui, loc.inspector_quota_period, t);
-                                                let mut period = rule.quota_period;
-                                                let period_combo = egui::ComboBox::from_id_salt("inspector_quota_period")
-                                                    .selected_text(quota_period_label(period, loc))
-                                                    .width(170.0)
-                                                    // Seven full-height rows; the 200 px default
-                                                    // would hide the last option below a scrollbar.
-                                                    .height(300.0)
-                                                    .show_ui(ui, |ui| {
-                                                        ui.selectable_value(&mut period, None, loc.inspector_quota_period_total);
-                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Minute), loc.inspector_quota_period_minute);
-                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Hour), loc.inspector_quota_period_hour);
-                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Day), loc.inspector_quota_period_day);
-                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Week), loc.inspector_quota_period_week);
-                                                        ui.selectable_value(&mut period, Some(QuotaPeriod::Month), loc.inspector_quota_period_month);
-                                                        ui.selectable_value(
-                                                            &mut period,
-                                                            Some(QuotaPeriod::Custom { value: 1, unit: QuotaUnit::Hours }),
-                                                            loc.inspector_quota_period_custom,
-                                                        );
-                                                    });
-                                                period_combo.response.labelled_by(period_label.id);
-                                                rule.quota_period = period;
-                                                ui.end_row();
-
-                                                if let Some(QuotaPeriod::Custom { value, unit }) = &mut rule.quota_period {
-                                                    let window_label = quota_form_label(ui, loc.inspector_quota_period, t)
-                                                        .on_hover_text(loc.inspector_quota_custom_tip);
-                                                    ui.horizontal(|ui| {
-                                                        ui.add(
-                                                            egui::DragValue::new(value)
-                                                                .range(1..=100_000)
-                                                                .speed(1.0),
-                                                        )
-                                                        .labelled_by(window_label.id);
-                                                        egui::ComboBox::from_id_salt("inspector_quota_unit")
-                                                            .selected_text(quota_unit_label(*unit, loc))
-                                                            .width(64.0)
-                                                            .height(220.0)
-                                                            .show_ui(ui, |ui| {
-                                                                for option in QuotaUnit::ALL {
-                                                                    ui.selectable_value(unit, option, quota_unit_label(option, loc));
-                                                                }
-                                                            })
-                                                            .response
-                                                            .labelled_by(window_label.id);
-                                                    });
-                                                    ui.end_row();
-                                                }
-                                            });
-
-                                        // Footer: remaining budget (separated from the fields)
-                                        // and the counter reset action right next to it.
-                                        ui.add_space(2.0);
-                                        ui.separator();
-                                        ui.add_space(2.0);
-                                        let now = chrono::Local::now();
-                                        let exhausted = rule.quota_exhausted(now);
-                                        let limit = rule.max_executions.unwrap_or(0);
-                                        let remaining = rule.quota_remaining(now).unwrap_or(0);
-                                        let mut status = loc
-                                            .inspector_runs_remaining
-                                            .replacen("{}", &remaining.to_string(), 1)
-                                            .replacen("{}", &limit.to_string(), 1);
-                                        if exhausted {
-                                            if let Some(reset) = rule.quota_next_reset(now) {
-                                                status.push_str(" · ");
-                                                status.push_str(
-                                                    &loc.inspector_quota_resets_at
-                                                        .replacen("{}", &reset.format("%H:%M").to_string(), 1),
-                                                );
-                                            }
-                                        }
-                                        ui.allocate_ui_with_layout(
-                                            vec2(ui.available_width(), ui.spacing().interact_size.y),
-                                            egui::Layout::left_to_right(egui::Align::Center),
-                                            |ui| {
-                                                ui.spacing_mut().item_spacing.x = 8.0;
-                                                // The counter reset is a bare glyph, not a framed
-                                                // button: it only reacts to hover.
-                                                let (reset_rect, reset_response) =
-                                                    ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-                                                let reset_color = if reset_response.hovered() { t.accent_ink } else { t.faint };
-                                                ui.painter().text(
-                                                    reset_rect.center(),
-                                                    egui::Align2::CENTER_CENTER,
-                                                    egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE,
-                                                    egui::FontId::new(15.0, theme::phosphor()),
-                                                    reset_color,
-                                                );
-                                                reset_response.widget_info(|| {
-                                                    egui::WidgetInfo::labeled(
-                                                        egui::Role::Button,
-                                                        true,
-                                                        loc.inspector_btn_reset,
-                                                    )
-                                                });
-                                                let reset_response = reset_response
-                                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                                    .on_hover_text(loc.inspector_btn_reset);
-                                                if reset_response.clicked() {
-                                                    reset_clicked = true;
-                                                }
-                                                widgets::hud(ui, &status, if exhausted { t.warn } else { t.faint });
-                                            },
-                                        );
-                                    });
-                                if reset_clicked {
-                                    state.reset_rule_quota(rule);
-                                }
-                            }
-
-                            // Stop pipeline on error (separate line)
-                            ui.checkbox(&mut rule.stop_on_error, loc.inspector_field_stop_on_error)
-                                .on_hover_text(loc.inspector_field_stop_on_error_tip);
-
-                            // Rule active (at the very end of the block on a separate line)
-                            if is_manual {
-                                rule.is_enabled = true;
-                            }
-                            let cb = egui::Checkbox::new(&mut rule.is_enabled, loc.inspector_checkbox_rule_active);
-                            let resp = ui.add_enabled(!is_manual, cb);
-                            if is_manual {
-                                resp.on_disabled_hover_text(loc.inspector_checkbox_rule_active_manual_tip);
-                            }
-                        });
+                        if reset_clicked {
+                            state.reset_rule_quota(rule);
+                        }
                     });
                 });
 

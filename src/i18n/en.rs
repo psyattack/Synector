@@ -179,7 +179,7 @@ pub static STRINGS: Strings = Strings {
     inspector_tags_existing: "Existing Tags",
     inspector_tags_no_existing: "No other tags found",
     inspector_tags_btn_create: "Add",
-    inspector_field_cooldown: "COOLDOWN",
+    inspector_field_cooldown: "Cooldown",
     inspector_checkbox_rule_active: "Rule Active",
     inspector_checkbox_rule_active_manual_tip: "Manual rules are triggered on demand and cannot be deactivated",
     inspector_eyebrow_trigger: "TRIGGER CONDITION",

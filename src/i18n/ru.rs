@@ -179,7 +179,7 @@ pub static STRINGS: Strings = Strings {
     inspector_tags_existing: "Существующие теги",
     inspector_tags_no_existing: "Других тегов пока нет",
     inspector_tags_btn_create: "Добавить",
-    inspector_field_cooldown: "КУЛДАУН",
+    inspector_field_cooldown: "Кулдаун",
     inspector_checkbox_rule_active: "Правило активно",
     inspector_checkbox_rule_active_manual_tip: "Правила с ручным запуском выполняются по требованию и не могут быть отключены",
     inspector_eyebrow_trigger: "УСЛОВИЕ ТРИГГЕРА",

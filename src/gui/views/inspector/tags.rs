@@ -10,65 +10,74 @@ pub(crate) fn render_inspector_tag_section(
     loc: &crate::i18n::Strings,
     t: &Tokens,
 ) {
-    ui.add_space(2.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        ui.spacing_mut().item_spacing.y = 4.0;
+    // The pills live in a full-width well, so the row reads as the field it is instead of a few
+    // chips floating in empty card space; the add chip follows them with a tight gap.
+    egui::Frame::new()
+        .stroke(t.hairline())
+        .corner_radius(t.field_corner())
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().item_spacing.y = 4.0;
 
-        let mut remove_idx = None;
-        let editor_style = &TagPillStyle::INSPECTOR_EDITOR;
-        for (idx, tag) in rule.tags.iter().enumerate() {
-            let color = theme::tag_color(tag, t.accent_ink);
-            let pill_w = tag_pill_width(ui, tag, editor_style);
-            let (rect, _resp) = ui.allocate_exact_size(vec2(pill_w, editor_style.height), Sense::hover());
+                let mut remove_idx = None;
+                let editor_style = &TagPillStyle::INSPECTOR_EDITOR;
+                for (idx, tag) in rule.tags.iter().enumerate() {
+                    let color = theme::tag_color(tag, t.accent_ink);
+                    let pill_w = tag_pill_width(ui, tag, editor_style);
+                    let (rect, _resp) = ui.allocate_exact_size(vec2(pill_w, editor_style.height), Sense::hover());
 
-            paint_tag_pill(ui, rect, tag, editor_style, color, color, color, false);
+                    paint_tag_pill(ui, rect, tag, editor_style, color, color, color, false);
 
-            let close_rect = Rect::from_center_size(pos2(rect.right() - 8.0, rect.center().y), vec2(14.0, 14.0));
-            let close_resp = ui.interact(close_rect, ui.scope_id().with(("tag_rem", idx)), Sense::click());
-            let close_hover = close_resp.hovered();
-            ui.painter().text(
-                close_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                egui_phosphor::regular::X,
-                egui::FontId::new(9.5, theme::phosphor()),
-                if close_hover { t.ink_strong } else { color.gamma_multiply(0.7) },
-            );
-            if close_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                remove_idx = Some(idx);
-            }
-        }
+                    let close_rect = Rect::from_center_size(pos2(rect.right() - 8.0, rect.center().y), vec2(14.0, 14.0));
+                    let close_resp = ui.interact(close_rect, ui.scope_id().with(("tag_rem", idx)), Sense::click());
+                    let close_hover = close_resp.hovered();
+                    ui.painter().text(
+                        close_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        egui_phosphor::regular::X,
+                        egui::FontId::new(9.5, theme::phosphor()),
+                        if close_hover { t.ink_strong } else { color.gamma_multiply(0.7) },
+                    );
+                    if close_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        remove_idx = Some(idx);
+                    }
+                }
 
-        if let Some(idx) = remove_idx {
-            rule.tags.remove(idx);
-            state.push_undo_snapshot();
-        }
+                if let Some(idx) = remove_idx {
+                    rule.tags.remove(idx);
+                    state.push_undo_snapshot();
+                }
 
-        let add_label = loc.inspector_tags_add;
-        let add_galley = widgets::caps(ui, add_label, 10.0, theme::mono(), 0.5, t.ink);
-        let add_w = add_galley.size().x + 18.0;
-        let (add_rect, add_resp) = ui.allocate_exact_size(vec2(add_w, 20.0), Sense::click());
-        let add_hovered = add_resp.hovered();
-        ui.painter().rect(
-            add_rect,
-            CornerRadius::same(10),
-            if add_hovered { t.sunken } else { egui::Color32::TRANSPARENT },
-            Stroke::new(1.0, if state.tag_picker_open { t.accent_ink } else if add_hovered { t.ink } else { t.line }),
-            egui::StrokeKind::Inside,
-        );
-        widgets::paint_centred(
-            ui,
-            add_rect,
-            add_galley,
-            if state.tag_picker_open { t.accent_ink } else if add_hovered { t.ink_strong } else { t.muted },
-        );
-        if add_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            state.tag_picker_open = !state.tag_picker_open;
-        }
-    });
+                let add_label = loc.inspector_tags_add;
+                let add_galley = widgets::caps(ui, add_label, 10.0, theme::mono(), 0.5, t.ink);
+                let add_w = add_galley.size().x + 18.0;
+                let (add_rect, add_resp) = ui.allocate_exact_size(vec2(add_w, 20.0), Sense::click());
+                let add_hovered = add_resp.hovered();
+                ui.painter().rect(
+                    add_rect,
+                    CornerRadius::same(10),
+                    if add_hovered { t.sunken } else { egui::Color32::TRANSPARENT },
+                    Stroke::new(1.0, if state.tag_picker_open { t.accent_ink } else if add_hovered { t.ink } else { t.line }),
+                    egui::StrokeKind::Inside,
+                );
+                widgets::paint_centred(
+                    ui,
+                    add_rect,
+                    add_galley,
+                    if state.tag_picker_open { t.accent_ink } else if add_hovered { t.ink_strong } else { t.muted },
+                );
+                if add_resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    state.tag_picker_open = !state.tag_picker_open;
+                }
+            });
+        });
 
     if state.tag_picker_open {
-        ui.add_space(4.0);
+        // The picker opens under the well with the card's own rhythm, which is exactly the gap
+        // that separates the tag block from the run-behaviour block below it.
         egui::Frame::new()
             .fill(t.sunken.gamma_multiply(0.6))
             .stroke(t.hairline())

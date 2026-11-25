@@ -75,11 +75,7 @@ fn visuals(t: &Tokens) -> Visuals {
     let rest_fill = if modern { t.glass_button(0.0) } else { t.bg };
     let hover_fill = if modern { t.glass_button(0.6) } else { t.raised() };
     let active_fill = if modern { t.glass_button(1.0) } else { t.raised() };
-    let rest_stroke = if modern {
-        t.line.lerp_to_gamma(t.line_strong, 0.55)
-    } else {
-        t.line
-    };
+    let rest_stroke = t.field_stroke().color;
     for (w, fill, stroke, fg) in [
         (&mut v.widgets.noninteractive, t.bg, t.line, t.muted),
         (&mut v.widgets.inactive, rest_fill, rest_stroke, t.ink),

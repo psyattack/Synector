@@ -416,6 +416,18 @@ impl Tokens {
         Stroke::new(self.metrics.hairline_w, self.line)
     }
 
+    /// Border of a framed control and of a text-entry well at rest: the same material
+    /// `apply_theme` gives the native widgets, exposed so a hand-painted field can match the
+    /// input next to it.
+    pub fn field_stroke(&self) -> Stroke {
+        let color = if self.metrics.skin == UiSkin::Modern {
+            self.line.lerp_to_gamma(self.line_strong, 0.55)
+        } else {
+            self.line
+        };
+        Stroke::new(self.metrics.hairline_w, color)
+    }
+
     /// Corner radius of a card or an inset panel.
     pub fn card_corner(&self) -> egui::CornerRadius {
         egui::CornerRadius::same(self.metrics.card_radius)
