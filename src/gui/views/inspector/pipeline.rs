@@ -254,6 +254,9 @@ impl PipelineHost for RulePipelineHost<'_> {
     }
 
     fn apply(&mut self, outcome: PipelineCardOutcome, idx: usize) {
+        if outcome.change_clicked {
+            self.state.open_action_catalog_change(self.is_exit_pipeline, idx);
+        }
         if let Some(lang) = outcome.expand_script {
             self.state.open_script_editor(idx, self.is_exit_pipeline, lang);
         }
@@ -301,6 +304,7 @@ impl PipelineHost for RulePipelineHost<'_> {
 pub(crate) struct PipelineCardOutcome {
     pub remove_clicked: bool,
     pub clone_clicked: bool,
+    pub change_clicked: bool,
     pub expand_script: Option<ScriptLanguage>,
     pub expand_macro: bool,
     pub expand_overlay: Option<String>,
@@ -319,6 +323,7 @@ impl Default for PipelineCardOutcome {
         Self {
             remove_clicked: false,
             clone_clicked: false,
+            change_clicked: false,
             expand_script: None,
             expand_macro: false,
             expand_overlay: None,
@@ -371,6 +376,19 @@ impl BranchPickerKind {
             BranchPickerKind::Then => crate::gui::state::ProcessPickerTarget::IfElseThen { parent_idx, sub_idx, is_exit },
             BranchPickerKind::ElseIf(branch_idx) => crate::gui::state::ProcessPickerTarget::IfElseElseIf { parent_idx, branch_idx, sub_idx, is_exit },
             BranchPickerKind::Else => crate::gui::state::ProcessPickerTarget::IfElseElse { parent_idx, sub_idx, is_exit },
+        }
+    }
+
+    /// Catalog target that replaces the nested step instead of appending to the branch.
+    fn make_change_target(self, parent_idx: usize, change_idx: usize) -> crate::gui::state::IfElseCatalogTarget {
+        match self {
+            BranchPickerKind::Then => crate::gui::state::IfElseCatalogTarget::ThenChange { parent_idx, change_idx },
+            BranchPickerKind::ElseIf(branch_idx) => crate::gui::state::IfElseCatalogTarget::ElseIfChange {
+                parent_idx,
+                branch_idx,
+                change_idx,
+            },
+            BranchPickerKind::Else => crate::gui::state::IfElseCatalogTarget::ElseChange { parent_idx, change_idx },
         }
     }
 }
@@ -440,7 +458,10 @@ impl PipelineHost for NestedPipelineHost<'_> {
         )
     }
 
-    fn apply(&mut self, outcome: PipelineCardOutcome, _idx: usize) {
+    fn apply(&mut self, outcome: PipelineCardOutcome, idx: usize) {
+        if outcome.change_clicked {
+            self.resp.open_catalog_nested = Some(self.picker_kind.make_change_target(self.parent_idx, idx));
+        }
         if let Some(target) = outcome.pick_target {
             self.resp.pick_target = Some(target);
         }
@@ -545,5 +566,33 @@ mod tests {
             assert!(salt.is_ascii(), "branch id salt must stay ASCII: {salt}");
             assert!(!salt.contains("ТОГДА") && !salt.contains("ИНАЧЕ"));
         }
+    }
+
+    /// A change click on a nested step must replace it in the branch it belongs to.
+    #[test]
+    fn test_nested_change_targets_follow_the_branch() {
+        use crate::gui::state::IfElseCatalogTarget;
+        assert_eq!(
+            BranchPickerKind::Then.make_change_target(2, 5),
+            IfElseCatalogTarget::ThenChange {
+                parent_idx: 2,
+                change_idx: 5
+            }
+        );
+        assert_eq!(
+            BranchPickerKind::ElseIf(1).make_change_target(2, 5),
+            IfElseCatalogTarget::ElseIfChange {
+                parent_idx: 2,
+                branch_idx: 1,
+                change_idx: 5
+            }
+        );
+        assert_eq!(
+            BranchPickerKind::Else.make_change_target(2, 5),
+            IfElseCatalogTarget::ElseChange {
+                parent_idx: 2,
+                change_idx: 5
+            }
+        );
     }
 }

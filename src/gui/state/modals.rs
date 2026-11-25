@@ -54,12 +54,18 @@ pub enum IfElseCatalogTarget {
     Then(usize),
     ElseIf { parent_idx: usize, branch_idx: usize },
     Else(usize),
+    /// Change mode: the chosen action replaces the nested step at `change_idx` instead of being
+    /// appended to the branch.
+    ThenChange { parent_idx: usize, change_idx: usize },
+    ElseIfChange { parent_idx: usize, branch_idx: usize, change_idx: usize },
+    ElseChange { parent_idx: usize, change_idx: usize },
 }
 
 #[derive(Debug, Clone)]
 pub struct ActionCatalogModalState {
     pub is_exit_pipeline: bool,
     pub insert_idx: Option<usize>,
+    pub change_idx: Option<usize>,
     pub selected_category: usize,
     pub search_query: String,
     pub ifelse_target: Option<IfElseCatalogTarget>,
@@ -103,6 +109,22 @@ pub enum RuleSortMode {
     TriggerType,
     ActionCount,
     Status,
+}
+
+/// Replaces the nested step at `idx` with `action`, handing the action back when the index no
+/// longer addresses a step so the caller can keep the pick instead of dropping it.
+fn replace_nested_action(
+    list: &mut [crate::models::Action],
+    idx: usize,
+    action: crate::models::Action,
+) -> Option<crate::models::Action> {
+    match list.get_mut(idx) {
+        Some(slot) => {
+            *slot = action;
+            None
+        }
+        None => Some(action),
+    }
 }
 
 impl GuiState {
@@ -201,6 +223,22 @@ impl GuiState {
         let catalog = ActionCatalogModalState {
             is_exit_pipeline,
             insert_idx,
+            change_idx: None,
+            selected_category: 0,
+            search_query: String::new(),
+            ifelse_target: None,
+        };
+        self.action_catalog = Some(catalog.clone());
+        self.last_action_catalog = Some(catalog);
+    }
+
+    /// Opens the catalog in change mode: the chosen action replaces the step at `change_idx`
+    /// instead of being inserted or appended.
+    pub fn open_action_catalog_change(&mut self, is_exit_pipeline: bool, change_idx: usize) {
+        let catalog = ActionCatalogModalState {
+            is_exit_pipeline,
+            insert_idx: None,
+            change_idx: Some(change_idx),
             selected_category: 0,
             search_query: String::new(),
             ifelse_target: None,
@@ -213,6 +251,7 @@ impl GuiState {
         let catalog = ActionCatalogModalState {
             is_exit_pipeline,
             insert_idx: None,
+            change_idx: None,
             selected_category: 0,
             search_query: String::new(),
             ifelse_target: Some(target),
@@ -331,6 +370,7 @@ impl GuiState {
         action: crate::models::Action,
         is_exit_pipeline: bool,
         insert_idx: Option<usize>,
+        change_idx: Option<usize>,
         ifelse_target: Option<IfElseCatalogTarget>,
     ) {
         self.push_undo_snapshot();
@@ -359,6 +399,43 @@ impl GuiState {
                             else_actions.push(action);
                         }
                     }
+                    IfElseCatalogTarget::ThenChange { parent_idx, change_idx } => {
+                        let leftover = match list.get_mut(parent_idx) {
+                            Some(crate::models::Action::IfElse { then_actions, .. }) => {
+                                replace_nested_action(then_actions, change_idx, action)
+                            }
+                            _ => Some(action),
+                        };
+                        if let Some(action) = leftover {
+                            // A stale target must not lose the pick silently.
+                            list.push(action);
+                        }
+                    }
+                    IfElseCatalogTarget::ElseIfChange { parent_idx, branch_idx, change_idx } => {
+                        let leftover = match list.get_mut(parent_idx) {
+                            Some(crate::models::Action::IfElse { else_if_branches, .. }) => {
+                                match else_if_branches.get_mut(branch_idx) {
+                                    Some(branch) => replace_nested_action(&mut branch.actions, change_idx, action),
+                                    None => Some(action),
+                                }
+                            }
+                            _ => Some(action),
+                        };
+                        if let Some(action) = leftover {
+                            list.push(action);
+                        }
+                    }
+                    IfElseCatalogTarget::ElseChange { parent_idx, change_idx } => {
+                        let leftover = match list.get_mut(parent_idx) {
+                            Some(crate::models::Action::IfElse { else_actions, .. }) => {
+                                replace_nested_action(else_actions, change_idx, action)
+                            }
+                            _ => Some(action),
+                        };
+                        if let Some(action) = leftover {
+                            list.push(action);
+                        }
+                    }
                 }
             } else {
                 let list = if is_exit_pipeline {
@@ -366,7 +443,15 @@ impl GuiState {
                 } else {
                     &mut rule.actions
                 };
-                if let Some(idx) = insert_idx {
+                if let Some(idx) = change_idx {
+                    // Change mode replaces the step in place; a stale index falls back to append
+                    // so the pick cannot be lost silently.
+                    if let Some(slot) = list.get_mut(idx) {
+                        *slot = action;
+                    } else {
+                        list.push(action);
+                    }
+                } else if let Some(idx) = insert_idx {
                     let clamped = idx.min(list.len());
                     list.insert(clamped, action);
                 } else {
@@ -447,6 +532,7 @@ mod tests {
         state.action_catalog = Some(ActionCatalogModalState {
             is_exit_pipeline: false,
             insert_idx: None,
+            change_idx: None,
             search_query: String::new(),
             selected_category: 0,
             ifelse_target: None,
@@ -655,7 +741,7 @@ mod tests {
 
         // 1. Insert at the requested index; the modal closes on commit.
         state.open_action_catalog(false, Some(1));
-        state.add_action_from_catalog(kill("new.exe"), false, Some(1), None);
+        state.add_action_from_catalog(kill("new.exe"), false, Some(1), None, None);
         assert!(state.action_catalog.is_none(), "a commit closes the catalog");
         {
             let actions = &state.editing_rule.as_ref().unwrap().actions;
@@ -663,16 +749,25 @@ mod tests {
             assert!(matches!(&actions[1], Action::KillProcess { process_name, .. } if process_name == "new.exe"));
         }
 
+        // 1b. Change mode replaces the step in place instead of inserting a new one.
+        state.open_action_catalog_change(false, 2);
+        state.add_action_from_catalog(notification("replaced"), false, None, Some(2), None);
+        {
+            let actions = &state.editing_rule.as_ref().unwrap().actions;
+            assert_eq!(actions.len(), 4, "a change never grows the pipeline");
+            assert!(matches!(&actions[2], Action::Notification { title, .. } if title == "replaced"));
+        }
+
         // 2. An out-of-range index is clamped to the end, and the exit pipeline is separate.
         state.open_action_catalog(false, Some(99));
-        state.add_action_from_catalog(notification("tail"), false, Some(99), None);
+        state.add_action_from_catalog(notification("tail"), false, Some(99), None, None);
         assert!(matches!(
             state.editing_rule.as_ref().unwrap().actions.last(),
             Some(Action::Notification { title, .. }) if title == "tail"
         ));
 
         state.open_action_catalog(true, None);
-        state.add_action_from_catalog(notification("exit"), true, None, None);
+        state.add_action_from_catalog(notification("exit"), true, None, None, None);
         assert_eq!(state.editing_rule.as_ref().unwrap().on_exit_actions.len(), 1);
         assert_eq!(state.editing_rule.as_ref().unwrap().actions.len(), 5);
 
@@ -683,12 +778,14 @@ mod tests {
             notification("then"),
             false,
             None,
+            None,
             Some(IfElseCatalogTarget::Then(ifelse)),
         );
         state.open_action_catalog_nested(false, IfElseCatalogTarget::Else(ifelse));
         state.add_action_from_catalog(
             notification("else"),
             false,
+            None,
             None,
             Some(IfElseCatalogTarget::Else(ifelse)),
         );
@@ -703,9 +800,29 @@ mod tests {
             notification("elseif"),
             false,
             None,
+            None,
             Some(IfElseCatalogTarget::ElseIf {
                 parent_idx: ifelse,
                 branch_idx: 0,
+            }),
+        );
+
+        // 4. Change mode replaces a nested step in place; it never appends or grows the branch.
+        state.open_action_catalog_nested(
+            false,
+            IfElseCatalogTarget::ThenChange {
+                parent_idx: ifelse,
+                change_idx: 0,
+            },
+        );
+        state.add_action_from_catalog(
+            notification("then-changed"),
+            false,
+            None,
+            None,
+            Some(IfElseCatalogTarget::ThenChange {
+                parent_idx: ifelse,
+                change_idx: 0,
             }),
         );
 
@@ -718,7 +835,7 @@ mod tests {
             ..
         }) = actions.get(ifelse)
         {
-            assert!(matches!(then_actions.as_slice(), [Action::Notification { title, .. }] if title == "then"));
+            assert!(matches!(then_actions.as_slice(), [Action::Notification { title, .. }] if title == "then-changed"));
             assert!(matches!(else_actions.as_slice(), [Action::Notification { title, .. }] if title == "else"));
             assert!(matches!(
                 else_if_branches[0].actions.as_slice(),
@@ -728,8 +845,9 @@ mod tests {
             panic!("expected the IfElse action at index {ifelse}");
         }
 
-        // Every commit pushed exactly one undo snapshot.
-        assert_eq!(state.undo_stack.len(), 6);
+        // Every commit pushed exactly one undo snapshot (insert, change, append, exit and the
+        // four nested picks).
+        assert_eq!(state.undo_stack.len(), 8);
     }
 
     /// Choosing a trigger replaces the draft's trigger and closes the catalog; `None` clears it.

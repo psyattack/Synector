@@ -589,6 +589,7 @@ pub fn render_action_catalog_modal(ctx: &egui::Context, state: &mut GuiState) {
             action,
             modal_state.is_exit_pipeline,
             modal_state.insert_idx,
+            modal_state.change_idx,
             modal_state.ifelse_target,
         );
     } else if outcome.close_requested {

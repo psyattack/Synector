@@ -45,6 +45,7 @@ pub(crate) fn render_action_card(
     let loc = state.loc();
     let mut remove_clicked = false;
     let mut clone_clicked = false;
+    let mut change_clicked = false;
     let mut drag_started = false;
     let mut step_tested_overlays = Vec::new();
     let mut fields_resp = ActionFieldsResponse::default();
@@ -89,6 +90,10 @@ pub(crate) fn render_action_card(
 
                         if widgets::glyph_button(ui, Glyph::Clone, loc.inspector_tip_clone_step).clicked() {
                             clone_clicked = true;
+                        }
+
+                        if widgets::glyph_button(ui, Glyph::Edit, loc.inspector_tip_change_step).clicked() {
+                            change_clicked = true;
                         }
 
                         if widgets::glyph_button(ui, Glyph::Play, loc.inspector_btn_test_step).clicked() {
@@ -192,6 +197,7 @@ pub(crate) fn render_action_card(
     PipelineCardOutcome {
         remove_clicked,
         clone_clicked,
+        change_clicked,
         expand_script: fields_resp.expand_script,
         expand_macro: fields_resp.expand_macro,
         expand_overlay: fields_resp.expand_overlay,
@@ -226,6 +232,7 @@ pub(crate) fn render_subaction_card(
     let loc = state.loc();
     let mut remove_clicked = false;
     let mut clone_clicked = false;
+    let mut change_clicked = false;
     let mut drag_started = false;
     let mut step_tested_overlays = Vec::new();
     let type_badge = action_type_badge(sub_act, loc);
@@ -279,6 +286,9 @@ pub(crate) fn render_subaction_card(
                         }
                         if widgets::glyph_button(ui, Glyph::Clone, loc.inspector_tip_clone_step).clicked() {
                             clone_clicked = true;
+                        }
+                        if widgets::glyph_button(ui, Glyph::Edit, loc.inspector_tip_change_step).clicked() {
+                            change_clicked = true;
                         }
                         if widgets::glyph_button(ui, Glyph::Play, loc.inspector_btn_test_step).clicked() {
                             if let Action::Overlay { overlay_id, custom_overlay, .. } = sub_act {
@@ -373,6 +383,7 @@ pub(crate) fn render_subaction_card(
     PipelineCardOutcome {
         remove_clicked,
         clone_clicked,
+        change_clicked,
         expand_script: fields_resp.expand_script,
         expand_macro: fields_resp.expand_macro,
         expand_overlay: fields_resp.expand_overlay,

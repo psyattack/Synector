@@ -283,13 +283,14 @@ pub(crate) fn render_if_else_fields(
 
         let mut remove_if_cond_idx = None;
         let mut change_if_cond_idx = None;
+        let mut clone_if_cond_idx = None;
         let total_if_conds = conditions.len();
         for (c_idx, c_item) in conditions.iter_mut().enumerate() {
             if c_idx > 0 {
                 render_condition_operator_connector(ui, &mut c_item.operator, loc, t);
             }
             let can_remove = total_if_conds > 1;
-            let (remove_clicked, change_clicked) = render_condition_card(
+            let (remove_clicked, change_clicked, clone_clicked) = render_condition_card(
                 ui,
                 c_idx,
                 c_item,
@@ -311,6 +312,15 @@ pub(crate) fn render_if_else_fields(
             }
             if change_clicked {
                 change_if_cond_idx = Some(c_idx);
+            }
+            if clone_clicked {
+                clone_if_cond_idx = Some(c_idx);
+            }
+        }
+        if let Some(c_idx) = clone_if_cond_idx {
+            if c_idx < conditions.len() {
+                let cloned = conditions[c_idx].clone();
+                conditions.insert(c_idx + 1, cloned);
             }
         }
         if let Some(c_idx) = remove_if_cond_idx {
@@ -375,13 +385,14 @@ pub(crate) fn render_if_else_fields(
 
             let mut remove_elif_cond_idx = None;
             let mut change_elif_cond_idx = None;
+            let mut clone_elif_cond_idx = None;
             let total_elif_conds = branch.conditions.len();
             for (c_idx, c_item) in branch.conditions.iter_mut().enumerate() {
                 if c_idx > 0 {
                     render_condition_operator_connector(ui, &mut c_item.operator, loc, t);
                 }
                 let can_remove = total_elif_conds > 1;
-                let (remove_clicked, change_clicked) = render_condition_card(
+                let (remove_clicked, change_clicked, clone_clicked) = render_condition_card(
                     ui,
                     c_idx,
                     c_item,
@@ -404,6 +415,15 @@ pub(crate) fn render_if_else_fields(
                 }
                 if change_clicked {
                     change_elif_cond_idx = Some(c_idx);
+                }
+                if clone_clicked {
+                    clone_elif_cond_idx = Some(c_idx);
+                }
+            }
+            if let Some(c_idx) = clone_elif_cond_idx {
+                if c_idx < branch.conditions.len() {
+                    let cloned = branch.conditions[c_idx].clone();
+                    branch.conditions.insert(c_idx + 1, cloned);
                 }
             }
             if let Some(c_idx) = remove_elif_cond_idx {

@@ -53,25 +53,21 @@ pub(crate) fn render_trigger_section(ui: &mut Ui, state: &mut GuiState, rule: &m
                             .color(glyph_color),
                     );
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(title)
-                            .family(theme::semibold())
-                            .size(12.5)
-                            .color(t.ink),
-                    );
+                    // The trigger name wears the same HUD voice as the STEP / CONDITION labels.
+                    widgets::hud(ui, title, t.accent_ink);
 
                     let exec_opt = state.get_rule_execution_state(rule);
                     let is_running = exec_opt.is_some();
                     let is_test_running = state.active_test_runs.contains_key(&rule.id);
                     let is_stoppable = if is_manual { is_running } else { is_test_running };
-                    let run_label = if is_stoppable { loc.rules_btn_stop } else { loc.rules_btn_test_run };
-                    let run_kind = if is_stoppable { Kind::Danger } else { Kind::Secondary };
+                    let run_glyph = if is_stoppable { Glyph::Stop } else { Glyph::Play };
+                    let run_tip = if is_stoppable { loc.rules_btn_stop } else { loc.rules_btn_test_run };
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::button(ui, loc.inspector_btn_change_trigger, Kind::Secondary, 0.0).clicked() {
+                        if widgets::glyph_button(ui, Glyph::Edit, loc.inspector_tip_change_trigger).clicked() {
                             state.open_trigger_catalog();
                         }
-                        if widgets::button(ui, run_label, run_kind, 0.0).clicked() {
+                        if widgets::glyph_button(ui, run_glyph, run_tip).clicked() {
                             if is_stoppable {
                                 state.stop_rule_execution(&rule.id);
                             } else {

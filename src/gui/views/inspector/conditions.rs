@@ -50,9 +50,10 @@ pub(crate) fn render_condition_card(
     can_remove: bool,
     on_pick_process: impl FnMut(),
     state: &GuiState,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let mut remove_clicked = false;
     let mut change_clicked = false;
+    let mut clone_clicked = false;
     let kind = ConditionKind::from_condition(&item.condition);
 
     let (fill, stroke) = if is_nested {
@@ -81,7 +82,10 @@ pub(crate) fn render_condition_card(
                         if can_remove && widgets::glyph_button(ui, Glyph::Close, loc.inspector_cond_remove_tip).clicked() {
                             remove_clicked = true;
                         }
-                        if widgets::button(ui, loc.inspector_btn_change_condition, Kind::Secondary, 0.0).clicked() {
+                        if widgets::glyph_button(ui, Glyph::Clone, loc.inspector_cond_clone_tip).clicked() {
+                            clone_clicked = true;
+                        }
+                        if widgets::glyph_button(ui, Glyph::Edit, loc.inspector_tip_change_condition).clicked() {
                             change_clicked = true;
                         }
                     });
@@ -94,7 +98,7 @@ pub(crate) fn render_condition_card(
             });
         });
 
-    (remove_clicked, change_clicked)
+    (remove_clicked, change_clicked, clone_clicked)
 }
 
 pub(crate) fn render_condition_operator_connector(
@@ -340,6 +344,7 @@ pub(crate) fn render_conditions_section(
     let loc = state.loc();
     let mut remove_idx = None;
     let mut change_idx = None;
+    let mut clone_idx = None;
     let mut pick_cond_idx = None;
 
     for (idx, item) in rule.conditions.iter_mut().enumerate() {
@@ -347,7 +352,7 @@ pub(crate) fn render_conditions_section(
             render_condition_operator_connector(ui, &mut item.operator, loc, t);
         }
 
-        let (remove_clicked, change_clicked) = render_condition_card(
+        let (remove_clicked, change_clicked, clone_clicked) = render_condition_card(
             ui,
             idx,
             item,
@@ -363,6 +368,17 @@ pub(crate) fn render_conditions_section(
         }
         if change_clicked {
             change_idx = Some(idx);
+        }
+        if clone_clicked {
+            clone_idx = Some(idx);
+        }
+    }
+
+    if let Some(idx) = clone_idx {
+        if idx < rule.conditions.len() {
+            state.push_undo_snapshot();
+            let cloned = rule.conditions[idx].clone();
+            rule.conditions.insert(idx + 1, cloned);
         }
     }
 
