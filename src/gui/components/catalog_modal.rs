@@ -320,6 +320,7 @@ fn render_catalog_body<T: CatalogEntry>(
         egui::ScrollArea::vertical()
             .id_salt(view.scroll_id)
             .auto_shrink([false, false])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, |ui| {
                 if filtered.is_empty() {
                     ui.vertical_centered(|ui| {
