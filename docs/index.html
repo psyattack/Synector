@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Synector documentation</title>
+  <meta name="description" content="Synector documentation: installation, rule authoring, Lua scripting, examples, troubleshooting and architecture.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Synector documentation">
+  <meta property="og:description" content="Synector documentation: installation, rule authoring, Lua scripting, examples, troubleshooting and architecture.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Synector documentation">
+  <meta name="twitter:description" content="Synector documentation: installation, rule authoring, Lua scripting, examples, troubleshooting and architecture.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Documentation", "description": "Synector documentation: installation, rule authoring, Lua scripting, examples, troubleshooting and architecture.", "url": "https://psyattack.github.io/Synector/docs/", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a class="is-active" href="index.html">Overview</a><a href="getting-started.html">Start</a><a href="rules.html">Rules</a><a href="scripting.html">Scripting</a><a href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell is-wide">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link is-active" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link" href="rules.html">Rule authoring</a>
+<a class="docs-side-link" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link" href="examples.html">Rule examples</a>
+<a class="docs-side-link" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/gh-pages/docs/index.html">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<h1 id="documentation">Documentation</h1>
+<p class="docs-hub-lede">Everything from the first install to the rule engine. The reference pages are written in English; the application interface and the in-app guide are localized.</p>
+<p class="docs-hub-note">The reference pages mirror the Markdown files in the main branch. Every page has a source link, so the original is one click away.</p>
+
+<div class="docs-hub-grid">
+  <a class="docs-hub-card" href="getting-started.html">
+    <span class="docs-hub-kind">Start here</span>
+    <h2 id="getting-started">Getting started</h2>
+    <p>Install, launch, and write the first rule. Requirements, the first window and the configuration files.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="docs-hub-card" href="rules.html">
+    <span class="docs-hub-kind">Reference</span>
+    <h2 id="rule-authoring">Rule authoring</h2>
+    <p>JSON format, commands, quotas, rule-to-rule control, webhooks, validation and share codes.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="docs-hub-card" href="scripting.html">
+    <span class="docs-hub-kind">Reference</span>
+    <h2 id="lua-scripting">Lua scripting</h2>
+    <p>The <code>syn</code> API, context tokens, output, limits and error handling.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="docs-hub-card" href="examples.html">
+    <span class="docs-hub-kind">Recipes</span>
+    <h2 id="rule-examples">Rule examples</h2>
+    <p>Complete, ready-to-apply rules for companions, schedules, webhooks, audio and rule chains.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="docs-hub-card" href="faq.html">
+    <span class="docs-hub-kind">Support</span>
+    <h2 id="faq-and-troubleshooting">FAQ and troubleshooting</h2>
+    <p>Elevation, updates, logs, overlays, macros, the webhook port and configuration recovery.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+  <a class="docs-hub-card" href="architecture.html">
+    <span class="docs-hub-kind">Internals</span>
+    <h2 id="architecture">Architecture</h2>
+    <p>Two tiers, data flow, the rule engine, event sources, overlays, input simulation and updates.</p>
+    <span class="docs-hub-arrow" aria-hidden="true">→</span>
+  </a>
+</div>
+
+<h2 id="repository-documents">Repository documents</h2>
+<p>The developer-facing documents stay next to the code and are not mirrored here.</p>
+<ul>
+  <li><a href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md">Contributing</a>: workflow, code style, tests and the documentation rules.</li>
+  <li><a href="https://github.com/psyattack/Synector/blob/main/SECURITY.md">Security policy</a>: supported versions and private vulnerability reporting.</li>
+  <li><a href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md">Changelog</a>: release history, one section per version.</li>
+  <li><a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a> and <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">license</a>.</li>
+</ul>
+
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="next" href="getting-started.html"><span>Next</span><strong>Getting started</strong></a>
+</nav>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>

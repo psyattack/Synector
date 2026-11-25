@@ -1,0 +1,496 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rule examples - Synector documentation</title>
+  <meta name="description" content="Complete, ready-to-apply Synector rule recipes.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/examples.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Rule examples - Synector documentation">
+  <meta property="og:description" content="Complete, ready-to-apply Synector rule recipes.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/examples.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Rule examples - Synector documentation">
+  <meta name="twitter:description" content="Complete, ready-to-apply Synector rule recipes.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Rule examples", "description": "Complete, ready-to-apply Synector rule recipes.", "url": "https://psyattack.github.io/Synector/docs/examples.html", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a href="index.html">Overview</a><a href="getting-started.html">Start</a><a href="rules.html">Rules</a><a href="scripting.html">Scripting</a><a href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link" href="rules.html">Rule authoring</a>
+<a class="docs-side-link" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link is-active" href="examples.html">Rule examples</a>
+<a class="docs-side-link" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a> / <span>Rule examples</span></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/main/docs/EXAMPLES.md">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<div class="markdown-heading"><h1 class="heading-element">Rule examples</h1><a id="rule-examples" class="anchor" aria-label="Permalink: Rule examples" href="#rule-examples"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Complete rules you can validate and apply without opening the GUI. The JSON format, field semantics
+and quota rules are documented in <a href="rules.html">Rule authoring</a>; this file is a recipe
+book. Replace paths and process names with values from your own machine.</p>
+<p>Every example validates with:</p>
+<div class="highlight highlight-source-powershell"><pre>cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-validate rule.json<span class="pl-pds">"</span></span>
+cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-apply rule.json<span class="pl-pds">"</span></span></pre></div>
+<p>Use <code>--rules-sync</code> instead of <code>--rules-apply</code> when the file should become the complete rule set.
+<code>--dry-run</code> previews the result.</p>
+<div class="markdown-heading"><h2 class="heading-element">Companion process bound to a game</h2><a id="companion-process-bound-to-a-game" class="anchor" aria-label="Permalink: Companion process bound to a game" href="#companion-process-bound-to-a-game"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Starts a helper tool with the game and closes it when the game exits. <code>single_instance: true</code>
+makes the rule fire only for the first matching instance and defers cleanup until every tracked
+instance has exited.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_companion<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Start the companion with the game<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"description"</span>: <span class="pl-s"><span class="pl-pds">"</span>Runs a helper HUD while the game is open and closes it with the game.<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"match_mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>exact<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"single_instance"</span>: <span class="pl-c1">true</span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Tools<span class="pl-cce">\\</span>CompanionHud.exe<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"arguments"</span>: <span class="pl-s"><span class="pl-pds">"</span>--attach game.exe<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"working_directory"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Tools<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"close_on_exit"</span>: <span class="pl-c1">true</span>
+    }
+  ]
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Free memory on a hotkey</h2><a id="free-memory-on-a-hotkey" class="anchor" aria-label="Permalink: Free memory on a hotkey" href="#free-memory-on-a-hotkey"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Trims the working set of one process. A cooldown prevents repeated trimming while the hotkey is
+held.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_trim_browser_memory<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Trim browser working set<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+R<span class="pl-pds">"</span></span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process_tuning<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"target_process"</span>: <span class="pl-s"><span class="pl-pds">"</span>chrome.exe<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"trim_memory"</span>: <span class="pl-c1">true</span>
+    }
+  ],
+  <span class="pl-ent">"cooldown_seconds"</span>: <span class="pl-c1">5</span>
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Webhook trigger with an hourly quota</h2><a id="webhook-trigger-with-an-hourly-quota" class="anchor" aria-label="Permalink: Webhook trigger with an hourly quota" href="#webhook-trigger-with-an-hourly-quota"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Anything on the machine can call
+<code>http://127.0.0.1:48123/api/v1/trigger/backup</code>. The quota allows five runs per
+clock hour and then skips requests until the hour rolls over; the rule stays enabled.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_webhook_backup<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Backup on webhook<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>webhook<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"endpoint_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>backup<span class="pl-pds">"</span></span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Backup<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Webhook received, starting the backup.<span class="pl-pds">"</span></span>
+    },
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>execute_script<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"interpreter"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_shell<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"script"</span>: <span class="pl-s"><span class="pl-pds">"</span>Write-Output 'backup placeholder'<span class="pl-pds">"</span></span>
+    }
+  ],
+  <span class="pl-ent">"max_executions"</span>: <span class="pl-c1">5</span>,
+  <span class="pl-ent">"quota_period"</span>: <span class="pl-s"><span class="pl-pds">"</span>hour<span class="pl-pds">"</span></span>
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<p>Replace the placeholder script with your own command. Script bodies are never written to the log.</p>
+<div class="markdown-heading"><h2 class="heading-element">Archive a folder when a new file arrives</h2><a id="archive-a-folder-when-a-new-file-arrives" class="anchor" aria-label="Permalink: Archive a folder when a new file arrives" href="#archive-a-folder-when-a-new-file-arrives"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Watches an inbox folder and packs it into a ZIP. The cooldown coalesces bursts of file events into
+one archive operation.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_archive_logs<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Archive new logs<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>file_watcher<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"folder_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Logs<span class="pl-cce">\\</span>Inbox<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"filter_extension"</span>: <span class="pl-s"><span class="pl-pds">"</span>log<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"on_created"</span>: <span class="pl-c1">true</span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>archive<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"operation"</span>: <span class="pl-s"><span class="pl-pds">"</span>pack<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"format"</span>: <span class="pl-s"><span class="pl-pds">"</span>zip<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"source_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Logs<span class="pl-cce">\\</span>Inbox<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"destination_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Logs<span class="pl-cce">\\</span>Archive<span class="pl-cce">\\</span>logs.zip<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"overwrite"</span>: <span class="pl-c1">true</span>
+    }
+  ],
+  <span class="pl-ent">"cooldown_seconds"</span>: <span class="pl-c1">30</span>
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Switch power plans on a weekday schedule</h2><a id="switch-power-plans-on-a-weekday-schedule" class="anchor" aria-label="Permalink: Switch power plans on a weekday schedule" href="#switch-power-plans-on-a-weekday-schedule"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Two rules in one file. <code>--rules-apply</code> accepts an array, a single object, or <code>{"rules": [...]}</code>.</p>
+<div class="highlight highlight-source-json"><pre>[
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_power_high_morning<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>High performance on weekday mornings<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: {
+      <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>schedule<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"schedule_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>daily<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"daily_time"</span>: <span class="pl-s"><span class="pl-pds">"</span>09:00:00<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"days_of_week"</span>: [<span class="pl-c1">1</span>, <span class="pl-c1">2</span>, <span class="pl-c1">3</span>, <span class="pl-c1">4</span>, <span class="pl-c1">5</span>]
+    },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_plan<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"plan"</span>: <span class="pl-s"><span class="pl-pds">"</span>high_performance<span class="pl-pds">"</span></span>
+      }
+    ]
+  },
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_power_balanced_evening<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Balanced power in the evening<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: {
+      <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>schedule<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"schedule_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>daily<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"daily_time"</span>: <span class="pl-s"><span class="pl-pds">"</span>19:00:00<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"days_of_week"</span>: [<span class="pl-c1">1</span>, <span class="pl-c1">2</span>, <span class="pl-c1">3</span>, <span class="pl-c1">4</span>, <span class="pl-c1">5</span>]
+    },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_plan<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"plan"</span>: <span class="pl-s"><span class="pl-pds">"</span>balanced<span class="pl-pds">"</span></span>
+      }
+    ]
+  }
+]</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<p><code>days_of_week</code> uses <code>1</code> = Monday through <code>7</code> = Sunday.</p>
+<div class="markdown-heading"><h2 class="heading-element">Branch on a condition</h2><a id="branch-on-a-condition" class="anchor" aria-label="Permalink: Branch on a condition" href="#branch-on-a-condition"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>One hotkey either restores an existing window or starts the application. Conditions use the
+<code>$condition_type</code> tag; the same condition type is valid in a top-level <code>conditions</code> list.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_focus_or_start_notepad<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Focus or start Notepad<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+N<span class="pl-pds">"</span></span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>if_else<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"conditions"</span>: [
+        {
+          <span class="pl-ent">"$condition_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process_running<span class="pl-pds">"</span></span>,
+          <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>notepad.exe<span class="pl-pds">"</span></span>,
+          <span class="pl-ent">"must_be_running"</span>: <span class="pl-c1">true</span>
+        }
+      ],
+      <span class="pl-ent">"then_actions"</span>: [
+        {
+          <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>window<span class="pl-pds">"</span></span>,
+          <span class="pl-ent">"target_process"</span>: <span class="pl-s"><span class="pl-pds">"</span>notepad.exe<span class="pl-pds">"</span></span>,
+          <span class="pl-ent">"window_action"</span>: <span class="pl-s"><span class="pl-pds">"</span>restore<span class="pl-pds">"</span></span>
+        }
+      ],
+      <span class="pl-ent">"else_actions"</span>: [
+        {
+          <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>,
+          <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Windows<span class="pl-cce">\\</span>System32<span class="pl-cce">\\</span>notepad.exe<span class="pl-pds">"</span></span>
+        }
+      ]
+    }
+  ]
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Chain rules: call and stop</h2><a id="chain-rules-call-and-stop" class="anchor" aria-label="Permalink: Chain rules: call and stop" href="#chain-rules-call-and-stop"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A rule without a trigger is a reusable pipeline other rules can run. <code>wait: true</code> keeps the caller
+paused until the called pipeline finishes, which is what makes the notification in the next example
+honest.</p>
+<div class="highlight highlight-source-json"><pre>[
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_prepare_workspace<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Prepare the workspace<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"description"</span>: <span class="pl-s"><span class="pl-pds">"</span>Library rule: called by the start rule, no trigger of its own.<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"actions"</span>: [
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_plan<span class="pl-pds">"</span></span>, <span class="pl-ent">"plan"</span>: <span class="pl-s"><span class="pl-pds">"</span>high_performance<span class="pl-pds">"</span></span> },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>, <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Windows<span class="pl-cce">\\</span>System32<span class="pl-cce">\\</span>notepad.exe<span class="pl-pds">"</span></span> },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>, <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Windows<span class="pl-cce">\\</span>System32<span class="pl-cce">\\</span>calc.exe<span class="pl-pds">"</span></span> }
+    ]
+  },
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_start_workspace<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Start the workspace<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+W<span class="pl-pds">"</span></span> },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_control<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_prepare_workspace<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"operation"</span>: <span class="pl-s"><span class="pl-pds">"</span>call<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"wait"</span>: <span class="pl-c1">true</span>
+      },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Workspace<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Ready<span class="pl-pds">"</span></span> }
+    ]
+  }
+]</pre></div>
+<p><code>stop</code> aborts what the target is running right now without disabling it. Here a hotkey ends a gaming
+companion that is bound to <code>game.exe</code>, while the game itself keeps running:</p>
+<div class="highlight highlight-source-json"><pre>[
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_companion<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Helper HUD with the game<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process<span class="pl-pds">"</span></span>, <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span> },
+    <span class="pl-ent">"actions"</span>: [
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>, <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Tools<span class="pl-cce">\\</span>hud.exe<span class="pl-pds">"</span></span>, <span class="pl-ent">"close_on_exit"</span>: <span class="pl-c1">true</span> }
+    ]
+  },
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_end_session<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>End the session<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+E<span class="pl-pds">"</span></span> },
+    <span class="pl-ent">"actions"</span>: [
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_control<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_companion<span class="pl-pds">"</span></span>, <span class="pl-ent">"operation"</span>: <span class="pl-s"><span class="pl-pds">"</span>stop<span class="pl-pds">"</span></span> },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Session<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Companion stopped<span class="pl-pds">"</span></span> }
+    ]
+  }
+]</pre></div>
+<p>A call that the target rejects (disabled, cooling down, out of quota or with unmet conditions) is
+logged and does not fail the caller. Direct self-calls and cycles are refused, so apply both rules
+of a pair together.</p>
+<p>A rule's pipeline can also be observed without calling it. <code>rule_started</code> and <code>rule_stopped</code> are wait
+conditions; "running" means the target's action pipeline is executing right now, not that a companion
+process or overlay it launched is still alive. Here a watcher waits for a long-running mode to begin
+and then for it to end:</p>
+<div class="highlight highlight-source-json"><pre>[
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_night_shift<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Night shift<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"description"</span>: <span class="pl-s"><span class="pl-pds">"</span>Long-running mode that another rule observes.<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+N<span class="pl-pds">"</span></span> },
+    <span class="pl-ent">"actions"</span>: [
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_plan<span class="pl-pds">"</span></span>, <span class="pl-ent">"plan"</span>: <span class="pl-s"><span class="pl-pds">"</span>power_saver<span class="pl-pds">"</span></span> },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>wait<span class="pl-pds">"</span></span>, <span class="pl-ent">"mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>timer<span class="pl-pds">"</span></span>, <span class="pl-ent">"seconds"</span>: <span class="pl-c1">3600</span> }
+    ]
+  },
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_night_shift_watcher<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Announce the end of the night shift<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+W<span class="pl-pds">"</span></span> },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>wait<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>until_condition<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"condition"</span>: { <span class="pl-ent">"type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_started<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_night_shift<span class="pl-pds">"</span></span> },
+        <span class="pl-ent">"timeout_sec"</span>: <span class="pl-c1">600</span>,
+        <span class="pl-ent">"timeout_policy"</span>: <span class="pl-s"><span class="pl-pds">"</span>abort<span class="pl-pds">"</span></span>
+      },
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>wait<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>until_condition<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"condition"</span>: { <span class="pl-ent">"type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_stopped<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_night_shift<span class="pl-pds">"</span></span> },
+        <span class="pl-ent">"timeout_sec"</span>: <span class="pl-c1">0</span>,
+        <span class="pl-ent">"timeout_policy"</span>: <span class="pl-s"><span class="pl-pds">"</span>abort<span class="pl-pds">"</span></span>
+      },
+      { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Shift<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Night shift is over<span class="pl-pds">"</span></span> }
+    ]
+  }
+]</pre></div>
+<p><code>rule_running</code> is the same idea as a regular condition and fits pre-conditions, <code>if_else</code> and
+<code>check</code>. This pre-condition keeps a maintenance rule from overlapping with another rule:</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"$condition_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_running<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_backup<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"must_be_running"</span>: <span class="pl-c1">false</span>
+}</pre></div>
+<div class="markdown-heading"><h2 class="heading-element">Mute before sleep and unmute after resume</h2><a id="mute-before-sleep-and-unmute-after-resume" class="anchor" aria-label="Permalink: Mute before sleep and unmute after resume" href="#mute-before-sleep-and-unmute-after-resume"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Sleep, resume, display state and device changes are pushed by Windows through a hidden notification
+window, so these rules fire without polling.</p>
+<div class="highlight highlight-source-json"><pre>[
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_mute_on_sleep<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Mute playback before sleep<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: {
+      <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>system<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"event_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>system_sleep<span class="pl-pds">"</span></span>
+    },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>audio_control<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"target"</span>: <span class="pl-s"><span class="pl-pds">"</span>playback<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>mute<span class="pl-pds">"</span></span>
+      }
+    ]
+  },
+  {
+    <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_unmute_on_resume<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Unmute playback after resume<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"trigger"</span>: {
+      <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>system<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"event_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>system_resume<span class="pl-pds">"</span></span>
+    },
+    <span class="pl-ent">"actions"</span>: [
+      {
+        <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>audio_control<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"target"</span>: <span class="pl-s"><span class="pl-pds">"</span>playback<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>unmute<span class="pl-pds">"</span></span>
+      }
+    ]
+  }
+]</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Launch, wait for the process, then tune it</h2><a id="launch-wait-for-the-process-then-tune-it" class="anchor" aria-label="Permalink: Launch, wait for the process, then tune it" href="#launch-wait-for-the-process-then-tune-it"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The wait step blocks only this execution. <code>timeout_policy: "abort"</code> stops the remaining pipeline if
+the process does not appear within 60 seconds; use <code>"continue"</code> to run the following steps anyway.</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_launch_game_priority<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Launch the game with high priority<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: {
+    <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>,
+    <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+G<span class="pl-pds">"</span></span>
+  },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>D:<span class="pl-cce">\\</span>Games<span class="pl-cce">\\</span>Example<span class="pl-cce">\\</span>game.exe<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"working_directory"</span>: <span class="pl-s"><span class="pl-pds">"</span>D:<span class="pl-cce">\\</span>Games<span class="pl-cce">\\</span>Example<span class="pl-pds">"</span></span>
+    },
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>wait<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>until_condition<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"condition"</span>: {
+        <span class="pl-ent">"type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process_started<span class="pl-pds">"</span></span>,
+        <span class="pl-ent">"process_name"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span>
+      },
+      <span class="pl-ent">"timeout_sec"</span>: <span class="pl-c1">60</span>,
+      <span class="pl-ent">"timeout_policy"</span>: <span class="pl-s"><span class="pl-pds">"</span>abort<span class="pl-pds">"</span></span>
+    },
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>process_tuning<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"target_process"</span>: <span class="pl-s"><span class="pl-pds">"</span>game.exe<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"priority"</span>: <span class="pl-s"><span class="pl-pds">"</span>high<span class="pl-pds">"</span></span>
+    }
+  ]
+}</pre></div>
+<p>Apply it with <code>cmd /c "Synector.exe --rules-apply rule.json"</code> after saving the block as <code>rule.json</code>.</p>
+<div class="markdown-heading"><h2 class="heading-element">More patterns</h2><a id="more-patterns" class="anchor" aria-label="Permalink: More patterns" href="#more-patterns"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>A <strong>toggle hotkey</strong> uses <code>hold_mode: true</code> to repeat the pipeline while held, or
+<code>repeat_while_held: true</code> without hold mode to loop until pressed again.</li>
+<li>
+<strong>On-exit actions</strong> belong to <code>on_exit_actions</code>; they run after the pipeline, including when a
+bound companion is cleaned up.</li>
+<li>
+<strong>Runtime counters</strong> (<code>execution_count</code>, <code>last_executed_at</code>, the custom quota anchor) are owned by
+<code>runtime.json</code>; values in a rule file are ignored when an existing rule is updated.</li>
+<li>
+<strong>Share codes</strong> (<code>SYN1:</code>) bundle the presets and overlays a rule references; imported rules are
+created disabled unless <code>--enable-imported</code> is passed.</li>
+<li>
+<strong>Quoted process arguments</strong> — <code>start_process.arguments</code> is split with the Windows command-line
+rules, so <code>-m "C:\\Program Files\\App\\mod.ini"</code> stays one argument. Quote paths with spaces and
+escape an embedded quote as <code>\"</code> or <code>\"\"</code>.</li>
+<li>
+<strong>Rule control</strong> (<code>rule_control</code>) chains rules: <code>operation: "call"</code> runs another pipeline,
+<code>operation: "stop"</code> aborts its executions without disabling it. Share codes do not rewrite these
+references, so export a calling rule and its target together.</li>
+<li>
+<strong>Rule activity</strong> (<code>rule_running</code>, wait <code>rule_started</code>/<code>rule_stopped</code>) observes another rule's
+pipeline; it reports stopped once the pipeline ends, even if a bound companion process is still
+alive.</li>
+</ul>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="prev" href="scripting.html"><span>Previous</span><strong>Lua scripting</strong></a>
+<a class="next" href="faq.html"><span>Next</span><strong>FAQ and troubleshooting</strong></a>
+</nav>
+    </main>
+<nav class="docs-toc" aria-label="On this page">
+<p class="docs-toc-title">On this page</p>
+<ul>
+<li><a href="#companion-process-bound-to-a-game">Companion process bound to a game</a></li>
+<li><a href="#free-memory-on-a-hotkey">Free memory on a hotkey</a></li>
+<li><a href="#webhook-trigger-with-an-hourly-quota">Webhook trigger with an hourly quota</a></li>
+<li><a href="#archive-a-folder-when-a-new-file-arrives">Archive a folder when a new file arrives</a></li>
+<li><a href="#switch-power-plans-on-a-weekday-schedule">Switch power plans on a weekday schedule</a></li>
+<li><a href="#branch-on-a-condition">Branch on a condition</a></li>
+<li><a href="#chain-rules-call-and-stop">Chain rules: call and stop</a></li>
+<li><a href="#mute-before-sleep-and-unmute-after-resume">Mute before sleep and unmute after resume</a></li>
+<li><a href="#launch-wait-for-the-process-then-tune-it">Launch, wait for the process, then tune it</a></li>
+<li><a href="#more-patterns">More patterns</a></li>
+</ul>
+</nav>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>

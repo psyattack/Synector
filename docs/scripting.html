@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lua scripting - Synector documentation</title>
+  <meta name="description" content="The Lua runtime, the syn API, context tokens, output and error handling in Synector.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/scripting.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Lua scripting - Synector documentation">
+  <meta property="og:description" content="The Lua runtime, the syn API, context tokens, output and error handling in Synector.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/scripting.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Lua scripting - Synector documentation">
+  <meta name="twitter:description" content="The Lua runtime, the syn API, context tokens, output and error handling in Synector.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Lua scripting", "description": "The Lua runtime, the syn API, context tokens, output and error handling in Synector.", "url": "https://psyattack.github.io/Synector/docs/scripting.html", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a href="index.html">Overview</a><a href="getting-started.html">Start</a><a href="rules.html">Rules</a><a class="is-active" href="scripting.html">Scripting</a><a href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link" href="rules.html">Rule authoring</a>
+<a class="docs-side-link is-active" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link" href="examples.html">Rule examples</a>
+<a class="docs-side-link" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a> / <span>Lua scripting</span></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/main/docs/SCRIPTING.md">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<div class="markdown-heading"><h1 class="heading-element">Lua scripting</h1><a id="lua-scripting" class="anchor" aria-label="Permalink: Lua scripting" href="#lua-scripting"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector embeds Lua 5.4.9 for rules that need more than a fixed action pipeline. A script runs as the
+<code>execute_script</code> action with <code>"interpreter": "lua"</code>. Every execution starts a fresh interpreter, so
+globals do not leak between runs and there is no state to clean up.</p>
+<p>Rule format, quotas and the action pipeline are documented in
+<a href="rules.html">Rule authoring</a>; this file covers the script side only.</p>
+<div class="markdown-heading"><h2 class="heading-element">Running a script</h2><a id="running-a-script" class="anchor" aria-label="Permalink: Running a script" href="#running-a-script"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_lua_greeting<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Greet the process<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>manual<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"actions"</span>: [
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>execute_script<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"interpreter"</span>: <span class="pl-s"><span class="pl-pds">"</span>lua<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"script"</span>: <span class="pl-s"><span class="pl-pds">"</span>local name = syn.get(<span class="pl-cce">\"</span>ProcessName<span class="pl-cce">\"</span>)<span class="pl-cce">\n</span>if name == <span class="pl-cce">\"\"</span> then<span class="pl-cce">\n</span>  name = <span class="pl-cce">\"</span>manual run<span class="pl-cce">\"\n</span>end<span class="pl-cce">\n</span>syn.log(<span class="pl-cce">\"</span>process: <span class="pl-cce">\"</span> .. name)<span class="pl-cce">\n</span>return <span class="pl-cce">\"</span>hello from <span class="pl-cce">\"</span> .. name<span class="pl-pds">"</span></span>
+    },
+    {
+      <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Lua<span class="pl-pds">"</span></span>,
+      <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>{PrevOutput}<span class="pl-pds">"</span></span>
+    }
+  ]
+}</pre></div>
+<p>The second step shows what the first one returned: a script's return value becomes the run output.</p>
+<div class="markdown-heading"><h2 class="heading-element">Context and tokens</h2><a id="context-and-tokens" class="anchor" aria-label="Permalink: Context and tokens" href="#context-and-tokens"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Before the chunk is evaluated, Synector substitutes <code>{...}</code> tokens in the script text with values from
+the run context — the same tokens other actions accept. The context always has <code>ProcessName</code>,
+<code>ProcessId</code> and <code>Timestamp</code>; process and window triggers add <code>ProcessPath</code>, <code>ProcessDir</code> and
+<code>WindowTitle</code> when they are known. A pipeline started by <code>rule_control</code> adds <code>CallerRule</code> and
+<code>CallerRuleId</code> and reports <code>ProcessName</code> as <code>Rule Call (from '&lt;caller&gt;')</code>. <code>{Clipboard}</code>, <code>{Date}</code>,
+<code>{Time}</code> and <code>{Env:NAME}</code> are resolved too.</p>
+<p>Substitution works on the source text, so a <code>{...}</code> fragment inside a string literal is replaced as
+well. Quote values explicitly when they may contain spaces or quotes.</p>
+<div class="markdown-heading"><h2 class="heading-element">API</h2><a id="api" class="anchor" aria-label="Permalink: API" href="#api"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The <code>syn</code> table is the only global Synector adds.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Returns</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>syn.context</code></td>
+<td>table</td>
+<td>Copy of the run context; keys as described above</td>
+</tr>
+<tr>
+<td><code>syn.get(key)</code></td>
+<td>string</td>
+<td>
+<code>""</code> when the key is missing</td>
+</tr>
+<tr>
+<td><code>syn.set(key, value)</code></td>
+<td>—</td>
+<td>Writes to a run-local table; return a value instead (see Output)</td>
+</tr>
+<tr>
+<td><code>syn.log(text)</code></td>
+<td>—</td>
+<td>Writes <code>[LUA] text</code> to the daemon's standard output</td>
+</tr>
+<tr>
+<td><code>syn.run_cmd(command)</code></td>
+<td>string</td>
+<td>Runs <code>cmd /C &lt;command&gt;</code> and returns its stdout. A non-zero exit, spawn failure or timeout comes back as an <code>Error: ...</code> string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one</td>
+</tr>
+<tr>
+<td><code>syn.overlay_show(id)</code></td>
+<td>—</td>
+<td>Shows a saved overlay</td>
+</tr>
+<tr>
+<td><code>syn.overlay_hide(id)</code></td>
+<td>—</td>
+<td>Hides it</td>
+</tr>
+<tr>
+<td><code>syn.overlay_toggle(id)</code></td>
+<td>—</td>
+<td>Shows or hides it</td>
+</tr>
+<tr>
+<td><code>syn.overlay_set_text(id, text)</code></td>
+<td>—</td>
+<td>Replaces the runtime text of an overlay</td>
+</tr>
+</tbody>
+</table></div>
+<p>Overlay lookups accept the overlay id or its name (case-insensitive). When <code>overlay_show</code> or
+<code>overlay_toggle</code> gets an unknown id, it falls back to a default overlay instead of failing.</p>
+<div class="markdown-heading"><h2 class="heading-element">Limits</h2><a id="limits" class="anchor" aria-label="Permalink: Limits" href="#limits"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Every execution is bounded so a runaway script cannot pin a daemon worker: 5,000,000 Lua
+instructions and 3 seconds of wall-clock time enforced by the VM hook, and a 64 MiB Lua heap. The
+hook is reached only between Lua instructions, so a native call such as <code>syn.run_cmd</code> is not
+interrupted by it and is bounded separately by its own 5 s deadline; one execution can therefore
+hold a daemon worker for roughly the 3 s budget plus such a call. A returned string longer than
+64 KiB fails the step. <code>syn.set</code> stores at most 64 output variables, 256-byte keys and 16 KiB values;
+exceeding a cap raises a Lua error.</p>
+<p><code>syn.run_cmd</code> captures at most 64 KiB of stdout — cut output ends with <code>[output truncated]</code> — and
+2 KiB of stderr, and kills the child process after 5 seconds (<code>Error: command timed out after 5s</code>).
+A non-zero exit returns <code>Error: exit code &lt;code&gt;</code>, followed by the trimmed stderr when it is not
+empty.</p>
+<div class="markdown-heading"><h2 class="heading-element">Output</h2><a id="output" class="anchor" aria-label="Permalink: Output" href="#output"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The value the chunk returns becomes the action output: strings are used as is, integers and floats are
+converted, booleans become <code>true</code>/<code>false</code>, and anything else (tables, functions, <code>nil</code>) counts as
+empty. The engine stores a non-empty result in the run context as <code>PrevOutput</code> and <code>StepN.Output</code>
+(<code>Step1.Output</code> for the first step), so later actions can use <code>{PrevOutput}</code> or <code>{Step1.Output}</code>.
+An If/Else step passes on the output of the last output-bearing action in the branch it took, so a
+script nested in a branch feeds the parent pipeline's tokens like a top-level step. <code>syn.set</code> writes
+into a run-local table that nothing reads back today — return the value instead.</p>
+<div class="markdown-heading"><h2 class="heading-element">Errors</h2><a id="errors" class="anchor" aria-label="Permalink: Errors" href="#errors"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A Lua error fails the step with <code>Lua runtime error: ...</code>; whether the pipeline continues depends on
+the rule's <code>stop_on_error</code>. Action errors may quote values from the script, so the engine sends them
+through its sensitive log channel: the details appear in the in-app log stream, while the log file
+records only that the step failed.</p>
+<div class="markdown-heading"><h2 class="heading-element">Security</h2><a id="security" class="anchor" aria-label="Permalink: Security" href="#security"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The interpreter is not a sandbox: <code>syn.run_cmd</code> runs through <code>cmd /C</code> with the daemon's rights, which
+are administrator rights unless Synector was started with <code>--no-elevate</code>. Run only rules and share
+codes you trust, and keep secrets out of <code>syn.log</code> — it writes to standard output rather than the log
+file.</p>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="prev" href="rules.html"><span>Previous</span><strong>Rule authoring</strong></a>
+<a class="next" href="examples.html"><span>Next</span><strong>Rule examples</strong></a>
+</nav>
+    </main>
+<nav class="docs-toc" aria-label="On this page">
+<p class="docs-toc-title">On this page</p>
+<ul>
+<li><a href="#running-a-script">Running a script</a></li>
+<li><a href="#context-and-tokens">Context and tokens</a></li>
+<li><a href="#api">API</a></li>
+<li><a href="#limits">Limits</a></li>
+<li><a href="#output">Output</a></li>
+<li><a href="#errors">Errors</a></li>
+<li><a href="#security">Security</a></li>
+</ul>
+</nav>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>

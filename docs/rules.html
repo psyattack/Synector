@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rule authoring - Synector documentation</title>
+  <meta name="description" content="The Synector rule format, CLI commands, quotas, rule-to-rule control, webhooks, validation and share codes.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/rules.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Rule authoring - Synector documentation">
+  <meta property="og:description" content="The Synector rule format, CLI commands, quotas, rule-to-rule control, webhooks, validation and share codes.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/rules.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Rule authoring - Synector documentation">
+  <meta name="twitter:description" content="The Synector rule format, CLI commands, quotas, rule-to-rule control, webhooks, validation and share codes.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Rule authoring from the command line", "description": "The Synector rule format, CLI commands, quotas, rule-to-rule control, webhooks, validation and share codes.", "url": "https://psyattack.github.io/Synector/docs/rules.html", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a href="index.html">Overview</a><a href="getting-started.html">Start</a><a class="is-active" href="rules.html">Rules</a><a href="scripting.html">Scripting</a><a href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link is-active" href="rules.html">Rule authoring</a>
+<a class="docs-side-link" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link" href="examples.html">Rule examples</a>
+<a class="docs-side-link" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a> / <span>Rule authoring</span></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/main/docs/RULE_AUTHORING.md">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<div class="markdown-heading"><h1 class="heading-element">Rule authoring from the command line</h1><a id="rule-authoring-from-the-command-line" class="anchor" aria-label="Permalink: Rule authoring from the command line" href="#rule-authoring-from-the-command-line"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector rules are plain JSON files. The CLI validates, applies, exports, shares and maintains them
+without opening the GUI. While the daemon is running changes go through IPC and take effect
+immediately; when it is not, the same operation is written to
+<code>%LOCALAPPDATA%\Synector\rules.json</code> (and <code>runtime.json</code> where counters change) and applied on the
+next daemon start.</p>
+<p>Related documents: <a href="index.html">documentation map</a> · <a href="examples.html">rule examples</a> ·
+<a href="scripting.html">Lua scripting</a> · <a href="architecture.html#rule-engine">architecture</a>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Commands</h2><a id="commands" class="anchor" aria-label="Permalink: Commands" href="#commands"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--rules-validate &lt;file|-&gt;</code></td>
+<td>Parse and validate a rule file; no changes are made</td>
+</tr>
+<tr>
+<td><code>--rules-apply &lt;file|-&gt;</code></td>
+<td>Create or update rules from a file (upsert by <code>id</code>)</td>
+</tr>
+<tr>
+<td><code>--rules-sync &lt;file|-&gt;</code></td>
+<td>Make the configured rules match the file exactly (upsert + delete missing)</td>
+</tr>
+<tr>
+<td><code>--rules-list [--json]</code></td>
+<td>List rules with state, execution counter and trigger</td>
+</tr>
+<tr>
+<td><code>--rules-export [&lt;file&gt;]</code></td>
+<td>Export all rules as JSON to stdout or a file</td>
+</tr>
+<tr>
+<td><code>--rules-delete &lt;id&gt;</code></td>
+<td>Delete one rule</td>
+</tr>
+<tr>
+<td>
+<code>--rules-enable &lt;id&gt;</code>, <code>--rules-disable &lt;id&gt;</code>
+</td>
+<td>Toggle one rule</td>
+</tr>
+<tr>
+<td><code>--rules-reset &lt;id&gt;</code></td>
+<td>Clear <code>execution_count</code>/<code>last_executed_at</code>/quota anchor and re-enable</td>
+</tr>
+<tr>
+<td><code>--rules-share [&lt;id&gt;]</code></td>
+<td>Print a <code>SYN1:</code> share code for one rule (id or name) or all rules</td>
+</tr>
+<tr>
+<td><code>--rules-import-share &lt;code|file|-&gt;</code></td>
+<td>Import rules from a <code>SYN1:</code> share code</td>
+</tr>
+<tr>
+<td><code>--rules-example</code></td>
+<td>Print an example rule file</td>
+</tr>
+<tr>
+<td><code>--rules-schema</code></td>
+<td>Print the draft-07 JSON Schema for one rule object</td>
+</tr>
+<tr>
+<td><code>--rules-reference</code></td>
+<td>Print a human-readable catalogue of triggers/actions/conditions</td>
+</tr>
+<tr>
+<td><code>--rules-template &lt;trigger&gt;[:&lt;action&gt;]</code></td>
+<td>Print a ready-to-edit rule skeleton</td>
+</tr>
+<tr>
+<td><code>--help</code></td>
+<td>Print the command reference</td>
+</tr>
+</tbody>
+</table></div>
+<p>Flags:</p>
+<ul>
+<li>
+<code>--json</code> switches most commands (validate/apply/sync/list/export/delete/enable/disable/reset/share/
+import-share) to machine-readable output.</li>
+<li>
+<code>--dry-run</code> previews <code>--rules-apply</code> and <code>--rules-sync</code> without writing anything.</li>
+<li>
+<code>--enable-imported</code> makes <code>--rules-import-share</code> enable the imported rules. Without it, imported
+rules are created disabled.</li>
+<li>A path of <code>-</code> reads the rule file or share code from stdin.</li>
+</ul>
+<p>Arguments are validated against the selected command. An unknown argument such as <code>--dry-runn</code>, two
+command flags in one invocation, or the same command flag twice is a usage error: the command
+reference is printed and the process exits with code 2. Other process flags, including
+<code>--no-elevate</code>, are not valid together with a rule command, and a misspelled <code>--rules-*</code> command is
+reported instead of falling through to a daemon or GUI start. <code>--run-rule &lt;id&gt;</code> is a runtime command,
+not a rule-authoring one; a missing or empty id is likewise a usage error that exits with code 2.</p>
+<div class="markdown-heading"><h2 class="heading-element">File format</h2><a id="file-format" class="anchor" aria-label="Permalink: File format" href="#file-format"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A rule file is one rule object, an array of rules, or <code>{"rules": [...]}</code>. <code>id</code> is the upsert key and
+must be unique and stable; <code>name</code> is required. The array and wrapper forms are file containers only —
+<code>--rules-schema</code> describes a single rule object.</p>
+<p>Runtime state is not part of the file format in practice: the daemon keeps <code>execution_count</code>,
+<code>last_executed_at</code> and the custom quota window anchor in <code>runtime.json</code>, writes those fields zeroed
+in <code>rules.json</code>, and preserves the live values when an existing rule is updated. Counters included
+in a rule file are therefore ignored.</p>
+<p>Keys are checked against the model before deserialization. An unknown key — a typo such as
+<code>max_execution</code>, or a field removed from the format — is reported with its JSON path:
+<code>--rules-validate</code>, <code>--rules-apply</code> and <code>--rules-import-share</code> reject the input, while the daemon
+logs the rule id and keys and skips only that rule when it loads <code>rules.json</code>. Values are checked on
+the same load with the per-rule validator the GUI Save and apply paths use: a rule with invalid
+values (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
+likewise skipped alone with its id and errors, so neither check drops a rule that would otherwise
+be accepted. There is no migration: update the file. The removed fields are <code>schedule.delay_sec</code>,
+the <code>system</code> trigger's <code>idle_duration_sec</code> and the <code>resource</code> condition's <code>duration_sec</code>. The
+<code>resource</code> trigger keeps its own <code>duration_sec</code> (default 5 s), and the <code>event</code> condition keeps a
+rule-authored <code>idle_duration_sec</code>.</p>
+<p>Minimal example:</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_open_notepad<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Open Notepad<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+N<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"actions"</span>: [
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>start_process<span class="pl-pds">"</span></span>, <span class="pl-ent">"file_path"</span>: <span class="pl-s"><span class="pl-pds">"</span>C:<span class="pl-cce">\\</span>Windows<span class="pl-cce">\\</span>System32<span class="pl-cce">\\</span>notepad.exe<span class="pl-pds">"</span></span> }
+  ]
+}</pre></div>
+<p>A rule with a schedule trigger, a beep action and a three-run lifetime quota:</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_beep_every_3s<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Beep every 3 seconds<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>schedule<span class="pl-pds">"</span></span>, <span class="pl-ent">"schedule_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>interval<span class="pl-pds">"</span></span>, <span class="pl-ent">"interval_sec"</span>: <span class="pl-c1">3</span> },
+  <span class="pl-ent">"actions"</span>: [
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>play_sound<span class="pl-pds">"</span></span>, <span class="pl-ent">"play_beep"</span>: <span class="pl-c1">true</span>, <span class="pl-ent">"beep_frequency"</span>: <span class="pl-c1">1000</span>, <span class="pl-ent">"beep_duration_ms"</span>: <span class="pl-c1">200</span> }
+  ],
+  <span class="pl-ent">"max_executions"</span>: <span class="pl-c1">3</span>
+}</pre></div>
+<p><code>max_executions</code> without <code>quota_period</code> is a lifetime quota: when it is reached the engine disables
+the rule automatically; <code>--rules-reset &lt;id&gt;</code> clears the counter and enables it again.</p>
+<p>Two field details are easy to get wrong. <code>start_process.arguments</code> is split with the Windows
+command-line rules (<code>CommandLineToArgvW</code>), so a path with spaces must stay quoted and an embedded
+quote is escaped as <code>\"</code> or <code>\"\"</code>. Audio actions address endpoints by display name:
+<code>audio_format.device_name</code> must match an active endpoint, and <code>default_device</code> requires the
+AudioDeviceCmdlets PowerShell module — a missing module or device is an action error, not a silent
+no-op.</p>
+<div class="markdown-heading"><h2 class="heading-element">Quotas</h2><a id="quotas" class="anchor" aria-label="Permalink: Quotas" href="#quotas"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A quota that resets on its own sets <code>quota_period</code>:</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_ten_runs_per_day<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Ten runs per day<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+D<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"actions"</span>: [
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Daily run<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Quota unit consumed<span class="pl-pds">"</span></span> }
+  ],
+  <span class="pl-ent">"max_executions"</span>: <span class="pl-c1">10</span>,
+  <span class="pl-ent">"quota_period"</span>: <span class="pl-s"><span class="pl-pds">"</span>day<span class="pl-pds">"</span></span>
+}</pre></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th><code>quota_period</code></th>
+<th>Reset point</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<code>"minute"</code>, <code>"hour"</code>, <code>"day"</code>, <code>"week"</code>, <code>"month"</code>
+</td>
+<td>Calendar-aligned local time: the next minute, the next hour, midnight, Monday 00:00 (ISO week), the 1st at 00:00</td>
+</tr>
+<tr>
+<td><code>{"custom": {"value": 90, "unit": "minutes"}}</code></td>
+<td>Fixed window of <code>value</code> <code>unit</code>s (<code>minutes</code>, <code>hours</code>, <code>days</code>, <code>weeks</code>, <code>months</code>); <code>value</code> must be between 1 and 100000. It starts with the rule's first execution and resets when the window ends. A <code>months</code> window is added as calendar months (e.g. first run on the 19th ends on the 19th; month-end days are clamped)</td>
+</tr>
+<tr>
+<td>omitted</td>
+<td>Lifetime quota</td>
+</tr>
+</tbody>
+</table></div>
+<p>A periodic quota never disables the rule: when the period is spent the engine skips executions until
+the counter rolls over. <code>--rules-reset &lt;id&gt;</code> clears it immediately, and <code>--rules-list</code> shows the
+progress plus the period, e.g. <code>exec 3/10 (daily)</code>.</p>
+<p>Updating a rule preserves its counter unless the quota definition changes in a way that makes the old
+counter meaningless:</p>
+<ul>
+<li>changing <code>quota_period</code> (adding, removing or replacing it) starts a fresh counting window and
+keeps <code>last_executed_at</code>, which schedule triggers use for deduplication;</li>
+<li>enabling <code>max_executions</code> where the rule previously had no limit also starts a fresh window;</li>
+<li>changing only the numeric limit (for example <code>10</code> → <code>20</code>) keeps the current counter and window
+anchor.</li>
+</ul>
+<div class="markdown-heading"><h2 class="heading-element">Calling and stopping other rules</h2><a id="calling-and-stopping-other-rules" class="anchor" aria-label="Permalink: Calling and stopping other rules" href="#calling-and-stopping-other-rules"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>rule_control</code> lets one rule drive another one. <code>operation</code> is required, <code>rule_id</code> names the target
+and <code>wait</code> only matters for <code>call</code>:</p>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_session_start<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"name"</span>: <span class="pl-s"><span class="pl-pds">"</span>Start the session<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"trigger"</span>: { <span class="pl-ent">"$trigger_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>hotkey<span class="pl-pds">"</span></span>, <span class="pl-ent">"key_combination"</span>: <span class="pl-s"><span class="pl-pds">"</span>CTRL+ALT+S<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"actions"</span>: [
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_control<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_mode<span class="pl-pds">"</span></span>, <span class="pl-ent">"operation"</span>: <span class="pl-s"><span class="pl-pds">"</span>call<span class="pl-pds">"</span></span>, <span class="pl-ent">"wait"</span>: <span class="pl-c1">true</span> },
+    { <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>notification<span class="pl-pds">"</span></span>, <span class="pl-ent">"title"</span>: <span class="pl-s"><span class="pl-pds">"</span>Session<span class="pl-pds">"</span></span>, <span class="pl-ent">"message"</span>: <span class="pl-s"><span class="pl-pds">"</span>Game mode ready<span class="pl-pds">"</span></span> }
+  ]
+}</pre></div>
+<div class="highlight highlight-source-json"><pre>{ <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_control<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_mode<span class="pl-pds">"</span></span>, <span class="pl-ent">"operation"</span>: <span class="pl-s"><span class="pl-pds">"</span>stop<span class="pl-pds">"</span></span> }</pre></div>
+<ul>
+<li>
+<code>call</code> starts the target's pipeline as an ordinary execution. It consumes the target's quota and
+honours its cooldown, conditions and <code>is_enabled</code>; a target that is disabled, cooling down, out of
+quota or has unmet conditions is skipped with a log entry and the caller keeps going. A skipped
+call is not an error. Calling a rule that is already running starts a second, parallel execution,
+so <code>stop</code> first when a restart is what you mean.</li>
+<li>The called pipeline sees <code>ProcessName</code> as <code>Rule Call (from '&lt;caller&gt;')</code> and gets the <code>{CallerRule}</code>
+and <code>{CallerRuleId}</code> tokens described in <a href="scripting.html#context-and-tokens">Lua scripting</a>.</li>
+<li>
+<code>wait: true</code> pauses the caller until the called pipeline ends or is stopped; <code>wait: false</code> (the
+default) continues immediately. A skipped, failed or stopped call never blocks the caller forever.</li>
+<li>
+<code>stop</code> aborts every active execution of the target: running pipelines are cancelled, its overlays
+are hidden, companion satellites started by it are terminated and simulated input is released. The
+target stays enabled, so its own triggers keep working; nothing has to re-enable it. Stopping a
+rule that is not running is a logged no-op.</li>
+<li>Direct recursion and cycles are rejected before the target starts: a rule cannot call itself, and a
+call to a rule that is already in the call chain is refused. A chain may contain at most eight
+rules.</li>
+<li>A rule called by another rule is not a manual run: it does not tear down the target's companion
+processes when its pipeline ends.</li>
+</ul>
+<p>Share codes carry only the rules you export. Overlay button and toggle targets inside a bundled
+overlay are rewritten to the final imported rule ids, but <code>rule_control</code> actions and rule-activity
+conditions are not, so export both rules together to keep those references intact.</p>
+<div class="markdown-heading"><h3 class="heading-element">Observing rule activity</h3><a id="observing-rule-activity" class="anchor" aria-label="Permalink: Observing rule activity" href="#observing-rule-activity"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Wait and check steps can observe a rule instead of a system event:</p>
+<div class="highlight highlight-source-json"><pre>{ <span class="pl-ent">"$condition_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_running<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_mode<span class="pl-pds">"</span></span>, <span class="pl-ent">"must_be_running"</span>: <span class="pl-c1">false</span> }</pre></div>
+<div class="highlight highlight-source-json"><pre>{
+  <span class="pl-ent">"$action_type"</span>: <span class="pl-s"><span class="pl-pds">"</span>wait<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"mode"</span>: <span class="pl-s"><span class="pl-pds">"</span>until_condition<span class="pl-pds">"</span></span>,
+  <span class="pl-ent">"condition"</span>: { <span class="pl-ent">"type"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_started<span class="pl-pds">"</span></span>, <span class="pl-ent">"rule_id"</span>: <span class="pl-s"><span class="pl-pds">"</span>rule_game_mode<span class="pl-pds">"</span></span> },
+  <span class="pl-ent">"timeout_sec"</span>: <span class="pl-c1">30</span>,
+  <span class="pl-ent">"timeout_policy"</span>: <span class="pl-s"><span class="pl-pds">"</span>abort<span class="pl-pds">"</span></span>
+}</pre></div>
+<ul>
+<li>
+<code>rule_running</code> is an ordinary condition: it works in <code>conditions</code>, <code>if_else</code> and <code>check</code>.
+<code>rule_started</code> and <code>rule_stopped</code> are wait conditions.</li>
+<li>"Running" means the target has an action pipeline executing right now — the same state a
+<code>rule_control</code> stop ends. A rule that started a companion process but already finished its
+pipeline reports stopped.</li>
+<li>Waits poll every 100 ms. <code>rule_started</code> also completes when the target started at any point since
+the wait began, even if it finished before the next poll; <code>rule_stopped</code> completes as soon as no
+pipeline of the target is running. <code>rule_stopped</code> passes immediately when the target has not
+started, so it waits for the current run to end, not for the next one to begin.</li>
+<li>An empty <code>rule_id</code> never satisfies the condition. A <code>rule_id</code> that does not match a configured
+rule is simply never running (<code>rule_stopped</code> and <code>rule_running</code> with <code>must_be_running: false</code>
+pass); <code>--rules-validate</code> warns about both.</li>
+<li>A pipeline cannot observe its own stop: while it runs, <code>rule_started</code> is true and <code>rule_stopped</code>
+stays false until the pipeline ends. To keep a rule from running twice, gate it with
+<code>rule_running</code> on its own id and <code>must_be_running: false</code> in its pre-conditions.</li>
+</ul>
+<div class="markdown-heading"><h2 class="heading-element">Webhook trigger</h2><a id="webhook-trigger" class="anchor" aria-label="Permalink: Webhook trigger" href="#webhook-trigger"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Anything that can make a local HTTP request can start a rule: the daemon listens on
+<code>http://127.0.0.1:48123/api/v1/trigger/&lt;endpoint&gt;</code>; the port is fixed. The listener exists only
+while at least one enabled rule has a <code>webhook</code> trigger: disabling the last one or deleting it
+closes the port again, and enabling a webhook rule starts it within about a second without
+restarting the daemon.</p>
+<ul>
+<li>The tail of the path is matched against enabled rules: the rule <code>id</code>, or the <code>endpoint_path</code> of a
+<code>webhook</code> trigger. A leading slash in <code>endpoint_path</code> is tolerated, a trailing slash in the request
+is ignored, and the first matching rule in configuration order wins.</li>
+<li>The request method and body are ignored; only the path matters.</li>
+<li>Matching rule: <code>200</code> with <code>{"status":"triggered","rule":"&lt;rule name&gt;"}</code>.</li>
+<li>Unknown name or a disabled rule: <code>404</code> with
+<code>{"status":"error","message":"Rule '&lt;target&gt;' not found or disabled"}</code>.</li>
+<li>Any other path: <code>400</code> with
+<code>{"status":"error","message":"Invalid endpoint. Use /api/v1/trigger/&lt;endpoint_or_rule_id&gt;"}</code>.</li>
+</ul>
+<p>A <code>200</code> means a rule was found, not that the pipeline ran: the engine still applies cooldowns and
+quotas, so a request can be accepted and then skipped. The server is local-only; while a webhook
+rule is enabled and another process owns the port, the bind error is logged and the daemon retries
+with a capped backoff (1 s doubling to 30 s), so webhook rules start working once the port is free.</p>
+<p>Outbound <code>http_webhook</code> actions send the rule's custom <code>headers</code> as HTTP headers, not through a
+shell; the method and header names/values must be valid or the action fails. A non-2xx response is
+an action error.</p>
+<div class="highlight highlight-source-powershell"><pre><span class="pl-c1">Invoke-RestMethod</span> http:<span class="pl-k">//</span><span class="pl-c1">127.0</span>.<span class="pl-c1">0.1</span>:<span class="pl-c1">48123</span><span class="pl-k">/</span>api<span class="pl-k">/</span>v1<span class="pl-k">/</span>trigger<span class="pl-k">/</span>backup</pre></div>
+<div class="highlight highlight-source-shell"><pre>curl http://127.0.0.1:48123/api/v1/trigger/backup</pre></div>
+<div class="markdown-heading"><h2 class="heading-element">Validation and warnings</h2><a id="validation-and-warnings" class="anchor" aria-label="Permalink: Validation and warnings" href="#validation-and-warnings"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>--rules-validate</code> performs structural validation and exits non-zero on errors:</p>
+<ul>
+<li>
+<code>id</code> and <code>name</code> must be non-empty, and <code>id</code> must be unique within the file;</li>
+<li>
+<code>cooldown_seconds</code> must be finite and non-negative;</li>
+<li>triggers that need a target must have one (process name, hotkey, folder, interval);</li>
+<li>schedule triggers are validated per type: Daily and Monthly need a zero-padded <code>daily_time</code>
+(<code>HH:MM</code> or <code>HH:MM:SS</code>, 00:00–23:59), Monthly needs <code>day_of_month</code> 1..=31, OneShot needs a valid
+<code>target_datetime</code> (<code>YYYY-MM-DD HH:MM[:SS]</code>), Interval needs <code>interval_sec &gt; 0</code>, and
+<code>days_of_week</code> is 1..=7;</li>
+<li>a time-range condition needs zero-padded <code>HH:MM</code> boundaries; an empty boundary stays open;</li>
+<li>an <code>until_condition</code> wait needs a condition, wait condition keys may not be empty, and
+<code>seconds</code>/<code>timeout_sec</code> must be finite, non-negative and at most 86400;</li>
+<li>a resource trigger or condition needs a non-empty <code>process_name</code> plus <code>cpu_percent</code> or
+<code>ram_mb</code>; every configured limit must hold, so with both set a process has to meet both, and a
+CPU-only limit fires on CPU alone;</li>
+<li>a custom quota window needs <code>value</code> between 1 and 100000;</li>
+<li>tag colours must be six ASCII hex digits, written as <code>#RRGGBB</code> (the leading <code>#</code> is optional in a
+rule file);</li>
+<li>an infinite macro requires a global-hotkey trigger.</li>
+</ul>
+<p>Non-blocking warnings cover rules that are valid but likely not what the author intended: no trigger,
+an empty action pipeline, <code>max_executions: 0</code>, a <code>quota_period</code> without <code>max_executions</code>, missing
+macro presets or overlays, an empty <code>start_process</code> path, a <code>rule_control</code> step with an empty target,
+a missing target or a call to the rule itself, and a wait or check that observes an empty or unknown
+rule.</p>
+<p>The Rule Builder runs the same validator before it saves: the errors are listed in the inspector and
+the editor stays open, so an invalid draft is never sent. The daemon also runs it before it applies
+a change: a rule draft saved from the Rule Builder (<code>SaveRule</code>) and a <code>SyncRules</code> replace are
+rejected with the validation message, and a rejected write leaves the stored rules untouched.
+<code>--rules-sync</code> also validates the whole desired set before sending it, so a bad rule or a duplicate
+id fails without changing the configuration.</p>
+<div class="markdown-heading"><h2 class="heading-element">Discovering the schema</h2><a id="discovering-the-schema" class="anchor" aria-label="Permalink: Discovering the schema" href="#discovering-the-schema"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The format is self-describing, so an AI agent or a person without the source can author rules:</p>
+<ul>
+<li>
+<code>--rules-schema</code> prints the draft-07 JSON Schema for one rule object. It is generated with
+<code>schemars</code> from the same <code>models::Rule</code> types the daemon deserializes, so it cannot drift from the
+real format. The schema contains only the current fields; the strict key check rejects anything
+else. Validate generated rules against it with any JSON Schema validator before applying.</li>
+<li>
+<code>--rules-reference</code> prints a compact catalogue of every trigger, action, condition, wait condition
+and macro event with field names, types and required markers.</li>
+<li>
+<code>--rules-template &lt;trigger&gt;[:&lt;action&gt;]</code> prints a minimal valid skeleton with the required fields
+already filled in. The action defaults to <code>notification</code>; run the command without a value to list
+every available trigger and action.</li>
+</ul>
+<div class="highlight highlight-source-powershell"><pre>cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-schema &gt; schema.json<span class="pl-pds">"</span></span>
+cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-template schedule:play_sound &gt; rule.json<span class="pl-pds">"</span></span>
+<span class="pl-c"><span class="pl-c">#</span> edit rule.json, then:</span>
+cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-validate rule.json<span class="pl-pds">"</span></span>
+cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-apply rule.json<span class="pl-pds">"</span></span></pre></div>
+<p><code>cmd /c</code> is required here because release builds are GUI-subsystem executables: PowerShell would
+neither wait for the process nor capture its output or exit code. See <a href="#console-notes">Console notes</a>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Config as code</h2><a id="config-as-code" class="anchor" aria-label="Permalink: Config as code" href="#config-as-code"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>--rules-apply</code> only upserts the rules present in the file: rules missing from it stay in the
+configuration. <code>--rules-sync</code> is the declarative variant and makes the configured rules match the
+file exactly, deleting rules that are absent. An empty array (<code>[]</code> or <code>{"rules": []}</code>) is the exact
+"no rules" file and deletes every configured rule, while <code>--rules-apply</code> and <code>--rules-validate</code>
+still reject an empty set. While the daemon is running a sync is applied as a single replace:
+surviving rules keep their runtime counters and hotkeys are reloaded once. Use <code>--dry-run</code> to
+preview the result and <code>--json</code> for a machine-readable report:</p>
+<div class="highlight highlight-source-powershell"><pre>cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-sync rules.json --dry-run --json<span class="pl-pds">"</span></span>
+cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-sync rules.json --json<span class="pl-pds">"</span></span></pre></div>
+<p>An apply/sync JSON report has the shape
+<code>{"ok": true, "target": "daemon"|"rules", "dry_run": false, "created": [...], "updated": [...], "deleted": [...], "warnings": [...]}</code>. Every <code>--json</code> failure — validation, read, list/export,
+import and IPC errors alike — uses one envelope
+<code>{"ok": false, "error": "...", "errors": [...], "warnings": [...], "target": "daemon"|"rules"|null}</code>
+and exits with a non-zero status. <code>--rules-list --json</code> prints the rule array itself; toggle and
+reset commands return a small object with <code>ok</code> plus the affected rule ids, counts or counters.</p>
+<div class="markdown-heading"><h2 class="heading-element">Share codes</h2><a id="share-codes" class="anchor" aria-label="Permalink: Share codes" href="#share-codes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>--rules-share [&lt;id&gt;]</code> prints one compact <code>SYN1:</code> code. With no selector it exports every configured
+rule; with an id or rule name it exports that rule only. The code bundles the macro presets and
+overlays the exported rules reference, resets sender-local runtime counters and drops custom icon,
+overlay image and button icon paths (with a warning). <code>--json</code> returns
+<code>{"ok": true, "rules": N, "bytes": N, "code": "SYN1:...", "warnings": [...]}</code>.</p>
+<p><code>--rules-import-share &lt;code|file|-&gt;</code> decodes a code from the argument, a file or stdin, verifies its
+SHA-256 checksum and bounded payload, and imports the rules plus the library entries they need. A
+literal argument must start with <code>SYN1:</code>; any other non-<code>-</code> argument is read as a file path, and a
+missing path is reported as a read error. Duplicates are skipped by content, colliding ids are
+re-identified, and imported rules are created disabled unless <code>--enable-imported</code> is passed. Library
+entries whose content already exists locally are reused instead of duplicated, so importing the
+same code twice adds nothing; bundled overlay button and toggle targets are re-pointed at the final
+rule ids, and a target that neither the code nor the local rules provide is reported as a warning.
+One code carries at most 500 rules, 500 overlays and 500 macro presets. With a running daemon the
+whole import is one <code>ImportShare</code> request; otherwise <code>library.json</code> is committed before <code>rules.json</code>
+so an imported rule never references a missing preset or overlay.</p>
+<div class="markdown-heading"><h2 class="heading-element">Ready-to-use recipes</h2><a id="ready-to-use-recipes" class="anchor" aria-label="Permalink: Ready-to-use recipes" href="#ready-to-use-recipes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>See <a href="examples.html">Rule examples</a> for complete rules: companion processes, hotkey actions, webhooks
+with quotas, file watchers and archives, weekday schedules, If/Else branching, rule chaining with
+<code>rule_control</code>, sleep/resume audio toggles, and launch-wait-tune pipelines.</p>
+<div class="markdown-heading"><h2 class="heading-element">Console notes</h2><a id="console-notes" class="anchor" aria-label="Permalink: Console notes" href="#console-notes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Release builds are Windows GUI-subsystem executables, so PowerShell does not wait for them and
+cannot capture their output or exit code. Prefix CLI commands with <code>cmd /c</code> (or use
+<code>Start-Process -Wait</code>) when scripting from PowerShell. Tools that spawn the process with piped
+stdio and wait for it — Python <code>subprocess.run</code>, Node <code>child_process</code>, most agent runtimes — work
+directly.</p>
+<p>Reading from stdin works the same way as from a file:</p>
+<div class="highlight highlight-source-powershell"><pre>cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>type rule.json | Synector.exe --rules-apply -<span class="pl-pds">"</span></span></pre></div>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="prev" href="getting-started.html"><span>Previous</span><strong>Getting started</strong></a>
+<a class="next" href="scripting.html"><span>Next</span><strong>Lua scripting</strong></a>
+</nav>
+    </main>
+<nav class="docs-toc" aria-label="On this page">
+<p class="docs-toc-title">On this page</p>
+<ul>
+<li><a href="#commands">Commands</a></li>
+<li><a href="#file-format">File format</a></li>
+<li><a href="#quotas">Quotas</a></li>
+<li><a href="#calling-and-stopping-other-rules">Calling and stopping other rules</a></li>
+<li class="is-sub"><a href="#observing-rule-activity">Observing rule activity</a></li>
+<li><a href="#webhook-trigger">Webhook trigger</a></li>
+<li><a href="#validation-and-warnings">Validation and warnings</a></li>
+<li><a href="#discovering-the-schema">Discovering the schema</a></li>
+<li><a href="#config-as-code">Config as code</a></li>
+<li><a href="#share-codes">Share codes</a></li>
+<li><a href="#ready-to-use-recipes">Ready-to-use recipes</a></li>
+<li><a href="#console-notes">Console notes</a></li>
+</ul>
+</nav>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>

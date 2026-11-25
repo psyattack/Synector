@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture - Synector documentation</title>
+  <meta name="description" content="How Synector is built: two tiers, data flow, rule engine, event sources, overlays, input simulation and updates.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/architecture.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="Architecture - Synector documentation">
+  <meta property="og:description" content="How Synector is built: two tiers, data flow, rule engine, event sources, overlays, input simulation and updates.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/architecture.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Architecture - Synector documentation">
+  <meta name="twitter:description" content="How Synector is built: two tiers, data flow, rule engine, event sources, overlays, input simulation and updates.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "Synector Architecture", "description": "How Synector is built: two tiers, data flow, rule engine, event sources, overlays, input simulation and updates.", "url": "https://psyattack.github.io/Synector/docs/architecture.html", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a href="index.html">Overview</a><a href="getting-started.html">Start</a><a href="rules.html">Rules</a><a href="scripting.html">Scripting</a><a href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link" href="rules.html">Rule authoring</a>
+<a class="docs-side-link" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link" href="examples.html">Rule examples</a>
+<a class="docs-side-link" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link is-active" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a> / <span>Architecture</span></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/main/docs/ARCHITECTURE.md">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<div class="markdown-heading"><h1 class="heading-element">Synector Architecture</h1><a id="synector-architecture" class="anchor" aria-label="Permalink: Synector Architecture" href="#synector-architecture"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector is a Windows-only automation suite and process supervisor written in Rust. It separates
+background execution from user interaction: a tray daemon owns rules, triggers, runtime state and
+system monitoring, while the egui desktop GUI is a controlling client that renders daemon state and
+edits drafts.</p>
+<p>The repository layout (top level only) is in the Project structure section of
+<a href="https://github.com/psyattack/Synector/blob/main/README.md">README.md</a>; module-level pointers are in <a href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md">Contributing</a>
+("Where changes belong"). This document explains how the pieces behave and why.</p>
+<p>Related documents: <a href="index.html">documentation map</a> · <a href="rules.html">rule authoring</a> ·
+<a href="examples.html">rule examples</a> · <a href="faq.html">FAQ and troubleshooting</a> · <a href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md">contributing</a>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Two tiers</h2><a id="two-tiers" class="anchor" aria-label="Permalink: Two tiers" href="#two-tiers"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<pre><code>+-------------------------------------------------------------+
+|            Interactive Desktop GUI (eframe / egui)           |
+|  - Hardware accelerated, high-DPI                            |
+|  - Dark and light palettes                                   |
+|  - English and Russian locales (src/i18n)                    |
+|  - Rule Builder, Macro Studio, Overlay Studio, Inspector     |
+|  - Global search, Analytics and Settings dialogs             |
++--------------------------+----------------------------------+
+                           | Windows named pipe
+                           | \\.\pipe\Synector_Daemon
++--------------------------v----------------------------------+
+|            System tray daemon (Tokio / Win32)                |
+|  - Rule engine with quotas, cooldowns and active executions  |
+|  - Hybrid ETW / Toolhelp32 process detection                 |
+|  - Global hotkeys, file watchers, webhook and system events  |
+|  - Audio, display, process, window and memory actions        |
+|  - Embedded Lua 5.4.9 runtime                                |
+|  - Overlay process supervisor                                |
+|  - Tray icon, notifications and background self-update       |
++-------------------------------------------------------------+
+</code></pre>
+<p>Both tiers are the same executable, selected by command-line flags. They share the domain types in
+<code>models</code> and the protocol in <code>ipc::protocol</code>, so a rule is identical on both sides. The daemon is the
+only owner of runtime state; the GUI keeps a draft copy for editing and reconciliation.</p>
+<div class="markdown-heading"><h2 class="heading-element">Runtime modes</h2><a id="runtime-modes" class="anchor" aria-label="Permalink: Runtime modes" href="#runtime-modes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Invocation</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>no flags</td>
+<td>Start <code>--daemon</code> in the background if absent, then open the GUI</td>
+</tr>
+<tr>
+<td><code>--gui</code></td>
+<td>Open the GUI; the daemon is started first if it is not running</td>
+</tr>
+<tr>
+<td><code>--daemon</code></td>
+<td>Background service only (tray mode; headless if the tray cannot be created)</td>
+</tr>
+<tr>
+<td><code>--status</code></td>
+<td>Print daemon status over IPC and exit</td>
+</tr>
+<tr>
+<td><code>--overlay-window &lt;id&gt;</code></td>
+<td>Standalone borderless overlay window for one overlay (<code>--calibration</code>, <code>--duration</code>, <code>--override-text</code>, <code>--overlay-data</code>)</td>
+</tr>
+<tr>
+<td><code>--run-rule &lt;rule id&gt;</code></td>
+<td>Invoke a rule directly: <code>TestRunRule</code> over IPC when the daemon runs, otherwise an in-process run through the engine's shared step loop; a missing or empty id is a usage error that exits with code 2</td>
+</tr>
+<tr>
+<td><code>--rules-*</code></td>
+<td>Rule authoring CLI: validate, apply, sync, list, export, enable/disable, reset, delete, share, import, schema and templates. See <a href="rules.html#commands">Rule authoring: commands</a>.</td>
+</tr>
+</tbody>
+</table></div>
+<p>After the overlay fast path and the CLI rule commands, the remaining arguments are validated as
+runtime flags. An unknown flag, or a value flag (<code>--run-rule</code>, <code>--overlay-window</code>) with a missing
+or empty value, prints <code>error:</code> plus the usage block on stderr and exits with code 2 instead of
+starting the GUI behind an elevation prompt. The CLI rule commands keep their own strict parser.</p>
+<p>When no daemon answers, <code>--run-rule</code> runs the rule through the engine's shared step loop, so
+<code>PrevOutput</code>, <code>StepN.Output</code>, <code>AbortPipeline</code> and <code>stop_on_error</code> behave exactly as in a daemon run.
+It applies the same gates as the GUI Run button: the quota and the rule's preconditions are
+enforced, while the cooldown and <code>is_enabled</code> are not, so a disabled rule can be tested. The
+differences are deliberate consequences of there being no daemon: nothing is persisted (analytics,
+runtime counters and a lifetime-quota auto-pause), <code>on_exit_actions</code> do not run because their bound
+process exit path is daemon-owned, rule-to-rule control has no dispatcher, and the context carries
+<code>ProcessId</code> 0 with no live process path — <code>ProcessName</code> is the rule's process/window/resource target
+when it has one and <code>Manual Run</code> otherwise.</p>
+<p>Synector runs elevated by default (<code>--no-elevate</code> opts out). Elevation enables kernel ETW process
+tracing, UIPI-safe input simulation into elevated applications, and silent highest-privilege logon
+autostart through Task Scheduler. The GUI forwards <code>--no-elevate</code> to the daemon it spawns, so the
+opt-out covers the whole process tree rather than just the GUI, and reports its own executable path
+to the daemon as <code>--gui-exe &lt;path&gt;</code> so a portable update with process masking targets the real
+executable after the window is closed (see
+<a href="#installation-forms-and-updates">Installation forms and updates</a>).</p>
+<p><code>src/app/</code> (entered from <code>src/main.rs</code>) dispatches in a fixed order: standalone overlay windows →
+CLI rule commands → update-file cleanup → <code>--status</code>/<code>--run-rule</code> → self-elevation → daemon or GUI.
+Runtime flags, overlay companions and CLI command spellings come from one vocabulary table in
+<code>src/app/args.rs</code>; the CLI keeps its own parser but a gate test pins that the two spellings sets
+agree. Overlay windows are separate
+processes and must stay on the fast path; they never touch update files or single-instance mutexes.
+CLI rule commands run before elevation because they are console tools.</p>
+<p>Daemon liveness is a named-pipe ping (<code>IpcClient::is_daemon_running()</code>), not a single-instance mutex
+probe: a mutex only shows that some process holds the name, while the pipe shows that the daemon
+answers. Raw mutex probing stays private to <code>SingleInstanceGuard</code>, which uses it for GUI liveness.
+A daemon whose tray cannot be created runs headless, but it still exits through the coordinated
+shutdown when asked: On App Close rules stop the engine, running overlays are closed synchronously
+so their fade-out plays instead of the kill-on-close Job Object ending them, and only then are the
+runtime counters and overlay positions flushed. That wiring lives in <code>src/daemon/runtime/</code>:
+<code>bootstrap</code> creates the Tokio runtime and installs the rule-control dispatcher, hotkey listener, IPC
+server and background loops in their fixed order, <code>loops</code> holds each long-lived loop body, <code>launch</code>
+records the <code>--gui-exe</code> path and <code>shutdown</code> owns the signal plus the ordered sequence above.</p>
+<div class="markdown-heading"><h2 class="heading-element">Layers</h2><a id="layers" class="anchor" aria-label="Permalink: Layers" href="#layers"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Area</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/gui/</code></td>
+<td>egui views and inspectors (<code>src/gui/views/inspector/</code>), the rules view (<code>src/gui/views/rules_view/</code> behind <code>src/gui/views/rules_view.rs</code>), the overlay studio (<code>src/gui/views/overlay_modal/</code> behind <code>src/gui/views/overlay_modal.rs</code>) and macro studio (<code>src/gui/views/macro_modal/</code> behind <code>src/gui/views/macro_modal.rs</code>) module trees, the catalog modals (<code>src/gui/views/catalogs/</code>), the preset-picker body shared by both studios (<code>src/gui/views/presets.rs</code>), the header bar and its global search overlay (<code>src/gui/views/header_bar.rs</code>, <code>src/gui/views/global_search.rs</code>), the analytics and settings dialogs (<code>src/gui/views/analytics_modal.rs</code>, <code>src/gui/views/settings_modal.rs</code>), the shared catalog shell and GUI primitives (<code>src/gui/components/</code>, including the colour editor in <code>src/gui/components/color_picker.rs</code>, tag pills in <code>src/gui/components/chips.rs</code> and the hand-painted charts in <code>src/gui/components/charts.rs</code>), overlay renderer, macro recorder, and the GUI state hub (<code>src/gui/state.rs</code> facade over <code>src/gui/state/</code>) with its IPC synchronization</td>
+</tr>
+<tr>
+<td>
+<code>src/daemon.rs</code>, <code>src/daemon/runtime/</code>
+</td>
+<td>Daemon tier entry: the module list and <code>run_daemon</code>, with the start-up/loop/shutdown wiring split into <code>bootstrap</code> (runtime creation and fixed install/spawn order), <code>loops</code> (process, window, system-event, schedule, hotkey, file, webhook, coalesced-flush and update-check loops), <code>shutdown</code> (the signal and the coordinated sequence) and <code>launch</code> (the <code>--gui-exe</code> path)</td>
+</tr>
+<tr>
+<td><code>src/daemon/engine/</code></td>
+<td>Rule runtime split by owner: <code>scheduler</code>, <code>quota</code>, <code>executions</code>, <code>pipeline</code> (the one pipeline launcher), <code>projector</code>, <code>triggers</code>, <code>state</code>, <code>ipc</code>, <code>offline</code>, <code>update</code> (the updater display state), <code>rule_call</code> (the rule-control dispatcher) and <code>activity</code> (the rule-activity registry), plus the engine suite; <code>src/daemon/engine.rs</code> is the <code>DaemonEngine</code> facade</td>
+</tr>
+<tr>
+<td><code>src/daemon/actions/</code></td>
+<td>One module per action family (<code>process</code>, <code>window</code>, <code>input</code>, <code>macro</code>, <code>audio</code>, <code>script</code>, <code>filesystem</code>, <code>webhook</code>, <code>system</code>, <code>overlay</code>, <code>tokens</code>) over the shared bounded runner in <code>src/command.rs</code> and the MTA COM guard in <code>src/win_com.rs</code>; <code>src/daemon/actions.rs</code> is the facade, the control-flow dispatcher and the exhaustive standard-action family dispatcher; command-line/PowerShell quoting lives in <code>src/win_args.rs</code>
+</td>
+</tr>
+<tr>
+<td><code>src/daemon/conditions.rs</code></td>
+<td>Condition evaluation and process/window/device matching shared by the engine ticks and the action handlers (<code>evaluate_condition</code>, <code>matches_process</code>, <code>device_filter_matches</code>, <code>strip_exe_suffix</code>, foreground-process probe); action code no longer reaches the engine for these</td>
+</tr>
+<tr>
+<td><code>src/daemon/overlay_manager/</code></td>
+<td>Overlay child supervision split into <code>supervisor</code>, <code>job</code>, <code>text</code>, <code>monitors</code> and <code>update</code>; <code>src/daemon/overlay_manager.rs</code> re-exports the unchanged surface</td>
+</tr>
+<tr>
+<td>
+<code>src/daemon/</code> services</td>
+<td>Process watcher, hotkeys, system events, telemetry (<code>src/daemon/telemetry/</code>), the rolling analytics collector (<code>src/daemon/analytics.rs</code>), tray (<code>src/daemon/tray/</code>), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC</td>
+</tr>
+<tr>
+<td><code>src/app/</code></td>
+<td>Process entry and dispatch: fixed stage order, the shared argv vocabulary (<code>src/app/args.rs</code>; spellings in <code>src/arg_spellings.rs</code>), daemon spawn, elevation, console reattachment, update-file cleanup, <code>--status</code> and <code>--run-rule</code>
+</td>
+</tr>
+<tr>
+<td><code>src/win_args.rs</code></td>
+<td>One Windows command-line helper set: UTF-16-equivalent argument splitting/quoting/joining, PowerShell single-quoted literal escaping and the no-window spawn flag shared by the daemon, the app tier, updater, autorun and shortcuts</td>
+</tr>
+<tr>
+<td><code>src/command.rs</code></td>
+<td>One bounded subprocess runner and one <code>CommandOutcome</code>: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua <code>syn.run_cmd</code> bridge), and <code>ensure_success</code> centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling)</td>
+</tr>
+<tr>
+<td><code>src/win_com.rs</code></td>
+<td>One COM apartment guard (MTA or STA, infallible or fallible) shared by action audio, telemetry audio and shortcut creation; it uninitialises only when <code>CoInitializeEx</code> returned <code>S_OK</code>, so a thread another component already initialised is never decremented</td>
+</tr>
+<tr>
+<td><code>src/daemon/engine/rule_call.rs</code></td>
+<td>Rule-to-rule control channel between <code>Action::RuleControl</code> and the engine dispatcher; the historical <code>crate::daemon::rule_call</code> module path is kept as a re-export</td>
+</tr>
+<tr>
+<td><code>src/daemon/engine/activity.rs</code></td>
+<td>Process-wide running-pipeline snapshot behind rule-activity conditions; the historical <code>crate::daemon::rule_activity</code> module path is kept as a re-export</td>
+</tr>
+<tr>
+<td><code>src/ipc/</code></td>
+<td>Named-pipe client, the shared request/response protocol, the one framing implementation both sides use, and the overlay wire encoding</td>
+</tr>
+<tr>
+<td><code>src/models/</code></td>
+<td>Domain model: <code>Rule</code>, <code>Trigger</code>, <code>Action</code>, conditions, overlays, macro presets, quotas, raw-key/schedule validation, the shared action-tree visitor (<code>Rule::visit_actions</code>), the analytics snapshot wire types (<code>src/models/analytics.rs</code>) and the generated rule schema (<code>src/models.rs</code> is the facade)</td>
+</tr>
+<tr>
+<td><code>src/validation.rs</code></td>
+<td>Structural rule validation and non-blocking warnings shared by the CLI, config loading, engine mutations and the GUI save path</td>
+</tr>
+<tr>
+<td><code>src/cli/</code></td>
+<td>Command-line rule authoring: argument parser, command bodies, upsert/sync planning, share codes, JSON envelopes and the daemon/offline target selection in <code>src/cli/target.rs</code>, which also owns the one IPC round-trip adapter behind the command-specific <code>*_via_daemon</code> functions and the one post-snapshot offline→daemon transition helper (<code>src/cli.rs</code> is the facade)</td>
+</tr>
+<tr>
+<td><code>src/config/</code></td>
+<td>Split configuration persistence: storage policy, caches and the four section modules (<code>src/config.rs</code> is the facade)</td>
+</tr>
+<tr>
+<td><code>src/i18n/</code></td>
+<td>Locale registry and the Windows UI-language detection (<code>src/i18n.rs</code>), the flat <code>Strings</code> declaration (<code>src/i18n/strings.rs</code>) and the English/Russian string catalogs</td>
+</tr>
+<tr>
+<td><code>src/autorun.rs</code></td>
+<td>Task Scheduler autostart registration</td>
+</tr>
+<tr>
+<td><code>src/updater/</code></td>
+<td>GitHub release checks, asset selection, SHA-256 verification, portable self-replacement, silent installer updates and stale update-file/<code>.old</code> executable cleanup (<code>src/updater.rs</code> is the facade over <code>release</code>, <code>install_mode</code>, <code>portable</code>, <code>install</code>, <code>apply</code>, <code>temp</code> and <code>util</code>)</td>
+</tr>
+<tr>
+<td><code>src/sharing/</code></td>
+<td>
+<code>SYN1:</code> Brotli + Base64 share codes split by stage (<code>format</code>, <code>payload</code>, <code>encode</code>, <code>decode</code>, <code>import</code>, <code>assets</code>; <code>src/sharing.rs</code> is the facade): SHA-256 prefix, library dependency bundling, bounded decode</td>
+</tr>
+<tr>
+<td><code>src/clipboard.rs</code></td>
+<td>One system-clipboard helper set (<code>copy_text_to_clipboard</code>, <code>read_text</code>) shared by the share flow, the inspector and token expansion</td>
+</tr>
+<tr>
+<td><code>src/shortcut.rs</code></td>
+<td>Windows <code>.lnk</code> generation for direct rule launch, written through <code>IShellLink</code>; a same-named foreign shortcut is never overwritten (a rule-id-suffixed name is used instead)</td>
+</tr>
+<tr>
+<td><code>src/single_instance.rs</code></td>
+<td>Named mutex guards for daemon and GUI</td>
+</tr>
+</tbody>
+</table></div>
+<div class="markdown-heading"><h3 class="heading-element">Design tokens and skins</h3><a id="design-tokens-and-skins" class="anchor" aria-label="Permalink: Design tokens and skins" href="#design-tokens-and-skins"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The GUI reads every colour and every geometry value from one token layer, <code>src/gui/theme.rs</code>
+(facade over <code>src/gui/theme/</code>). <code>tokens</code> owns the dark and light palettes and the resolved
+<code>Tokens</code> value a view reads; <code>skin</code> owns the geometry, density and stroke metrics; <code>style</code> derives
+egui's <code>Visuals</code>, spacing and text styles from both; <code>motion</code> owns the platform motion permission;
+<code>paint</code> holds the shared painting helpers and <code>fonts</code> registers the bundled type stacks.</p>
+<p>The palette and the skin are independent axes: switching one never changes the other. A view
+asks for a role (<code>t.sunken</code>), a helper (<code>t.hairline()</code>) or a metric (<code>t.metrics().card_radius</code>)
+rather than branching on either, which is what lets a second visual generation ship as a new
+metrics value instead of a second view tree. The few surfaces that genuinely compose differently
+per generation — the filter cells, the appearance previews — read <code>Metrics::skin</code> for that one
+branch, never to pick a colour.</p>
+<p>A skin owns geometry (radii, control and bar heights), strokes, elevation (<code>Shadow</code>) and motion
+(<code>Motion</code>). The type and colour voice is shared: both generations keep the mono-caps labels and the
+Archivo display face, and both palettes are orthogonal to the skin, so both skins must stay
+readable in both. The generations differ in how they compose chrome: the classic one keeps flat,
+opaque panels with square cards, while the modern one lifts tinted translucent surfaces
+(<code>Tokens::raised</code>, <code>Tokens::surface</code>) and draws the selected filter cell as a lifted pill instead
+of an inverted block. The modern generation is the default; the classic one stays selectable from
+Settings (<code>ui_skin</code>).</p>
+<p>A user accent (<code>settings.accent</code>) re-tints <code>Palette::accent</code>, derives a readable <code>accent_ink</code> from
+it and tints the selection background; an accent change is applied at once instead of fading,
+because a fade would chase the colour picker's drag. Omitting the value keeps the palette's own
+accent, and the Settings reset button clears the override.</p>
+<p>Windows can decide two things here: the interface language once, and the palette continuously if
+asked to. The first launch adopts the Windows UI language (<code>Language::system</code> from
+<code>GetUserDefaultUILanguage</code>, mapped onto the shipped catalogs: Russian for <code>LANG_RUSSIAN</code>, English for
+everything else) and persists it with the section it materializes; every later launch keeps the
+persisted choice. The palette stays the user's unless <code>follow_system_theme</code> is on (it is off by
+default): the GUI then renders the palette Windows applies to its own apps and re-reads it at most
+once a second, so a switch made in Windows is picked up without a restart. That palette comes from
+<code>AppTheme::system</code> (<code>AppsUseLightTheme</code> under <code>HKCU\…\Themes\Personalize</code>), the same lookup the
+daemon uses to shade the tray menu, and it is the palette <code>Settings::effective_theme</code> reports; a
+missing or unreadable value keeps the configured <code>theme</code>. Picking a palette by hand turns the switch
+off, and the switch itself stores the palette currently on screen as <code>theme</code> — that field is both the
+explicit fallback and the effective palette. Neither the adopted palette nor the switch raises the
+theme toast: automatic switching is not a user edit and writes nothing to disk.</p>
+<p>Motion has two owners: the skin sets the durations, and <code>theme::motion</code> asks Windows whether client
+area animations are enabled (<code>SPI_GETCLIENTAREAANIMATION</code>, cached for the process). When the system
+says no, every duration collapses to zero, transitions return their target immediately and no
+transition schedules a repaint. Components animate user-triggered state only — hover, press, a
+drawer, a dialog, a drop indicator — never decoration. A palette change additionally cross-fades
+the colour roles (<code>Palette::lerp</code>, 0.18 s): views read the blended palette while the fade runs, and
+each frame re-derives the native widget visuals until it settles, when the target visuals are
+applied once more. A skin change never fades colours, because the palette is unchanged.</p>
+<p><code>src/gui/theme.rs</code> also owns one convention test, <code>views_never_pick_a_literal_frame_radius</code>: it
+walks <code>src/gui/views/**</code> and fails if a <code>Frame</code> carries a literal corner radius instead of a skin
+helper, so the sweep cannot erode unnoticed.</p>
+<p>The window backdrop (<code>theme::paint_backdrop</code>) is painted once behind every panel. The classic skin
+paints the flat page colour; the modern skin paints a quiet two-stop wash derived from the palette,
+which its translucent panels (<code>surface_alpha</code>) let through. Nothing decorative is painted on top of
+it.</p>
+<div class="markdown-heading"><h2 class="heading-element">Window shell, dialogs and global search</h2><a id="window-shell-dialogs-and-global-search" class="anchor" aria-label="Permalink: Window shell, dialogs and global search" href="#window-shell-dialogs-and-global-search"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The main window has no navigation tabs: the rules list is the only page, and the header owns the
+one rules search field, centered between the wordmark and the window caption buttons. The field is
+deliberately background-free with only an outline, and sized to the glyph buttons beside it, so it
+reads as title-bar chrome rather than as a form; every other search field in the app (settings,
+catalogs, process picker, analytics logs) reuses the same outlined chrome, while widths and heights
+stay per call site. The analytics and settings surfaces are base-class dialogs
+(<code>src/gui/components/modal.rs</code>) opened from two glyph buttons right of the field. A dialog joins
+<code>GuiState::is_modal_open()</code>, opens with the shared scrim and animation, and opening one surrenders
+the search focus so typing cannot land in the field behind the scrim.</p>
+<p>Typing a query opens the global search overlay instead of a plain dropdown: a scrim <code>Area</code> covers
+everything below the header while a results panel groups matches by the surface that can consume
+them — rules, settings, the activity log, actions, triggers, conditions, overlay presets and macro
+presets — with a count and up to three previews each. Applying a group keeps the query in the
+header for rules (which are already filtered behind the panel) and transfers it into the target's
+own search field for every other surface: the settings dialog, the analytics log filter, a
+rule-builder catalog over a fresh or current draft, the overlay studio's preset picker, or the
+Macro Studio opened on a draft rule with the matched preset attached and its preset picker filtered.
+The overlay is not a <code>Modal</code>: the header field stays visible and editable, and Escape closes the
+results first, then clears the query.</p>
+<p>The analytics dashboard reads daemon-owned data. <code>src/daemon/analytics.rs</code> keeps a rolling
+24-hour window bucketed by local wall-clock hour — the current hour plus the 24 before it — with
+runs, outcomes, per-source and per-rule counts, and the last two minutes of CPU/RAM samples. The
+one-second runtime flush loop takes those two numbers with a CPU/RAM-only probe (no battery read,
+no COM audio endpoint) outside the engine lock, and the dashboard draws the last minute of them.
+The same tick samples the daemon's own CPU share, private working set and disk throughput from the
+process I/O counters (<code>DaemonUsage</code>), shown as one line in the SYSTEM LOAD card; network and GPU
+are deliberately absent because Windows exposes no cheap per-process counter for either and a
+daemon's share of them is effectively zero.
+The shared step loop reports every finished non-exit pipeline once (<code>PipelineOutcome</code>), so an error
+that does not halt a pipeline still counts; a run that never reports an outcome is recorded as
+aborted by its execution guard, so a user stop, a replaced run and a stopped recurring cycle are
+counted in one place and an exit pipeline is never counted at all. The GUI polls one narrow
+<code>GetAnalytics</code> request per second only while its dialog is open; the ordinary state snapshot does
+not carry the analytics payload. The dashboard paints charts with
+<code>src/gui/components/charts.rs</code> on <code>Tokens</code> roles and <code>Tokens::series</code>, so there is no plotting
+dependency and both palettes and a custom accent stay coherent.</p>
+<div class="markdown-heading"><h2 class="heading-element">Data flow</h2><a id="data-flow" class="anchor" aria-label="Permalink: Data flow" href="#data-flow"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ol>
+<li>The GUI reads state over IPC and holds an editable draft with undo/redo history.</li>
+<li>Mutations are queued to one IPC worker thread and sent as <code>IpcRequest</code> values; the daemon
+validates them, applies them to its in-memory <code>AppConfig</code> aggregate and persists only the
+affected config section under <code>%LOCALAPPDATA%\Synector\</code>. The editable draft is discarded only
+after the daemon confirms the mutation; a rejected or failed mutation keeps the draft open and
+reports the error. Every other GUI round-trip goes through the same worker too — testing a step,
+terminating a process, saving settings, preset-library writes, overlay-preview show/hide, the
+calibration position poll and the analytics dashboard poll — so the render loop never blocks on
+the named pipe; the frame thread only enqueues and applies results, and the latest result wins.</li>
+<li>The daemon executes rules and streams status, telemetry and execution snapshots back, so the GUI
+reflects engine state without owning it. A sustained daemon outage (three failed polls plus a
+one-second quiet period) is logged and shown as an offline toast instead of being collapsed into
+a retry counter, and the window stays open with the offline state so unsaved drafts survive.</li>
+<li>Overlay windows are separate GPU-accelerated processes supervised by the daemon; the GUI only
+edits their definitions.</li>
+</ol>
+<p>IPC round-trips are bounded. A client call gets 5 s (750 ms for the liveness ping, 60 s for an
+inline <code>TestStep</code>), a busy pipe (<code>ERROR_PIPE_BUSY</code>) is retried briefly because another process may
+be connecting to the single listening instance, and a missing pipe is re-checked a few times before
+it counts as absent. A call that exceeds its bound cancels its blocked worker
+(<code>CancelSynchronousIo</code>) and joins it, so the pipe handle is released and repeated timeouts cannot
+accumulate threads; the next call opens a fresh instance. During GUI exit the round-trips share a
+1.5 s shutdown budget, window geometry is persisted first, and a spent budget returns immediately
+instead of waiting out another timeout. The typed transport error separates <code>Unavailable</code> (the pipe
+does not exist) from <code>Busy</code>/<code>Timeout</code> (the daemon is alive but not answering); only <code>Unavailable</code>
+is proof that the daemon is offline, so a slow or busy daemon never triggers an offline fallback.
+Frames are capped at 16 MiB in both directions: the client rejects an over-cap response length
+before reading the body, and the daemon replaces an oversized response (an implausibly large state
+snapshot) with a small <code>Error</code> response so the caller reports an error instead of losing the
+connection.</p>
+<div class="markdown-heading"><h2 class="heading-element">Configuration storage</h2><a id="configuration-storage" class="anchor" aria-label="Permalink: Configuration storage" href="#configuration-storage"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The configuration is split into four independent, versioned JSON files in
+<code>%LOCALAPPDATA%\Synector\</code> (relocatable through <code>SYNECTOR_CONFIG_DIR</code> for portable or isolated runs).
+The sections and their user-facing contents are listed in
+<a href="https://github.com/psyattack/Synector/blob/main/README.md#configuration">configuration reference</a>; this section covers how they are written.
+<code>AppConfig</code> exists only in memory: it is assembled from the sections on load and exchanged over IPC,
+never written as one document. This keeps write volume proportional to what changed.</p>
+<p>Every write goes through a temporary file that is flushed and renamed over the target, so a crash
+mid-write cannot truncate user data; <code>&lt;section&gt;.&lt;pid&gt;.tmp</code> files left behind by a writer that died
+before the rename are swept once they are five minutes old, because a younger one may still belong
+to a live writer. Every section carries a schema version: an older file is upgraded in memory and
+stamped with <code>CONFIG_VERSION</code> on its next save, while a file written by a newer build is read as-is
+and never overwritten — the refusal is logged and returned as a save error, so this build cannot
+downgrade it. A section that fails to parse is moved aside as <code>&lt;name&gt;.corrupt-&lt;timestamp&gt;</code> (with a
+<code>-1</code>, <code>-2</code>, … suffix when that name is taken, so an earlier quarantine copy is never replaced)
+before defaults take over; if the file cannot be moved aside, writes to that section are refused
+until it is moved or repaired by hand. First-run materialization creates only the section files
+that are missing and writes each one from the state already loaded, so an existing <code>runtime.json</code>
+keeps its counters even when another section has to be created or quarantined. A first run — no
+<code>settings.json</code> yet — also adopts the Windows UI language before the section is written; from then
+on the persisted <code>language</code> is the user's choice and is never re-detected.</p>
+<p>Rule-level strictness is separate from section parsing. <code>rules.json</code> entries are checked with
+<code>validate_rule_keys</code> before deserialization: a rule carrying an unknown key is logged with its rule
+id and keys and skipped, while the rest of the file loads. After deserialization each rule also runs
+through the same per-rule validator as the GUI Save and CLI apply paths: a rule whose values are
+invalid (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
+skipped on its own, with its id and errors logged. Neither check drops a rule the GUI or CLI would
+accept. The unknown-key check is how the fields removed from the model (<code>schedule.delay_sec</code>, the
+<code>system</code> trigger's <code>idle_duration_sec</code>, the <code>resource</code> condition's <code>duration_sec</code>) are handled — no
+migration shim rewrites old files, so such a rule must be updated. <code>--rules-apply</code> and share import
+reject the input instead of skipping. Overlay actions are normalized on the same load, so the
+embedded definition and <code>overlay_id</code> share one id and a <code>close_on_exit</code> binding refers to the
+overlay that actually runs.</p>
+<p>The daemon is the only writer while it is reachable. The GUI sends section-scoped requests
+(<code>SaveSettings</code>, <code>SaveRule</code>, <code>ReorderRules</code>, <code>ResetRule</code>, <code>SaveOverlay</code>, ...), so the two processes
+cannot race on a read-modify-write of the same file. Rule, overlay-library and runtime-counter
+fallbacks run only after a failed liveness probe: <code>rules.json</code> (<code>SaveRule</code>, <code>DeleteRule</code>,
+<code>ToggleRule</code>, <code>ReorderRules</code>), <code>library.json</code> (<code>SaveOverlay</code>, <code>SaveMacroPreset</code>) and the <code>ResetRule</code>
+counters in <code>runtime.json</code>; a reachable daemon that rejects one of those is reported instead of being
+bypassed. <code>--rules-sync</code> is a single <code>SyncRules</code> request that replaces the rule set, persists once,
+reloads hotkeys once and prunes counters of removed rules in one step. An offline CLI write re-checks
+daemon liveness immediately before persisting and switches to IPC if the daemon became reachable in
+between; offline delete and sync also prune the removed rules' counters from <code>runtime.json</code>. An
+offline share import commits <code>library.json</code> before <code>rules.json</code>, so imported rules never reference a
+missing preset or overlay.</p>
+<p>Hot sections are read through a process-local cache (<code>settings.json</code>, <code>library.json</code>) that validates
+the cached value against the file's size and modification time: action steps, Lua <code>syn.overlay_*</code>
+calls and overlay windows avoid re-reading and re-parsing the file, while an externally written file
+is still picked up immediately. A cached stamp is trusted only after the file's timestamp is at
+least two seconds old, so a coarse filesystem timestamp cannot hide an equal-length rewrite, and a
+failed read is never cached, so a transient sharing or permission error does not pin the default
+section. Runtime counters, overlay drag positions and main-window geometry are written coalesced
+(bounded intervals, plus a forced flush on quota pause, reset, window exit and shutdown), so a
+fast-firing rule, a dragged HUD or a resized window does not turn every event into a disk write.
+Under <code>cfg(test)</code> the config directory is an isolated per-process temporary directory, so tests
+never touch real user data.</p>
+<div class="markdown-heading"><h2 class="heading-element">Event sources and polling</h2><a id="event-sources-and-polling" class="anchor" aria-label="Permalink: Event sources and polling" href="#event-sources-and-polling"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector prefers push notifications, but Windows does not expose every event that way. The watcher
+subscribes to kernel ETW process lifecycle events when elevated; if tracing cannot start, the
+process is not elevated, or the realtime <code>ProcessTrace</code> thread exits, it degrades to adaptive
+Toolhelp32 snapshot polling. The ETW callback only queues <code>(pid, event)</code>; names are resolved on the
+daemon thread from the image path first and from a Toolhelp snapshot second, so protected/PPL
+processes produce the same events as polling. A name that cannot be resolved when the start arrives
+is filled by the periodic reconcile from a fresh snapshot, which then emits the deferred start
+event once; a pid that already exited is dropped with one debug line. The trace thread records the
+<code>ProcessTrace</code> result, so an exited trace is logged and the same tick falls through to polling. The ETW session name carries
+the Windows session id (<code>SynectorKernelProcessTrace-&lt;session-id&gt;</code>), because the session is
+machine-wide while daemons are per user. Both paths feed the same trigger surface, so a rule never
+depends on which one is active.</p>
+<p>Other sources are mixed by nature:</p>
+<ul>
+<li>
+<strong>Push/event sources:</strong> kernel ETW process lifecycle records, Win32 named-pipe IPC, the local
+webhook server (<code>127.0.0.1:48123</code>), low-level keyboard/mouse hooks during macro recording, Raw
+Input camera deltas, <code>WM_POWERBROADCAST</code> for sleep/resume and console display state, and
+<code>WM_DEVICECHANGE</code> for plug-and-play devices. The webhook server only listens while at least one
+enabled rule uses the <code>webhook</code> trigger; the daemon re-reads the rule set and starts or stops the
+listener, so a daemon whose rules do not use the trigger holds no socket and logs no listener line.</li>
+<li>
+<strong>Polling sources:</strong> Toolhelp32 process snapshots when ETW is unavailable, foreground-window
+detection, the file watcher, resource thresholds, session lock, AC/battery power source,
+user idle/active, network state and system telemetry (CPU, RAM, network, battery, volume).
+Polling loops back off when no rule uses the corresponding trigger: the process snapshots drop to
+a 3 s dormancy tick when no process or resource rule and no bound companion needs them, foreground
+focus drops to 3 s without a <code>window_focus</code> rule, and the system-event sampler drops to 10 s when
+no enabled rule has a system trigger or an <code>event</code> condition (its notification window still wakes
+it for suspend, display and device broadcasts). The system trigger's idle
+event uses a fixed five-minute threshold; only the <code>event</code> condition carries a rule-authored
+<code>idle_duration_sec</code>.</li>
+<li>
+<strong>Global hotkeys:</strong> <code>hotkeys.rs</code> checks <code>GetAsyncKeyState</code> for the registered combinations on a
+short interval (8 ms while hotkeys exist) and blocks on a condition variable with no periodic
+wake-up when there are none. This is a polling design, not a <code>RegisterHotKey</code> hook; it is what
+allows mouse-button combinations and hold/repeat modes to share one code path.</li>
+</ul>
+<div class="markdown-heading"><h3 class="heading-element">System notification window</h3><a id="system-notification-window" class="anchor" aria-label="Permalink: System notification window" href="#system-notification-window"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>system_events.rs</code> starts a dedicated hidden top-level window on the
+<code>system-event-notifications</code> thread. It registers <code>RegisterPowerSettingNotification</code> with
+<code>GUID_CONSOLE_DISPLAY_STATE</code> and <code>RegisterDeviceNotificationW</code> for all device interface classes.
+<code>WM_POWERBROADCAST</code> maps suspend/resume and display on/off/dimmed transitions;
+<code>WM_DEVICECHANGE</code> maps device-interface arrival/removal and captures the interface path for the
+optional <code>device_id_filter</code>.</p>
+<p>Notifications are pushed to a bounded queue and wake the daemon loop immediately through a Tokio
+<code>Notify</code>, so a sleep trigger can start its pipeline before Windows suspends the machine. The same
+module exposes the current state used by pre-conditions: sleeping/awake, display on/off and whether
+a tracked device is connected. Conditions for device state stay false until Windows has delivered at
+least one plug-and-play notification, which avoids firing a "device disconnected" rule at startup.</p>
+<div class="markdown-heading"><h2 class="heading-element">Rule engine</h2><a id="rule-engine" class="anchor" aria-label="Permalink: Rule engine" href="#rule-engine"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A rule pairs one optional trigger with preconditions, an ordered action pipeline, <code>on_exit_actions</code>,
+and cooldown/quota limits. <code>src/daemon/engine.rs</code> is the <code>DaemonEngine</code> facade: it schedules
+triggered runs, evaluates conditions, enforces quotas and cooldowns, tracks active executions and
+reports analytics. The implementation is split by owner under <code>src/daemon/engine/</code>: <code>scheduler</code>
+owns admission and tick throttling, <code>quota</code> the documented counter semantics, <code>executions</code> active
+pipelines, abort handles, recurring test loops and bound satellites, <code>pipeline</code> the step loop, the
+single launch machinery behind the triggered/exit/recurring paths and the call/context entry points,
+<code>triggers</code> the process/window/schedule/resource/system intake, <code>projector</code> the read-only
+<code>DaemonState</code> snapshot the IPC layer serializes, <code>state</code> the log buffer and section persistence,
+<code>ipc</code> the request dispatcher and rule writers, <code>offline</code> the <code>--run-rule</code> fallback, <code>update</code> the
+updater display state (<code>UpdateStatus</code>), <code>rule_call</code> the dispatcher installed by the daemon,
+<code>activity</code> the process-wide activity registry, and <code>tests</code> the engine suite. The bound-satellite,
+bound-overlay and rule-overlay registries live in the tracker, so one teardown owner is responsible
+for them; <code>DaemonEngine::trigger(rule, origin, context_name, pid, extra_ctx)</code> is the only pipeline
+entry point and every caller states the <code>ExecutionOrigin</code> explicitly (there is no string-to-origin
+fallback). Condition evaluation and process/window/device matching live in <code>src/daemon/conditions.rs</code>,
+which the action handlers call directly; <code>Rule::visit_actions</code> in the model is the one read-only
+action-tree traversal used by the engine, sharing, validation and the GUI, including the
+active-overlay branch of <code>is_rule_executing</code>, which scans nested <code>IfElse</code> branches and the exit
+actions as well as the top-level pipeline.</p>
+<ul>
+<li>
+<strong>Cooldown:</strong> minimum time between two triggered runs. It is seeded from <code>last_executed_at</code>
+when the daemon starts, so a restart does not clear a cooldown that is still running; a run the
+user starts directly (Run/Test Run, an overlay click target or <code>--run-rule</code>) bypasses it.</li>
+<li>
+<strong>Lifetime quota:</strong> <code>max_executions</code> without <code>quota_period</code>. When it is reached the engine logs
+<code>completed quota (x/y) and has been auto-paused</code> at WARN, pauses the rule, and the rule can be
+re-enabled with <code>--rules-reset</code> or the GUI reset action.</li>
+<li>
+<strong>Periodic quota:</strong> <code>quota_period</code> keeps the rule enabled and skips executions until the counter
+rolls over; the rollover logs <code>reached its quota (x/y); the counter resets …</code> at INFO. One helper
+classifies both cases and owns their messages. The exact reset rules and custom windows are
+documented in <a href="rules.html#quotas">Rule authoring: quotas</a>.</li>
+<li>
+<strong>Runtime counter ownership:</strong> <code>execution_count</code>, <code>last_executed_at</code> and <code>quota_window_start</code> live
+in <code>runtime.json</code>, are zeroed in <code>rules.json</code>, and are preserved across ordinary rule updates. A
+changed <code>quota_period</code>, or enabling a limit where there was none, starts a fresh counter;
+<code>last_executed_at</code> is always kept because schedule triggers use it for deduplication. Changing
+only the numeric limit keeps the counter.</li>
+</ul>
+<p>Pipelines support waits, inline checks and branching:</p>
+<ul>
+<li>
+<code>Action::Wait</code> delays by timer or by a system condition (window opened/closed, process
+started/exited, hotkey pressed, file created/deleted, another rule starting or stopping) with a
+timeout and an abort-or-continue timeout policy.</li>
+<li>
+<code>Action::Check</code> evaluates environmental criteria mid-pipeline and halts the remaining steps
+cleanly when unsatisfied, without raising an error. <code>RuleCondition::RuleRunning</code> observes another
+rule's pipeline activity here, in <code>IfElse</code> and in rule pre-conditions.</li>
+<li>
+<code>Action::IfElse</code> evaluates conditions at runtime and runs the Then, Else If or Else action list.</li>
+<li>Toggle actions: firewall <code>Toggle</code>, window <code>ToggleMinimizeRestore</code> and <code>ToggleShowHide</code>.</li>
+</ul>
+<p><code>Trigger::GlobalHotkey</code> supports plain toggle mode, <code>hold_mode: true</code> and <code>repeat_while_held: true</code>.
+In hold mode the entire pipeline repeats until the hotkey is released; <code>repeat_while_held</code> without
+hold mode loops until the hotkey is pressed again. Every iteration goes through the normal quota
+check, so the quota is decremented per iteration.</p>
+<p>Infinite macros (<code>Action::Macro { infinite: true }</code>) have no natural end. The CLI validator rejects
+them unless the trigger is a global hotkey, because another trigger offers no manual cancellation
+path; the Rule Builder shows a warning and dims every step after the infinite one, since those steps
+will never run.</p>
+<p>Schedule triggers are admitted by the scheduler rather than by scanning every rule on each tick. A
+one-shot schedule is consumed only when its run actually starts, so a one-shot whose preconditions
+or quota rejected the attempt stays armed.</p>
+<p>Action handlers are asynchronous. Each action family lives in its own module under
+<code>src/daemon/actions/</code> (<code>process</code>, <code>window</code>, <code>input</code>, <code>macro</code>, <code>audio</code>, <code>script</code>, <code>filesystem</code>,
+<code>webhook</code>, <code>system</code>, <code>overlay</code>, <code>tokens</code>); the standard-action dispatcher matches every family
+exhaustively, so a new <code>Action</code> variant cannot silently no-op. Helper subprocesses — scripts, archive
+tools, audio/device helpers and elevated launches — run through the one bounded runner in
+<code>src/command.rs</code> on a blocking thread that enforces a timeout and caps captured output at 64 KiB
+per stream; the Lua <code>syn.run_cmd</code> bridge uses the same runner (with a process-tree kill on timeout),
+and the updater's external extraction tools run through it with a 600 s ceiling. The Windows
+argument quoter, PowerShell literal escaper and no-window spawn flag live in <code>src/win_args.rs</code>; the
+COM apartment guard lives in <code>src/win_com.rs</code>. The budgets are 300 s for PowerShell/Batch scripts,
+600 s for archive helpers and 120 s for an elevation prompt; a spawn failure, non-zero exit or
+timeout is reported as an action error instead of being ignored. Outbound <code>http_webhook</code> actions use
+the process-wide <code>reqwest</code> client and send configured headers as request headers, never through a
+shell; a non-2xx response fails the step. Discord Rich Presence actions validate the reply frame —
+opcode, nonce and an <code>evt: ERROR</code> rejection — so a rejected presence update is an action error
+rather than a silent success.</p>
+<div class="markdown-heading"><h3 class="heading-element">Rule-to-rule control</h3><a id="rule-to-rule-control" class="anchor" aria-label="Permalink: Rule-to-rule control" href="#rule-to-rule-control"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>Action::RuleControl</code> runs inside the calling pipeline's task and cannot reach the engine, which
+lives behind the daemon's mutex. The daemon installs a dispatcher (<code>src/daemon/engine/rule_call.rs</code>,
+the historical <code>crate::daemon::rule_call</code> path): the
+action submits a <code>call</code> or <code>stop</code> request and awaits the reply, and a waiting call is resolved
+outside the engine lock so a long pipeline never freezes the daemon.</p>
+<p>Every execution records the call chain that created it (<code>ActiveExecutionItem::call_chain</code>). The
+chain is how a direct self-call and a call to a rule that is already running in the same chain are
+rejected before the target starts, and how nesting stops at eight rules. A <code>wait: true</code> call is
+signalled by the called pipeline's execution guard, so a normal finish, an abort and a <code>stop</code> all
+release the caller.</p>
+<p>A <code>call</code> goes through the same gates as a triggered run: quota, cooldown, conditions and
+<code>is_enabled</code>; a skipped call is logged and is not an error for the caller. <code>stop</code> aborts the target's
+active executions and releases their resources without touching <code>is_enabled</code>, which separates it
+from the user-facing Stop button: that one also disables the rule and persists the pause. The GUI
+Run/Test Run emulation, releasing a hold-mode hotkey and a <code>rule_control</code> stop abort only the
+running executions, so the rule stays enabled for its next trigger. Executions are identified by a
+process-wide monotonic id shared by triggered, exit, recurring and called pipelines; active
+executions, abort handles and call chains are keyed by it.</p>
+<div class="markdown-heading"><h3 class="heading-element">Rule activity conditions</h3><a id="rule-activity-conditions" class="anchor" aria-label="Permalink: Rule activity conditions" href="#rule-activity-conditions"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>RuleCondition::RuleRunning</code>, <code>WaitCondition::RuleStarted</code> and <code>WaitCondition::RuleStopped</code> observe
+another rule instead of the machine. The engine publishes every pipeline start and finish into
+<code>src/daemon/engine/activity.rs</code> (the historical <code>crate::daemon::rule_activity</code> path),
+a process-wide map guarded by a short lock: a start is recorded where
+the pipeline task is created, and the finish sits in the same execution guard that reports the
+completion event, so a normal finish, an abort, a user stop and a <code>rule_control stop</code> all decrement
+the counter through one path. Readers (wait polling, check, if/else and pre-conditions) take that
+lock directly and never touch the engine mutex, so a condition cannot freeze the daemon or deadlock
+against the pipeline it observes.</p>
+<p><code>active</code> is the number of pipelines of the rule that run right now. That is the same state
+<code>rule_control stop</code> acts on: a rule whose pipeline ended but whose companion process or overlay is
+still alive reports stopped. Waits poll the snapshot every 100 ms like the other wait conditions;
+<code>RuleStarted</code> additionally remembers the rule's monotonic <code>starts</code> counter when the wait begins, so
+a start that already finished between two polls still satisfies it. An empty target never satisfies
+a rule-activity condition; a target that does not exist is simply never running, and the CLI
+validator warns about both.</p>
+<div class="markdown-heading"><h2 class="heading-element">Companion mode (bound satellites)</h2><a id="companion-mode-bound-satellites" class="anchor" aria-label="Permalink: Companion mode (bound satellites)" href="#companion-mode-bound-satellites"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>Action::StartProcess { close_on_exit: true }</code> attaches a companion process to a primary
+application: the satellite starts with it and terminates when it exits. <code>Action::Overlay</code> has the
+same <code>close_on_exit</code> flag for HUDs. While the primary application runs, the binding is tracked in
+the daemon's active execution state so the rule list and analytics show it. Only a run the user
+starts directly (Run/Test Run, an overlay click target or <code>--run-rule</code>) force-terminates the rule's
+bound satellites at start and after the pipeline finishes; scheduled, webhook, hotkey and
+system-event runs leave them tracked while the primary process keeps running.</p>
+<p>Process-triggered rules can enable <code>single_instance</code>. It does not prevent more copies of the
+application from starting; it makes the rule fire only for the first matching instance and defers
+exit actions and bound-satellite cleanup until every tracked instance has exited.</p>
+<div class="markdown-heading"><h2 class="heading-element">Input simulation and Macro Studio</h2><a id="input-simulation-and-macro-studio" class="anchor" aria-label="Permalink: Input simulation and Macro Studio" href="#input-simulation-and-macro-studio"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Keyboard and mouse events go through Win32 <code>SendInput</code>. Games and DirectInput consumers read
+low-level scan codes and ignore virtual keys, so every simulated key carries a hardware scan code
+obtained from <code>MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)</code> together with <code>KEYEVENTF_SCANCODE</code>; extended keys
+(arrows, Delete, Home, End, ...) also set <code>KEYEVENTF_EXTENDEDKEY</code>. Polled game engines only sample
+input once per frame, so presses stay down for at least 30–35 ms. Volume and media keys (the overlay
+mute, play/pause and next/previous controls) use the same path: <code>MapVirtualKeyW</code> scan code,
+<code>KEYEVENTF_EXTENDEDKEY</code> for the E0-prefixed media range and a 35 ms hold.</p>
+<p>Macro Studio records low-level keyboard and mouse hooks (<code>WH_KEYBOARD_LL</code>, <code>WH_MOUSE_LL</code>) while a
+recording is active, groups events into a timeline, and replays them with humanized jitter. The
+hook, the polling fallback and the GUI capture path report the same physical transition, so a
+lock-free per-key gate admits it once; a recorded tap is stretched to a 35 ms minimum replay hold so
+DirectInput games register it, and stopping closes every still-held key and mouse button with a
+synthetic release so the timeline never ends with an unmatched press. Relative mouse movement
+(<code>MouseCoordMode::Relative</code>) is captured through Raw Input and replayed as short delta pulses for
+in-game camera turns. Named presets are saved and deleted through the daemon; the modal writes
+<code>library.json</code> directly only after a failed liveness probe and reports a daemon rejection instead
+of retrying silently. The Macro Studio and the Overlay Studio share that one library-write path
+(<code>src/gui/state/library_write.rs</code>).</p>
+<div class="markdown-heading"><h2 class="heading-element">Overlay Studio</h2><a id="overlay-studio" class="anchor" aria-label="Permalink: Overlay Studio" href="#overlay-studio"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Overlays are borderless, GPU-accelerated windows rendered by a dedicated process
+(<code>--overlay-window &lt;id&gt;</code>), positioned by the daemon's supervisor across monitors with DPI and
+orientation awareness. The supervisor is split by owner under <code>src/daemon/overlay_manager/</code>
+(<code>supervisor</code> for active children and calibrated positions, <code>job</code> for the kill-on-close Job Object,
+<code>text</code> for the live-text channel, <code>monitors</code> for DPI/logical bounds and <code>update</code> for the updater's
+notification overlays); <code>src/daemon/overlay_manager.rs</code> re-exports the same public surface.
+Optional <code>WDA_EXCLUDEFROMCAPTURE</code> keeps overlays out of screen capture.
+Running overlay children are assigned to a kill-on-close Job Object, so they cannot outlive the
+daemon. <code>SetText</code> and <code>syn.overlay_set_text</code> publish a label to
+<code>%LOCALAPPDATA%\Synector\overlay_text\&lt;slug&gt;-&lt;hash&gt;.txt</code> by atomic replace; the overlay window polls
+that file every 150 ms, so text updates repaint without restarting the process. Positions reported
+by <code>WM_MOVE</code>/<code>WM_EXITSIZEMOVE</code> while the overlay is being dragged are throttled, coalesced into one
+pending slot and sent to the daemon by a worker, so the window procedure never blocks on IPC.</p>
+<p>The studio itself is a WYSIWYG editor: multi-monitor artboard, snap-to-grid, pan/zoom, element
+catalog, undo/redo, and interactive controls (buttons, toggles, sliders) bound to actions, volume,
+opacity and live telemetry. The canvas is a non-interactive preview — it paints the real element
+widgets but never forwards live pointer input, so an editor click cannot execute an element's
+<code>on_click</code> rule. ToggleSwitch and ClockTimer state can be exercised locally from the inspector;
+overlay click actions can trigger or toggle a rule. Smallest authorable sizes and positions are
+enforced: a crosshair <code>x</code>/<code>y</code> is an absolute offset from the card corner and stays at 1 px or more
+(0 or a negative value is the renderer's "centre" sentinel, not an authorable value). Every inspector
+property edit — size, colour, label, slider, rotation — is one undo step, and elements are clamped to
+the card only when the card or element geometry changes; the clamp never rewrites a Text font size
+and overflow is clipped by the card painter. Graph background and InteractiveControl active colour
+are element-scoped and edited in the element's own panel.</p>
+<p>Calibration is started from the studio and makes the overlay draggable; there is no global
+calibration hotkey. Saving a preset always creates a new id: a derived id or typed name that already
+exists gets <code>_2</code>, <code>_3</code>, …, a name without letters or digits is refused, and built-in presets are
+never replaced. Preset writes go through the daemon; the GUI writes <code>library.json</code> directly only
+after a failed liveness probe and reports a daemon rejection instead of retrying silently, on the
+same shared write path the Macro Studio uses.</p>
+<p>Timers run in the overlay process: a Stopwatch adds, and a Countdown subtracts, the real frame
+delta, so a paused or minimized process catches up instead of drifting; Clock and Uptime are
+display-only. A countdown reaching zero stops and runs its <code>on_finish</code> action once per completed
+run, and a reset re-arms it. <code>ResetTimer</code> and <code>ToggleTimer</code> click actions act on the overlay's timer
+elements — a countdown returns to its configured duration and a stopwatch to zero, and toggling a
+finished countdown restarts it. Element click actions that need the daemon (trigger/toggle rule,
+kill process, trim memory) are queued to a worker instead of running on the render thread. The
+update-progress overlay polls the narrow <code>IpcRequest::GetUpdateProgress</code> query, which answers with
+only the progress fraction and status string, so the frame loop never deserializes the full state
+snapshot. A <code>WindowRelative</code> overlay caches its target window
+handle and re-resolves it when the handle stops being trackable or after two seconds, then converts
+the target's physical rectangle with the target monitor's DPI because element geometry is logical
+points.</p>
+<p>Media widgets show the current title and artist, an equalizer and transport controls (previous,
+play/pause, next). A progress bar and a seek control are not rendered: playback position needs a
+Windows media-session (GSMTC) integration that does not exist yet, and an always-zero bar with a
+dead seek knob would be fake UI.</p>
+<div class="markdown-heading"><h2 class="heading-element">Sharing and backup</h2><a id="sharing-and-backup" class="anchor" aria-label="Permalink: Sharing and backup" href="#sharing-and-backup"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The <code>src/sharing/</code> tree (facade <code>src/sharing.rs</code> over the <code>format</code>, <code>payload</code>, <code>encode</code>, <code>decode</code>,
+<code>import</code> and <code>assets</code> stages) turns rules into <code>SYN1:</code> text codes that can be pasted into chats: the
+JSON payload is Brotli-compressed (quality 11, with a versioned custom dictionary), prefixed with an
+8-byte SHA-256 checksum and Base64URL-encoded. A code also bundles the macro presets and overlays
+its rules reference, so the recipient gets a working rule set. Presets or overlays whose id
+already exists locally with different content are re-identified; a content-equal entry is reused
+instead of duplicated, so importing the same code twice adds nothing. Rules whose content already
+exists are skipped as duplicates, and colliding rule ids get a fresh id. Bundled overlay button and
+toggle targets are re-pointed at the final imported rule ids, and a target that neither the code nor
+the local rule set provides is reported as a warning.</p>
+<p>Sender-local data never travels: runtime counters are reset, and custom icon paths plus overlay
+image and button icon paths are dropped with a notice. Truncated or altered codes fail the checksum
+instead of decoding to garbage, and the comparison accumulates every differing byte rather than
+stopping at the first one. Decoding is bounded (4 MiB of code, 8 MiB of decompressed payload, 500
+rules, 500 overlays and 500 macro presets), so a hostile code cannot exhaust memory. Exporting is
+one click: the code is compressed on a worker thread and copied straight to the clipboard through
+the shared <code>src/clipboard.rs</code> helper. Importing is one daemon-owned <code>IpcRequest::ImportShare</code> step
+that applies rules plus library entries, skips duplicates and creates the rules disabled by default.
+The toast reports how many rules, library entries and duplicates were handled, while advisory
+notices (scripts, elevated processes, webhooks, dropped icons and overlay images, unresolved overlay
+targets, missing presets/overlays) are written to the log. JSON files remain the backup format:
+<code>--rules-export</code> and the CLI authoring commands cover file-based migration.</p>
+<div class="markdown-heading"><h2 class="heading-element">Installation forms and updates</h2><a id="installation-forms-and-updates" class="anchor" aria-label="Permalink: Installation forms and updates" href="#installation-forms-and-updates"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector ships in two forms. The portable zip is <code>Synector.exe</code> plus <code>LICENSE</code> and <code>NOTICES.md</code>; the
+installer (<code>installer/synector.iss</code>, built only in CI) installs the same executable into <code>Program Files</code>, adds Start Menu and <code>App Paths</code> integration and registers an uninstaller. A console bootstrap
+(<code>installer/install.cmd</code>, or <code>install.ps1</code> fetched with <code>irm &lt;url&gt; | iex</code>) covers machine-driven
+installs: it resolves the latest release, verifies the chosen artifact's SHA-256 and runs Setup,
+extracts the portable archive or calls the uninstaller.</p>
+<p>The daemon owns update work: it checks GitHub releases, streams the download and verifies it against
+the SHA-256 digest published by the GitHub API. An asset without a published digest is refused and
+the download deleted, so an update is never applied unverified. Every release also publishes
+<code>SHA256SUMS.txt</code> alongside the artifacts for manual verification; the updater itself uses the API
+digest. A portable copy replaces its own executable in place; an installed copy downloads the
+release's setup and starts it silently with <code>/VERYSILENT /UpdateMode=gui|daemon</code>, letting the
+installer replace files, refresh the uninstaller metadata and restart Synector. With process masking
+enabled the portable daemon runs from the <code>WindowsServiceHost.exe</code> cache, so the portable updater
+targets the real executable instead of that cache. The GUI reports its own executable path to the
+daemon it spawns (<code>--gui-exe &lt;path&gt;</code>), so the target stays known after the GUI window is closed
+(tray-only updates); the executable of a running GUI window is the fallback, and only when neither
+is available does the update fail closed with an error. A failed in-place swap restores or keeps the
+previous executable and reports the failure. The GUI prepares the masked copy before it spawns the
+daemon, and every daemon start with masking enabled verifies or refreshes that copy; when
+preparation fails the daemon runs unmasked with the fallback logged, so a degraded masked deployment
+is never silent.
+When masking has been disabled, a daemon start that is not itself the masked copy removes the stale
+image; if the running daemon is that copy, the skip is logged and the next start from the real
+executable cleans it up. The restart follows the update origin: a background update keeps the
+daemon-only or GUI state that was active before. Progress and status surface through the tray menu
+and overlay notifications, and optional auto-install is a setting.</p>
+<p>The PowerShell bootstrap that extracts the portable archive rejects entries with rooted paths or
+<code>..</code> segments before resolving the destination, so a crafted archive cannot write outside the chosen
+folder. The installer closes running instances and, for updates and interactive installs, removes the
+stale masked daemon copy so it is rebuilt from the new binary. The masked autostart entry is the
+per-user task <code>Synector_DaemonMasked</code>; a legacy <code>WindowsServiceHost</code> task is migrated only after its
+definition proves it belongs to Synector. On uninstall the installer removes the autostart tasks,
+the masked copy and the application files while keeping the user configuration directory.</p>
+<div class="markdown-heading"><h2 class="heading-element">Rules: organization and editing</h2><a id="rules-organization-and-editing" class="anchor" aria-label="Permalink: Rules: organization and editing" href="#rules-organization-and-editing"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Rules carry custom colored tags, tag filters, and multi-mode sorting (manual/default, name ascending
+or descending, trigger type, action count, status). In default sort order with no tag filter and no
+active search, cards are reordered by drag handle and the new order is committed immediately and
+persisted through IPC; filtered, searched or sorted modes disable reordering with an explanatory
+tooltip.</p>
+<p>The GUI keeps an undo/redo draft per edited rule and per overlay definition (up to 50 snapshots),
+through one bounded-history implementation shared by the two drafts (<code>src/gui/state/undo.rs</code>), so
+editing, testing and saving a rule never mutates daemon-owned counters before the user commits. An
+edit gesture is one undo step — a drag or a slider commits the pre-gesture state once instead of one
+snapshot per frame. Opening a rule only renders its stored values: the inspector writes no defaults
+into the draft outside real widget interaction, so an unset field stays unset and is reported by
+validation on save instead of being silently patched. Save runs the same structural validator as the
+CLI before it sends anything; the errors are listed in the inspector and the editor stays open, and
+the daemon validates again when it applies the mutation.</p>
+<div class="markdown-heading"><h2 class="heading-element">Logging and localization</h2><a id="logging-and-localization" class="anchor" aria-label="Permalink: Logging and localization" href="#logging-and-localization"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Every user-visible string lives in the <code>Strings</code> catalog (<code>src/i18n/strings.rs</code>, <code>src/i18n/en.rs</code>,
+<code>src/i18n/ru.rs</code>). The in-app guide is the deliberate exception: its long prose is written as
+Russian/English <code>if lang == Language::Russian { ... } else { ... }</code> branches inside
+<code>src/gui/views/guide_modal.rs</code>, while its chrome labels come from <code>Strings</code>. Both language branches
+must be updated together.</p>
+<p>Diagnostics go through <code>crate::logging</code> into daily files under <code>%LOCALAPPDATA%\Synector\logs</code>; the
+level comes from <code>SYNECTOR_LOG</code> (<code>off|error|warn|info|debug|trace</code>, default <code>info</code>). File logging can
+also be turned off with the <code>log_to_disk</code> setting: every process reads it at start-up, the daemon
+applies a runtime change when it saves the section, and the GUI applies it on the toggle and then
+follows the daemon's snapshot, so all tiers stop writing together. Disabling only stops new events —
+the files already on disk, including the retention window, are left untouched and logging resumes on
+the same day's file when it is turned back on; <code>SYNECTOR_LOG=off</code> remains an independent override.
+Log identifiers and outcomes only — never script bodies, webhook payloads, rule JSON or other user
+secrets. Action errors that may embed script output are routed through the engine's <code>SensitiveLog</code>
+event. The logger primes today's file at start-up, so an unwritable logs directory is reported once
+on stderr and returned from <code>init()</code>; the process entry prints that returned failure as an explicit
+diagnostic because a release build has no console, and the open is not retried until the next day.
+Every append and compaction is serialized across processes with a named mutex, so the daemon, the
+GUI and a CLI command cannot interleave a write.</p>
+<div class="markdown-heading"><h2 class="heading-element">Design conventions</h2><a id="design-conventions" class="anchor" aria-label="Permalink: Design conventions" href="#design-conventions"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>Localization is mandatory for regular views; the guide's inline bilingual prose is the documented
+exception.</li>
+<li>Documentation has one owner per topic; the document set and its owners are listed in one place,
+<a href="index.html">documentation index</a>. Link instead of copying text across files.</li>
+<li>
+<code>README.md</code> and <code>README.ru.md</code> are mirrors and must change together.</li>
+</ul>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="prev" href="faq.html"><span>Previous</span><strong>FAQ and troubleshooting</strong></a>
+</nav>
+    </main>
+<nav class="docs-toc" aria-label="On this page">
+<p class="docs-toc-title">On this page</p>
+<ul>
+<li><a href="#two-tiers">Two tiers</a></li>
+<li><a href="#runtime-modes">Runtime modes</a></li>
+<li><a href="#layers">Layers</a></li>
+<li class="is-sub"><a href="#design-tokens-and-skins">Design tokens and skins</a></li>
+<li><a href="#window-shell-dialogs-and-global-search">Window shell, dialogs and global search</a></li>
+<li><a href="#data-flow">Data flow</a></li>
+<li><a href="#configuration-storage">Configuration storage</a></li>
+<li><a href="#event-sources-and-polling">Event sources and polling</a></li>
+<li class="is-sub"><a href="#system-notification-window">System notification window</a></li>
+<li><a href="#rule-engine">Rule engine</a></li>
+<li class="is-sub"><a href="#rule-to-rule-control">Rule-to-rule control</a></li>
+<li class="is-sub"><a href="#rule-activity-conditions">Rule activity conditions</a></li>
+<li><a href="#companion-mode-bound-satellites">Companion mode (bound satellites)</a></li>
+<li><a href="#input-simulation-and-macro-studio">Input simulation and Macro Studio</a></li>
+<li><a href="#overlay-studio">Overlay Studio</a></li>
+<li><a href="#sharing-and-backup">Sharing and backup</a></li>
+<li><a href="#installation-forms-and-updates">Installation forms and updates</a></li>
+<li><a href="#rules-organization-and-editing">Rules: organization and editing</a></li>
+<li><a href="#logging-and-localization">Logging and localization</a></li>
+<li><a href="#design-conventions">Design conventions</a></li>
+</ul>
+</nav>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>

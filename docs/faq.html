@@ -1,0 +1,452 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FAQ and troubleshooting - Synector documentation</title>
+  <meta name="description" content="Answers to common Synector questions: elevation, updates, logs, rules, overlays, macros and recovery.">
+  <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://psyattack.github.io/Synector/docs/faq.html">
+
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="Synector">
+  <meta property="og:title" content="FAQ and troubleshooting - Synector documentation">
+  <meta property="og:description" content="Answers to common Synector questions: elevation, updates, logs, rules, overlays, macros and recovery.">
+  <meta property="og:url" content="https://psyattack.github.io/Synector/docs/faq.html">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="FAQ and troubleshooting - Synector documentation">
+  <meta name="twitter:description" content="Answers to common Synector questions: elevation, updates, logs, rules, overlays, macros and recovery.">
+
+  <link rel="icon" type="image/png" href="../assets/icon-256.png">
+  <link rel="preload" href="../fonts/Archivo-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="../fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="docs.css">
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "TechArticle", "headline": "FAQ and troubleshooting", "description": "Answers to common Synector questions: elevation, updates, logs, rules, overlays, macros and recovery.", "url": "https://psyattack.github.io/Synector/docs/faq.html", "isPartOf": {"@type": "WebSite", "name": "Synector", "url": "https://psyattack.github.io/Synector/"}}</script>
+</head>
+<body class="docs-page">
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="docs-header">
+    <div class="shell docs-header-inner">
+      <a class="brand" href="../index.html" aria-label="Synector">
+        <img class="brand-mark" src="../assets/logo.svg" width="30" height="30" alt="">
+        <span class="wordmark">SYN<span>ECTOR</span></span>
+      </a>
+      <span class="docs-divider" aria-hidden="true"></span>
+      <span class="docs-label">Documentation</span>
+      <nav class="docs-topnav" aria-label="Documentation sections"><a href="index.html">Overview</a><a href="getting-started.html">Start</a><a href="rules.html">Rules</a><a href="scripting.html">Scripting</a><a class="is-active" href="faq.html">FAQ</a></nav>
+      <div class="docs-header-actions">
+        <a href="../index.html">Product</a>
+        <a href="https://github.com/psyattack/Synector">GitHub <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+    </div>
+  </header>
+
+  <div class="shell docs-shell">
+    <aside class="docs-sidebar" aria-label="Documentation">
+<div class="docs-side-group">
+<p class="docs-side-title">Start</p>
+<a class="docs-side-link" href="index.html">Overview</a>
+<a class="docs-side-link" href="getting-started.html">Getting started</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Guides</p>
+<a class="docs-side-link" href="rules.html">Rule authoring</a>
+<a class="docs-side-link" href="scripting.html">Lua scripting</a>
+<a class="docs-side-link" href="examples.html">Rule examples</a>
+<a class="docs-side-link is-active" href="faq.html">FAQ</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Internals</p>
+<a class="docs-side-link" href="architecture.html">Architecture</a>
+</div>
+<div class="docs-side-group">
+<p class="docs-side-title">Repository</p>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Changelog <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contributing <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/SECURITY.md" target="_blank" rel="noopener">Security <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/LICENSE" target="_blank" rel="noopener">License <span class="ext" aria-hidden="true">↗</span></a>
+<a class="docs-side-link" href="https://github.com/psyattack/Synector/blob/main/NOTICES.md" target="_blank" rel="noopener">Notices <span class="ext" aria-hidden="true">↗</span></a>
+</div>
+</aside>
+    <main class="docs-main" id="main">
+      <div class="docs-breadcrumb"><a href="index.html">Docs</a> / <span>FAQ and troubleshooting</span></div>
+      <div class="docs-toolbar">
+        <span class="docs-en">English</span>
+        <a class="docs-edit" href="https://github.com/psyattack/Synector/blob/main/docs/FAQ.md">Edit source <span class="ext" aria-hidden="true">↗</span></a>
+      </div>
+      <article class="docs-article">
+<div class="markdown-heading"><h1 class="heading-element">FAQ and troubleshooting</h1><a id="faq-and-troubleshooting" class="anchor" aria-label="Permalink: FAQ and troubleshooting" href="#faq-and-troubleshooting"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Answers to the questions that come up most often. For the JSON rule format see
+<a href="rules.html">Rule authoring</a>, for complete rules see <a href="examples.html">Rule examples</a>, and for
+internals see <a href="architecture.html">Architecture</a>.</p>
+<details>
+<summary>Contents</summary>
+<ul>
+<li>
+<a href="#installation-and-updates">Installation and updates</a>
+<ul>
+<li><a href="#which-build-should-i-use-setup-or-portable">Which build should I use: Setup or portable?</a></li>
+<li><a href="#windows-smartscreen-or-antivirus-warns-about-the-download">Windows SmartScreen or antivirus warns about the download</a></li>
+<li><a href="#do-i-need-to-run-as-administrator">Do I need to run as administrator?</a></li>
+<li><a href="#does-synector-start-with-windows">Does Synector start with Windows?</a></li>
+<li><a href="#how-do-updates-work">How do updates work?</a></li>
+<li><a href="#can-i-downgrade">Can I downgrade?</a></li>
+<li><a href="#upgrading-from-28-or-older">Upgrading from 2.8 or older</a></li>
+</ul>
+</li>
+<li>
+<a href="#daemon-and-gui">Daemon and GUI</a>
+<ul>
+<li><a href="#does-closing-the-window-stop-my-rules">Does closing the window stop my rules?</a></li>
+<li><a href="#where-are-configuration-and-logs">Where are configuration and logs?</a></li>
+<li><a href="#how-do-i-back-up-or-move-my-setup">How do I back up or move my setup?</a></li>
+<li><a href="#a-configuration-file-is-corrupt-or-i-want-a-clean-start">A configuration file is corrupt or I want a clean start</a></li>
+<li><a href="#why-are-there-two-synector-processes">Why are there two Synector processes?</a></li>
+<li><a href="#a-save-failed--is-my-edit-lost">A save failed — is my edit lost?</a></li>
+<li><a href="#how-do-i-create-or-change-an-overlay">How do I create or change an overlay?</a></li>
+<li><a href="#how-do-i-record-and-replay-a-macro">How do I record and replay a macro?</a></li>
+</ul>
+</li>
+<li>
+<a href="#interface">Interface</a>
+<ul>
+<li><a href="#where-do-i-find-a-setting">Where do I find a setting?</a></li>
+<li><a href="#where-did-the-tabs-go-and-how-do-i-search">Where did the tabs go, and how do I search?</a></li>
+<li><a href="#what-does-the-analytics-dialog-show">What does the analytics dialog show?</a></li>
+<li><a href="#how-do-i-change-the-appearance">How do I change the appearance?</a></li>
+</ul>
+</li>
+<li>
+<a href="#rules-and-triggers">Rules and triggers</a>
+<ul>
+<li><a href="#my-rule-does-not-fire">My rule does not fire</a></li>
+<li><a href="#what-is-the-difference-between-a-cooldown-and-a-quota">What is the difference between a cooldown and a quota?</a></li>
+<li><a href="#why-is-my-infinite-macro-rejected">Why is my infinite macro rejected?</a></li>
+<li><a href="#how-do-i-trigger-synector-from-another-program">How do I trigger Synector from another program?</a></li>
+<li><a href="#why-does-a-hotkey-not-respond">Why does a hotkey not respond?</a></li>
+<li><a href="#are-share-codes-safe">Are share codes safe?</a></li>
+<li><a href="#powershell-does-not-show-cli-output">PowerShell does not show CLI output</a></li>
+</ul>
+</li>
+<li>
+<a href="#troubleshooting">Troubleshooting</a>
+<ul>
+<li><a href="#the-daemon-does-not-start-or-exits-immediately">The daemon does not start or exits immediately</a></li>
+<li><a href="#an-overlay-is-not-visible">An overlay is not visible</a></li>
+<li><a href="#a-macro-does-not-register-in-a-game">A macro does not register in a game</a></li>
+<li><a href="#audio-actions-fail">Audio actions fail</a></li>
+<li><a href="#high-cpu-or-constant-disk-writes">High CPU or constant disk writes</a></li>
+<li><a href="#the-webhook-port-is-busy">The webhook port is busy</a></li>
+<li><a href="#where-do-i-report-a-bug-or-a-security-issue">Where do I report a bug or a security issue?</a></li>
+</ul>
+</li>
+</ul>
+</details>
+<div class="markdown-heading"><h2 class="heading-element">Installation and updates</h2><a id="installation-and-updates" class="anchor" aria-label="Permalink: Installation and updates" href="#installation-and-updates"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="markdown-heading"><h3 class="heading-element">Which build should I use: Setup or portable?</h3><a id="which-build-should-i-use-setup-or-portable" class="anchor" aria-label="Permalink: Which build should I use: Setup or portable?" href="#which-build-should-i-use-setup-or-portable"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>
+<strong>Setup</strong> (<code>Synector-Setup-&lt;version&gt;-Windows-x64.exe</code>) installs into <code>Program Files</code>, adds a Start
+Menu shortcut, registers <code>App Paths</code> and an uninstaller. Updates are applied by downloading and
+running the new setup silently.</li>
+<li>
+<strong>Portable</strong> (<code>Synector-v&lt;version&gt;-Windows-x64.zip</code>) contains <code>Synector.exe</code> plus the license and
+attribution files. Extract it anywhere and run the executable; updates replace it in place.</li>
+</ul>
+<p>Both forms share the same configuration in <code>%LOCALAPPDATA%\Synector\</code> and the same daemon.</p>
+<div class="markdown-heading"><h3 class="heading-element">Windows SmartScreen or antivirus warns about the download</h3><a id="windows-smartscreen-or-antivirus-warns-about-the-download" class="anchor" aria-label="Permalink: Windows SmartScreen or antivirus warns about the download" href="#windows-smartscreen-or-antivirus-warns-about-the-download"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector is distributed through GitHub Releases. Verify the file before running it:</p>
+<div class="highlight highlight-source-powershell"><pre><span class="pl-c1">Get-FileHash</span> .\Synector<span class="pl-k">-</span>Setup<span class="pl-k">-</span><span class="pl-k">&lt;</span>version<span class="pl-k">&gt;</span><span class="pl-k">-</span><span class="pl-c1">Windows-x64.exe</span> <span class="pl-k">-</span>Algorithm SHA256</pre></div>
+<p>Compare the result with the matching line in <code>SHA256SUMS.txt</code> from the same release. If the hashes
+match and you downloaded from the official release page, the warning is a reputation prompt rather
+than a sign of tampering. Do not disable antivirus protection or add exclusions for files whose
+hash you have not verified.</p>
+<div class="markdown-heading"><h3 class="heading-element">Do I need to run as administrator?</h3><a id="do-i-need-to-run-as-administrator" class="anchor" aria-label="Permalink: Do I need to run as administrator?" href="#do-i-need-to-run-as-administrator"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector starts elevated by default; <code>--no-elevate</code> opts out. Elevation enables:</p>
+<ul>
+<li>kernel ETW process tracing (otherwise Synector falls back to adaptive Toolhelp32 polling);</li>
+<li>input simulation into elevated applications (UIPI bypass);</li>
+<li>memory/priority/affinity tuning of elevated processes;</li>
+<li>silent highest-privilege logon autostart through Task Scheduler.</li>
+</ul>
+<p>Without elevation most rules still work, but a rule that targets an elevated game or application,
+or that relies on ETW, may not fire.</p>
+<div class="markdown-heading"><h3 class="heading-element">Does Synector start with Windows?</h3><a id="does-synector-start-with-windows" class="anchor" aria-label="Permalink: Does Synector start with Windows?" href="#does-synector-start-with-windows"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The daemon registers a Task Scheduler autostart entry on first launch. It can be disabled in
+Settings. The entry is separate from the installer: uninstalling removes it. First launch always
+creates <code>%LOCALAPPDATA%\Synector\</code> with the configuration files and logs, and it is also the one
+launch that picks the interface language from Windows: a Russian Windows UI opens Synector in
+Russian, every other UI language in English. The choice is stored in <code>settings.json</code> and is never
+re-detected afterwards — change it in <strong>Settings → Appearance</strong>.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do updates work?</h3><a id="how-do-updates-work" class="anchor" aria-label="Permalink: How do updates work?" href="#how-do-updates-work"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The daemon checks GitHub Releases, selects the right asset, downloads it and verifies the SHA-256
+digest published by the GitHub API. An asset without a published digest is refused and its download
+deleted, so an update is never applied unverified. An installed copy downloads the release's setup
+and starts it silently; a portable copy replaces its own executable. With process masking enabled the
+portable daemon runs from the masked copy, so the update targets the real executable: the GUI reports
+its path to the daemon when it starts it, which keeps the target known after that window is closed,
+and a running GUI window is the fallback. Only when neither source is available does the update fail
+with an error. If the executable swap fails, the previous executable is kept or restored and the
+update reports an error instead of claiming success. Progress is shown in the tray and overlay
+notifications. Auto-install is optional and can be turned off in Settings.</p>
+<p>If an update fails, check the log in <code>%LOCALAPPDATA%\Synector\logs\</code>, make sure the app is not
+running from a read-only or protected folder, and install the latest release manually. The
+configuration directory is preserved either way.</p>
+<div class="markdown-heading"><h3 class="heading-element">Can I downgrade?</h3><a id="can-i-downgrade" class="anchor" aria-label="Permalink: Can I downgrade?" href="#can-i-downgrade"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Install the older release over the current one. Configuration is versioned per section and
+downgrades are not a supported migration path: a 2.8 build cannot read the 2.9 files. Before
+changing versions, keep a copy of <code>%LOCALAPPDATA%\Synector\</code> and an export of your rules
+(<code>--rules-export rules.json</code>), so the rules can be restored or re-entered.</p>
+<div class="markdown-heading"><h3 class="heading-element">Upgrading from 2.8 or older</h3><a id="upgrading-from-28-or-older" class="anchor" aria-label="Permalink: Upgrading from 2.8 or older" href="#upgrading-from-28-or-older"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The 2.9 storage format is split into independent section files and older configuration is not
+migrated automatically. A 2.8 installation has no <code>--rules-export</code> flag and its <code>PH1:</code> share codes
+are rejected by 2.9, so rules have to be re-created in the new version: keep the old app installed
+alongside while you copy rule settings across. <code>SYN1:</code> share codes exist only in 2.9 and later.</p>
+<div class="markdown-heading"><h2 class="heading-element">Daemon and GUI</h2><a id="daemon-and-gui" class="anchor" aria-label="Permalink: Daemon and GUI" href="#daemon-and-gui"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="markdown-heading"><h3 class="heading-element">Does closing the window stop my rules?</h3><a id="does-closing-the-window-stop-my-rules" class="anchor" aria-label="Permalink: Does closing the window stop my rules?" href="#does-closing-the-window-stop-my-rules"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>No. The daemon is the tier that owns rules and triggers; the GUI is only a client. Closing the GUI,
+or never opening it, leaves automation running. Use the tray menu to pause, open the window or exit
+the daemon.</p>
+<div class="markdown-heading"><h3 class="heading-element">Where are configuration and logs?</h3><a id="where-are-configuration-and-logs" class="anchor" aria-label="Permalink: Where are configuration and logs?" href="#where-are-configuration-and-logs"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>Configuration: <code>%LOCALAPPDATA%\Synector\</code> (<code>settings.json</code>, <code>rules.json</code>, <code>library.json</code>,
+<code>runtime.json</code>). Set <code>SYNECTOR_CONFIG_DIR</code> to relocate the whole directory.</li>
+<li>Logs: <code>%LOCALAPPDATA%\Synector\logs\</code>, one file per day, 7-day retention and an 8 MiB cap per
+file.</li>
+</ul>
+<p>The log level comes from <code>SYNECTOR_LOG</code> (<code>off</code>, <code>error</code>, <code>warn</code>, <code>info</code>, <code>debug</code>, <code>trace</code>; default
+<code>info</code>). Restart Synector after changing it. Disk logging itself can be turned off in
+<strong>Settings → General</strong> (<em>Write Logs to Disk</em>): new events stop being written right away, while the
+log files already on disk stay where they are. Turn the switch back on to resume appending to the
+current day's file.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do I back up or move my setup?</h3><a id="how-do-i-back-up-or-move-my-setup" class="anchor" aria-label="Permalink: How do I back up or move my setup?" href="#how-do-i-back-up-or-move-my-setup"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Stop Synector first, then copy the whole <code>%LOCALAPPDATA%\Synector\</code> directory. For rules alone,
+<code>Synector.exe --rules-export rules.json</code> or a <code>SYN1:</code> share code is enough. While the daemon is
+running it is the only writer; editing the files underneath it is not supported.</p>
+<div class="markdown-heading"><h3 class="heading-element">A configuration file is corrupt or I want a clean start</h3><a id="a-configuration-file-is-corrupt-or-i-want-a-clean-start" class="anchor" aria-label="Permalink: A configuration file is corrupt or I want a clean start" href="#a-configuration-file-is-corrupt-or-i-want-a-clean-start"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>A section that fails to parse is renamed to <code>&lt;name&gt;.corrupt-&lt;timestamp&gt;</code> before defaults replace
+it, so the original is not destroyed; a taken name gets a <code>-1</code>, <code>-2</code>, … suffix, so an earlier
+quarantine copy is never overwritten. If the file cannot be moved aside, Synector refuses to
+overwrite that section until you move it by hand, and the log names the blocking file. Rules are
+checked one by one: a rule that contains an unknown key — including a field removed from the format
+— or whose values fail validation is skipped, and the log names the rule id with the keys or
+errors, while the rest of <code>rules.json</code> still loads. To start clean, stop Synector and remove or
+rename the section files; to recover, restore a backup over them while the daemon is stopped.</p>
+<div class="markdown-heading"><h3 class="heading-element">Why are there two Synector processes?</h3><a id="why-are-there-two-synector-processes" class="anchor" aria-label="Permalink: Why are there two Synector processes?" href="#why-are-there-two-synector-processes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The tray daemon and the GUI are separate tiers of the same executable. Overlay windows are
+additional borderless processes supervised by the daemon. Seeing several Synector processes is
+normal when overlays are open. Each tier has a single-instance mutex, so a second daemon or GUI does
+not start.</p>
+<div class="markdown-heading"><h3 class="heading-element">A save failed — is my edit lost?</h3><a id="a-save-failed--is-my-edit-lost" class="anchor" aria-label="Permalink: A save failed — is my edit lost?" href="#a-save-failed--is-my-edit-lost"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>No. Saving a rule validates the draft first: structural errors are listed in the inspector and
+nothing is sent, so an invalid rule never replaces the stored one. A rule or overlay edit also stays
+open with its draft intact when the daemon rejects or the request fails, and a toast names the
+error. When the daemon is confirmed unreachable, the GUI writes the affected config section directly
+after a failed liveness probe, so the edit can still be saved offline. A sustained outage is logged
+and shown as an offline toast. Settings edits keep the same guarantee: if neither the daemon nor the
+direct write accepts the change, the edited form stays and the failure is reported instead of a
+success toast.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do I create or change an overlay?</h3><a id="how-do-i-create-or-change-an-overlay" class="anchor" aria-label="Permalink: How do I create or change an overlay?" href="#how-do-i-create-or-change-an-overlay"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Overlays are edited in the Overlay Studio: select an Overlay action in the rule inspector and press
+<strong>OPEN →</strong>. The studio arranges elements on a multi-monitor artboard; <strong>POSITION ON SCREEN</strong> switches
+the overlay into calibration, which makes it draggable so it can be placed on the intended display.
+The canvas is a preview, not a live overlay: clicking an element in the editor never runs its click
+action. ToggleSwitch and ClockTimer state can still be exercised from the inspector, every property
+edit is undoable, and saving a preset under an existing name creates a new <code>_2</code>/<code>_3</code> copy instead of
+replacing the built-in one. The daemon then renders the overlay in a separate process, so it stays on
+screen when the GUI is closed.</p>
+<p>The action decides what happens at runtime: toggle visibility or flash on screen, optional override
+text (tokens such as <code>{ProcessName}</code> are allowed), duration and fade, and "close when process exits"
+to bind the overlay to the triggering application. Saved definitions live in <code>library.json</code>.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do I record and replay a macro?</h3><a id="how-do-i-record-and-replay-a-macro" class="anchor" aria-label="Permalink: How do I record and replay a macro?" href="#how-do-i-record-and-replay-a-macro"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Record it in Macro Studio: select a Macro action in the inspector and press <strong>OPEN →</strong>, then <strong>F9</strong>
+starts and stops recording — the low-level hooks are active only while recording. <strong>F10</strong> test-runs
+the sequence on a background thread, <strong>Esc</strong> stops recording, cancels an active drag-and-drop and
+closes the studio. The action then decides playback: operation Run, Stop or Toggle, repeat count, and
+an optional preset stored in <code>library.json</code>. Playback uses hardware scan codes with short holds and
+humanized timing, so it also registers in DirectInput games.</p>
+<div class="markdown-heading"><h2 class="heading-element">Interface</h2><a id="interface" class="anchor" aria-label="Permalink: Interface" href="#interface"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="markdown-heading"><h3 class="heading-element">Where do I find a setting?</h3><a id="where-do-i-find-a-setting" class="anchor" aria-label="Permalink: Where do I find a setting?" href="#where-do-i-find-a-setting"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Settings is a dialog opened from the gear glyph in the window header. It is one scrollable column of
+untitled blocks — general, appearance and update settings — with its own search field across the top
+of the dialog. The field keeps only the rows whose title or description contains the query,
+case-insensitively, and a query that names a block (<code>appearance</code>, <code>updates</code>, <code>general</code>) keeps that
+whole block. A block left without matching rows disappears instead of leaving an empty frame, and a
+query that matches nothing says so in place of the blocks. The dialog scrolls with the wheel and
+keyboard and does not show a scrollbar. Every switch and picker saves as you change it: there is no
+Save button and no restart unless a row says otherwise.</p>
+<div class="markdown-heading"><h3 class="heading-element">Where did the tabs go, and how do I search?</h3><a id="where-did-the-tabs-go-and-how-do-i-search" class="anchor" aria-label="Permalink: Where did the tabs go, and how do I search?" href="#where-did-the-tabs-go-and-how-do-i-search"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The window no longer has navigation tabs: the rules list is the only page. The header center holds a
+search field, and the chart and gear glyphs to its right open the analytics and settings dialogs.
+Typing opens a dimmed results panel grouped by surface — rules, settings, the activity log, actions,
+triggers, conditions, overlay presets and macro presets — with a count and a few previews per group.
+Choosing the rules group simply closes the panel and keeps the filtered list (the query stays in the
+field); choosing any other group opens that surface with the query already typed into its own search
+field. A macro preset has no standalone editor, so choosing it starts a draft rule with a Macro step
+carrying that preset and opens the Macro Studio on it.
+Escape closes the panel first and clears the field on the next press.</p>
+<div class="markdown-heading"><h3 class="heading-element">What does the analytics dialog show?</h3><a id="what-does-the-analytics-dialog-show" class="anchor" aria-label="Permalink: What does the analytics dialog show?" href="#what-does-the-analytics-dialog-show"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>It is one scrolling page: the activity log comes first — the level/category filters and one
+stretched text filter above the stream — followed by the metrics: the sum of the per-rule execution
+counters, session executions, what is running now and the 24-hour success rate; a live 60-second
+CPU/RAM chart with one line under its title for the daemon's own CPU share, memory and disk
+throughput; executions grouped by their source (process, window, resource, hotkey, schedule,
+system event, file, webhook, manual run, rule call); a 24-hour activity chart with failures marked;
+the most active rules; and a list of enabled rules that need attention (execution quota exhausted or
+never ran). Analytics history is kept in the daemon's memory for the last 24 hours and restarts with
+it; each rule's execution counter is persisted in <code>runtime.json</code> and a periodic quota restarts it
+together with its window, so the top counter sums those counters rather than a lifetime history.
+Applying an activity-log result from the header search clears the level filter, so the stream shows
+every match the result counted.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do I change the appearance?</h3><a id="how-do-i-change-the-appearance" class="anchor" aria-label="Permalink: How do I change the appearance?" href="#how-do-i-change-the-appearance"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><strong>Settings → Appearance</strong> holds three independent controls — palette, skin generation and accent —
+plus a switch that lets Windows pick the palette. The palette swatches switch between the
+<strong>Dark</strong> and <strong>Light</strong> themes — only colours change. <em>Follow Windows Theme</em> makes the palette
+follow the Windows light/dark setting instead: it is applied when Synector starts and while it
+runs, so a switch made in Windows is picked up without a restart. Picking a swatch by hand turns the
+switch off and freezes that palette as your choice. The <strong>skin tiles</strong> choose the interface
+generation: the modern look (rounded, layered surfaces, lifted filter cells) or the
+original studio one (hard edges, hairline rules, square chrome); the palette stays whatever you
+picked. <strong>Accent colour</strong> offers a few presets and a custom colour picker for selection, focus rings
+and active controls; <strong>Reset</strong> clears the custom accent back to the palette's own. All choices
+are stored in <code>settings.json</code> as <code>theme</code>, <code>follow_system_theme</code>, <code>ui_skin</code> and <code>accent</code> (omitted
+while no custom accent is set) and apply immediately, without a restart.</p>
+<div class="markdown-heading"><h2 class="heading-element">Rules and triggers</h2><a id="rules-and-triggers" class="anchor" aria-label="Permalink: Rules and triggers" href="#rules-and-triggers"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="markdown-heading"><h3 class="heading-element">My rule does not fire</h3><a id="my-rule-does-not-fire" class="anchor" aria-label="Permalink: My rule does not fire" href="#my-rule-does-not-fire"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Check, in order:</p>
+<ol>
+<li>The rule is enabled and has not hit a lifetime quota.</li>
+<li>The trigger target actually matches (process name, window, folder, hotkey, webhook path).</li>
+<li>Preconditions are satisfied. A false condition prevents the pipeline from starting.</li>
+<li>
+<code>cooldown_seconds</code> or a periodic quota is not skipping the run. <code>--rules-list</code> shows the counter
+and period.</li>
+<li>The rule is not stuck in an active execution, and <code>stop_on_error</code> did not halt it after a failed
+step.</li>
+<li>The daemon logs in <code>%LOCALAPPDATA%\Synector\logs\</code> do not show a permission or target-not-found
+error.</li>
+</ol>
+<p>Process detection uses ETW when elevated and adaptive Toolhelp32 polling otherwise; both feed the
+same trigger surface, so a missing ETW session alone does not disable process rules.</p>
+<div class="markdown-heading"><h3 class="heading-element">What is the difference between a cooldown and a quota?</h3><a id="what-is-the-difference-between-a-cooldown-and-a-quota" class="anchor" aria-label="Permalink: What is the difference between a cooldown and a quota?" href="#what-is-the-difference-between-a-cooldown-and-a-quota"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>
+<strong>Cooldown</strong> is a minimum delay between two triggered runs.</li>
+<li>
+<strong>Lifetime quota</strong> (<code>max_executions</code> without <code>quota_period</code>) pauses the rule after the limit.
+<code>--rules-reset</code> clears the counter and re-enables it.</li>
+<li>
+<strong>Periodic quota</strong> (<code>quota_period</code>) keeps the rule enabled and skips executions until the period
+rolls over.</li>
+</ul>
+<p>See <a href="rules.html#quotas">Rule authoring: quotas</a> for reset semantics and JSON fields.</p>
+<div class="markdown-heading"><h3 class="heading-element">Why is my infinite macro rejected?</h3><a id="why-is-my-infinite-macro-rejected" class="anchor" aria-label="Permalink: Why is my infinite macro rejected?" href="#why-is-my-infinite-macro-rejected"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>An infinite macro has no natural end. The CLI validator only accepts it with a global-hotkey
+trigger, because every other trigger offers no manual cancellation path. The Rule Builder warns and
+dims the steps after the infinite action.</p>
+<div class="markdown-heading"><h3 class="heading-element">How do I trigger Synector from another program?</h3><a id="how-do-i-trigger-synector-from-another-program" class="anchor" aria-label="Permalink: How do I trigger Synector from another program?" href="#how-do-i-trigger-synector-from-another-program"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Use a webhook trigger and send a request to
+<code>http://127.0.0.1:48123/api/v1/trigger/&lt;endpoint_path&gt;</code> (a rule id also works). The server is
+local-only. See <a href="rules.html#webhook-trigger">Rule authoring: webhook trigger</a> for the
+request and response contract, <a href="rules.html">Rule authoring</a> for the JSON format and
+<a href="examples.html">Rule examples</a> for a complete rule.</p>
+<div class="markdown-heading"><h3 class="heading-element">Why does a hotkey not respond?</h3><a id="why-does-a-hotkey-not-respond" class="anchor" aria-label="Permalink: Why does a hotkey not respond?" href="#why-does-a-hotkey-not-respond"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Global hotkeys are detected by polling <code>GetAsyncKeyState</code>, not by <code>RegisterHotKey</code>, which is what
+allows mouse-button combinations and hold/repeat modes. Another application listening for the same
+combination will also react, and a target that ignores synthetic input will still not respond. If a
+combination does nothing, try another one and check the logs. Hold mode repeats the pipeline while
+the key is held; repeat-while-held without hold mode loops until the hotkey is pressed again.</p>
+<div class="markdown-heading"><h3 class="heading-element">Are share codes safe?</h3><a id="are-share-codes-safe" class="anchor" aria-label="Permalink: Are share codes safe?" href="#are-share-codes-safe"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p><code>SYN1:</code> codes carry a checksum and are decoded with bounds on code length and decompressed size,
+and at most 500 rules, 500 overlays and 500 macro presets per code. Imported rules are created
+disabled by default; review them before enabling. A share code can contain scripts, webhook actions
+and other powerful steps, so only import codes from people you trust. See
+<a href="architecture.html#sharing-and-backup">Architecture: sharing and backup</a>.</p>
+<div class="markdown-heading"><h3 class="heading-element">PowerShell does not show CLI output</h3><a id="powershell-does-not-show-cli-output" class="anchor" aria-label="Permalink: PowerShell does not show CLI output" href="#powershell-does-not-show-cli-output"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Release builds use the Windows GUI subsystem, so PowerShell neither waits for them nor captures their
+output or exit code. Prefix commands with <code>cmd /c</code>:</p>
+<div class="highlight highlight-source-powershell"><pre>cmd <span class="pl-k">/</span>c <span class="pl-s"><span class="pl-pds">"</span>Synector.exe --rules-validate rule.json<span class="pl-pds">"</span></span></pre></div>
+<p>The full explanation, including how other tools that spawn and wait for the process behave, is in
+<a href="rules.html#console-notes">Rule authoring: console notes</a>.</p>
+<div class="markdown-heading"><h2 class="heading-element">Troubleshooting</h2><a id="troubleshooting" class="anchor" aria-label="Permalink: Troubleshooting" href="#troubleshooting"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<div class="markdown-heading"><h3 class="heading-element">The daemon does not start or exits immediately</h3><a id="the-daemon-does-not-start-or-exits-immediately" class="anchor" aria-label="Permalink: The daemon does not start or exits immediately" href="#the-daemon-does-not-start-or-exits-immediately"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Another Synector instance may hold the single-instance mutex; check Task Manager for an existing
+daemon or GUI. Look for an update-file cleanup failure or a permission error in the log. Starting
+from a folder that requires higher privileges than the process has can also prevent self-update or
+overlay processes from starting.</p>
+<div class="markdown-heading"><h3 class="heading-element">An overlay is not visible</h3><a id="an-overlay-is-not-visible" class="anchor" aria-label="Permalink: An overlay is not visible" href="#an-overlay-is-not-visible"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Open the Overlay Studio and start calibration: the overlay becomes draggable and can be moved to
+the intended monitor. Check multi-monitor placement and DPI scaling in the overlay definition. The
+daemon must be running for overlays to exist. <code>WDA_EXCLUDEFROMCAPTURE</code> keeps an overlay out of
+screen capture; it does not hide it on screen.</p>
+<div class="markdown-heading"><h3 class="heading-element">A macro does not register in a game</h3><a id="a-macro-does-not-register-in-a-game" class="anchor" aria-label="Permalink: A macro does not register in a game" href="#a-macro-does-not-register-in-a-game"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Synector replays hardware scan codes and holds presses for at least 30–35 ms, which covers most
+DirectInput games, but some titles and anti-cheat systems ignore or flag synthetic input. Run
+Synector elevated if the game is elevated (UIPI otherwise blocks input). Relative camera turns use
+Raw Input-compatible deltas and should be recorded in the same coordinate mode the game expects.
+Use automation only where the application permits it.</p>
+<div class="markdown-heading"><h3 class="heading-element">Audio actions fail</h3><a id="audio-actions-fail" class="anchor" aria-label="Permalink: Audio actions fail" href="#audio-actions-fail"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Check that the requested default device exists and is enabled, and that the target process is
+playing audio. <code>default_device</code> uses the AudioDeviceCmdlets PowerShell module; if it is not
+installed the action reports an error instead of doing nothing. <code>audio_format.device_name</code> must
+match an active endpoint's display name — a name that matches nothing fails the action.
+Per-application volume and channel balance depend on the Windows audio session for that process; a
+stopped or suspended app may not expose one. Audio format changes can temporarily interrupt playback
+by design.</p>
+<div class="markdown-heading"><h3 class="heading-element">High CPU or constant disk writes</h3><a id="high-cpu-or-constant-disk-writes" class="anchor" aria-label="Permalink: High CPU or constant disk writes" href="#high-cpu-or-constant-disk-writes"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>Polling is adaptive and backs off when no rule uses a trigger, but many independent polling
+triggers, a fast interval schedule or <code>trace</code> logging increase load. Process triggers use ETW when
+elevated; without elevation they fall back to snapshot polling. Runtime counters and overlay
+positions are written coalesced, not on every event.</p>
+<div class="markdown-heading"><h3 class="heading-element">The webhook port is busy</h3><a id="the-webhook-port-is-busy" class="anchor" aria-label="Permalink: The webhook port is busy" href="#the-webhook-port-is-busy"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<p>The local webhook server binds <code>127.0.0.1:48123</code>, and the port is fixed. It only runs while at
+least one enabled rule uses the webhook trigger, so a busy port cannot affect a daemon whose rules
+never use it. While a webhook rule is enabled and another application already owns the port, the
+bind error is logged and the server retries with a capped backoff (1 s doubling to 30 s), so
+webhook-triggered rules resume once the port is freed. Close the conflicting application, or stop
+the rule source until the port is available.</p>
+<div class="markdown-heading"><h3 class="heading-element">Where do I report a bug or a security issue?</h3><a id="where-do-i-report-a-bug-or-a-security-issue" class="anchor" aria-label="Permalink: Where do I report a bug or a security issue?" href="#where-do-i-report-a-bug-or-a-security-issue"><span aria-hidden="true" class="octicon octicon-link"></span></a></div>
+<ul>
+<li>Bugs and feature requests: <a href="https://github.com/psyattack/Synector/issues/new/choose">GitHub Issues</a>.
+Include the Synector version, <code>winver</code>, whether the app was elevated, reproduction steps and the
+relevant log lines with secrets removed.</li>
+<li>Security problems: follow <a href="https://github.com/psyattack/Synector/blob/main/SECURITY.md">Security policy</a> and report privately. Do not open a
+public issue.</li>
+</ul>
+
+      </article>
+      <nav class="docs-pager" aria-label="Documentation pages">
+<a class="prev" href="examples.html"><span>Previous</span><strong>Rule examples</strong></a>
+<a class="next" href="architecture.html"><span>Next</span><strong>Architecture</strong></a>
+</nav>
+    </main>
+<nav class="docs-toc" aria-label="On this page">
+<p class="docs-toc-title">On this page</p>
+<ul>
+<li><a href="#installation-and-updates">Installation and updates</a></li>
+<li><a href="#daemon-and-gui">Daemon and GUI</a></li>
+<li><a href="#interface">Interface</a></li>
+<li><a href="#rules-and-triggers">Rules and triggers</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+</ul>
+</nav>
+  </div>
+
+  <footer class="docs-footer">
+    <div class="shell docs-footer-inner">
+      <span>Synector documentation. Reference pages are in English, the application interface is localized.</span>
+      <div class="docs-footer-links">
+        <a href="../index.html">Product</a>
+        <a href="getting-started.html">Install</a>
+        <a href="https://github.com/psyattack/Synector">GitHub</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/LICENSE">MIT license</a>
+        <a href="https://github.com/psyattack/Synector/blob/main/NOTICES.md">Notices</a>
+      </div>
+    </div>
+  </footer>
+
+  <script src="docs.js" defer></script>
+</body>
+</html>
