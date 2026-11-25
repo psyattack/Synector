@@ -1,5 +1,39 @@
 # Changelog
 
+## [3.2.0](https://github.com/psyattack/Synector/compare/v3.1.1...v3.2.0) - 2026-11-25
+
+### Added
+- Process Trigger Events: a process trigger now switches between On Process Start and On Process Exit, so one rule can run its action chain when a program closes as well as when it opens. Pre-conditions, cooldown, quota and analytics apply to both events, and the rule list marks each rule with PROC START or PROC EXIT. With Single Instance, start fires for the first instance and exit for the last one.
+- Rule Builder Glyphs: every step gains a change glyph that opens the action library in replace mode, including steps nested in If/Else branches, and each pre-condition gains a clone glyph that duplicates it in place. Test Run and Change on the trigger header use the same glyphs.
+
+### Changed
+- Exit Actions Removed (breaking): the separate exit pipeline is gone, and a rule file that still contains `on_exit_actions` is rejected, so that rule is skipped on load with its id in the log. Rebuild it as a second rule with a process trigger set to On Process Exit.
+- Rule Details: tags sit in a full-width well with the add chip in the same row, and the run settings share one two-column panel with the switches on the left and the cooldown and execution quota on the right. Cooldown is now a toggle over the same value, so no rule field changes.
+- Script Editor: the Copy Script button and its confirmation toast are gone; the editor, highlighting and line numbers stay.
+
+### Fixed
+- Process Picker: the close button is the quiet header glyph other dialogs use, the search field fills the space between the categories and that glyph, and the select buttons no longer draw over the next row.
+- Execution Quota: the panel inside Rule Details takes the inset corner radius instead of square corners.
+- Catalog Dialogs: the trigger, action, condition and overlay libraries hide their scrollbar; the mouse wheel and the keyboard still scroll them.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **gui:** add change and clone glyph actions to the rule builder (by @psyattack in f9059b7)
+- **gui:** recompose the rule details card (by @psyattack in ce23695)
+
+### Changed
+- **engine:** merge process start and exit into one pipeline (by @psyattack in ffcf4df)
+
+### Fixed
+- **gui:** fit the process picker header and row buttons (by @psyattack in c826839)
+- **gui:** remove the copy script button from the script modal (by @psyattack in ca27f0c)
+- **gui:** round the execution quota panel (by @psyattack in c3b74ce)
+- **gui:** hide the catalog card scrollbar (by @psyattack in 1111742)
+
+</details>
+
+
 ## [3.1.1](https://github.com/psyattack/Synector/compare/v3.1.0...v3.1.1) - 2026-11-25
 
 ### Changed
