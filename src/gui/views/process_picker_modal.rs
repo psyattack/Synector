@@ -56,7 +56,8 @@ pub fn render_process_picker_modal(ctx: &egui::Context, state: &mut GuiState) {
     }
 }
 
-/// Header slice: segmented category cells on the left, close button + search on the right.
+/// Header slice: segmented category cells on the left, then the search field stretched across the
+/// remaining width up to the quiet close glyph.
 fn render_picker_header(
     frame: &mut ModalFrame<'_>,
     state: &mut GuiState,
@@ -72,21 +73,23 @@ fn render_picker_header(
 
                     render_category_cells(ui, state, t, loc);
 
-                    // Right side: Close button, Search Input
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if widgets::glyph_button(ui, Glyph::Close, loc.inspector_btn_close_tip).clicked() {
-                            *close_req = true;
-                        }
+                    // The close glyph is a fixed square, so the field takes exactly the space
+                    // between the cells and the glyph instead of a fixed width. The header close
+                    // is quiet like every other dialog's, not a framed icon button.
+                    let search_w = (ui.available_width()
+                        - t.metrics().control_h
+                        - ui.spacing().item_spacing.x)
+                        .max(120.0);
+                    widgets::catalog_search_box_sized(
+                        ui,
+                        &mut state.process_search_query,
+                        loc.hunter_search_placeholder,
+                        search_w,
+                    );
 
-                        ui.add_space(8.0);
-
-                        widgets::catalog_search_box_sized(
-                            ui,
-                            &mut state.process_search_query,
-                            loc.hunter_search_placeholder,
-                            240.0,
-                        );
-                    });
+                    if widgets::glyph_button_quiet(ui, Glyph::Close, loc.inspector_btn_close_tip).clicked() {
+                        *close_req = true;
+                    }
                 });
             });
     });
@@ -307,8 +310,13 @@ fn render_process_select_cell(
     name: &str,
 ) {
     ui.vertical_centered(|ui| {
-        ui.add_space((ui.available_height() - theme::control_height(ui)).max(0.0) / 2.0);
-        if widgets::button(ui, loc.hunter_btn_select, Kind::Primary, 0.0).clicked()
+        // The table row is denser than the skin's control row (36 against the modern 38), so the
+        // button is sized to the row instead of the control height: a full-height button drew
+        // over the select button of the next row.
+        let row_h = ui.available_height();
+        let btn_h = (row_h - 8.0).clamp(22.0, theme::control_height(ui));
+        ui.add_space(((row_h - btn_h) * 0.5).max(0.0));
+        if widgets::button_with_height(ui, loc.hunter_btn_select, Kind::Primary, 0.0, btn_h).clicked()
             || row_double_clicked
         {
             *chosen_process = Some(name.to_string());
