@@ -53,7 +53,7 @@ The `syn` table is the only global Synector adds.
 | `syn.get(key)` | string | `""` when the key is missing |
 | `syn.set(key, value)` | — | Writes to a run-local table; return a value instead (see Output) |
 | `syn.log(text)` | — | Writes `[LUA] text` to the daemon's standard output |
-| `syn.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure, timeout or a stop of the running manual step test comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
+| `syn.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout; a failure comes back as an `Error: ...` string instead of raising, so check the prefix |
 | `syn.overlay_show(id)` | — | Shows a saved overlay |
 | `syn.overlay_hide(id)` | — | Hides it |
 | `syn.overlay_toggle(id)` | — | Shows or hides it |
@@ -76,7 +76,8 @@ keys and 16 KiB values; exceeding a cap raises a Lua error.
 `syn.run_cmd` captures at most 64 KiB of stdout — cut output ends with `[output truncated]` — and
 2 KiB of stderr, and terminates the whole process tree after 5 seconds (`Error: command timed out
 after 5s`) through a Windows Job Object, with `taskkill /T` as the fallback. A non-zero exit returns
-`Error: exit code <code>`, followed by the trimmed stderr when it is not empty.
+`Error: exit code <code>`, followed by the trimmed stderr when it is not empty. A spawn failure
+returns the same `Error: ...` shape instead of raising.
 
 ## Output
 
@@ -85,8 +86,7 @@ converted, booleans become `true`/`false`, and anything else (tables, functions,
 empty. The engine stores a non-empty result in the run context as `PrevOutput` and `StepN.Output`
 (`Step1.Output` for the first step), so later actions can use `{PrevOutput}` or `{Step1.Output}`.
 An If/Else step passes on the output of the last output-bearing action in the branch it took, so a
-script nested in a branch feeds the parent pipeline's tokens like a top-level step. `syn.set` writes
-into a run-local table that nothing reads back today — return the value instead.
+script nested in a branch feeds the parent pipeline's tokens like a top-level step.
 
 ## Errors
 

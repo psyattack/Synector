@@ -44,14 +44,14 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Structural rule validation and warnings shared by CLI/config/engine/GUI | `src/validation.rs` |
 | Scheduling, quotas, cooldowns, active executions | `src/daemon/engine/` (facade `src/daemon/engine.rs`; modules `scheduler`, `quota`, `executions`, `pipeline`, `projector`, `triggers`, `state`, `ipc`, `offline`, `update`, `rule_call`, `activity`) |
 | Daemon start-up, background loops and shutdown order | `src/daemon/runtime/` (facade `src/daemon/runtime.rs`; `src/daemon.rs` keeps the module list and `run_daemon`) |
-| Rule-to-rule calls and stops | `src/daemon/engine/rule_call.rs` (`crate::daemon::rule_call` is a re-export) |
-| Rule-activity snapshot behind wait/check conditions | `src/daemon/engine/activity.rs` (`crate::daemon::rule_activity` is a re-export) |
+| Rule-to-rule calls and stops | `src/daemon/engine/rule_call.rs` |
+| Rule-activity snapshot behind wait/check conditions | `src/daemon/engine/activity.rs` |
 | Condition evaluation and process/window/device matching | `src/daemon/conditions.rs` |
 | Action execution handlers | `src/daemon/actions/` (facade `src/daemon/actions.rs`; one module per family) |
 | Bounded subprocess runner and `CommandOutcome` (action handlers, Lua bridge, updater tools) | `src/command.rs` |
 | Windows command-line quoting, PowerShell literals and the no-window spawn flag | `src/win_args.rs` |
 | COM apartment guard (MTA/STA, fallible/infallible) | `src/win_com.rs` |
-| Action timeout budgets and module-side re-exports | `src/daemon/actions/support/` |
+| Action timeout budgets | `src/daemon/actions/support/` |
 | Read-only action-tree traversal | `src/models/rule.rs` (`Rule::visit_actions`) |
 | Process detection | `src/daemon/watcher.rs` |
 | File and directory watching | `src/daemon/file_watcher.rs` |
@@ -84,6 +84,7 @@ cargo run -- --status        # print daemon status over IPC and exit
 | Configuration persistence | `src/config/` (facade `src/config.rs`) |
 | Share codes | `src/sharing/` (facade `src/sharing.rs`; stages `format`, `payload`, `encode`, `decode`, `import`, `assets`) |
 | Clipboard access | `src/clipboard.rs` (`copy_text_to_clipboard`, `read_text`) |
+| Desktop shortcut generation | `src/shortcut.rs` (`.lnk` for direct rule launch; a same-named foreign shortcut is never overwritten) |
 | Autostart registration | `src/autorun.rs` |
 | Updates and self-replacement | `src/updater/` (facade `src/updater.rs`) |
 | Logging | `src/logging.rs` |
@@ -91,9 +92,8 @@ cargo run -- --status        # print daemon status over IPC and exit
 
 Adding or changing a trigger, action or condition touches `src/models/`, the engine
 (`src/daemon/engine/`) and the action handlers (`src/daemon/actions/`), the catalog/inspector GUI
-views, and both i18n catalogs. Treat `src/models/` (facade `src/models.rs`) as the single source of
-truth: the JSON schema printed by `--rules-schema` is generated from it with `schemars`, so the CLI
-format cannot drift from the real types.
+views, and both i18n catalogs. `src/models/` is the single source of truth: the JSON schema printed
+by `--rules-schema` is generated from it, so the CLI format cannot drift from the real types.
 
 ## Code conventions
 
@@ -118,24 +118,18 @@ steps in the pull request.
 
 ## Documentation and localization
 
-Documentation has one owner per topic. The document set and its owners are listed once, in
-[docs/README.md](docs/README.md); update the owning file and link to it instead of copying its content
-elsewhere.
-
-User-visible GUI strings belong to `Strings` in `src/i18n/strings.rs`, with values in `src/i18n/en.rs` and
-`src/i18n/ru.rs`; views must not embed literals. The same `{...}` placeholders must appear in the
+User-visible GUI strings belong to `Strings` in `src/i18n/strings.rs`, with values in `src/i18n/en.rs`
+and `src/i18n/ru.rs`; views must not embed literals. The same `{...}` placeholders must appear in the
 English and Russian value of a field — `test_catalog_placeholder_parity` fails the test suite when
 they differ. The in-app guide is the documented exception: its long prose uses Russian/English
-`if lang == Language::Russian { ... } else { ... }` branches in `src/gui/views/guide_modal.rs`, and
-both branches must be updated together. Chrome labels in the guide still come from `Strings`.
+branches in `src/gui/views/guide_modal.rs`, and both branches must be updated together. Chrome labels
+in the guide still come from `Strings`.
 
-When dependencies change, update the dependency table and license texts in `NOTICES.md`. When CLI
-commands or quota behavior change, update `docs/RULE_AUTHORING.md`. When subsystems change, update
-`docs/ARCHITECTURE.md`. When behavior users ask about changes, update `docs/FAQ.md`.
-
-Division of ownership: this file owns the contribution process and code conventions,
-`docs/ARCHITECTURE.md` owns subsystem behavior, `docs/RULE_AUTHORING.md` owns the CLI and JSON format,
-and `docs/RELEASING.md` owns the release flow. Where two documents appear to disagree, the owner wins.
+Documentation has one owner per topic, listed in [docs/README.md](docs/README.md): update the owning
+file and link to it instead of copying its content. When dependencies change, update `NOTICES.md`.
+When a change affects the CLI, quota behavior, a subsystem or a question users ask about, update
+`docs/RULE_AUTHORING.md`, `docs/ARCHITECTURE.md` or `docs/FAQ.md` respectively, and keep `README.md`
+and `README.ru.md` in sync.
 
 ## Commits and pull requests
 

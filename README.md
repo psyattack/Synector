@@ -53,27 +53,24 @@ engine, triggers, runtime counters and system monitoring around the clock. A har
 **GUI** (eframe/egui) is a controlling client: it edits draft rules, displays daemon state and closes
 without stopping automation.
 
-Synector talks to Windows directly: Win32 APIs, Win32 named pipes, embedded Lua and no browser
-engine, bundled web runtime or telemetry. Detection is event-driven where Windows exposes an event
-source — kernel ETW for process lifecycles, low-level hooks during macro recording, HTTP webhooks,
-Raw Input camera deltas, power broadcasts for sleep/resume and display state, and plug-and-play
-device notifications. Foreground-window focus, file changes, resource thresholds, session lock,
-AC/battery power and network state are sampled with small, adaptive polling loops instead of
-pretending otherwise.
+Synector talks to Windows directly: Win32 APIs, Win32 named pipes and an embedded Lua runtime, with
+no browser engine, bundled web runtime or telemetry. Detection is event-driven wherever Windows
+exposes an event source — process lifecycle, macro recording, webhooks, power and device broadcasts
+— and uses small, adaptive polling loops for everything Windows only reports on request.
 
 ## Features
 
 * **Dual-tier, pure Rust** — the tray daemon owns rules, triggers and monitoring; close the GUI and automation keeps running with near-zero CPU.
-* **Hybrid event detection** — kernel ETW process tracing when elevated, adaptive Toolhelp32 snapshot polling otherwise; both feed the same trigger surface. Global hotkeys, window focus, file watcher, HTTP webhook, sleep/resume, display on/off, device connect/disconnect, session lock/unlock, AC/battery power, user idle/active and network state.
-* **Visual rule pipelines** — drag-and-drop actions with undo/redo, wait steps with timeout policies, mid-pipeline checks, If/Else branching, rule-to-rule calls and stops, waits and checks that observe another rule's pipeline, toggle actions, per-rule cooldowns and lifetime or periodic execution quotas.
-* **Process and overlay lifetimes** — keep a helper tool, HUD or recorder until the triggering app exits, close it with the rule run, or leave it detached; the daemon owns the exact PID and overlay show, so cleanup never hits an unrelated process or a newer overlay.
-* **Overlay Studio (HUD)** — WYSIWYG GPU-accelerated overlays: crosshairs, telemetry badges, graphs, timers, media widgets, interactive controls, multi-monitor placement and `WDA_EXCLUDEFROMCAPTURE` anti-capture protection.
-* **Macro Studio** — keyboard and mouse recording through low-level Windows hooks, DirectInput-compatible scan-code playback, humanized motion, Raw Input camera turns, Run/Stop/Toggle operations and reusable presets.
-* **Scripting and CLI automation** — embedded Lua 5.4.9 with the `syn` API, PowerShell and Batch actions; JSON rule authoring via `--rules-apply`/`--rules-sync` with schema, template and reference discovery ([CLI reference](docs/RULE_AUTHORING.md)); `SYN1:` share codes, desktop `.lnk` shortcuts and `--run-rule`.
+* **Hybrid event detection** — kernel-level process tracing when elevated, adaptive snapshot polling otherwise. Global hotkeys, window focus, file watcher, HTTP webhook, sleep/resume, display on/off, device connect/disconnect, session lock/unlock, AC/battery power, user idle/active and network state.
+* **Visual rule pipelines** — drag-and-drop actions with undo/redo, wait steps with timeout policies, mid-pipeline checks, If/Else branching, rule-to-rule calls and stops, toggles, per-rule cooldowns and lifetime or periodic execution quotas.
+* **Process and overlay lifetimes** — keep a helper tool, HUD or recorder until the triggering app exits, close it with the rule run, or leave it detached; the daemon owns the exact PID and overlay show, so cleanup never hits an unrelated process.
+* **Overlay Studio (HUD)** — WYSIWYG GPU-accelerated overlays: crosshairs, telemetry badges, graphs, timers, media widgets, interactive controls, multi-monitor placement and anti-capture protection.
+* **Macro Studio** — keyboard and mouse recording, scan-code playback that games accept, humanized motion, camera turns, Run/Stop/Toggle operations and reusable presets.
+* **Scripting and CLI automation** — embedded Lua with the `syn` API, PowerShell and Batch actions; JSON rule authoring via `--rules-apply`/`--rules-sync` with schema, template and reference discovery ([CLI reference](docs/RULE_AUTHORING.md)); `SYN1:` share codes, desktop shortcuts and `--run-rule`.
 * **System and device control** — working-set trimming, CPU priority and affinity, firewall toggles, window actions, master/per-app volume, channel balance, audio format and default playback/recording device switching.
-* **Observability** — an analytics dialog with rule-counter, session, live-load and success-rate KPIs, a live 60-second CPU/RAM chart with the daemon's own CPU/memory/disk use, executions by source, 24-hour activity, top rules, rules that need attention and the in-app log stream, plus daily rotating log files with configurable verbosity.
-* **Global search** — one header field searches rules, settings, the activity log, overlay and macro presets and the rule-builder catalogs; results are grouped with counts and open the matching surface with the query already in place.
-* **Installer and portable builds** — a native Windows installer with an uninstaller, Start Menu shortcut and `App Paths` integration, or a single portable executable. Both update themselves through daemon-managed GitHub release checks with SHA-256 verification, tray progress and optional auto-install.
+* **Observability** — an analytics dialog with rule-counter, session, load and success-rate KPIs, a live CPU/RAM chart with the daemon's own usage, executions by source, 24-hour activity, top rules, rules that need attention and the in-app log stream, plus daily rotating log files.
+* **Global search** — one header field searches rules, settings, the activity log, overlay and macro presets and the rule-builder catalogs; results are grouped and open the matching surface with the query already in place.
+* **Installer and portable builds** — a native Windows installer with an uninstaller, Start Menu shortcut and `App Paths` integration, or a single portable executable. Both update themselves through daemon-managed GitHub release checks with SHA-256 verification and optional auto-install.
 
 ## Installation
 
@@ -88,10 +85,9 @@ you verify a download manually. SmartScreen prompts, elevation and update questi
 [docs/FAQ.md](docs/FAQ.md#installation-and-updates).
 
 > [!IMPORTANT]
-> **Administrator Privileges**: Synector launches elevated by default (override with `--no-elevate`). Required for:
-> * **Kernel ETW**: zero-polling, real-time process lifecycle events.
-> * **UIPI Bypass**: hardware input simulation into elevated games and apps.
-> * **Process Control & Autostart**: memory/affinity tuning and silent elevated logon via Task Scheduler.
+> **Administrator privileges**: Synector launches elevated by default (override with `--no-elevate`).
+> Elevation is required to see and control elevated processes, simulate input into elevated
+> applications and register the silent logon autostart task.
 
 > [!NOTE]
 > The daemon registers a Task Scheduler autostart entry on first launch (configurable in Settings).
@@ -165,11 +161,8 @@ Synector/
 └── NOTICES.md              # Third-party dependencies and license texts
 ```
 
-The tree stops at the top level on purpose: per-file responsibilities change faster than this
-document. Module-level pointers live in [CONTRIBUTING.md](CONTRIBUTING.md) ("Where changes belong"),
-and how the pieces behave and interact — the two tiers, the data flow, the rule engine, overlays,
-input simulation and process monitoring — is described in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Module-level pointers live in [CONTRIBUTING.md](CONTRIBUTING.md) ("Where changes belong"), and
+subsystem behavior is described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Configuration
 
@@ -185,9 +178,8 @@ directory for portable or isolated runs.
 | `logs\` | Daily diagnostic logs, one file per day, 7-day retention and an 8 MiB cap per file |
 
 Writes are atomic and versioned, and while the daemon is reachable it is the only writer — back up or
-edit these files with Synector stopped. A section written by a newer Synector build is read but never
-overwritten by an older build, so downgrading cannot silently rewrite it. The write path, the
-quarantine of a section that fails to parse, read caches and coalescing rules are documented in
+edit these files with Synector stopped. The write path, versioning, the quarantine of a section that
+fails to parse and the read caches are documented in
 [docs/ARCHITECTURE.md#configuration-storage](docs/ARCHITECTURE.md#configuration-storage).
 
 ## Rule authoring from the CLI

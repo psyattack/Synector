@@ -4,15 +4,15 @@ Complete rules you can validate and apply without opening the GUI. The JSON form
 and quota rules are documented in [RULE_AUTHORING.md](RULE_AUTHORING.md); this file is a recipe
 book. Replace paths and process names with values from your own machine.
 
-Every example validates with:
+Save the block you want as `rule.json`, then:
 
 ```powershell
 cmd /c "Synector.exe --rules-validate rule.json"
 cmd /c "Synector.exe --rules-apply rule.json"
 ```
 
-Use `--rules-sync` instead of `--rules-apply` when the file should become the complete rule set.
-`--dry-run` previews the result.
+Use `--rules-sync` instead of `--rules-apply` when the file should become the complete rule set, and
+`--dry-run` to preview the result.
 
 ## Companion process with a host lifetime
 
@@ -42,8 +42,6 @@ instance has exited.
   ]
 }
 ```
-
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Run cleanup when a game exits
 
@@ -95,8 +93,6 @@ held.
 }
 ```
 
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
-
 ## Webhook trigger with an hourly quota
 
 Anything on the machine can call
@@ -128,9 +124,7 @@ clock hour and then skips requests until the hour rolls over; the rule stays ena
 }
 ```
 
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
-
-Replace the placeholder script with your own command. Script bodies are never written to the log.
+Replace the placeholder script with your own command.
 
 ## Archive a folder when a new file arrives
 
@@ -160,8 +154,6 @@ one archive operation.
   "cooldown_seconds": 30
 }
 ```
-
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Switch power plans on a weekday schedule
 
@@ -203,8 +195,6 @@ Two rules in one file. `--rules-apply` accepts an array, a single object, or `{"
   }
 ]
 ```
-
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 `days_of_week` uses `1` = Monday through `7` = Sunday.
 
@@ -248,8 +238,6 @@ One hotkey either restores an existing window or starts the application. Conditi
   ]
 }
 ```
-
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Chain rules: call and stop
 
@@ -315,10 +303,8 @@ A call that the target rejects (disabled, cooling down, out of quota or with unm
 logged and does not fail the caller. Direct self-calls and cycles are refused, so apply both rules
 of a pair together.
 
-A rule's pipeline can also be observed without calling it. `rule_started` and `rule_stopped` are wait
-conditions; "running" means the target's action pipeline is executing right now or it still owns a
-live process or overlay from a finished run. Here a watcher waits for a long-running mode to begin
-and then for it to end:
+A rule's pipeline can also be observed without calling it. Here a watcher waits for a long-running
+mode to begin and then for it to end:
 
 ```json
 [
@@ -370,8 +356,8 @@ and then for it to end:
 
 ## Mute before sleep and unmute after resume
 
-Sleep, resume, display state and device changes are pushed by Windows through a hidden notification
-window, so these rules fire without polling.
+Sleep, resume, display state and device changes are pushed by Windows, so these rules fire without
+polling.
 
 ```json
 [
@@ -407,8 +393,6 @@ window, so these rules fire without polling.
   }
 ]
 ```
-
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
 
 ## Launch, wait for the process, then tune it
 
@@ -448,26 +432,16 @@ the process does not appear within 60 seconds; use `"continue"` to run the follo
 }
 ```
 
-Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the block as `rule.json`.
-
 ## More patterns
 
 - A **toggle hotkey** uses `hold_mode: true` to repeat the pipeline while held, or
   `repeat_while_held: true` without hold mode to loop until pressed again.
 - A **process trigger** fires its one action pipeline on `event: "started"` (the default) or
   `event: "exited"`; `single_instance` makes the start run fire for the first instance and the exit
-  run for the last one. `lifetime: "until_trigger_process_exit"` binds processes and overlays to a
-  start-triggered run; `until_run_end` releases them when the run ends.
-- **Runtime counters** (`execution_count`, `last_executed_at`, the custom quota anchor) are owned by
-  `runtime.json`; values in a rule file are ignored when an existing rule is updated.
-- **Share codes** (`SYN1:`) bundle the presets and overlays a rule references; imported rules are
-  created disabled unless `--enable-imported` is passed.
+  run for the last one.
 - **Quoted process arguments** — `start_process.arguments` is split with the Windows command-line
   rules, so `-m "C:\\Program Files\\App\\mod.ini"` stays one argument. Quote paths with spaces and
   escape an embedded quote as `\"` or `\"\"`.
-- **Rule control** (`rule_control`) chains rules: `operation: "call"` runs another pipeline,
-  `operation: "stop"` aborts its executions without disabling it. Share codes do not rewrite these
-  references, so export a calling rule and its target together.
-- **Rule activity** (`rule_running`, wait `rule_started`/`rule_stopped`) observes another rule's
-  pipeline and its live owned resources; it reports stopped once both the pipeline and its
-  `until_trigger_process_exit`/`until_run_end` resources are gone.
+
+Field-level semantics — lifetimes, quota counters, share codes and `rule_control` — are in
+[RULE_AUTHORING.md](RULE_AUTHORING.md).

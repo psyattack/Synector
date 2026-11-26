@@ -38,12 +38,12 @@ Flags:
   rules are created disabled.
 - A path of `-` reads the rule file or share code from stdin.
 
-Arguments are validated against the selected command. An unknown argument such as `--dry-runn`, two
-command flags in one invocation, or the same command flag twice is a usage error: the command
-reference is printed and the process exits with code 2. Other process flags, including
-`--no-elevate`, are not valid together with a rule command, and a misspelled `--rules-*` command is
-reported instead of falling through to a daemon or GUI start. `--run-rule <id>` is a runtime command,
-not a rule-authoring one; a missing or empty id is likewise a usage error that exits with code 2.
+Arguments are validated against the selected command: an unknown argument such as `--dry-runn`, two
+command flags in one invocation or the same flag twice prints the command reference and exits with
+code 2. Other process flags, including `--no-elevate`, are not valid together with a rule command,
+and a misspelled `--rules-*` command is reported instead of falling through to a daemon or GUI start.
+`--run-rule <id>` is a runtime command, not a rule-authoring one, and a missing or empty id is
+likewise a usage error.
 
 ## File format
 
@@ -51,7 +51,7 @@ A rule file is one rule object, an array of rules, or `{"rules": [...]}`. `id` i
 must be unique and stable; `name` is required. The array and wrapper forms are file containers only —
 `--rules-schema` describes a single rule object.
 
-Runtime state is not part of the file format in practice: the daemon keeps `execution_count`,
+Runtime state is not part of the file format: the daemon keeps `execution_count`,
 `last_executed_at` and the custom quota window anchor in `runtime.json`, writes those fields zeroed
 in `rules.json`, and preserves the live values when an existing rule is updated. Counters included
 in a rule file are therefore ignored.
@@ -62,11 +62,8 @@ Keys are checked against the model before deserialization. An unknown key — a 
 logs the rule id and keys and skips only that rule when it loads `rules.json`. Values are checked on
 the same load with the per-rule validator the GUI Save and apply paths use: a rule with invalid
 values (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
-likewise skipped alone with its id and errors, so neither check drops a rule that would otherwise
-be accepted. There is no migration: update the file. The removed fields are `schedule.delay_sec`,
-the `system` trigger's `idle_duration_sec`, the `resource` condition's `duration_sec` and the
-rule-level `on_exit_actions` pipeline. The `resource` trigger keeps its own `duration_sec`
-(default 5 s), and the `event` condition keeps a rule-authored `idle_duration_sec`.
+likewise skipped alone with its id and errors. There is no migration shim, so such a rule must be
+updated.
 
 Minimal example:
 
@@ -117,24 +114,18 @@ quota. `single_instance: true` fires the start event for the first matching inst
 event for the last one. `start_process` and `overlay` actions take a `lifetime` that says how long
 the process or overlay they create may live:
 
-- `"detach"` (the default) — leave it running or on screen after the run, as before. A detached
-  process is not owned and is never stopped; a detached overlay still records its show, so stopping
-  the rule hides that exact show (a later show by another rule is left alone);
+- `"detach"` (the default) — leave it running or on screen after the run. A detached process is not
+  owned and is never stopped; a detached overlay still records its show, so stopping the rule hides
+  that exact show (a later show by another rule is left alone);
 - `"until_run_end"` — terminate the process or hide that overlay show when the run that created it
   ends, however it ends (finish, failure, abort or stop);
-- `"until_trigger_process_exit"` — keep it until the process that triggered the rule exits. This is
-  the old companion binding and is only valid for a process-start trigger with a live primary
-  process; an exit-triggered rule cannot bind to a process that is already gone. A rule call, manual
-  run or test run has no primary process, so the engine treats the value as `until_run_end` there.
+- `"until_trigger_process_exit"` — keep it until the process that triggered the rule exits. Only
+  valid for a process-start trigger with a live primary process; an exit-triggered rule cannot bind
+  to a process that is already gone. A rule call, manual run or test run has no primary process, so
+  the engine treats the value as `until_run_end` there.
 
-The engine records the PID captured at spawn and the generation of the overlay show it started, so
-teardown targets exactly that process or show instead of every process with the same name. A rule
-whose pipeline ended but still owns a live process or overlay reports running in both the rule list
-and `rule_running` / `rule_stopped`; a dead process or a hidden/replaced overlay show is pruned on
-the process loop.
-
-The former `close_on_exit` flags are gone: a rule file that still carries one is rejected as an
-unknown key, and a share code containing it fails import validation. Use `lifetime` instead.
+Teardown targets the PID captured at spawn and the generation of the overlay show it started, so it
+never touches an unrelated process or a newer overlay. A rule that reacts to the game closing:
 
 ```json
 {
@@ -292,10 +283,6 @@ an action error.
 Invoke-RestMethod http://127.0.0.1:48123/api/v1/trigger/backup
 ```
 
-```bash
-curl http://127.0.0.1:48123/api/v1/trigger/backup
-```
-
 ## Validation and warnings
 
 `--rules-validate` performs structural validation and exits non-zero on errors:
@@ -336,10 +323,10 @@ id fails without changing the configuration.
 
 The format is self-describing, so an AI agent or a person without the source can author rules:
 
-- `--rules-schema` prints the draft-07 JSON Schema for one rule object. It is generated with
-  `schemars` from the same `models::Rule` types the daemon deserializes, so it cannot drift from the
-  real format. The schema contains only the current fields; the strict key check rejects anything
-  else. Validate generated rules against it with any JSON Schema validator before applying.
+- `--rules-schema` prints the draft-07 JSON Schema for one rule object, generated with `schemars`
+  from the same `models::Rule` types the daemon deserializes. The schema contains only the current
+  fields; the strict key check rejects anything else. Validate generated rules against it with any
+  JSON Schema validator before applying.
 - `--rules-reference` prints a compact catalogue of every trigger, action, condition, wait condition
   and macro event with field names, types and required markers.
 - `--rules-template <trigger>[:<action>]` prints a minimal valid skeleton with the required fields
@@ -396,15 +383,13 @@ re-identified, and imported rules are created disabled unless `--enable-imported
 entries whose content already exists locally are reused instead of duplicated, so importing the
 same code twice adds nothing; bundled overlay button and toggle targets are re-pointed at the final
 rule ids, and a target that neither the code nor the local rules provide is reported as a warning.
-One code carries at most 500 rules, 500 overlays and 500 macro presets. With a running daemon the
-whole import is one `ImportShare` request; otherwise `library.json` is committed before `rules.json`
-so an imported rule never references a missing preset or overlay.
+One code carries at most 500 rules, 500 overlays and 500 macro presets.
 
 ## Ready-to-use recipes
 
-See [EXAMPLES.md](EXAMPLES.md) for complete rules: owned companion processes with lifetimes, hotkey actions, webhooks
-with quotas, file watchers and archives, weekday schedules, If/Else branching, rule chaining with
-`rule_control`, sleep/resume audio toggles, and launch-wait-tune pipelines.
+See [EXAMPLES.md](EXAMPLES.md) for complete rules: owned companion processes with lifetimes, hotkey
+actions, webhooks with quotas, file watchers and archives, weekday schedules, If/Else branching, rule
+chaining with `rule_control`, sleep/resume audio toggles, and launch-wait-tune pipelines.
 
 ## Console notes
 

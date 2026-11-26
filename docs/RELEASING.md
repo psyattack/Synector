@@ -1,11 +1,8 @@
 # Releasing Synector
 
-How a release is cut: which files change, in what order, and what automation publishes. The
-user-facing result is described in the README and in `CHANGELOG.md`; this document covers the
-mechanics only.
-
-Releases are cut by maintainers. Contributors land changes through pull requests; they do not bump
-the version in `Cargo.toml`, edit `CHANGELOG.md` or push `v*` tags.
+How a release is cut: which files change, in what order, and what automation publishes. Releases are
+cut by maintainers. Contributors land changes through pull requests; they do not bump the version in
+`Cargo.toml`, edit `CHANGELOG.md` or push `v*` tags.
 
 ## Version source
 
@@ -54,7 +51,7 @@ is pushed. Entry shape:
 3. Write the `CHANGELOG.md` section per [Changelog entry](#changelog-entry).
 4. Run `cargo check`, `cargo test` and `cargo clippy -- -D warnings` on the release commit.
 5. Commit with the release message used in this repository, for example
-   `chore(release): bump version to 2.9.2`, including `CHANGELOG.md`, `Cargo.toml` and `Cargo.lock`.
+   `chore(release): bump version to X.Y.Z`, including `CHANGELOG.md`, `Cargo.toml` and `Cargo.lock`.
 6. Tag the commit `vX.Y.Z` and push the tag. Pushing `v*` is what starts the release workflow; the
    tag name must equal `v<Cargo.toml version>` or the workflow aborts.
 7. Watch `.github/workflows/release.yml` and verify the published release.
@@ -90,10 +87,8 @@ and in the [FAQ](FAQ.md#how-do-updates-work).
 
 - `README.md` and `README.ru.md` use `<version>` placeholders for artifact names, so a version bump
   does not require an edit there.
-- A storage-format change needs a migration note in the new `CHANGELOG.md` section and an entry in
-  the FAQ's upgrade questions; otherwise readers on an older build see no warning.
-- `SECURITY.md` supports only the latest published release — nothing to change unless that policy
-  changes.
+- A storage-format change needs a migration note in the new `CHANGELOG.md` section and a user-facing
+  passage in `docs/FAQ.md`; otherwise readers on an older build see no warning.
 
 ## If the workflow fails after the tag is pushed
 

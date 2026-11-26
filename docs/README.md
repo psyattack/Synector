@@ -1,10 +1,7 @@
 # Synector documentation
 
-This directory holds the detailed documentation. Each topic has one owner; update that file and
-link to it instead of copying its content elsewhere.
-
-This index is the only place where the document set is enumerated. Other files link here instead of
-keeping their own list.
+This directory holds the detailed documentation. Each topic has one owner: update that file and link
+to it instead of copying its content elsewhere.
 
 ## Users
 
@@ -20,8 +17,8 @@ keeping their own list.
 
 | Document | Contents |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Two tiers, data flow, rule engine, event sources, overlays, input simulation, updates and design conventions. |
-| [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contribution workflow, code style, documentation rules and pull-request process. |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Two tiers, data flow, rule engine, event sources, overlays, input simulation, updates and the GUI design system. |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contribution workflow, code style, module map and pull-request process. |
 | [../SECURITY.md](../SECURITY.md) | Supported versions and private vulnerability reporting. |
 | [../CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md) | Community standards. |
 
@@ -42,9 +39,9 @@ The project landing page is published from the `gh-pages` branch:
 
 - **One owner per topic.** Behavior belongs to `ARCHITECTURE.md`, CLI and JSON format to
   `RULE_AUTHORING.md`, Lua scripting to `SCRIPTING.md`, recipes to `EXAMPLES.md`, user questions to
-  `FAQ.md`, release mechanics to `RELEASING.md`.
+  `FAQ.md`, release mechanics to `RELEASING.md`, and the module map to `CONTRIBUTING.md`.
 - **Link, do not copy.** When a detail is already documented in its owner file, reference it. This
   keeps `README.md` and the docs from drifting.
-- **Keep both languages in sync.** `README.md` and `README.ru.md` are mirrors. GUI strings live in
+- **Keep both languages in sync.** `README.md` and `README.ru.md` are mirrors; GUI strings live in
   both i18n catalogs, and the in-app guide has Russian and English branches.
 - **Update this index** when a document is added, renamed or removed.

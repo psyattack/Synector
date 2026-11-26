@@ -14,12 +14,6 @@
 
 <!-- Commands you ran and any manual steps needed to verify the change. -->
 
-```powershell
-cargo check
-cargo test
-cargo clippy -- -D warnings
-```
-
 ## Checklist
 
 - [ ] `cargo check`, `cargo test` and `cargo clippy -- -D warnings` pass locally.
