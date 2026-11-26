@@ -233,10 +233,18 @@ dependency and both palettes and a custom accent stay coherent.
    validates them, applies them to its in-memory `AppConfig` aggregate and persists only the
    affected config section under `%LOCALAPPDATA%\Synector\`. The editable draft is discarded only
    after the daemon confirms the mutation; a rejected or failed mutation keeps the draft open and
-   reports the error. Every other GUI round-trip goes through the same worker too — testing a step,
-   terminating a process, saving settings, preset-library writes, overlay-preview show/hide, the
-   calibration position poll and the analytics dashboard poll — so the render loop never blocks on
-   the named pipe; the frame thread only enqueues and applies results, and the latest result wins.
+   reports the error. Every other GUI round-trip goes through the same worker too — terminating a
+   process, saving settings, preset-library writes, overlay-preview show/hide, the calibration
+   position poll and the analytics dashboard poll — so the render loop never blocks on the named
+   pipe; the frame thread only enqueues and applies results, and the latest result wins. Testing a
+   step is the one exception: it executes an action inline on the daemon and may legitimately run
+   for minutes, so the worker hands it to its own thread instead of serializing the state poll
+   behind it. The inspector paints the tested step with the same focus an executing step gets and
+   clears it when the daemon reports completion; the editor paints no result badge (the outcome is
+   in the daemon log). While a test runs, its Play button becomes Stop: the GUI sends
+   `StopTestStep` with the test's correlation id, the daemon terminates the script's Job Object and
+   aborts the action task, exactly like `StopRuleExecution` aborts a Test Run. A stop that overtakes
+   its start is remembered and refuses the request when it arrives.
 3. The daemon executes rules and streams status, telemetry and execution snapshots back, so the GUI
    reflects engine state without owning it. A sustained daemon outage (three failed polls plus a
    one-second quiet period) is logged and shown as an offline toast instead of being collapsed into
@@ -244,9 +252,12 @@ dependency and both palettes and a custom accent stay coherent.
 4. Overlay windows are separate GPU-accelerated processes supervised by the daemon; the GUI only
    edits their definitions.
 
-IPC round-trips are bounded. A client call gets 5 s (750 ms for the liveness ping, 60 s for an
-inline `TestStep`), a busy pipe (`ERROR_PIPE_BUSY`) is retried briefly because another process may
-be connecting to the single listening instance, and a missing pipe is re-checked a few times before
+IPC round-trips are bounded. A client call gets 5 s (750 ms for the liveness ping) and an inline
+`TestStep` gets the action's own worst-case wall clock plus a 60 s slack
+(`daemon::actions::max_execution_duration`, whose exhaustive match forces every action to state
+its ceiling), so a long script test is not mistaken for a hung daemon; a busy pipe
+(`ERROR_PIPE_BUSY`) is retried briefly because another process may be connecting to the single
+listening instance, and a missing pipe is re-checked a few times before
 it counts as absent. A call that exceeds its bound cancels its blocked worker
 (`CancelSynchronousIo`) and joins it, so the pipe handle is released and repeated timeouts cannot
 accumulate threads; the next call opens a fresh instance. During GUI exit the round-trips share a
@@ -444,8 +455,13 @@ Action handlers are asynchronous. Each action family lives in its own module und
 exhaustively, so a new `Action` variant cannot silently no-op. Helper subprocesses — scripts, archive
 tools, audio/device helpers and elevated launches — run through the one bounded runner in
 `src/command.rs` on a blocking thread that enforces a timeout and caps captured output at 64 KiB
-per stream; the Lua `syn.run_cmd` bridge uses the same runner (with a process-tree kill on timeout),
-and the updater's external extraction tools run through it with a 600 s ceiling. The Windows
+per stream. PowerShell/Batch scripts and the Lua `syn.run_cmd` bridge run through the runner's
+tracked variant: each execution owns a Windows Job Object, so the action's deadline and a stopped
+manual step test (`StopTestStep`) terminate every descendant whatever its name or executable. A
+process that leaves the tree by design (UAC elevation through AppInfo, Task Scheduler) is outside
+the job, a failed job assignment falls back to `taskkill /T`, and the job is not kill-on-close, so a
+script that starts a background program and exits leaves that program running as before. The
+updater's external extraction tools run through the same runner with a 600 s ceiling. The Windows
 argument quoter, PowerShell literal escaper and no-window spawn flag live in `src/win_args.rs`; the
 COM apartment guard lives in `src/win_com.rs`. The budgets are 300 s for PowerShell/Batch scripts,
 600 s for archive helpers and 120 s for an elevation prompt; a spawn failure, non-zero exit or

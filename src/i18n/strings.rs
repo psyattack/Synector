@@ -697,8 +697,6 @@ pub struct Strings {
     pub inspector_hotkey_repeat_while_held: &'static str,
     pub inspector_hotkey_repeat_while_held_tip: &'static str,
     pub inspector_infinite_macro_warning: &'static str,
-    pub inspector_macro_test_empty: &'static str,
-    pub inspector_macro_testing_actions: &'static str,
     pub inspector_badge_unreachable: &'static str,
     pub inspector_badge_unreachable_tip: &'static str,
     pub inspector_field_notif_title_hint: &'static str,
@@ -1306,13 +1304,6 @@ pub struct Strings {
     // Inspector toasts
     pub toast_url_copied: &'static str,
 
-    // Inspector test-step result messages
-    pub inspector_test_step_passed: &'static str,
-    pub inspector_test_step_failed: &'static str,
-    pub inspector_test_step_error: &'static str,
-    pub inspector_test_step_ipc_error: &'static str,
-    pub inspector_test_step_unknown: &'static str,
-
     // Inspector action summary preview (action_summary_preview)
     pub summary_preview_launch_empty: &'static str,
     pub summary_preview_launch: &'static str,
@@ -1634,8 +1625,6 @@ pub struct Strings {
     pub inspector_preset_prefix: &'static str,
     pub inspector_preset_unknown: &'static str,
     pub inspector_ifelse_elif_badge: &'static str,
-    pub inspector_test_step_pass_badge: &'static str,
-    pub inspector_test_step_fail_badge: &'static str,
     pub inspector_dialog_icon_title: &'static str,
     pub inspector_dialog_filter_image_exe: &'static str,
     pub inspector_dialog_filter_executables: &'static str,

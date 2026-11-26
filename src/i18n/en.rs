@@ -699,8 +699,6 @@ pub static STRINGS: Strings = Strings {
     inspector_hotkey_repeat_while_held: "Repeat in loop",
     inspector_hotkey_repeat_while_held_tip: "Loop and repeat entire pipeline actions continuously while hotkey combo is held. Stops immediately when released.",
     inspector_infinite_macro_warning: "Infinite macro: subsequent steps will not be executed",
-    inspector_macro_test_empty: "Macro has no events",
-    inspector_macro_testing_actions: "Testing {} actions",
     inspector_badge_unreachable: "UNREACHABLE",
     inspector_badge_unreachable_tip: "This step will never execute because a prior step runs an infinite macro",
     inspector_field_notif_title_hint: "Notification Title",
@@ -1308,13 +1306,6 @@ pub static STRINGS: Strings = Strings {
     // Inspector toasts
     toast_url_copied: "URL copied to clipboard",
 
-    // Inspector test-step result messages
-    inspector_test_step_passed: "Step passed",
-    inspector_test_step_failed: "Failed: {}",
-    inspector_test_step_error: "Error: {}",
-    inspector_test_step_ipc_error: "IPC Error: {}",
-    inspector_test_step_unknown: "Unknown result",
-
     // Inspector action summary preview (action_summary_preview)
     summary_preview_launch_empty: "Launch executable",
     summary_preview_launch: "Launch {}",
@@ -1632,8 +1623,6 @@ pub static STRINGS: Strings = Strings {
     inspector_preset_prefix: "Preset: {}",
     inspector_preset_unknown: "Preset",
     inspector_ifelse_elif_badge: "ELIF {:02}",
-    inspector_test_step_pass_badge: "PASS",
-    inspector_test_step_fail_badge: "FAIL",
     inspector_dialog_icon_title: "Select Rule Icon",
     inspector_dialog_filter_image_exe: "Image or Exe",
     inspector_dialog_filter_executables: "Executables",

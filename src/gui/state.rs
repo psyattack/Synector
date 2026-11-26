@@ -119,8 +119,9 @@ pub struct GuiState {
     pub(crate) new_tag_name: String,
     pub(crate) new_tag_color: Option<String>,
     pub(crate) new_tag_icon: Option<String>,
-    /// Completed inline step tests waiting for the inspector to place them in egui temp data.
-    pub(crate) pending_test_step_results: Vec<(egui::Id, (bool, String, Instant))>,
+    /// Completed inline step tests whose running focus the inspector must clear, paired with the
+    /// daemon-side test id so a stale completion cannot clear a newer run of the same step.
+    pub(crate) finished_step_tests: Vec<(egui::Id, u64)>,
     /// Latest calibration position reported by the daemon for one overlay.
     pub(crate) cached_overlay_position: Option<(String, f32, f32)>,
     /// Revision of the newest settings write and the newest revision the daemon confirmed.
@@ -213,7 +214,7 @@ impl GuiState {
             new_tag_name: String::new(),
             new_tag_color: Some("#3B82F6".into()),
             new_tag_icon: None,
-            pending_test_step_results: Vec::new(),
+            finished_step_tests: Vec::new(),
             cached_overlay_position: None,
             settings_revision: 0,
             settings_saved_revision: None,

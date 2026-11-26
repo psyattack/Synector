@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Arc;
 
 use super::support::command::{
-    apply_no_window, powershell_command, run_command_bounded_async, SCRIPT_TIMEOUT,
+    apply_no_window, powershell_command, run_command_bounded_tracked_async, CommandCancellation,
+    SCRIPT_TIMEOUT,
 };
 use super::ActionRunner;
 use crate::models::Action;
@@ -18,7 +20,14 @@ pub(super) async fn run_script_internal(
     script: &str,
     run_in_window: bool,
     context: &HashMap<String, String>,
+    cancel: Option<Arc<CommandCancellation>>,
 ) -> Result<Option<String>, String> {
+    if cancel
+        .as_deref()
+        .is_some_and(CommandCancellation::is_cancelled)
+    {
+        return Err("the script was stopped".to_string());
+    }
     match interpreter {
         crate::models::ScriptType::Lua => {
             let script_code = ActionRunner::interpolate_tokens(script, context);
@@ -29,7 +38,12 @@ pub(super) async fn run_script_internal(
             // The VM has its own instruction/time budgets; running it on a blocking
             // thread keeps a long script from occupying a Tokio worker.
             let res = tokio::task::spawn_blocking(move || {
-                crate::daemon::lua_runner::LuaRunner::execute(&script_code, &lua_ctx, outputs)
+                crate::daemon::lua_runner::LuaRunner::execute(
+                    &script_code,
+                    &lua_ctx,
+                    outputs,
+                    cancel,
+                )
             })
             .await
             .map_err(|e| format!("Lua task failed: {e}"))??;
@@ -49,7 +63,10 @@ pub(super) async fn run_script_internal(
                 for (k, v) in script_env(context) {
                     cmd.env(format!("SYN_{}", k.to_uppercase()), v);
                 }
-                let out = run_command_bounded_async(cmd, SCRIPT_TIMEOUT).await?;
+                let out = run_command_bounded_tracked_async(cmd, SCRIPT_TIMEOUT, cancel).await?;
+                if out.cancelled {
+                    return Err("PowerShell script was stopped".to_string());
+                }
                 if out.timed_out {
                     return Err(format!(
                         "PowerShell script timed out after {}s",
@@ -74,7 +91,10 @@ pub(super) async fn run_script_internal(
                 let mut cmd = Command::new("cmd");
                 cmd.args(["/C", &cmd_text]);
                 apply_no_window(&mut cmd);
-                let out = run_command_bounded_async(cmd, SCRIPT_TIMEOUT).await?;
+                let out = run_command_bounded_tracked_async(cmd, SCRIPT_TIMEOUT, cancel).await?;
+                if out.cancelled {
+                    return Err("Cmd script was stopped".to_string());
+                }
                 if out.timed_out {
                     return Err(format!(
                         "Cmd script timed out after {}s",
@@ -91,10 +111,14 @@ pub(super) async fn run_script_internal(
     }
 }
 
-pub(super) async fn execute(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
+pub(super) async fn execute(
+    action: &Action,
+    context: &HashMap<String, String>,
+    cancel: Option<Arc<CommandCancellation>>,
+) -> Result<(), String> {
     match action {
         Action::ExecuteScript { interpreter, script, run_in_window } => {
-            run_script_internal(interpreter, script, *run_in_window, context).await?;
+            run_script_internal(interpreter, script, *run_in_window, context, cancel).await?;
             Ok(())
         }
         _ => unreachable!("script handler received a non-script action"),

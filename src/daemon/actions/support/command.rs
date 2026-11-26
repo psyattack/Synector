@@ -6,7 +6,8 @@
 
 pub(in crate::daemon::actions) use crate::command::{
     apply_no_window, powershell_command, powershell_helper_command, run_command_bounded_async,
-    run_system_tool, CommandOutcome, UTILITY_TIMEOUT,
+    run_command_bounded_tracked_async, run_system_tool, CommandCancellation, CommandOutcome,
+    UTILITY_TIMEOUT,
 };
 
 /// Wall-clock ceilings for helper subprocesses. User scripts may legitimately run for

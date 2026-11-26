@@ -14,11 +14,13 @@ mod update;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
 
+use crate::command::CommandCancellation;
 use crate::config::AppConfig;
 use crate::daemon::analytics::AnalyticsCollector;
 use crate::daemon::watcher::ProcessWatcher;
@@ -55,6 +57,13 @@ pub struct DaemonEngine {
     scheduler: Scheduler,
     /// Quota counters and their coalesced `runtime.json` flush clock.
     quota: QuotaLedger,
+    /// Manual step tests the GUI started, keyed by its test id. `None` is an id the dispatcher
+    /// reserved but whose task handle is not attached yet; `StopTestStep` aborts the handle and
+    /// terminates the script's process tree.
+    running_step_tests: HashMap<u64, Option<RunningStepTest>>,
+    /// Step-test ids stopped before their `TestStep` request reached the dispatcher. Bounded to
+    /// the recent window; a stop must never be lost because it overtook the start.
+    stopped_step_tests: VecDeque<u64>,
     /// Overlay drags stream position updates; persisting presets on every frame would
     /// hammer `library.json`, so those saves are coalesced separately.
     overlay_position_library_dirty: bool,
@@ -68,8 +77,18 @@ pub struct DaemonEngine {
     forced_persist_failure: bool,
 }
 
+/// One running manual step test: the handle that aborts the dispatcher's action task and the kill
+/// switch that terminates a script's whole process tree.
+struct RunningStepTest {
+    abort: tokio::task::AbortHandle,
+    cancel: Arc<CommandCancellation>,
+}
+
 impl DaemonEngine {
     pub const MAX_LOGS: usize = 500;
+    /// Stopped step-test ids remembered until their request reaches the dispatcher. The GUI sends
+    /// stops only for tests it just started, so a short recent window is enough.
+    const MAX_STOPPED_STEP_TESTS: usize = 32;
     /// Coalescing window for `runtime.json`; counters may lag the daemon by this much
     /// after a hard kill, which is acceptable for execution quotas.
     const RUNTIME_SAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -94,6 +113,8 @@ impl DaemonEngine {
             update: UpdateStatus::new(),
             scheduler: Scheduler::new(),
             quota: QuotaLedger::new(),
+            running_step_tests: HashMap::new(),
+            stopped_step_tests: VecDeque::new(),
             overlay_position_library_dirty: false,
             overlay_position_rules_dirty: false,
             last_overlay_position_save: Instant::now(),

@@ -283,6 +283,20 @@ trigger fires the rule's one pipeline on the event selected in the rule builder 
 (the default) or On Process Exit — and both choices go through the same preconditions, cooldown and
 quota.
 
+### Why does a manual step test run for a long time?
+
+Testing a step executes only that action, but it executes it for real: a script that copies files
+runs until it finishes, a wait step waits for its configured time. While the daemon runs it, the
+step card keeps the executing focus and the rest of the window stays connected — the state poll is
+not queued behind the test. The test is bounded by the action's own ceiling (a script gets
+300 seconds, an archive or file copy reports when it ends) plus a short slack, not by a fixed IPC
+timeout, so a long script is never reported as a lost daemon. While the daemon runs the action, the
+step's Play button becomes Stop; stopping it aborts the action like a Test Run and terminates the
+whole process tree the script started — every descendant, whatever its name or executable, not just
+the shell — and the focus clears at once. A process launched outside that tree (for example through
+a UAC prompt or Task Scheduler) cannot be tracked. When the action finishes the running focus simply
+clears; the editor paints no PASS/FAIL badge, and the outcome is in the daemon log.
+
 ### What is the difference between a cooldown and a quota?
 
 - **Cooldown** is a minimum delay between two triggered runs.

@@ -6,13 +6,17 @@ use crate::models::Action;
 
 static WEBHOOK_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
 
+/// Wall-clock ceiling of one webhook request. The same value bounds a manual step test of the
+/// action, so the two must stay one constant.
+pub(super) const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub(super) fn webhook_client() -> Result<&'static reqwest::Client, String> {
     WEBHOOK_CLIENT
         .get_or_init(|| {
             crate::updater::init_tls();
             reqwest::Client::builder()
                 .user_agent(concat!("Synector/", env!("CARGO_PKG_VERSION")))
-                .timeout(std::time::Duration::from_secs(15))
+                .timeout(WEBHOOK_TIMEOUT)
                 .build()
                 .map_err(|e| format!("Failed to create HTTP client: {e}"))
         })

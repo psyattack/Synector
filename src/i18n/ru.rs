@@ -699,8 +699,6 @@ pub static STRINGS: Strings = Strings {
     inspector_hotkey_repeat_while_held: "Выполнение в цикле",
     inspector_hotkey_repeat_while_held_tip: "Повторять весь пайплайн действий по кругу, пока хоткей зажат. При отпускании цикл останавливается.",
     inspector_infinite_macro_warning: "Бесконечный макрос: следующие шаги не будут выполнены",
-    inspector_macro_test_empty: "Макрос пуст",
-    inspector_macro_testing_actions: "Тест запущен ({} действий)",
     inspector_badge_unreachable: "НЕДОСТИЖИМ",
     inspector_badge_unreachable_tip: "Этот шаг не будет выполнен, так как перед ним стоит бесконечный макрос",
     inspector_field_notif_title_hint: "Заголовок уведомления",
@@ -1308,13 +1306,6 @@ pub static STRINGS: Strings = Strings {
     // Inspector toasts
     toast_url_copied: "URL скопирован в буфер обмена",
 
-    // Inspector test-step result messages
-    inspector_test_step_passed: "Шаг выполнен",
-    inspector_test_step_failed: "Сбой: {}",
-    inspector_test_step_error: "Ошибка: {}",
-    inspector_test_step_ipc_error: "Ошибка IPC: {}",
-    inspector_test_step_unknown: "Неизвестный результат",
-
     // Inspector action summary preview (action_summary_preview)
     summary_preview_launch_empty: "Запуск программы",
     summary_preview_launch: "Запуск {}",
@@ -1632,8 +1623,6 @@ pub static STRINGS: Strings = Strings {
     inspector_preset_prefix: "Пресет: {}",
     inspector_preset_unknown: "Пресет",
     inspector_ifelse_elif_badge: "ИНАЧЕ ЕСЛИ {:02}",
-    inspector_test_step_pass_badge: "УСПЕХ",
-    inspector_test_step_fail_badge: "СБОЙ",
     inspector_dialog_icon_title: "Выбор иконки правила",
     inspector_dialog_filter_image_exe: "Изображения и Exe",
     inspector_dialog_filter_executables: "Исполняемые файлы",

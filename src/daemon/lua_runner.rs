@@ -5,6 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::command::CommandCancellation;
+
 /// Instruction budget for one script. The hook runs every
 /// [`INSTRUCTION_HOOK_INTERVAL`] VM instructions, so an endless loop aborts
 /// promptly instead of pinning a daemon worker forever.
@@ -33,9 +35,16 @@ impl LuaRunner {
         script: &str,
         context: &HashMap<String, String>,
         output_vars: Arc<Mutex<HashMap<String, String>>>,
+        cancel: Option<Arc<CommandCancellation>>,
     ) -> Result<String, String> {
+        if cancel
+            .as_deref()
+            .is_some_and(CommandCancellation::is_cancelled)
+        {
+            return Err("the script was stopped".to_string());
+        }
         let lua = Lua::new();
-        Self::install_limits(&lua)?;
+        Self::install_limits(&lua, cancel.clone())?;
 
         // 1. Create `syn` global table
         let syn_table = lua.create_table().map_err(|e| e.to_string())?;
@@ -87,8 +96,9 @@ impl LuaRunner {
         syn_table.set("log", log_fn).map_err(|e| e.to_string())?;
 
         // 6. syn.run_cmd(cmd)
-        let cmd_fn = lua.create_function(|_, cmd: String| {
-            Ok(run_shell_command(&cmd, RUN_CMD_TIMEOUT))
+        let cmd_cancel = cancel.clone();
+        let cmd_fn = lua.create_function(move |_, cmd: String| {
+            Ok(run_shell_command(&cmd, RUN_CMD_TIMEOUT, cmd_cancel.clone()))
         }).map_err(|e| e.to_string())?;
         syn_table.set("run_cmd", cmd_fn).map_err(|e| e.to_string())?;
 
@@ -170,7 +180,10 @@ impl LuaRunner {
 
     /// Installs the instruction/time hook and the Lua heap cap. They stay active
     /// for the whole script, including callbacks such as `syn.run_cmd`.
-    fn install_limits(lua: &Lua) -> Result<(), String> {
+    fn install_limits(
+        lua: &Lua,
+        cancel: Option<Arc<CommandCancellation>>,
+    ) -> Result<(), String> {
         lua.set_memory_limit(MEMORY_LIMIT_BYTES)
             .map_err(|e| format!("Lua memory limit is unavailable: {e}"))?;
 
@@ -180,6 +193,12 @@ impl LuaRunner {
         lua.set_hook(
             HookTriggers::new().every_nth_instruction(INSTRUCTION_HOOK_INTERVAL),
             move |_lua, _debug| {
+                if cancel
+                    .as_deref()
+                    .is_some_and(CommandCancellation::is_cancelled)
+                {
+                    return Err(LuaError::runtime("the script was stopped"));
+                }
                 let executed = hook_executed
                     .fetch_add(u64::from(INSTRUCTION_HOOK_INTERVAL), Ordering::Relaxed)
                     + u64::from(INSTRUCTION_HOOK_INTERVAL);
@@ -203,16 +222,27 @@ impl LuaRunner {
 
 /// Runs a shell command through the shared bounded runner with a wall-clock deadline, a capped
 /// capture of stdout/stderr, the documented `Error: ...` string for every failure mode, and the
-/// process-tree kill on timeout or wait error. Blocking on purpose: `syn.run_cmd` is synchronous
-/// in the Lua VM.
-fn run_shell_command(cmd: &str, timeout: Duration) -> String {
+/// process-tree kill on timeout or stop. Blocking on purpose: `syn.run_cmd` is synchronous in the
+/// Lua VM.
+fn run_shell_command(
+    cmd: &str,
+    timeout: Duration,
+    cancel: Option<Arc<CommandCancellation>>,
+) -> String {
     let mut command = Command::new("cmd");
     command.args(["/C", cmd]);
-    let outcome = match crate::command::run_command_bounded_ex(command, timeout, true) {
+    let outcome = match crate::command::run_command_bounded_tracked(
+        command,
+        timeout,
+        cancel.as_deref(),
+    ) {
         Ok(outcome) => outcome,
         Err(error) => return format!("Error: {}", error.io_error()),
     };
 
+    if outcome.cancelled {
+        return "Error: command stopped".to_string();
+    }
     if outcome.timed_out {
         return format!("Error: command timed out after {}s", timeout.as_secs_f32());
     }
@@ -257,7 +287,7 @@ mod tests {
     fn run(script: &str) -> Result<String, String> {
         let ctx = HashMap::new();
         let outputs = Arc::new(Mutex::new(HashMap::new()));
-        LuaRunner::execute(script, &ctx, outputs)
+        LuaRunner::execute(script, &ctx, outputs, None)
     }
 
     #[test]
@@ -273,7 +303,8 @@ mod tests {
             return 42
         "#;
 
-        let res = LuaRunner::execute(script, &ctx, Arc::clone(&outputs)).expect("Lua execution should succeed");
+        let res = LuaRunner::execute(script, &ctx, Arc::clone(&outputs), None)
+            .expect("Lua execution should succeed");
         assert_eq!(res, "42");
 
         let vars = outputs.lock().unwrap();
@@ -335,14 +366,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn test_run_shell_command_reports_nonzero_exit() {
-        let out = run_shell_command("exit /b 3", Duration::from_secs(5));
+        let out = run_shell_command("exit /b 3", Duration::from_secs(5), None);
         assert_eq!(out, "Error: exit code 3");
     }
 
     #[cfg(windows)]
     #[test]
     fn test_run_shell_command_includes_stderr() {
-        let out = run_shell_command("echo boom 1>&2 & exit /b 2", Duration::from_secs(5));
+        let out = run_shell_command("echo boom 1>&2 & exit /b 2", Duration::from_secs(5), None);
         assert!(out.starts_with("Error: exit code 2"), "{out}");
         assert!(out.contains("boom"), "{out}");
     }
@@ -351,7 +382,11 @@ mod tests {
     #[test]
     fn test_run_shell_command_times_out() {
         let started = Instant::now();
-        let out = run_shell_command("ping -n 20 127.0.0.1 >nul", Duration::from_millis(300));
+        let out = run_shell_command(
+            "ping -n 20 127.0.0.1 >nul",
+            Duration::from_millis(300),
+            None,
+        );
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "the command must be killed at the deadline"
@@ -365,6 +400,7 @@ mod tests {
         let out = run_shell_command(
             "for /L %i in (1,1,7000) do @echo xxxxxxxxxx",
             Duration::from_secs(10),
+            None,
         );
         assert!(
             out.ends_with("\n[output truncated]"),
@@ -379,6 +415,7 @@ mod tests {
         let out = run_shell_command(
             "(for /L %i in (1,1,300) do @echo eeeeeeeee 1>&2) & exit /b 1",
             Duration::from_secs(10),
+            None,
         );
         assert!(out.starts_with("Error: exit code 1: "), "{out}");
         assert!(

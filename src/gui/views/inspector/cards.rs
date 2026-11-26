@@ -2,6 +2,36 @@
 
 use super::*;
 
+/// One running manual step test. The daemon-side `test_id` is what the stop button aborts; the
+/// egui id it is stored under belongs to the card it runs on.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PendingStepTest {
+    pub(crate) test_id: u64,
+}
+
+/// Temp-data id of a top-level step test's running focus.
+pub(crate) fn step_test_result_id(idx: usize) -> Id {
+    Id::unique(("test_step_res", idx))
+}
+
+/// Same id for one nested If/Else branch step. The salt is the ASCII branch key, so the id does
+/// not change with the UI language.
+pub(crate) fn sub_step_test_result_id(
+    ui: &Ui,
+    parent_idx: usize,
+    branch_salt: &str,
+    sub_idx: usize,
+) -> Id {
+    ui.scope_id()
+        .with(("sub_test_res", parent_idx, branch_salt, sub_idx))
+}
+
+/// The running step test of this card, if any. Its presence drives both the execution focus and
+/// the Play/Stop swap.
+fn running_step_test(ui: &Ui, id: Id) -> Option<PendingStepTest> {
+    ui.data(|data| data.get_temp::<PendingStepTest>(id))
+}
+
 pub(crate) fn render_infinite_macro_warning(ui: &mut Ui, state: &GuiState, t: &Tokens) {
     let loc = state.loc();
     ui.add_space(2.0);
@@ -42,6 +72,10 @@ pub(crate) fn render_action_card(
     is_dimmed: bool,
 ) -> PipelineCardOutcome {
     let loc = state.loc();
+    // A running manual step test uses the same focus as the step the daemon is executing.
+    let result_id = step_test_result_id(idx);
+    let running_test = running_step_test(ui, result_id);
+    let is_active = is_executing || running_test.is_some();
     let mut remove_clicked = false;
     let mut clone_clicked = false;
     let mut change_clicked = false;
@@ -54,7 +88,7 @@ pub(crate) fn render_action_card(
 
     let (fill, stroke) = if is_dimmed {
         (t.sunken.gamma_multiply(0.4), Stroke::new(1.0, t.muted.gamma_multiply(0.2)))
-    } else if is_executing {
+    } else if is_active {
         (t.sunken, Stroke::new(1.5, t.accent_ink))
     } else if ghost_anim > 0.001 {
         (
@@ -95,37 +129,40 @@ pub(crate) fn render_action_card(
                             change_clicked = true;
                         }
 
-                        if widgets::glyph_button(ui, Glyph::Play, loc.inspector_btn_test_step).clicked() {
-                            if let Action::Overlay { overlay_id, custom_overlay, .. } = action {
-                                step_tested_overlays.push(overlay_id.clone());
-                                if let Some(cust) = custom_overlay {
-                                    step_tested_overlays.push(cust.id.clone());
-                                }
-                            }
-                            let key = idx;
-                            if let Action::Macro { events, speed, .. } = action {
-                                let (ok, msg) = if events.is_empty() {
-                                    (false, loc.inspector_macro_test_empty.to_string())
-                                } else {
-                                    crate::gui::macro_recorder::run_macro_test_safe(events.clone(), *speed);
-                                    (true, loc.inspector_macro_testing_actions.replace("{}", &events.len().to_string()))
-                                };
-                                ui.data_mut(|d| d.insert_temp(Id::unique(("test_step_res", key)), (ok, msg, Instant::now())));
+                        let (test_glyph, test_tip) = if running_test.is_some() {
+                            (Glyph::Stop, loc.rules_btn_stop)
+                        } else {
+                            (Glyph::Play, loc.inspector_btn_test_step)
+                        };
+                        if widgets::glyph_button(ui, test_glyph, test_tip).clicked() {
+                            if let Some(pending) = running_test {
+                                // Stop works like a Test Run stop: the daemon aborts the action
+                                // and the card drops its focus without waiting for the round-trip.
+                                state.stop_step_test(pending.test_id);
+                                ui.data_mut(|d| d.remove::<PendingStepTest>(result_id));
                             } else {
-                                // The round-trip runs on the IPC worker; the outcome badge appears
-                                // when the result is applied on a later frame.
-                                let mut ctx = HashMap::new();
-                                ctx.insert("ProcessName".to_string(), "test.exe".to_string());
-                                ctx.insert("Timestamp".to_string(), chrono::Local::now().to_rfc3339());
-                                state.test_step(action, ctx, Id::unique(("test_step_res", key)));
-                            }
-                        }
-
-                        let test_key = idx;
-                        if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, Instant)>(Id::unique(("test_step_res", test_key)))) {
-                            if at.elapsed().as_secs() < 8 {
-                                let badge_color = if ok { t.good } else { t.bad };
-                                widgets::badge(ui, if ok { loc.inspector_test_step_pass_badge } else { loc.inspector_test_step_fail_badge }, badge_color).on_hover_text(msg);
+                                if let Action::Overlay { overlay_id, custom_overlay, .. } = action {
+                                    step_tested_overlays.push(overlay_id.clone());
+                                    if let Some(cust) = custom_overlay {
+                                        step_tested_overlays.push(cust.id.clone());
+                                    }
+                                }
+                                if let Action::Macro { events, speed, .. } = action {
+                                    // A macro test replays locally in the GUI; the replay is the
+                                    // feedback, so it paints no result badge.
+                                    crate::gui::macro_recorder::run_macro_test_safe(events.clone(), *speed);
+                                } else {
+                                    // The round-trip runs on the IPC worker; the card keeps the
+                                    // execution focus until the completion reaches the next frame.
+                                    let mut ctx = HashMap::new();
+                                    ctx.insert("ProcessName".to_string(), "test.exe".to_string());
+                                    ctx.insert("Timestamp".to_string(), chrono::Local::now().to_rfc3339());
+                                    if let Some(daemon_test_id) = state.test_step(action, ctx, result_id) {
+                                        ui.data_mut(|d| {
+                                            d.insert_temp(result_id, PendingStepTest { test_id: daemon_test_id })
+                                        });
+                                    }
+                                }
                             }
                         }
 
@@ -143,7 +180,7 @@ pub(crate) fn render_action_card(
                             if is_dimmed {
                                 widgets::badge(ui, loc.inspector_badge_unreachable, t.warn.gamma_multiply(0.8))
                                     .on_hover_text(loc.inspector_badge_unreachable_tip);
-                            } else if is_executing {
+                            } else if is_active {
                                 widgets::badge(ui, loc.inspector_badge_executing_now, t.accent_ink);
                             } else if is_being_dragged {
                                 widgets::badge(ui, loc.inspector_badge_moving_step, t.accent_ink);
@@ -223,6 +260,7 @@ pub(crate) fn render_subaction_card(
     depth: usize,
 ) -> PipelineCardOutcome {
     let loc = state.loc();
+    let result_id = sub_step_test_result_id(ui, parent_idx, branch_salt, sub_idx);
     let mut remove_clicked = false;
     let mut clone_clicked = false;
     let mut change_clicked = false;
@@ -243,10 +281,13 @@ pub(crate) fn render_subaction_card(
         }
         _ => false,
     };
+    // A running manual step test uses the same focus as an executing nested step.
+    let running_test = running_step_test(ui, result_id);
+    let is_active = is_overlay_active || running_test.is_some();
 
     let (fill, stroke) = if is_dimmed {
         (t.sunken.gamma_multiply(0.4), Stroke::new(1.0, t.muted.gamma_multiply(0.2)))
-    } else if is_overlay_active {
+    } else if is_active {
         (t.bg, Stroke::new(1.5, t.accent_ink))
     } else if ghost_anim > 0.001 {
         (
@@ -283,37 +324,40 @@ pub(crate) fn render_subaction_card(
                         if widgets::glyph_button(ui, Glyph::Edit, loc.inspector_tip_change_step).clicked() {
                             change_clicked = true;
                         }
-                        if widgets::glyph_button(ui, Glyph::Play, loc.inspector_btn_test_step).clicked() {
-                            if let Action::Overlay { overlay_id, custom_overlay, .. } = sub_act {
-                                step_tested_overlays.push(overlay_id.clone());
-                                if let Some(cust) = custom_overlay {
-                                    step_tested_overlays.push(cust.id.clone());
-                                }
-                            }
-                            let sub_test_key = ui.scope_id().with(("sub_test_res", parent_idx, branch_salt, sub_idx));
-                            if let Action::Macro { events, speed, .. } = sub_act {
-                                let (ok, msg) = if events.is_empty() {
-                                    (false, loc.inspector_macro_test_empty.to_string())
-                                } else {
-                                    crate::gui::macro_recorder::run_macro_test_safe(events.clone(), *speed);
-                                    (true, loc.inspector_macro_testing_actions.replace("{}", &events.len().to_string()))
-                                };
-                                ui.data_mut(|d| d.insert_temp(sub_test_key, (ok, msg, std::time::Instant::now())));
+                        let (test_glyph, test_tip) = if running_test.is_some() {
+                            (Glyph::Stop, loc.rules_btn_stop)
+                        } else {
+                            (Glyph::Play, loc.inspector_btn_test_step)
+                        };
+                        if widgets::glyph_button(ui, test_glyph, test_tip).clicked() {
+                            if let Some(pending) = running_test {
+                                // Stop works like a Test Run stop: the daemon aborts the action
+                                // and the card drops its focus without waiting for the round-trip.
+                                state.stop_step_test(pending.test_id);
+                                ui.data_mut(|d| d.remove::<PendingStepTest>(result_id));
                             } else {
-                                // The round-trip runs on the IPC worker; the outcome badge appears
-                                // when the result is applied on a later frame.
-                                let mut ctx = std::collections::HashMap::new();
-                                ctx.insert("ProcessName".to_string(), "test.exe".to_string());
-                                ctx.insert("Timestamp".to_string(), chrono::Local::now().to_rfc3339());
-                                state.test_step(sub_act, ctx, sub_test_key);
-                            }
-                        }
-
-                        let sub_test_key = ui.scope_id().with(("sub_test_res", parent_idx, branch_salt, sub_idx));
-                        if let Some((ok, msg, at)) = ui.data(|d| d.get_temp::<(bool, String, std::time::Instant)>(sub_test_key)) {
-                            if at.elapsed().as_secs() < 8 {
-                                let badge_color = if ok { t.good } else { t.bad };
-                                widgets::badge(ui, if ok { loc.inspector_test_step_pass_badge } else { loc.inspector_test_step_fail_badge }, badge_color).on_hover_text(msg);
+                                if let Action::Overlay { overlay_id, custom_overlay, .. } = sub_act {
+                                    step_tested_overlays.push(overlay_id.clone());
+                                    if let Some(cust) = custom_overlay {
+                                        step_tested_overlays.push(cust.id.clone());
+                                    }
+                                }
+                                if let Action::Macro { events, speed, .. } = sub_act {
+                                    // A macro test replays locally in the GUI; the replay is the
+                                    // feedback, so it paints no result badge.
+                                    crate::gui::macro_recorder::run_macro_test_safe(events.clone(), *speed);
+                                } else {
+                                    // The round-trip runs on the IPC worker; the card keeps the
+                                    // execution focus until the completion reaches the next frame.
+                                    let mut ctx = std::collections::HashMap::new();
+                                    ctx.insert("ProcessName".to_string(), "test.exe".to_string());
+                                    ctx.insert("Timestamp".to_string(), chrono::Local::now().to_rfc3339());
+                                    if let Some(daemon_test_id) = state.test_step(sub_act, ctx, result_id) {
+                                        ui.data_mut(|d| {
+                                            d.insert_temp(result_id, PendingStepTest { test_id: daemon_test_id })
+                                        });
+                                    }
+                                }
                             }
                         }
 
@@ -331,7 +375,7 @@ pub(crate) fn render_subaction_card(
                                     .on_hover_text(loc.inspector_badge_unreachable_tip);
                             } else if is_being_dragged {
                                 widgets::badge(ui, loc.inspector_badge_moving_step, t.accent_ink);
-                            } else if is_overlay_active {
+                            } else if is_active {
                                 widgets::badge(ui, loc.inspector_badge_executing_now, t.accent_ink);
                             } else {
                                 widgets::badge(ui, type_badge, t.muted);

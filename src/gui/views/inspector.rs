@@ -16,7 +16,6 @@ use crate::models::{
 };
 use chrono::{Datelike, Timelike};
 use std::collections::HashMap;
-use std::time::Instant;
 
 mod actions;
 mod cards;
@@ -149,10 +148,19 @@ fn store_save_errors(ctx: &egui::Context, rule_id: &str, messages: Vec<String>) 
 pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
     let t = Tokens::get(ctx);
 
-    // Step-test outcomes arrive through the IPC worker on a later frame; the cards read their
-    // badge from egui temp data under the id they computed when the user pressed Test.
-    for (result_id, value) in state.take_test_step_results() {
-        ctx.data_mut(|data| data.insert_temp(result_id, value));
+    // Step-test completions arrive through the IPC worker on a later frame: the card drops the
+    // running focus it showed while the daemon executed the action. Pairing the daemon-side test
+    // id keeps a stale completion from clearing a newer run of the same step. The outcome itself
+    // is logged by the daemon, not painted as a badge in the editor.
+    for (result_id, daemon_test_id) in state.take_finished_step_tests() {
+        ctx.data_mut(|data| {
+            if data
+                .get_temp::<PendingStepTest>(result_id)
+                .is_some_and(|pending| pending.test_id == daemon_test_id)
+            {
+                data.remove::<PendingStepTest>(result_id);
+            }
+        });
     }
 
     let is_open = state.editing_rule.is_some() || state.selected_process.is_some();
@@ -853,6 +861,73 @@ mod tests {
                 .as_ref()
                 .is_some_and(|rule| rule.custom_icon_path.is_none()),
             "clicking the hovered icon tile must reset the custom icon"
+        );
+    }
+
+    /// The action card's own frame: a card-sized rect with the 1.5 px execution stroke. The
+    /// step-test focus reuses that exact shape, so the test can tell it apart from a normal card
+    /// (hairline) and from the small status badges (hairline chips).
+    fn execution_focus_rect(output: &egui::FullOutput, t: &Tokens) -> Option<Rect> {
+        output.shapes.iter().find_map(|clipped| match &clipped.shape {
+            egui::Shape::Rect(rect)
+                if rect.stroke.width == 1.5
+                    && rect.stroke.color == t.accent_ink
+                    && rect.rect.width() > 200.0
+                    && rect.rect.height() > 40.0 =>
+            {
+                Some(rect.rect)
+            }
+            _ => None,
+        })
+    }
+
+    /// A manual step test used to show nothing until a PASS/FAIL badge landed. It now shows the
+    /// same focus as an executing step for as long as the daemon runs the action, and completion
+    /// simply drops that focus again — the editor paints no result badge.
+    #[test]
+    fn test_a_running_step_test_shows_the_execution_focus_until_it_finishes() {
+        let ctx = egui::Context::default();
+        let mut state = preset_drawer_state(Action::Notification {
+            title: "Test".into(),
+            message: "Body".into(),
+        });
+        let t = Tokens::get(&ctx);
+
+        let (rest, _panel) = settled_drawer_frame(&ctx, &mut state);
+        assert!(
+            execution_focus_rect(&rest, &t).is_none(),
+            "an idle step card must not paint the execution focus"
+        );
+
+        let result_id = step_test_result_id(0);
+        ctx.data_mut(|data| data.insert_temp(result_id, PendingStepTest { test_id: 7 }));
+        let (running, _panel) = settled_drawer_frame(&ctx, &mut state);
+        let focus = execution_focus_rect(&running, &t)
+            .expect("a running step test must paint the execution focus on its card");
+        assert!(focus.width() > 200.0, "the focus belongs on the action card: {focus:?}");
+
+        // A late completion of an earlier test must not clear the focus of a newer run.
+        state.finished_step_tests.push((result_id, 6));
+        let (stale, _panel) = settled_drawer_frame(&ctx, &mut state);
+        assert!(
+            execution_focus_rect(&stale, &t).is_some(),
+            "a stale completion must not clear a newer test's focus"
+        );
+
+        // The daemon finished: the drawer drops the running focus and stores no outcome payload.
+        state.finished_step_tests.push((result_id, 7));
+        let (settled, _panel) = settled_drawer_frame(&ctx, &mut state);
+        assert!(
+            execution_focus_rect(&settled, &t).is_none(),
+            "the focus must clear once the test finishes"
+        );
+        assert!(
+            ctx.data(|data| data.get_temp::<PendingStepTest>(result_id).is_none()),
+            "the pending marker must not outlive the test"
+        );
+        assert!(
+            ctx.data(|data| data.get_temp::<(bool, String, std::time::Instant)>(result_id).is_none()),
+            "the editor must not store a PASS/FAIL badge payload"
         );
     }
 

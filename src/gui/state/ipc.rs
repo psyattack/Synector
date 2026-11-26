@@ -7,6 +7,8 @@
 // mutation keeps its draft until the daemon (or the documented direct-file fallback) confirms it.
 // ---------------------------------------------------------------------------
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::ipc::{IpcClient, IpcRequest, IpcResponse};
@@ -14,6 +16,23 @@ use crate::models::Rule;
 
 use super::library_write::{LibraryWriteOutcome, LibraryWriteRequest};
 use super::GuiState;
+
+/// Correlation ids for manual step tests. The daemon keys its running tests by this id, so the
+/// stop request can target exactly one action. The counter is seeded from the wall clock: a
+/// restarted GUI must not collide with a test the previous process left running in the daemon.
+static NEXT_STEP_TEST_ID: OnceLock<AtomicU64> = OnceLock::new();
+
+fn next_step_test_id() -> u64 {
+    NEXT_STEP_TEST_ID
+        .get_or_init(|| {
+            let seed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(1);
+            AtomicU64::new(seed << 16)
+        })
+        .fetch_add(1, Ordering::Relaxed)
+}
 
 /// Identifies a queued IPC request so its result can update GUI state on the frame thread.
 /// Mutations carry just enough identity for the success/failure reporting.
@@ -39,7 +58,7 @@ pub(super) enum IpcJobKind {
     StartUpdate,
     KillProcess { pid: u32, name: String },
     /// Result of an inline step test; stored in egui temp data under the view's own id.
-    TestStep { result_id: egui::Id },
+    TestStep { result_id: egui::Id, test_id: u64 },
     OverlayPosition { overlay_id: String },
     SaveSettings { revision: u64, restart_required: bool },
     /// A preset-library write executed through `state::library_write`; the payload lives in
@@ -70,7 +89,7 @@ impl IpcJobKind {
             Self::SetAutorun { enabled } => format!("SetAutorun ({enabled})"),
             Self::StartUpdate => "StartUpdate".into(),
             Self::KillProcess { pid, .. } => format!("KillProcess #{pid}"),
-            Self::TestStep { .. } => "TestStep".into(),
+            Self::TestStep { test_id, .. } => format!("TestStep #{test_id}"),
             Self::OverlayPosition { overlay_id } => format!("GetOverlayPosition '{overlay_id}'"),
             Self::SaveSettings { .. } => "SaveSettings".into(),
             Self::LibraryWrite { key } => format!("library write #{key}"),
@@ -337,22 +356,67 @@ pub(super) struct IpcGateway {
     pub(super) frame_ctx: Option<egui::Context>,
 }
 
-impl IpcGateway {
-    pub(super) fn new() -> Self {
-        let (job_tx, job_rx) = std::sync::mpsc::channel::<IpcJob>();
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<IpcJobResult>();
-        let spawned = std::thread::Builder::new()
-            .name("synector-gui-ipc".into())
-            .spawn(move || {
-                while let Ok(job) = job_rx.recv() {
-                    if result_tx.send(run_ipc_job(&job)).is_err() {
+/// One job that must not hold the serialized IPC worker. A step test executes an action inline on
+/// the daemon and may legitimately take minutes (a script or a wait), while the daemon poll and
+/// mutations queued behind it must keep answering; sharing the worker would time them out as a
+/// daemon outage.
+fn job_runs_on_its_own_thread(kind: &IpcJobKind) -> bool {
+    matches!(kind, IpcJobKind::TestStep { .. })
+}
+
+/// Starts the GUI's IPC worker and returns the queue and result handles.
+///
+/// `run` is the executor of one job. Production passes [`run_ipc_job`]; tests pass a fake so the
+/// queueing contract can be exercised without a named pipe.
+fn spawn_ipc_worker(
+    run: fn(&IpcJob) -> IpcJobResult,
+) -> (std::sync::mpsc::Sender<IpcJob>, std::sync::mpsc::Receiver<IpcJobResult>) {
+    let (job_tx, job_rx) = std::sync::mpsc::channel::<IpcJob>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<IpcJobResult>();
+    let worker_result_tx = result_tx.clone();
+    let spawned = std::thread::Builder::new()
+        .name("synector-gui-ipc".into())
+        .spawn(move || {
+            while let Ok(job) = job_rx.recv() {
+                if !job_runs_on_its_own_thread(&job.kind) {
+                    if worker_result_tx.send(run(&job)).is_err() {
                         break;
                     }
+                    continue;
                 }
-            });
-        if let Err(err) = spawned {
-            crate::logging::error("GUI", &format!("Cannot start the IPC worker: {err}"));
-        }
+                // The job is detached because it can outlive several polls. Its result still
+                // reaches the frame thread through the same result channel.
+                let kind = job.kind.clone();
+                let job_result_tx = worker_result_tx.clone();
+                let detached_result_tx = worker_result_tx.clone();
+                let detached = std::thread::Builder::new()
+                    .name("synector-gui-step-test".into())
+                    .spawn(move || {
+                        let _ = job_result_tx.send(run(&job));
+                    });
+                if let Err(error) = detached {
+                    crate::logging::error(
+                        "GUI",
+                        &format!("Cannot start the step-test worker: {error}"),
+                    );
+                    // The job itself moved into the failed closure; report the failure for its
+                    // kind so a running focus does not outlive the attempt.
+                    let _ = detached_result_tx.send(IpcJobResult {
+                        kind,
+                        result: Err(format!("cannot start the step-test worker: {error}")),
+                    });
+                }
+            }
+        });
+    if let Err(err) = spawned {
+        crate::logging::error("GUI", &format!("Cannot start the IPC worker: {err}"));
+    }
+    (job_tx, result_rx)
+}
+
+impl IpcGateway {
+    pub(super) fn new() -> Self {
+        let (job_tx, result_rx) = spawn_ipc_worker(run_ipc_job);
         Self {
             job_tx,
             result_rx,
@@ -535,7 +599,10 @@ impl GuiState {
             IpcJobKind::SetAutorun { enabled } => self.apply_autorun_result(*enabled, result),
             IpcJobKind::StartUpdate => self.apply_start_update_result(result),
             IpcJobKind::KillProcess { pid, name } => self.apply_kill_process_result(*pid, name, result),
-            IpcJobKind::TestStep { result_id } => self.apply_test_step_result(*result_id, result),
+            IpcJobKind::TestStep {
+                result_id,
+                test_id,
+            } => self.finish_step_test(*result_id, *test_id),
             IpcJobKind::OverlayPosition { overlay_id } => {
                 self.apply_overlay_position_result(overlay_id, result)
             }
@@ -613,47 +680,53 @@ impl GuiState {
         }
     }
 
-    /// Queues one inline step test; the localized outcome reaches the inspector through
-    /// [`Self::take_test_step_results`] on a later frame.
+    /// Queues one inline step test; its completion reaches the inspector through
+    /// [`Self::take_finished_step_tests`] on a later frame. Returns the daemon-side test id (used
+    /// by [`Self::stop_step_test`]) or `None` when the worker is gone, so the caller does not show
+    /// a running focus for a request that will never be answered.
     pub fn test_step(
         &self,
         action: &crate::models::Action,
         context: std::collections::HashMap<String, String>,
         result_id: egui::Id,
-    ) {
+    ) -> Option<u64> {
+        let test_id = next_step_test_id();
         self.enqueue_ipc(
-            IpcJobKind::TestStep { result_id },
+            IpcJobKind::TestStep {
+                result_id,
+                test_id,
+            },
             IpcRequest::TestStep {
+                test_id,
                 action: action.clone(),
                 context,
             },
             None,
+        )
+        .then_some(test_id)
+    }
+
+    /// Asks the daemon to abort one running step test, the same way `StopRuleExecution` aborts a
+    /// Test Run. The card clears its running focus immediately; the stopped test is not recorded.
+    pub fn stop_step_test(&self, test_id: u64) {
+        self.enqueue_ipc(
+            IpcJobKind::Background,
+            IpcRequest::StopTestStep(test_id),
+            None,
         );
     }
 
-    fn apply_test_step_result(&mut self, result_id: egui::Id, result: Result<IpcResponse, String>) {
-        let loc = self.loc();
-        let (ok, message) = match result {
-            Ok(IpcResponse::TestStepResult(Ok(()))) => {
-                (true, loc.inspector_test_step_passed.to_string())
-            }
-            Ok(IpcResponse::TestStepResult(Err(error))) => {
-                (false, loc.inspector_test_step_failed.replace("{}", &error))
-            }
-            Ok(IpcResponse::Error(error)) => {
-                (false, loc.inspector_test_step_error.replace("{}", &error))
-            }
-            Err(error) => (false, loc.inspector_test_step_ipc_error.replace("{}", &error)),
-            Ok(_) => (false, loc.inspector_test_step_unknown.to_string()),
-        };
-        self.pending_test_step_results
-            .push((result_id, (ok, message, Instant::now())));
+    /// Records that the daemon finished one inline step test, so the inspector clears the running
+    /// focus of that exact test on the next frame. The outcome itself is already logged by the
+    /// daemon; the editor paints no result badge.
+    fn finish_step_test(&mut self, result_id: egui::Id, test_id: u64) {
+        self.finished_step_tests.push((result_id, test_id));
     }
 
-    /// Drains completed step tests for the inspector to place in egui temp data under the ids it
-    /// computed when the user pressed Test.
-    pub fn take_test_step_results(&mut self) -> Vec<(egui::Id, (bool, String, Instant))> {
-        std::mem::take(&mut self.pending_test_step_results)
+    /// Drains completed step tests for the inspector to clear the focus under the ids it computed
+    /// when the user pressed Test.
+    pub fn take_finished_step_tests(&mut self) -> Vec<(egui::Id, u64)> {
+        std::mem::take(&mut self.finished_step_tests)
     }
 
     /// Polls the daemon's live overlay position while the studio is calibrating; at most one poll
@@ -1020,37 +1093,115 @@ mod tests {
         );
     }
 
+    /// A step test executes an action inline on the daemon and can take minutes. It must not hold
+    /// the serialized worker: the state poll queued behind it has to answer first, otherwise the
+    /// GUI times its polls out and reports a lost daemon (the reported long-script case).
     #[test]
-    fn test_test_step_results_are_queued_for_the_view() {
+    fn test_a_step_test_does_not_hold_the_serialized_worker() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{mpsc, Mutex};
+        use std::time::Duration;
+
+        static STEP_STARTED: AtomicBool = AtomicBool::new(false);
+        static STEP_RELEASE: Mutex<Option<mpsc::Receiver<()>>> = Mutex::new(None);
+
+        fn fake_runner(job: &IpcJob) -> IpcJobResult {
+            if matches!(job.kind, IpcJobKind::TestStep { .. }) {
+                STEP_STARTED.store(true, Ordering::SeqCst);
+                if let Some(release) = STEP_RELEASE.lock().expect("step-test gate").take() {
+                    let _ = release.recv();
+                }
+            }
+            IpcJobResult {
+                kind: job.kind.clone(),
+                result: Ok(IpcResponse::Ok),
+            }
+        }
+
+        let (release_tx, release_rx) = mpsc::channel();
+        *STEP_RELEASE.lock().expect("step-test gate") = Some(release_rx);
+        STEP_STARTED.store(false, Ordering::SeqCst);
+        let (job_tx, result_rx) = spawn_ipc_worker(fake_runner);
+
+        job_tx
+            .send(IpcJob {
+                kind: IpcJobKind::TestStep {
+                    result_id: egui::Id::unique("slow_step_test"),
+                    test_id: 1,
+                },
+                request: None,
+                direct: None,
+                library: None,
+            })
+            .expect("queue the step test");
+        let start_deadline = Instant::now() + Duration::from_secs(2);
+        while !STEP_STARTED.load(Ordering::SeqCst) {
+            assert!(Instant::now() < start_deadline, "the step-test worker never started");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+
+        job_tx
+            .send(IpcJob {
+                kind: IpcJobKind::Sync,
+                request: None,
+                direct: None,
+                library: None,
+            })
+            .expect("queue the state poll behind the step test");
+        let first = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the state poll must answer while the step test runs");
+        assert!(
+            matches!(first.kind, IpcJobKind::Sync),
+            "the step test held the serialized worker"
+        );
+
+        release_tx.send(()).expect("release the step test");
+        let second = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the released step test must report its result");
+        assert!(matches!(second.kind, IpcJobKind::TestStep { .. }));
+    }
+
+    /// Step-test ids must never repeat in one process and must not collide with a test left
+    /// running by a previous GUI process in the same daemon, so they are wall-clock seeded.
+    #[test]
+    fn test_step_test_ids_are_unique_and_time_seeded() {
+        let first = next_step_test_id();
+        let second = next_step_test_id();
+        assert!(second > first, "ids must increase: {first} then {second}");
+        assert!(first >> 16 > 0, "ids must carry the wall-clock seed: {first}");
+    }
+
+    /// The inspector only needs to know which step test finished, so it can clear that exact run's
+    /// running focus; the outcome no longer becomes a badge in the editor.
+    #[test]
+    fn test_finished_step_tests_are_queued_for_the_view() {
         let mut state = GuiState::new();
-        state.language = crate::i18n::Language::English;
-        let en = crate::i18n::get(crate::i18n::Language::English);
         let result_id = egui::Id::unique("test_step_queue");
 
         state.apply_ipc_result(IpcJobResult {
-            kind: IpcJobKind::TestStep { result_id },
+            kind: IpcJobKind::TestStep {
+                result_id,
+                test_id: 7,
+            },
             result: Ok(IpcResponse::TestStepResult(Ok(()))),
         });
-        let results = state.take_test_step_results();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, result_id);
-        assert!(results[0].1.0);
-        assert_eq!(results[0].1.1, en.inspector_test_step_passed);
+        assert_eq!(state.take_finished_step_tests(), vec![(result_id, 7)]);
         assert!(
-            state.take_test_step_results().is_empty(),
-            "drained results are consumed"
+            state.take_finished_step_tests().is_empty(),
+            "drained completions are consumed"
         );
 
+        // A stopped or failed test still clears the focus; the daemon owns the log.
         state.apply_ipc_result(IpcJobResult {
-            kind: IpcJobKind::TestStep { result_id },
-            result: Ok(IpcResponse::TestStepResult(Err("boom".into()))),
+            kind: IpcJobKind::TestStep {
+                result_id,
+                test_id: 8,
+            },
+            result: Ok(IpcResponse::TestStepResult(Err("the step test was stopped".into()))),
         });
-        let results = state.take_test_step_results();
-        assert!(!results[0].1.0);
-        assert_eq!(
-            results[0].1.1,
-            en.inspector_test_step_failed.replace("{}", "boom")
-        );
+        assert_eq!(state.take_finished_step_tests(), vec![(result_id, 8)]);
     }
 
     #[test]

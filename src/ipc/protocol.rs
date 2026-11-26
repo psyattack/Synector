@@ -22,7 +22,16 @@ pub enum IpcRequest {
         rule: Option<Box<Rule>>,
     },
     StopRuleExecution(String),
-    TestStep { action: Action, context: std::collections::HashMap<String, String> },
+    /// Runs one action for the rule editor's manual step test. `test_id` is the GUI's monotonic
+    /// correlation id; [`Self::StopTestStep`] aborts the same id.
+    TestStep {
+        test_id: u64,
+        action: Action,
+        context: std::collections::HashMap<String, String>,
+    },
+    /// Aborts one running manual step test. An id the dispatcher has not started yet is remembered
+    /// and refused when its `TestStep` arrives, so a stop can never be lost to that race.
+    StopTestStep(u64),
     GetProcesses,
     KillProcess { pid: u32, force: bool },
     SetAutorun(bool),
@@ -258,6 +267,32 @@ mod tests {
         match dec_stop {
             IpcRequest::StopRuleExecution(id) => assert_eq!(id, "rule_1"),
             _ => panic!("wrong variant"),
+        }
+    }
+
+    /// The manual step test and its stop travel as one correlation id, so the stop cannot target
+    /// another action and a stale id keeps its meaning across the wire.
+    #[test]
+    fn test_ipc_test_step_and_stop_serde() {
+        let req = IpcRequest::TestStep {
+            test_id: 9,
+            action: crate::models::Action::DiscordRpcClear,
+            context: std::collections::HashMap::new(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        match serde_json::from_str::<IpcRequest>(&json).unwrap() {
+            IpcRequest::TestStep { test_id, action, .. } => {
+                assert_eq!(test_id, 9);
+                assert_eq!(action, crate::models::Action::DiscordRpcClear);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+
+        let stop = IpcRequest::StopTestStep(9);
+        let json_stop = serde_json::to_string(&stop).unwrap();
+        match serde_json::from_str::<IpcRequest>(&json_stop).unwrap() {
+            IpcRequest::StopTestStep(test_id) => assert_eq!(test_id, 9),
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 

@@ -656,6 +656,7 @@ async fn test_powershell_script_sees_syn_prefixed_context() {
         "Write-Output $env:SYN_PROCESSNAME",
         false,
         &context,
+        None,
     )
     .await
     .expect("the script should run");

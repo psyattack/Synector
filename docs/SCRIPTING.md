@@ -53,7 +53,7 @@ The `syn` table is the only global Synector adds.
 | `syn.get(key)` | string | `""` when the key is missing |
 | `syn.set(key, value)` | — | Writes to a run-local table; return a value instead (see Output) |
 | `syn.log(text)` | — | Writes `[LUA] text` to the daemon's standard output |
-| `syn.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure or timeout comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
+| `syn.run_cmd(command)` | string | Runs `cmd /C <command>` and returns its stdout. A non-zero exit, spawn failure, timeout or a stop of the running manual step test comes back as an `Error: ...` string instead of raising, so check the prefix; a non-zero exit also carries the trimmed stderr when there is one |
 | `syn.overlay_show(id)` | — | Shows a saved overlay |
 | `syn.overlay_hide(id)` | — | Hides it |
 | `syn.overlay_toggle(id)` | — | Shows or hides it |
@@ -67,15 +67,16 @@ Overlay lookups accept the overlay id or its name (case-insensitive). When `over
 Every execution is bounded so a runaway script cannot pin a daemon worker: 5,000,000 Lua
 instructions and 3 seconds of wall-clock time enforced by the VM hook, and a 64 MiB Lua heap. The
 hook is reached only between Lua instructions, so a native call such as `syn.run_cmd` is not
-interrupted by it and is bounded separately by its own 5 s deadline; one execution can therefore
-hold a daemon worker for roughly the 3 s budget plus such a call. A returned string longer than
-64 KiB fails the step. `syn.set` stores at most 64 output variables, 256-byte keys and 16 KiB values;
-exceeding a cap raises a Lua error.
+interrupted by it and is bounded separately by its own 5 s deadline; stopping the running manual
+step test also terminates that call's process tree and returns `Error: command stopped`. One
+execution can therefore hold a daemon worker for roughly the 3 s budget plus such a call. A returned
+string longer than 64 KiB fails the step. `syn.set` stores at most 64 output variables, 256-byte
+keys and 16 KiB values; exceeding a cap raises a Lua error.
 
 `syn.run_cmd` captures at most 64 KiB of stdout — cut output ends with `[output truncated]` — and
-2 KiB of stderr, and kills the child process after 5 seconds (`Error: command timed out after 5s`).
-A non-zero exit returns `Error: exit code <code>`, followed by the trimmed stderr when it is not
-empty.
+2 KiB of stderr, and terminates the whole process tree after 5 seconds (`Error: command timed out
+after 5s`) through a Windows Job Object, with `taskkill /T` as the fallback. A non-zero exit returns
+`Error: exit code <code>`, followed by the trimmed stderr when it is not empty.
 
 ## Output
 

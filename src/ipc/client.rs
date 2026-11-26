@@ -13,9 +13,10 @@ use crate::ipc::{IpcRequest, IpcResponse, MAX_PAYLOAD_BYTES, PIPE_NAME};
 const PING_TIMEOUT: Duration = Duration::from_millis(750);
 /// Bound for a request that is expected to answer immediately (state sync, mutations).
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-/// `TestStep` executes the action inline on the daemon, so it gets room for the default wait
-/// timeout (30 s) before the client gives up.
-const TEST_STEP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Slack on top of the action's own execution ceiling for an inline `TestStep`. The action may
+/// finish at its deadline and the response still has to wait for the daemon's engine lock to
+/// record the outcome, so the client never bounds the wait at the bare action budget.
+const TEST_STEP_SLACK: Duration = Duration::from_secs(60);
 /// A busy pipe is transient: another process may be connecting to the one listening instance.
 const CONNECT_ATTEMPTS: u32 = 10;
 /// A missing pipe is re-checked briefly: the server creates the replacement listening instance
@@ -207,7 +208,11 @@ impl IpcClient {
 fn timeout_for(req: &IpcRequest) -> Duration {
     match req {
         IpcRequest::Ping => PING_TIMEOUT,
-        IpcRequest::TestStep { .. } => TEST_STEP_TIMEOUT,
+        // A step test runs the action inline on the daemon, so the client must wait for the
+        // action's own worst case instead of rejecting a long script as a hung daemon.
+        IpcRequest::TestStep { action, .. } => {
+            crate::daemon::actions::max_execution_duration(action).saturating_add(TEST_STEP_SLACK)
+        }
         _ => REQUEST_TIMEOUT,
     }
 }
@@ -594,6 +599,94 @@ mod tests {
         );
 
         server.join().expect("join the test server");
+    }
+
+    /// A step test of a script used to time out after a fixed 60 s while the script was still
+    /// running, which the GUI reported as a failed test and a lost daemon. The bound must follow
+    /// the action's own ceiling instead.
+    #[test]
+    fn test_step_test_bound_follows_the_action_ceiling() {
+        use crate::models::{Action, ScriptType, WaitCondition, WaitMode, WaitTimeoutPolicy};
+
+        let script = Action::ExecuteScript {
+            interpreter: ScriptType::PowerShell,
+            script: "rclone sync C:\\data remote:data".into(),
+            run_in_window: false,
+        };
+        let request = IpcRequest::TestStep {
+            test_id: 1,
+            action: script.clone(),
+            context: std::collections::HashMap::new(),
+        };
+        let script_bound = timeout_for(&request);
+        assert!(
+            script_bound >= Duration::from_secs(300),
+            "a script test must outlive the script ceiling: {script_bound:?}"
+        );
+
+        // A script nested in an If/Else branch gets the same room.
+        let nested = Action::IfElse {
+            conditions: Vec::new(),
+            then_actions: vec![script],
+            else_if_branches: Vec::new(),
+            else_actions: Vec::new(),
+        };
+        let request = IpcRequest::TestStep {
+            test_id: 1,
+            action: nested,
+            context: std::collections::HashMap::new(),
+        };
+        assert!(timeout_for(&request) >= Duration::from_secs(300));
+
+        // A timer wait is bounded by its own duration, not by the fixed client timeout.
+        let request = IpcRequest::TestStep {
+            test_id: 1,
+            action: Action::Wait {
+                mode: WaitMode::Timer,
+                seconds: 120.0,
+                condition: None,
+                timeout_sec: 30.0,
+                timeout_policy: WaitTimeoutPolicy::Abort,
+            },
+            context: std::collections::HashMap::new(),
+        };
+        let wait_bound = timeout_for(&request);
+        assert!(
+            wait_bound >= Duration::from_secs(120) && wait_bound < Duration::from_secs(300),
+            "a timed wait test must follow the declared wait: {wait_bound:?}"
+        );
+
+        // A condition wait without a timeout has no finite action ceiling, so the client keeps
+        // its day-long safety net rather than rejecting a legitimate wait.
+        let request = IpcRequest::TestStep {
+            test_id: 1,
+            action: Action::Wait {
+                mode: WaitMode::UntilCondition,
+                seconds: 0.0,
+                condition: Some(WaitCondition::File {
+                    path: "C:\\flag".into(),
+                    condition: crate::models::WaitFileCondition::Exists,
+                }),
+                timeout_sec: 0.0,
+                timeout_policy: WaitTimeoutPolicy::Abort,
+            },
+            context: std::collections::HashMap::new(),
+        };
+        assert!(timeout_for(&request) >= Duration::from_secs(86_400));
+
+        // An instant action still gives up quickly when the daemon is gone.
+        let request = IpcRequest::TestStep {
+            test_id: 1,
+            action: Action::Notification {
+                title: "t".into(),
+                message: "m".into(),
+            },
+            context: std::collections::HashMap::new(),
+        };
+        assert!(
+            timeout_for(&request) < Duration::from_secs(120),
+            "an instant action must not hold the client for long"
+        );
     }
 
     #[test]

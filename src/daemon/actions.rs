@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::command::CommandCancellation;
 use crate::models::Action;
 
 mod audio;
@@ -49,27 +52,48 @@ impl ActionRunner {
         action: &Action,
         context: &HashMap<String, String>,
     ) -> Result<ActionOutcome, String> {
+        Self::execute_with_output_cancellable(action, context, None).await
+    }
+
+    /// Executes one step with an optional process-tree kill switch. A manual step test passes a
+    /// [`CommandCancellation`] so `StopTestStep` can terminate a script's whole tree; pipeline
+    /// runs pass `None` and keep their existing deadline behaviour.
+    pub async fn execute_with_output_cancellable(
+        action: &Action,
+        context: &HashMap<String, String>,
+        cancel: Option<Arc<CommandCancellation>>,
+    ) -> Result<ActionOutcome, String> {
         match action {
             Action::ExecuteScript { interpreter, script, run_in_window } => {
-                let res = Self::run_script_internal(interpreter, script, *run_in_window, context).await?;
+                let res = Self::run_script_internal_with_cancel(
+                    interpreter,
+                    script,
+                    *run_in_window,
+                    context,
+                    cancel,
+                )
+                .await?;
                 Ok(ActionOutcome::Continue(res))
             }
-            other => {
-                Self::execute_void_action(other, context).await
-            }
+            other => Self::execute_void_action_cancellable(other, context, cancel).await,
         }
     }
 
-    pub async fn run_script_internal(
+    async fn run_script_internal_with_cancel(
         interpreter: &crate::models::ScriptType,
         script: &str,
         run_in_window: bool,
         context: &HashMap<String, String>,
+        cancel: Option<Arc<CommandCancellation>>,
     ) -> Result<Option<String>, String> {
-        script::run_script_internal(interpreter, script, run_in_window, context).await
+        script::run_script_internal(interpreter, script, run_in_window, context, cancel).await
     }
 
-    pub async fn execute_void_action(action: &Action, context: &HashMap<String, String>) -> Result<ActionOutcome, String> {
+    async fn execute_void_action_cancellable(
+        action: &Action,
+        context: &HashMap<String, String>,
+        cancel: Option<Arc<CommandCancellation>>,
+    ) -> Result<ActionOutcome, String> {
         match action {
             Action::Wait { mode, seconds, condition, timeout_sec, timeout_policy } => {
                 match mode {
@@ -211,7 +235,7 @@ impl ActionRunner {
                 let mut last_output: Option<String> = None;
                 if is_true {
                     for sub_action in then_actions {
-                        match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                        match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
                             ActionOutcome::Continue(output) => {
                                 if output.is_some() {
                                     last_output = output;
@@ -225,7 +249,7 @@ impl ActionRunner {
                     for branch in else_if_branches {
                         if !branch.conditions.is_empty() && crate::daemon::conditions::evaluate_rule_conditions(&branch.conditions) {
                             for sub_action in &branch.actions {
-                                match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                                match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
                                     ActionOutcome::Continue(output) => {
                                         if output.is_some() {
                                             last_output = output;
@@ -240,7 +264,7 @@ impl ActionRunner {
                     }
                     if !matched {
                         for sub_action in else_actions {
-                            match Box::pin(Self::execute_with_output(sub_action, context)).await? {
+                            match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
                                 ActionOutcome::Continue(output) => {
                                     if output.is_some() {
                                         last_output = output;
@@ -287,14 +311,14 @@ impl ActionRunner {
             Action::DiscordRpcSet { .. } | Action::DiscordRpcClear => system::execute_discord(action, context).await,
             Action::HttpWebhook { .. } => webhook::execute(action, context).await,
             Action::AudioControl { .. } | Action::AudioFormat { .. } | Action::DefaultDevice { .. } => audio::execute(action, context).await,
-            Action::ExecuteScript { .. } => script::execute(action, context).await,
+            Action::ExecuteScript { .. } => script::execute(action, context, None).await,
             Action::Macro { .. } => macro_action::execute(action, context).await,
             Action::Archive { .. } => filesystem::execute_archive_action(action, context).await,
             Action::FileSystem { .. } => filesystem::execute_fs_action(action, context),
             Action::Overlay { .. } => overlay::execute(action, context),
             Action::Wait { .. } | Action::Check { .. } | Action::Firewall { .. } | Action::IfElse { .. }
             | Action::RuleControl { .. } => {
-                unreachable!("control-flow actions are dispatched by execute_void_action")
+                unreachable!("control-flow actions are dispatched by execute_void_action_cancellable")
             }
         }
     }
@@ -302,6 +326,96 @@ impl ActionRunner {
     pub fn interpolate_tokens(text: &str, context: &HashMap<String, String>) -> String {
         tokens::interpolate_tokens(text, context)
     }
+}
+
+/// Upper bound for an action whose own contract has no finite ceiling. The value is the validated
+/// maximum for a `Wait` timeout; it is a safety net that lets the inline step-test round-trip
+/// terminate, never an expected duration.
+const UNBOUNDED_ACTION_CEILING: std::time::Duration = std::time::Duration::from_secs(86_400);
+
+/// Longest wall-clock time one daemon-side execution of `action` may legitimately occupy.
+///
+/// The GUI tests a step by sending the action over IPC and waiting for the daemon to run it, so
+/// the client's round-trip bound is this budget plus a fixed slack window (see
+/// `ipc::client`). The values are the ceilings the handlers themselves enforce on their helper
+/// subprocesses; the slack covers an action that issues more than one helper. An action without
+/// an internal ceiling reports [`UNBOUNDED_ACTION_CEILING`] so a legitimate long run is never cut
+/// short by the client.
+///
+/// A new action must state its ceiling here: the match is exhaustive on purpose.
+pub fn max_execution_duration(action: &Action) -> std::time::Duration {
+    use std::time::Duration;
+
+    use crate::models::{RuleControlOperation, WaitMode};
+
+    match action {
+        Action::Wait { mode, seconds, timeout_sec, .. } => match mode {
+            WaitMode::Timer => crate::models::duration_from_secs(*seconds).unwrap_or_default(),
+            WaitMode::UntilCondition if *timeout_sec > 0.0 => {
+                crate::models::duration_from_secs(*timeout_sec).unwrap_or_default()
+            }
+            WaitMode::UntilCondition => UNBOUNDED_ACTION_CEILING,
+        },
+        Action::ExecuteScript { run_in_window, .. } => {
+            // A script launched in its own window returns as soon as the window is spawned.
+            if *run_in_window {
+                Duration::ZERO
+            } else {
+                support::command::SCRIPT_TIMEOUT
+            }
+        }
+        Action::StartProcess { run_as_admin, .. } => {
+            // Elevation waits for the UAC prompt; a plain spawn returns immediately.
+            if *run_as_admin {
+                support::command::ELEVATION_TIMEOUT
+            } else {
+                Duration::ZERO
+            }
+        }
+        Action::KillProcess { .. }
+        | Action::Firewall { .. }
+        | Action::Notification { .. }
+        | Action::PowerPlan { .. }
+        | Action::SystemPower { .. }
+        | Action::DiscordRpcSet { .. } => support::command::UTILITY_TIMEOUT,
+        Action::AudioControl { .. } | Action::AudioFormat { .. } | Action::DefaultDevice { .. } => {
+            support::command::AUDIO_HELPER_TIMEOUT
+        }
+        Action::HttpWebhook { .. } => webhook::WEBHOOK_TIMEOUT,
+        Action::IfElse { then_actions, else_if_branches, else_actions, .. } => {
+            // Exactly one branch runs, so the longest branch bounds the action.
+            let mut longest = action_sequence_duration(then_actions)
+                .max(action_sequence_duration(else_actions));
+            for branch in else_if_branches {
+                longest = longest.max(action_sequence_duration(&branch.actions));
+            }
+            longest
+        }
+        Action::RuleControl { wait, operation, .. } => match operation {
+            RuleControlOperation::Call if *wait => UNBOUNDED_ACTION_CEILING,
+            _ => Duration::ZERO,
+        },
+        Action::Macro { .. } | Action::Archive { .. } | Action::FileSystem { .. } => {
+            // An infinite macro, an archive (its zip path has no deadline) or a large file
+            // copy has no guaranteed internal ceiling.
+            UNBOUNDED_ACTION_CEILING
+        }
+        Action::Window { .. }
+        | Action::ProcessTuning { .. }
+        | Action::PlaySound { .. }
+        | Action::Check { .. }
+        | Action::Display { .. }
+        | Action::TrimWorkingSet { .. }
+        | Action::DiscordRpcClear
+        | Action::Overlay { .. } => Duration::ZERO,
+    }
+}
+
+/// Wall clock of a sequentially executed action list.
+fn action_sequence_duration(actions: &[Action]) -> std::time::Duration {
+    actions.iter().fold(std::time::Duration::ZERO, |total, action| {
+        total.saturating_add(max_execution_duration(action))
+    })
 }
 
 pub(crate) fn random_gaussian(mean: f64, std_dev: f64) -> f64 {

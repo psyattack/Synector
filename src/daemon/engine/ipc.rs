@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use crate::command::CommandCancellation;
 use crate::daemon::actions::ActionRunner;
 use crate::daemon::watcher::ProcessWatcher;
 use crate::ipc::{DaemonState, IpcRequest, IpcResponse};
@@ -8,7 +10,7 @@ use crate::models::{Action, Rule, ScheduleType, Trigger};
 use super::executions::ExecutionOrigin;
 use super::projector::StateProjector;
 use super::quota::adopt_rule_runtime;
-use super::DaemonEngine;
+use super::{DaemonEngine, RunningStepTest};
 
 impl DaemonEngine {
     pub async fn handle_request(&mut self, req: IpcRequest) -> IpcResponse {
@@ -148,6 +150,11 @@ impl DaemonEngine {
 
             IpcRequest::StopRuleExecution(id) => {
                 self.stop_rule_execution(&id);
+                IpcResponse::Ok
+            }
+
+            IpcRequest::StopTestStep(test_id) => {
+                self.stop_step_test(test_id);
                 IpcResponse::Ok
             }
 
@@ -325,13 +332,91 @@ impl DaemonEngine {
     }
 
     /// Executes one `TestStep` action for the GUI. It deliberately takes no `&self`: the IPC
-    /// server runs it before taking the engine lock, so a wait or a script cannot stall the
-    /// scheduler and every other IPC request.
+    /// server spawns it before taking the engine lock, so a wait or a script cannot stall the
+    /// scheduler and every other IPC request. The cancellation handle lets `StopTestStep`
+    /// terminate a script's whole process tree.
     pub async fn execute_test_step(
         action: &Action,
         context: &HashMap<String, String>,
+        cancel: Option<Arc<CommandCancellation>>,
     ) -> Result<crate::daemon::actions::ActionOutcome, String> {
-        ActionRunner::execute(action, context).await
+        ActionRunner::execute_with_output_cancellable(action, context, cancel).await
+    }
+
+    /// Reserves one manual step test for execution. `false` means the GUI already stopped this
+    /// id (the stop overtook the start) or it is already running, so the dispatcher must not run
+    /// the action.
+    pub(crate) fn begin_step_test(&mut self, test_id: u64) -> bool {
+        if let Some(position) = self
+            .stopped_step_tests
+            .iter()
+            .position(|stopped| *stopped == test_id)
+        {
+            self.stopped_step_tests.remove(position);
+            self.log("INFO", "TEST", "Step test stopped before it started");
+            return false;
+        }
+        if self.running_step_tests.contains_key(&test_id) {
+            return false;
+        }
+        self.running_step_tests.insert(test_id, None);
+        true
+    }
+
+    /// Attaches the action task's abort handle and the script tree's kill switch to a reserved
+    /// step test. When the GUI stopped the test before this call, both are triggered immediately
+    /// and `false` is returned.
+    pub(crate) fn attach_step_test(
+        &mut self,
+        test_id: u64,
+        abort: tokio::task::AbortHandle,
+        cancel: Arc<CommandCancellation>,
+    ) -> bool {
+        match self.running_step_tests.get_mut(&test_id) {
+            Some(slot) => {
+                *slot = Some(RunningStepTest { abort, cancel });
+                true
+            }
+            None => {
+                cancel.cancel();
+                abort.abort();
+                false
+            }
+        }
+    }
+
+    /// Removes the registration. `false` means the test was stopped while it ran, so its outcome
+    /// must not be recorded as a success or failure.
+    pub(crate) fn finish_step_test(&mut self, test_id: u64) -> bool {
+        self.running_step_tests.remove(&test_id).is_some()
+    }
+
+    /// Test-only introspection for the dispatcher stop tests.
+    #[cfg(test)]
+    pub(crate) fn is_step_test_running(&self, test_id: u64) -> bool {
+        self.running_step_tests.contains_key(&test_id)
+    }
+
+    /// Aborts one running manual step test, like `StopRuleExecution` aborts a Test Run. A stop
+    /// for an id the dispatcher has not started yet is remembered in a bounded recent window so
+    /// the request is refused when it arrives; a stop for a finished id is a no-op.
+    fn stop_step_test(&mut self, test_id: u64) {
+        if let Some(entry) = self.running_step_tests.remove(&test_id) {
+            if let Some(running) = entry {
+                // Terminate the script's job first so its descendants start dying before the
+                // dispatcher task is aborted.
+                running.cancel.cancel();
+                running.abort.abort();
+            }
+            self.log("INFO", "TEST", "Step test stopped");
+            return;
+        }
+        if !self.stopped_step_tests.contains(&test_id) {
+            if self.stopped_step_tests.len() >= Self::MAX_STOPPED_STEP_TESTS {
+                self.stopped_step_tests.pop_front();
+            }
+            self.stopped_step_tests.push_back(test_id);
+        }
     }
 
     /// Records a step-test outcome. Script errors embed stdout/stderr, so they stay in the in-app

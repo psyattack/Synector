@@ -130,20 +130,69 @@ fn cap_response_bytes(bytes: Vec<u8>, limit: usize) -> Vec<u8> {
 
 /// Routes one request to the engine.
 ///
-/// A `TestStep` runs its action *before* the engine lock is taken. The lock serializes every
-/// daemon task and every other IPC request, so executing a wait or a script while holding it
-/// would stall process polling, schedules and the whole GUI for the action's duration. The lock
-/// is then taken only to record the outcome.
+/// A `TestStep` never runs under the engine lock. The lock serializes every daemon task and every
+/// other IPC request, so executing a wait or a script while holding it would stall process
+/// polling, schedules and the whole GUI for the action's duration. The dispatcher reserves the
+/// test id, spawns the action task, registers its abort handle and awaits it without the lock;
+/// the lock is taken only for the registration and the final outcome. `StopTestStep` aborts that
+/// handle from another connection, exactly like `StopRuleExecution` aborts a Test Run.
 pub async fn dispatch(engine: Arc<Mutex<DaemonEngine>>, req: IpcRequest) -> IpcResponse {
     match req {
-        IpcRequest::TestStep { action, context } => {
-            let outcome = DaemonEngine::execute_test_step(&action, &context).await;
-            let mut eng = engine.lock().await;
-            eng.record_test_step(outcome)
-        }
+        IpcRequest::TestStep {
+            test_id,
+            action,
+            context,
+        } => dispatch_test_step(engine, test_id, action, context).await,
         req => {
             let mut eng = engine.lock().await;
             eng.handle_request(req).await
+        }
+    }
+}
+
+/// Runs one manual step test outside the engine lock and records its outcome. A stopped test is
+/// not recorded at all: the stop is already logged, and a success or failure line would
+/// misdescribe the run.
+async fn dispatch_test_step(
+    engine: Arc<Mutex<DaemonEngine>>,
+    test_id: u64,
+    action: crate::models::Action,
+    context: std::collections::HashMap<String, String>,
+) -> IpcResponse {
+    {
+        let mut eng = engine.lock().await;
+        if !eng.begin_step_test(test_id) {
+            return IpcResponse::TestStepResult(Err(
+                "the step test was stopped before it started".to_string(),
+            ));
+        }
+    }
+
+    let cancel = Arc::new(crate::command::CommandCancellation::new());
+    let task_cancel = Arc::clone(&cancel);
+    let task = tokio::spawn(async move {
+        DaemonEngine::execute_test_step(&action, &context, Some(task_cancel)).await
+    });
+    let abort_handle = task.abort_handle();
+    {
+        let mut eng = engine.lock().await;
+        // A stop that arrived before the handles existed aborts the task and terminates the
+        // script's job here; the await below then resolves as cancelled.
+        eng.attach_step_test(test_id, abort_handle, cancel);
+    }
+
+    let outcome = task.await;
+    let mut eng = engine.lock().await;
+    if !eng.finish_step_test(test_id) {
+        return IpcResponse::TestStepResult(Err("the step test was stopped".to_string()));
+    }
+    match outcome {
+        Ok(outcome) => eng.record_test_step(outcome),
+        Err(error) if error.is_cancelled() => IpcResponse::TestStepResult(Err(
+            "the step test was cancelled".to_string(),
+        )),
+        Err(error) => {
+            IpcResponse::TestStepResult(Err(format!("the step test task failed: {error}")))
         }
     }
 }
@@ -161,6 +210,7 @@ mod tests {
         let step = tokio::spawn(dispatch(
             Arc::clone(&engine),
             IpcRequest::TestStep {
+                test_id: 1,
                 action: Action::Wait {
                     mode: WaitMode::Timer,
                     seconds: 0.4,
@@ -188,6 +238,86 @@ mod tests {
             matches!(response, IpcResponse::TestStepResult(Ok(()))),
             "a successful wait must report a successful step"
         );
+    }
+
+    /// `StopTestStep` aborts the spawned action task, like `StopRuleExecution` aborts a Test Run:
+    /// the wait ends immediately and the stopped run is not recorded as a success.
+    #[tokio::test]
+    async fn test_stop_test_step_aborts_the_running_action() {
+        let engine = Arc::new(Mutex::new(DaemonEngine::new(AppConfig::default())));
+        let test_id = 41;
+        let step = tokio::spawn(dispatch(
+            Arc::clone(&engine),
+            IpcRequest::TestStep {
+                test_id,
+                action: timer_wait(30.0),
+                context: HashMap::new(),
+            },
+        ));
+
+        let register_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !engine.lock().await.is_step_test_running(test_id) {
+            assert!(
+                tokio::time::Instant::now() < register_deadline,
+                "the step test was never registered"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let response = dispatch(Arc::clone(&engine), IpcRequest::StopTestStep(test_id)).await;
+        assert!(matches!(response, IpcResponse::Ok));
+        let response = tokio::time::timeout(std::time::Duration::from_secs(2), step)
+            .await
+            .expect("a stopped step test must finish immediately")
+            .expect("the dispatch task");
+        match response {
+            IpcResponse::TestStepResult(Err(error)) => {
+                assert!(error.contains("stopped"), "the answer must name the stop: {error}");
+            }
+            other => panic!("a stopped step test must answer TestStepResult(Err(..)): {other:?}"),
+        }
+        assert!(
+            !engine.lock().await.is_step_test_running(test_id),
+            "the stopped test must be unregistered"
+        );
+    }
+
+    /// A stop can overtake the start on the wire; the dispatcher must still refuse to run the
+    /// action instead of silently executing a test the user already cancelled.
+    #[tokio::test]
+    async fn test_a_stop_that_overtakes_the_start_refuses_the_step_test() {
+        let engine = Arc::new(Mutex::new(DaemonEngine::new(AppConfig::default())));
+        let test_id = 42;
+
+        let response = dispatch(Arc::clone(&engine), IpcRequest::StopTestStep(test_id)).await;
+        assert!(matches!(response, IpcResponse::Ok));
+
+        let response = dispatch(
+            Arc::clone(&engine),
+            IpcRequest::TestStep {
+                test_id,
+                action: timer_wait(30.0),
+                context: HashMap::new(),
+            },
+        )
+        .await;
+        match response {
+            IpcResponse::TestStepResult(Err(error)) => {
+                assert!(error.contains("stopped"), "the answer must name the stop: {error}");
+            }
+            other => panic!("a pre-stopped test must not run: {other:?}"),
+        }
+        assert!(!engine.lock().await.is_step_test_running(test_id));
+    }
+
+    fn timer_wait(seconds: f64) -> Action {
+        Action::Wait {
+            mode: WaitMode::Timer,
+            seconds,
+            condition: None,
+            timeout_sec: 30.0,
+            timeout_policy: WaitTimeoutPolicy::Abort,
+        }
     }
 
     #[tokio::test]

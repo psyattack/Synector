@@ -2388,6 +2388,7 @@ async fn test_handle_request_does_not_execute_test_step_under_the_lock() {
     let response = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         engine.handle_request(IpcRequest::TestStep {
+            test_id: 1,
             action: timer_wait(30.0),
             context: HashMap::new(),
         }),
@@ -2405,6 +2406,37 @@ async fn test_handle_request_does_not_execute_test_step_under_the_lock() {
         !engine.logs.iter().any(|log| log.category == "TEST"),
         "no step-test outcome may be recorded: the action never ran"
     );
+}
+
+/// `StopTestStep` must fire both halves of a step test's cancellation: the dispatcher task abort
+/// and the script tree's job kill switch, including the stop-before-attach race.
+#[tokio::test]
+async fn test_stop_test_step_cancels_the_task_and_the_script_tree() {
+    let mut engine = DaemonEngine::new(AppConfig::default());
+
+    let cancel = std::sync::Arc::new(crate::command::CommandCancellation::new());
+    let task = tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    assert!(engine.begin_step_test(91));
+    assert!(engine.attach_step_test(91, task.abort_handle(), std::sync::Arc::clone(&cancel)));
+    assert!(!cancel.is_cancelled());
+    let response = engine.handle_request(IpcRequest::StopTestStep(91)).await;
+    assert!(matches!(response, IpcResponse::Ok));
+    assert!(cancel.is_cancelled(), "the job kill switch must fire with the stop");
+    assert!(task.await.is_err(), "the dispatcher task must be aborted");
+
+    // A stop that lands before the handles are attached must fire both at attach time.
+    let cancel = std::sync::Arc::new(crate::command::CommandCancellation::new());
+    assert!(engine.begin_step_test(92));
+    let response = engine.handle_request(IpcRequest::StopTestStep(92)).await;
+    assert!(matches!(response, IpcResponse::Ok));
+    let task = tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    });
+    assert!(!engine.attach_step_test(92, task.abort_handle(), std::sync::Arc::clone(&cancel)));
+    assert!(cancel.is_cancelled());
+    assert!(task.await.is_err());
 }
 
 #[tokio::test]
