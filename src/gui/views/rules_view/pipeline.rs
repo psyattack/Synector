@@ -63,7 +63,7 @@ pub(super) fn render_track_pipeline(
     // 3. Arrow divider to actions
     widgets::hud(ui, "➔", t.faint);
 
-    // 4. Action Steps (No step numbering! Active highlight with ▶ prefix!)
+    // 4. Action Steps (No step numbering! The running step is highlighted only.)
     if rule.actions.is_empty() {
         widgets::hud(ui, loc.rules_summary_no_actions, t.muted);
     } else {
@@ -107,7 +107,7 @@ fn render_action_chip(
         (t.sunken, t.hairline(), ink, theme::mono())
     };
 
-    let step_label = format_step_chip(icon, &brief, is_current);
+    let step_label = format!("{icon} {brief}");
     let galley = widgets::caps(ui, &step_label, 9.5, font, 0.5, chip_ink);
     let chip_w = galley.size().x + 12.0;
     let (chip_rect, chip_resp) = ui.allocate_exact_size(vec2(chip_w, 22.0), Sense::hover());
@@ -116,26 +116,5 @@ fn render_action_chip(
 
     if is_current {
         chip_resp.on_hover_text(loc.rules_summary_step_active);
-    }
-}
-
-/// `▶ icon brief` for the running step, `icon brief` otherwise.
-fn format_step_chip(icon: &str, brief: &str, is_current: bool) -> String {
-    if is_current {
-        format!("▶ {} {}", icon, brief)
-    } else {
-        format!("{} {}", icon, brief)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_action_step_chip_marks_only_the_current_step() {
-        let icon = egui_phosphor::regular::ROCKET;
-        assert_eq!(format_step_chip(icon, "LAUNCH app", false), format!("{} LAUNCH app", icon));
-        assert_eq!(format_step_chip(icon, "LAUNCH app", true), format!("▶ {} LAUNCH app", icon));
     }
 }
