@@ -704,11 +704,17 @@ The GUI keeps an undo/redo draft per edited rule and per overlay definition (up 
 through one bounded-history implementation shared by the two drafts (`src/gui/state/undo.rs`), so
 editing, testing and saving a rule never mutates daemon-owned counters before the user commits. An
 edit gesture is one undo step — a drag or a slider commits the pre-gesture state once instead of one
-snapshot per frame. Opening a rule only renders its stored values: the inspector writes no defaults
-into the draft outside real widget interaction, so an unset field stays unset and is reported by
-validation on save instead of being silently patched. Save runs the same structural validator as the
-CLI before it sends anything; the errors are listed in the inspector and the editor stays open, and
-the daemon validates again when it applies the mutation.
+snapshot per frame. The expanded Script Modal is the exception: it is a text surface, so it keeps its
+own bounded history of the script text in the dialog state, exactly like the studios keep theirs, and
+it owns Ctrl+Z / Ctrl+Y while it is open — the inspector leaves the draft's shortcuts to it, so one
+undo in the dialog steps through the script's edits instead of reverting unrelated rule fields. That
+history starts empty with each opened dialog, again like a freshly opened studio, and commits one
+entry per typing gesture the same way; closing the dialog hands the keys back to the draft.
+Opening a rule only renders its stored values: the inspector writes no defaults into the draft
+outside real widget interaction, so an unset field stays unset and is reported by validation on save
+instead of being silently patched. Save runs the same structural validator as the CLI before it
+sends anything; the errors are listed in the inspector and the editor stays open, and the daemon
+validates again when it applies the mutation.
 
 ## Logging and localization
 

@@ -231,6 +231,16 @@ field. A macro preset has no standalone editor, so choosing it starts a draft ru
 carrying that preset and opens the Macro Studio on it.
 Escape closes the panel first and clears the field on the next press.
 
+### What does Ctrl+Z undo while I edit a rule?
+
+The rule builder keeps one undo history for the draft (up to 50 snapshots), and **Ctrl+Z** /
+**Ctrl+Y** or **Ctrl+Shift+Z** walk it. It is the draft's history rather than a text field's, so an
+edit gesture — a drag, a slider move or a typing burst — is one step wherever it happened. The
+expanded script editor (the expand glyph on an Execute Script step) is the exception: it is a text
+surface, so while that dialog is open Ctrl+Z / Ctrl+Y step through the dialog's own text edits
+instead, one typing burst per step, and the rule draft's history stays untouched; closing the dialog
+hands the keys back. Nothing is sent to the daemon until **Save**.
+
 ### What does the analytics dialog show?
 
 It is one scrolling page: the activity log comes first — the level/category filters and one

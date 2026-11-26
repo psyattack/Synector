@@ -346,16 +346,23 @@ pub fn render_inspector_drawer(ctx: &egui::Context, state: &mut GuiState) {
                         ui.set_width(ui.available_width());
                         ui.set_max_width(ui.available_width());
 
-                        // Keyboard shortcuts for Undo (Ctrl+Z) and Redo (Ctrl+Y or Ctrl+Shift+Z)
-                        let (do_undo, do_redo) = ui.input_mut(|i| {
-                            let u = i.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
-                                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
-                            let r = i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
-                                || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
-                                || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
-                                || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
-                            (u, r)
-                        });
+                        // Keyboard shortcuts for Undo (Ctrl+Z) and Redo (Ctrl+Y or Ctrl+Shift+Z).
+                        // The expanded script dialog keeps its own text history, so while it is
+                        // open it owns these keys: the drawer must leave them unconsumed for the
+                        // dialog, which renders after it in the same frame.
+                        let (do_undo, do_redo) = if state.expanded_script_editor.is_some() {
+                            (false, false)
+                        } else {
+                            ui.input_mut(|i| {
+                                let u = i.consume_key(egui::Modifiers::CTRL, egui::Key::Z)
+                                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z);
+                                let r = i.consume_key(egui::Modifiers::CTRL, egui::Key::Y)
+                                    || i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)
+                                    || i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::Z)
+                                    || i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z);
+                                (u, r)
+                            })
+                        };
 
                         let mut undid_or_redid = false;
                         if do_undo {

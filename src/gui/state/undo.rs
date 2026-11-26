@@ -5,7 +5,7 @@
 //! wrapping them in a new type.
 
 use super::overlay_studio::OverlayStudioState;
-use super::GuiState;
+use super::{ExpandedScriptEditorState, GuiState};
 use crate::models::Rule;
 
 /// Maximum number of snapshots kept in one undo history; the oldest entry is dropped first.
@@ -91,6 +91,39 @@ impl OverlayStudioState {
     }
 }
 
+impl ExpandedScriptEditorState {
+    /// Appends the text from before an edit gesture to the dialog's own history and clears its
+    /// redo branch. The dialog walks this history with Ctrl+Z / Ctrl+Y while it is open, exactly
+    /// like the studios walk theirs.
+    pub fn push_undo_snapshot(&mut self, text: String) {
+        push_if_new(&mut self.undo_stack, &mut self.redo_stack, &text);
+    }
+
+    /// Commits the typing gesture in progress against the text the editor shows now. A gesture
+    /// that ended where it started (typed and deleted again) leaves no no-op undo step behind.
+    pub(crate) fn commit_pending_undo(&mut self, current: &str) {
+        if let Some(pending) = self.pending_undo.take() {
+            if pending != current {
+                self.push_undo_snapshot(pending);
+            }
+        }
+    }
+
+    /// Restores the newest snapshot and returns the text the editor must show now, or `None`
+    /// while the history has nothing to undo.
+    pub fn undo(&mut self, current: &str) -> Option<String> {
+        let mut text = current.to_string();
+        undo_step(&mut self.undo_stack, &mut self.redo_stack, &mut text).then_some(text)
+    }
+
+    /// Restores the newest redo snapshot and returns the text the editor must show now, or `None`
+    /// while the redo branch is empty.
+    pub fn redo(&mut self, current: &str) -> Option<String> {
+        let mut text = current.to_string();
+        redo_step(&mut self.undo_stack, &mut self.redo_stack, &mut text).then_some(text)
+    }
+}
+
 impl GuiState {
     pub fn push_undo_snapshot(&mut self) {
         if let Some(r) = &self.editing_rule {
@@ -171,5 +204,43 @@ mod tests {
         assert_eq!(state.editing_rule.as_ref().unwrap().name, "Step 2");
         assert_eq!(state.undo_stack.len(), 2);
         assert_eq!(state.redo_stack.len(), 0);
+    }
+
+    /// The script dialog's history is the same bounded stack, with the script text as the
+    /// snapshot: repeated snapshots are ignored, undo/redo round-trip, and typing after an undo
+    /// starts a new branch.
+    #[test]
+    fn test_script_dialog_history_round_trips_and_drops_the_redo_branch() {
+        let mut editor = ExpandedScriptEditorState::new(
+            0,
+            crate::gui::components::script_highlighter::ScriptLanguage::PowerShell,
+        );
+        editor.push_undo_snapshot("a".to_string());
+        editor.push_undo_snapshot("a".to_string());
+        editor.push_undo_snapshot("b".to_string());
+        assert_eq!(editor.undo_stack.len(), 2, "a repeated snapshot is not a new step");
+
+        assert_eq!(editor.undo("c").as_deref(), Some("b"));
+        assert_eq!(editor.undo("b").as_deref(), Some("a"));
+        assert_eq!(editor.undo("a"), None, "nothing left to undo");
+        assert_eq!(editor.redo("a").as_deref(), Some("b"));
+        assert_eq!(editor.redo("b").as_deref(), Some("c"));
+        assert_eq!(editor.redo("c"), None, "nothing left to redo");
+
+        // Typing after an undo abandons the redo branch.
+        assert_eq!(editor.undo("c").as_deref(), Some("b"));
+        editor.push_undo_snapshot("typed".to_string());
+        assert!(editor.redo_stack.is_empty());
+        assert_eq!(editor.undo("new text").as_deref(), Some("typed"));
+
+        // A gesture that ended where it started is not recorded as a no-op step, while a real
+        // gesture commits the text from before it.
+        let committed = editor.undo_stack.len();
+        editor.pending_undo = Some("same text".to_string());
+        editor.commit_pending_undo("same text");
+        assert_eq!(editor.undo_stack.len(), committed);
+        editor.pending_undo = Some("typed".to_string());
+        editor.commit_pending_undo("typed more");
+        assert_eq!(editor.undo_stack.len(), committed + 1);
     }
 }

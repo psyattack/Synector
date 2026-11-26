@@ -430,7 +430,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Клавиатурные Сочетания Редактора",
-            "• Ctrl + Z — Отмена последнего действия (Undo). Поддерживает историю до 50 снимков состояния.\n\
+            "• Ctrl + Z — Отмена последнего действия (Undo). Поддерживает историю до 50 снимков состояния. В развёрнутом редакторе скрипта (Script Modal) действует его собственная история текста: Ctrl+Z шагает по правкам скрипта, а не по правилу.\n\
              • Ctrl + Y или Ctrl + Shift + Z — Повтор отмененного действия (Redo).\n\
              • F9 — Старт / стоп аппаратной записи макроса; при открытой Студии макросов работает из любого окна Windows.\n\
              • F10 — Быстрый запуск пробного тестирования макроса (Test Run live).\n\
@@ -467,7 +467,7 @@ fn render_shortcuts_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Studio Editor Shortcuts",
-            "• Ctrl + Z — Undo previous rule edit (supports up to 50 historical snapshots).\n\
+            "• Ctrl + Z — Undo previous rule edit (supports up to 50 historical snapshots). The expanded script editor (Script Modal) keeps its own text history instead: Ctrl+Z steps through the script's own edits, not the rule's.\n\
              • Ctrl + Y or Ctrl + Shift + Z — Redo reverted modification.\n\
              • F9 — Start / Stop hardware macro recording; while Macro Studio is open it works from any window.\n\
              • F10 — Start / Stop live safe test run of the macro sequence.\n\

@@ -229,6 +229,15 @@ pub(crate) fn render_overlay_fields(
         }
     }
 
+    // Lifetime sits right below the override text: it says when the overlay is released, while the
+    // custom-overlay extras under it describe the overlay definition itself.
+    ui.add_space(4.0);
+    let can_follow_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(
+        r.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+    ));
+    render_resource_lifetime(ui, t, loc, idx, lifetime, can_follow_trigger);
+
     // Compact checkbox group for overlay behaviors (click-through, draggable dependent on click-through, hide from capture)
     if let Some(overlay_def) = custom_overlay.as_deref_mut() {
         ui.add_space(4.0);
@@ -287,10 +296,4 @@ pub(crate) fn render_overlay_fields(
             ui.checkbox(&mut overlay_def.hide_from_capture, loc.overlay_studio_hide_from_capture);
         });
     }
-
-    let can_follow_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(
-        r.trigger,
-        Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
-    ));
-    render_resource_lifetime(ui, t, loc, idx, lifetime, can_follow_trigger);
 }

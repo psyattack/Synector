@@ -27,6 +27,27 @@ pub enum ProcessCategoryFilter {
 pub struct ExpandedScriptEditorState {
     pub step_idx: usize,
     pub language: crate::gui::components::script_highlighter::ScriptLanguage,
+    /// Text-undo history of this dialog session, kept the way the studios keep theirs: one entry
+    /// per edit gesture and the dialog, not the rule draft, owns Ctrl+Z while it is open.
+    pub undo_stack: Vec<String>,
+    pub redo_stack: Vec<String>,
+    /// Script text as it was before the edit gesture in progress.
+    pub(crate) pending_undo: Option<String>,
+}
+
+impl ExpandedScriptEditorState {
+    pub fn new(
+        step_idx: usize,
+        language: crate::gui::components::script_highlighter::ScriptLanguage,
+    ) -> Self {
+        Self {
+            step_idx,
+            language,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            pending_undo: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -129,10 +150,8 @@ impl GuiState {
         step_idx: usize,
         language: crate::gui::components::script_highlighter::ScriptLanguage,
     ) {
-        let editor = ExpandedScriptEditorState {
-            step_idx,
-            language,
-        };
+        // A fresh dialog session starts with an empty text history, like a freshly opened studio.
+        let editor = ExpandedScriptEditorState::new(step_idx, language);
         self.expanded_script_editor = Some(editor.clone());
         self.last_script_editor = Some(editor);
     }
@@ -513,10 +532,10 @@ mod tests {
         assert!(!state.is_modal_open());
 
         // Script editor
-        state.expanded_script_editor = Some(ExpandedScriptEditorState {
-            step_idx: 0,
-            language: crate::gui::components::script_highlighter::ScriptLanguage::PowerShell,
-        });
+        state.expanded_script_editor = Some(ExpandedScriptEditorState::new(
+            0,
+            crate::gui::components::script_highlighter::ScriptLanguage::PowerShell,
+        ));
         assert!(state.is_modal_open());
         state.expanded_script_editor = None;
         assert!(!state.is_modal_open());

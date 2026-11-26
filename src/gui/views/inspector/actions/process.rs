@@ -70,17 +70,20 @@ pub(crate) fn render_start_process_fields(
         });
     });
 
-    widgets::checkbox_group(ui, |ui| {
-        ui.checkbox(run_hidden, loc.inspector_checkbox_run_hidden);
-        ui.checkbox(only_if_not_running, loc.inspector_checkbox_only_if_not_running);
-        ui.checkbox(run_as_admin, loc.inspector_checkbox_run_as_admin);
-    });
-
+    // Lifetime sits right below the working directory: it says what the rule does with the started
+    // process (leave it detached, close it with the run or with the triggering app), while the
+    // checkboxes under it only tune how the process is started.
     let can_follow_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(
         r.trigger,
         Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
     ));
     render_resource_lifetime(ui, t, loc, ctx.idx, lifetime, can_follow_trigger);
+
+    widgets::checkbox_group(ui, |ui| {
+        ui.checkbox(run_hidden, loc.inspector_checkbox_run_hidden);
+        ui.checkbox(only_if_not_running, loc.inspector_checkbox_only_if_not_running);
+        ui.checkbox(run_as_admin, loc.inspector_checkbox_run_as_admin);
+    });
 }
 
 pub(crate) fn render_kill_process_fields(
