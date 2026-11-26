@@ -1,6 +1,8 @@
 //! Analytics dialog: the daemon's rolling activity and system telemetry rendered as a dashboard.
 //!
 //! The layout is one scroll: the activity log is its first section and the dashboard follows it.
+//! The stream inside the log block is a nested scroll area; while the pointer is over it, the
+//! wheel belongs to the stream, so reaching either end never scrolls the page.
 //! Every number comes from the daemon: the snapshot carries run sources, outcomes, hourly buckets
 //! and the live CPU/RAM series; this view only formats them. Charts are hand-painted in
 //! `components::charts` on the design tokens, so no plotting dependency and no hardcoded colours.
@@ -127,7 +129,7 @@ pub fn render_analytics_modal(ctx: &egui::Context, state: &mut GuiState) {
                                 .as_ref()
                                 .map(|daemon| daemon.logs.as_slice())
                                 .unwrap_or(&[]);
-                            ui.allocate_ui_with_layout(
+                            let log_block = ui.allocate_ui_with_layout(
                                 vec2(ui.available_width(), LOG_SECTION_H),
                                 Layout::top_down(Align::LEFT),
                                 |ui| {
@@ -138,9 +140,12 @@ pub fn render_analytics_modal(ctx: &egui::Context, state: &mut GuiState) {
                                         &mut state.analytics_log_level,
                                         &t,
                                         loc,
-                                    );
+                                    )
                                 },
                             );
+                            if let Some(stream_rect) = log_block.inner {
+                                keep_page_still_over_log_stream(ui, stream_rect);
+                            }
 
                             clicked_rule_id = render_dashboard(ui, state, &t, loc);
                         });
@@ -810,7 +815,7 @@ fn render_log_panel(
     level: &mut AnalyticsLogFilter,
     t: &Tokens,
     loc: &Strings,
-) {
+) -> Option<Rect> {
     let total = logs.len().min(LOG_SCAN_LIMIT);
     let error_count = logs
         .iter()
@@ -889,7 +894,7 @@ fn render_log_panel(
 
     // Fill the block exactly: the next section is separated only by the page's item spacing.
     let well_h = ui.available_height().max(60.0);
-    theme::well(t)
+    let well = theme::well(t)
         // The vertical inset matches the cards and the spacing between sections (12 px), so the
         // stream's bottom breathing room equals the gap it has above the next block.
         .inner_margin(egui::Margin::symmetric(12, 12))
@@ -907,9 +912,9 @@ fn render_log_panel(
                     ui.add_space(4.0);
                     widgets::hud(ui, loc.logs_empty_subtitle, t.faint);
                 });
-                return;
+                return false;
             }
-            egui::ScrollArea::vertical()
+            let stream = egui::ScrollArea::vertical()
                 .id_salt("analytics-log-scroll")
                 .max_height(content_h)
                 .stick_to_bottom(true)
@@ -949,7 +954,24 @@ fn render_log_panel(
                         });
                     }
                 });
+            // Only a stream that can move may keep the wheel; a short one leaves the page to
+            // scroll as usual instead of creating a dead zone over the well.
+            stream.content_size.y > stream.inner_rect.height() + 0.5
         });
+    well.inner.then_some(well.response.rect)
+}
+
+/// Drops the wheel delta the analytics page would otherwise take while the pointer is over the
+/// log stream.
+///
+/// The stream is a scroll area nested in the page's scroll area. egui hands a nested area's
+/// unconsumed delta to the enclosing one, so once the stream reached an end the rest of the wheel
+/// notch scrolled the page towards the dashboard. The stream keeps the wheel while the pointer is
+/// over it; the page scrolls from the dashboard below instead.
+fn keep_page_still_over_log_stream(ui: &mut Ui, stream_rect: Rect) {
+    if ui.rect_contains_pointer(stream_rect) {
+        ui.input_mut(|input| input.smooth_scroll_delta = egui::Vec2::ZERO);
+    }
 }
 
 /// One dashboard card: the recessed surface every section shares.
@@ -1548,6 +1570,135 @@ mod tests {
             })
             .expect("the dialog card is painted");
         (output, card)
+    }
+
+    /// Renders one frame with the given input events; used by the wheel-scroll test.
+    fn analytics_frame_with_events(
+        ctx: &egui::Context,
+        state: &mut GuiState,
+        screen: Rect,
+        events: Vec<egui::Event>,
+        time: f64,
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(screen),
+                time: Some(time),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                render_analytics_modal(ui.ctx(), state);
+            },
+        );
+        output.textures_delta.clear();
+        output
+    }
+
+    /// Hovers `pointer` and sends twelve downward wheel notches while the pointer stays there.
+    fn wheel_down_over(
+        ctx: &egui::Context,
+        state: &mut GuiState,
+        screen: Rect,
+        pointer: egui::Pos2,
+    ) -> egui::FullOutput {
+        analytics_frame_with_events(
+            ctx,
+            state,
+            screen,
+            vec![egui::Event::PointerMoved(pointer)],
+            1.0,
+        );
+        let mut last = None;
+        for step in 0..12 {
+            last = Some(analytics_frame_with_events(
+                ctx,
+                state,
+                screen,
+                vec![egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, -40.0),
+                    modifiers: egui::Modifiers::NONE,
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                }],
+                1.05 + step as f64 * 0.05,
+            ));
+        }
+        last.expect("twelve wheel frames rendered")
+    }
+
+    /// The top-most wide recessed surface of the page: the activity stream's well.
+    fn log_well_rect(output: &egui::FullOutput, card: Rect) -> Rect {
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Rect(rect)
+                    if rect.fill == Tokens::DARK.sunken
+                        && rect.rect.width() > card.width() * 0.5 =>
+                {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
+            .min_by(|left, right| left.min.y.total_cmp(&right.min.y))
+            .expect("the activity stream well is painted")
+    }
+
+    /// The stream is a nested scroll area. Its end must not hand the wheel to the page: with the
+    /// pointer over the stream, a downward wheel may move the stream (never here, it starts at the
+    /// bottom) but must leave the page exactly where it was.
+    #[test]
+    fn wheel_over_the_log_stream_does_not_scroll_the_page() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 900.0));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = dense_analytics_state(crate::i18n::Language::English);
+        state.show_analytics_modal = true;
+
+        let (output, card) = settled_analytics_frame(&ctx, &mut state, screen);
+        let well = log_well_rect(&output, card);
+        let after = log_well_rect(
+            &wheel_down_over(&ctx, &mut state, screen, well.center()),
+            card,
+        );
+        assert!(
+            (after.min.y - well.min.y).abs() < 0.5,
+            "the page scrolled under the wheel while the pointer was over the stream: \
+             well moved from {} to {}",
+            well.min.y,
+            after.min.y
+        );
+    }
+
+    /// A stream whose rows already fit must not create a dead zone: with nothing to scroll, the
+    /// wheel over the well belongs to the page.
+    #[test]
+    fn wheel_over_a_short_log_stream_scrolls_the_page() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 900.0));
+        let ctx = egui::Context::default();
+        theme::install_fonts(&ctx);
+        let mut state = dense_analytics_state(crate::i18n::Language::English);
+        state
+            .daemon_state
+            .as_mut()
+            .expect("the fixture carries a daemon state")
+            .logs
+            .truncate(2);
+        state.show_analytics_modal = true;
+
+        let (output, card) = settled_analytics_frame(&ctx, &mut state, screen);
+        let well = log_well_rect(&output, card);
+        let after = log_well_rect(
+            &wheel_down_over(&ctx, &mut state, screen, well.center()),
+            card,
+        );
+        assert!(
+            after.min.y < well.min.y - 1.0,
+            "a short stream swallowed the wheel: the well stayed at {}",
+            after.min.y
+        );
     }
 
     /// A long log line truncates at the right edge of the stream instead of widening the page.

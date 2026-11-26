@@ -243,7 +243,9 @@ never ran). Analytics history is kept in the daemon's memory for the last 24 hou
 it; each rule's execution counter is persisted in `runtime.json` and a periodic quota restarts it
 together with its window, so the top counter sums those counters rather than a lifetime history.
 Applying an activity-log result from the header search clears the level filter, so the stream shows
-every match the result counted.
+every match the result counted. The stream scrolls inside its own well: while the pointer is over it
+the mouse wheel stays in the stream even at either end, and the page itself scrolls from the
+dashboard below.
 
 ### How do I change the appearance?
 
