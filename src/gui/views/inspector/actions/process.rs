@@ -11,7 +11,7 @@ pub(crate) fn render_start_process_fields(
     let loc = ctx.state.loc();
     let state = ctx.state;
     let t = ctx.t;
-    let Action::StartProcess { file_path, arguments, working_directory, run_as_admin, only_if_not_running, run_hidden, close_on_exit, } = action else { return; };
+    let Action::StartProcess { file_path, arguments, working_directory, run_as_admin, only_if_not_running, run_hidden, lifetime, } = action else { return; };
     widgets::hud(ui, loc.inspector_field_executable_path, t.muted);
     ui.horizontal(|ui| {
         ui.set_width(ui.available_width());
@@ -74,23 +74,13 @@ pub(crate) fn render_start_process_fields(
         ui.checkbox(run_hidden, loc.inspector_checkbox_run_hidden);
         ui.checkbox(only_if_not_running, loc.inspector_checkbox_only_if_not_running);
         ui.checkbox(run_as_admin, loc.inspector_checkbox_run_as_admin);
-        let can_companion = state.editing_rule.as_ref().is_some_and(|r| matches!(
-            r.trigger,
-            Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
-        ));
-        if !can_companion {
-            *close_on_exit = false;
-        }
-        let resp = ui.add_enabled(
-            can_companion,
-            egui::Checkbox::new(close_on_exit, loc.inspector_checkbox_close_on_exit),
-        );
-        if !can_companion {
-            resp.on_disabled_hover_text(loc.inspector_companion_disabled_tip);
-        } else {
-            resp.on_hover_text(loc.inspector_checkbox_close_on_exit_tip);
-        }
     });
+
+    let can_follow_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(
+        r.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+    ));
+    render_resource_lifetime(ui, t, loc, ctx.idx, lifetime, can_follow_trigger);
 }
 
 pub(crate) fn render_kill_process_fields(

@@ -510,7 +510,7 @@ mod tests {
             operation: OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
 
         let prepared = prepare_import(SharePayload::rules_only(vec![rule]), &[], &[], &[], true)
@@ -609,7 +609,7 @@ mod tests {
             operation: crate::models::OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let (payload, _) = build_payload(
             vec![rule],
@@ -646,7 +646,7 @@ mod tests {
             operation: crate::models::OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let (payload, _) = build_payload(
             vec![rule],
@@ -729,7 +729,7 @@ mod tests {
             operation: OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let (payload, _) =
             build_payload(vec![rule], std::slice::from_ref(&shared_overlay), &[]);

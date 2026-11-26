@@ -2,7 +2,45 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::command::CommandCancellation;
-use crate::models::Action;
+use crate::models::{Action, ResourceLifetime};
+
+/// A process or overlay that a step created and the pipeline now owns.
+///
+/// The process carries the PID captured at spawn, the overlay the generation of the show that is
+/// on screen, so teardown can target exactly that object instead of a name or a global id.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SpawnedResource {
+    Process {
+        pid: u32,
+        image_path: String,
+        lifetime: ResourceLifetime,
+    },
+    Overlay {
+        overlay_id: String,
+        generation: u64,
+        lifetime: ResourceLifetime,
+    },
+}
+
+impl SpawnedResource {
+    pub fn lifetime(&self) -> ResourceLifetime {
+        match self {
+            Self::Process { lifetime, .. } | Self::Overlay { lifetime, .. } => *lifetime,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ActionOutcome {
+    Continue(Option<String>),
+    /// The step created resources the pipeline may have to tear down later. A branch collects the
+    /// resources of every nested step, so ownership works inside If/Else too.
+    ContinueOwned {
+        output: Option<String>,
+        owned: Vec<SpawnedResource>,
+    },
+    AbortPipeline { reason: String },
+}
 
 mod audio;
 mod filesystem;
@@ -32,18 +70,16 @@ pub use self::macro_action::{
     stop_macro_by_id_or_name,
 };
 pub use self::process::trim_working_set;
+pub(crate) use self::process::{
+    is_process_alive, kill_process_tree_by_pid, kill_process_tree_by_pid_blocking,
+};
 pub use self::system::is_firewall_rule_active;
 pub use self::window::{get_foreground_window_pid, has_matching_window};
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ActionOutcome {
-    Continue(Option<String>),
-    AbortPipeline { reason: String },
-}
 
 pub struct ActionRunner;
 
 impl ActionRunner {
+    #[cfg(test)]
     pub async fn execute(action: &Action, context: &HashMap<String, String>) -> Result<ActionOutcome, String> {
         Self::execute_with_output(action, context).await
     }
@@ -233,15 +269,12 @@ impl ActionRunner {
                     true
                 };
                 let mut last_output: Option<String> = None;
+                let mut owned: Vec<SpawnedResource> = Vec::new();
                 if is_true {
                     for sub_action in then_actions {
-                        match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
-                            ActionOutcome::Continue(output) => {
-                                if output.is_some() {
-                                    last_output = output;
-                                }
-                            }
-                            ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                        let outcome = Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await?;
+                        if let Err(abort) = absorb_sub_outcome(outcome, &mut last_output, &mut owned) {
+                            return Ok(abort);
                         }
                     }
                 } else {
@@ -249,13 +282,9 @@ impl ActionRunner {
                     for branch in else_if_branches {
                         if !branch.conditions.is_empty() && crate::daemon::conditions::evaluate_rule_conditions(&branch.conditions) {
                             for sub_action in &branch.actions {
-                                match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
-                                    ActionOutcome::Continue(output) => {
-                                        if output.is_some() {
-                                            last_output = output;
-                                        }
-                                    }
-                                    ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                                let outcome = Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await?;
+                                if let Err(abort) = absorb_sub_outcome(outcome, &mut last_output, &mut owned) {
+                                    return Ok(abort);
                                 }
                             }
                             matched = true;
@@ -264,20 +293,24 @@ impl ActionRunner {
                     }
                     if !matched {
                         for sub_action in else_actions {
-                            match Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await? {
-                                ActionOutcome::Continue(output) => {
-                                    if output.is_some() {
-                                        last_output = output;
-                                    }
-                                }
-                                ActionOutcome::AbortPipeline { reason } => return Ok(ActionOutcome::AbortPipeline { reason }),
+                            let outcome = Box::pin(Self::execute_with_output_cancellable(sub_action, context, cancel.clone())).await?;
+                            if let Err(abort) = absorb_sub_outcome(outcome, &mut last_output, &mut owned) {
+                                return Ok(abort);
                             }
                         }
                     }
                 }
                 // The branch output feeds `{PrevOutput}` / `{StepN.Output}` in the parent
-                // pipeline; discarding it made a nested ExecuteScript unusable.
-                Ok(ActionOutcome::Continue(last_output))
+                // pipeline; discarding it made a nested ExecuteScript unusable. A branch that
+                // started owned resources hands them up with the output.
+                if owned.is_empty() {
+                    Ok(ActionOutcome::Continue(last_output))
+                } else {
+                    Ok(ActionOutcome::ContinueOwned {
+                        output: last_output,
+                        owned,
+                    })
+                }
             }
 
             Action::RuleControl { rule_id, operation, wait } => {
@@ -294,6 +327,40 @@ impl ActionRunner {
                 Ok(ActionOutcome::Continue(None))
             }
 
+            Action::StartProcess { lifetime, .. } => {
+                let spawned = process::execute_start(action, context).await?;
+                match spawned {
+                    Some(spawned) if *lifetime != ResourceLifetime::Detach => {
+                        Ok(ActionOutcome::ContinueOwned {
+                            output: None,
+                            owned: vec![SpawnedResource::Process {
+                                pid: spawned.pid,
+                                image_path: spawned.image_path,
+                                lifetime: *lifetime,
+                            }],
+                        })
+                    }
+                    _ => Ok(ActionOutcome::Continue(None)),
+                }
+            }
+
+            Action::Overlay { lifetime, .. } => {
+                let shown = overlay::execute(action, context)?;
+                match shown {
+                    // Even a detached overlay is recorded for the run: it must not count as a
+                    // running resource, but stopping the rule still hides the exact show it made.
+                    Some((overlay_id, generation)) => Ok(ActionOutcome::ContinueOwned {
+                        output: None,
+                        owned: vec![SpawnedResource::Overlay {
+                            overlay_id,
+                            generation,
+                            lifetime: *lifetime,
+                        }],
+                    }),
+                    None => Ok(ActionOutcome::Continue(None)),
+                }
+            }
+
             other => {
                 Self::execute_standard_void_action(other, context).await?;
                 Ok(ActionOutcome::Continue(None))
@@ -303,7 +370,11 @@ impl ActionRunner {
 
     pub(crate) async fn execute_standard_void_action(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
         match action {
-            Action::StartProcess { .. } | Action::KillProcess { .. } | Action::ProcessTuning { .. }
+            Action::StartProcess { .. } => {
+                let _ = process::execute_start(action, context).await?;
+                Ok(())
+            }
+            Action::KillProcess { .. } | Action::ProcessTuning { .. }
             | Action::TrimWorkingSet { .. } => process::execute(action, context).await,
             Action::Window { .. } => window::execute(action, context),
             Action::PowerPlan { .. } | Action::SystemPower { .. } | Action::Notification { .. }
@@ -315,7 +386,10 @@ impl ActionRunner {
             Action::Macro { .. } => macro_action::execute(action, context).await,
             Action::Archive { .. } => filesystem::execute_archive_action(action, context).await,
             Action::FileSystem { .. } => filesystem::execute_fs_action(action, context),
-            Action::Overlay { .. } => overlay::execute(action, context),
+            Action::Overlay { .. } => {
+                let _ = overlay::execute(action, context)?;
+                Ok(())
+            }
             Action::Wait { .. } | Action::Check { .. } | Action::Firewall { .. } | Action::IfElse { .. }
             | Action::RuleControl { .. } => {
                 unreachable!("control-flow actions are dispatched by execute_void_action_cancellable")
@@ -325,6 +399,36 @@ impl ActionRunner {
 
     pub fn interpolate_tokens(text: &str, context: &HashMap<String, String>) -> String {
         tokens::interpolate_tokens(text, context)
+    }
+}
+
+/// Folds one nested If/Else step's outcome into the branch's output/resource accumulators.
+/// An abort is handed back unchanged so the parent pipeline halts with the nested reason.
+fn absorb_sub_outcome(
+    outcome: ActionOutcome,
+    last_output: &mut Option<String>,
+    owned: &mut Vec<SpawnedResource>,
+) -> Result<(), ActionOutcome> {
+    match outcome {
+        ActionOutcome::Continue(output) => {
+            if output.is_some() {
+                *last_output = output;
+            }
+            Ok(())
+        }
+        ActionOutcome::ContinueOwned {
+            output,
+            owned: sub_owned,
+        } => {
+            if output.is_some() {
+                *last_output = output;
+            }
+            owned.extend(sub_owned);
+            Ok(())
+        }
+        ActionOutcome::AbortPipeline { reason } => {
+            Err(ActionOutcome::AbortPipeline { reason })
+        }
     }
 }
 

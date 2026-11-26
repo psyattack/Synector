@@ -16,6 +16,36 @@ use super::input::{mouse_control, send_key_event, ACTIVE_HELD_KEYS, ACTIVE_HELD_
 // focused window or move the cursor while the developer is working.
 const _: () = assert!(!INPUT_INJECTION_ENABLED, "unit tests must not inject input into the desktop");
 
+#[tokio::test]
+async fn test_start_process_reports_and_kills_the_captured_pid() {
+    let action = crate::models::Action::StartProcess {
+        file_path: "cmd.exe".into(),
+        arguments: "/c ping -n 60 127.0.0.1 >nul".into(),
+        working_directory: None,
+        run_as_admin: false,
+        only_if_not_running: false,
+        run_hidden: true,
+        lifetime: crate::models::ResourceLifetime::UntilRunEnd,
+    };
+    let spawned = super::process::execute_start(&action, &HashMap::new())
+        .await
+        .expect("start action")
+        .expect("a spawned process reports its pid");
+
+    assert!(
+        super::is_process_alive(spawned.pid),
+        "the captured pid must be alive right after the spawn"
+    );
+    super::kill_process_tree_by_pid(spawned.pid)
+        .await
+        .expect("tree kill by pid");
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !super::is_process_alive(spawned.pid),
+        "the captured pid must be dead after its tree is terminated"
+    );
+}
+
 /// The macro cancellation registry is process-global, so tests that inspect it must not
 /// overlap with a test that transiently registers a running macro.
 static MACRO_REGISTRY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

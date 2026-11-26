@@ -70,7 +70,7 @@ fn test_action_duplicate_with_fresh_ids() {
         operation: OverlayOperation::Toggle,
         override_text: None,
         duration_ms: None,
-        close_on_exit: false,
+        lifetime: ResourceLifetime::Detach,
     };
 
     let duplicated = overlay_act.duplicate_with_fresh_ids();
@@ -485,7 +485,7 @@ fn test_overlay_models_and_action_serde() {
         operation: OverlayOperation::Toggle,
         override_text: Some("Aim Active".to_string()),
         duration_ms: Some(3000),
-        close_on_exit: true,
+        lifetime: ResourceLifetime::UntilTriggerProcessExit,
     };
     let json = serde_json::to_string(&action).expect("Serialize Action::Overlay");
     let decoded: Action = serde_json::from_str(&json).expect("Deserialize Action::Overlay");
@@ -498,7 +498,7 @@ fn test_overlay_models_and_action_serde() {
         operation: OverlayOperation::Show,
         override_text: None,
         duration_ms: None,
-        close_on_exit: false,
+        lifetime: ResourceLifetime::Detach,
     };
     let custom_json = serde_json::to_string(&custom_action).unwrap();
     let custom_decoded: Action = serde_json::from_str(&custom_json).unwrap();
@@ -866,7 +866,7 @@ fn test_macro_presets_and_operations_serde() {
         custom_overlay: None,
         override_text: Some("Dynamic notification text".into()),
         duration_ms: None,
-        close_on_exit: false,
+        lifetime: ResourceLifetime::Detach,
     };
     let json_set_text = serde_json::to_string(&overlay_set_text).unwrap();
     let dec_set_text: Action = serde_json::from_str(&json_set_text).unwrap();
@@ -1186,7 +1186,7 @@ fn test_overlay_ids_normalize_across_load_and_nesting() {
         operation: OverlayOperation::Show,
         override_text: None,
         duration_ms: None,
-        close_on_exit: true,
+        lifetime: ResourceLifetime::UntilTriggerProcessExit,
     };
     action.normalize_overlay_ids();
     if let Action::Overlay {
@@ -1214,7 +1214,7 @@ fn test_overlay_ids_normalize_across_load_and_nesting() {
         operation: OverlayOperation::Show,
         override_text: None,
         duration_ms: None,
-        close_on_exit: false,
+        lifetime: ResourceLifetime::Detach,
     };
     empty.normalize_overlay_ids();
     if let Action::Overlay { overlay_id, .. } = &empty {
@@ -1257,7 +1257,7 @@ fn test_validate_rule_keys_rejects_typos() {
             run_as_admin: false,
             only_if_not_running: false,
             run_hidden: false,
-            close_on_exit: false,
+            lifetime: ResourceLifetime::Detach,
         }],
         tags: vec![RuleTag::new("tag")],
         ..Default::default()
@@ -1267,6 +1267,7 @@ fn test_validate_rule_keys_rejects_typos() {
 
     value["max_execution"] = serde_json::json!(5);
     value["actions"][0]["max_execution"] = serde_json::json!(5);
+    value["actions"][0]["close_on_exit"] = serde_json::json!(true);
     value["tags"][0]["colour"] = serde_json::json!("#fff");
     let errors = validate_rule_keys(&value).expect_err("typos must be reported");
     let rendered = errors
@@ -1275,6 +1276,7 @@ fn test_validate_rule_keys_rejects_typos() {
         .collect::<Vec<_>>()
         .join("; ");
     assert!(rendered.contains("max_execution"), "{rendered}");
+    assert!(rendered.contains("close_on_exit"), "{rendered}");
     assert!(rendered.contains("actions[0]"), "{rendered}");
     assert!(rendered.contains("tags[0]"), "{rendered}");
 }

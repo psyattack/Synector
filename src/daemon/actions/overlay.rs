@@ -3,7 +3,12 @@ use std::collections::HashMap;
 use super::ActionRunner;
 use crate::models::Action;
 
-pub(super) fn execute(action: &Action, context: &HashMap<String, String>) -> Result<(), String> {
+/// Executes one overlay step and returns the `(overlay id, show generation)` of an overlay it
+/// actually put on screen, so the pipeline can own that exact show.
+pub(super) fn execute(
+    action: &Action,
+    context: &HashMap<String, String>,
+) -> Result<Option<(String, u64)>, String> {
     match action {
         Action::Overlay {
             overlay_id,
@@ -27,53 +32,64 @@ pub(super) fn execute(action: &Action, context: &HashMap<String, String>) -> Res
                 }
             }
 
-            let target_id = found_overlay.as_ref().map(|o| o.id.as_str()).unwrap_or(&id);
+            let target_id = found_overlay
+                .as_ref()
+                .map(|o| o.id.clone())
+                .unwrap_or_else(|| id.clone());
 
-            match operation {
+            let shown = match operation {
                 crate::models::OverlayOperation::Show => {
-                    if let Some(mut overlay) = found_overlay {
+                    let generation = if let Some(mut overlay) = found_overlay {
                         if let Some(custom_t) = text.clone() {
                             overlay.name = custom_t;
                         }
-                        crate::daemon::overlay_manager::show_overlay(&overlay, false, text);
+                        crate::daemon::overlay_manager::show_overlay(&overlay, false, text)
                     } else {
-                        let def = match id.as_str() {
+                        let mut def = match id.as_str() {
                             "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                             "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
                             "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
                             _ => crate::models::OverlayDefinition::default_new_overlay(),
                         };
-                        crate::daemon::overlay_manager::show_overlay(&def, false, text);
-                    }
+                        def.id = target_id.clone();
+                        crate::daemon::overlay_manager::show_overlay(&def, false, text)
+                    };
+                    generation.map(|generation| (target_id.clone(), generation))
                 }
                 crate::models::OverlayOperation::Hide => {
-                    crate::daemon::overlay_manager::hide_overlay(target_id);
+                    crate::daemon::overlay_manager::hide_overlay(&target_id);
+                    None
                 }
                 crate::models::OverlayOperation::Toggle => {
-                    let overlay = found_overlay.unwrap_or_else(|| match id.as_str() {
+                    let mut overlay = found_overlay.unwrap_or_else(|| match id.as_str() {
                         "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                         "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
                         "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
                         _ => crate::models::OverlayDefinition::default_new_overlay(),
                     });
-                    crate::daemon::overlay_manager::toggle_overlay(&overlay, text);
+                    overlay.id = target_id.clone();
+                    crate::daemon::overlay_manager::toggle_overlay(&overlay, text)
+                        .map(|generation| (target_id.clone(), generation))
                 }
                 crate::models::OverlayOperation::Flash => {
                     let dur = duration_ms.unwrap_or(3000);
-                    let overlay = found_overlay.unwrap_or_else(|| match id.as_str() {
+                    let mut overlay = found_overlay.unwrap_or_else(|| match id.as_str() {
                         "overlay_crosshair" => crate::models::OverlayDefinition::default_crosshair(),
                         "overlay_telemetry" => crate::models::OverlayDefinition::default_telemetry(),
                         "overlay_macro_badge" => crate::models::OverlayDefinition::default_macro_badge(),
                         _ => crate::models::OverlayDefinition::default_new_overlay(),
                     });
-                    crate::daemon::overlay_manager::flash_overlay(&overlay, dur, text);
+                    overlay.id = target_id.clone();
+                    crate::daemon::overlay_manager::flash_overlay(&overlay, dur, text)
+                        .map(|generation| (target_id.clone(), generation))
                 }
                 crate::models::OverlayOperation::SetText => {
                     let t_str = text.unwrap_or_default();
-                    crate::daemon::overlay_manager::update_overlay_text(target_id, &t_str);
+                    crate::daemon::overlay_manager::update_overlay_text(&target_id, &t_str);
+                    None
                 }
-            }
-            Ok(())
+            };
+            Ok(shown)
         }
         _ => unreachable!("overlay handler received a non-overlay action"),
     }

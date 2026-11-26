@@ -94,7 +94,7 @@ pub(crate) mod fixtures {
                 run_as_admin: false,
                 only_if_not_running: true,
                 run_hidden: true,
-                close_on_exit: true,
+                lifetime: crate::models::ResourceLifetime::UntilTriggerProcessExit,
             }],
             custom_icon_path: Some("C:\\games\\game.exe".into()),
             auto_process_icon: true,

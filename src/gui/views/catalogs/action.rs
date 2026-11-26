@@ -45,7 +45,7 @@ const CATALOG_ITEMS: [ActionEntry; 26] = [
             run_as_admin: false,
             only_if_not_running: false,
             run_hidden: false,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         },
     },
     CatalogEntryDef {
@@ -362,7 +362,7 @@ const CATALOG_ITEMS: [ActionEntry; 26] = [
                 operation: crate::models::OverlayOperation::Toggle,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             }
         },
     },

@@ -6,7 +6,7 @@
 //! them, `rules.json` logs them and the daemon returns them over IPC.
 
 use crate::config::AppConfig;
-use crate::models::{Action, Rule, Trigger};
+use crate::models::{Action, ProcessTriggerEvent, ResourceLifetime, Rule, Trigger};
 
 /// Structural rule errors that must block `--rules-apply`.
 pub(crate) fn validate_rules(rules: &[Rule]) -> Vec<String> {
@@ -62,9 +62,25 @@ pub(crate) fn validate_rules(rules: &[Rule]) -> Vec<String> {
         }
 
         let mut has_infinite_macro = false;
+        let can_follow_trigger = matches!(
+            rule.trigger,
+            Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+        );
         let mut check = |action: &Action| {
             if matches!(action, Action::Macro { infinite: true, .. }) {
                 has_infinite_macro = true;
+            }
+            let lifetime = match action {
+                Action::StartProcess { lifetime, .. } | Action::Overlay { lifetime, .. } => {
+                    Some(*lifetime)
+                }
+                _ => None,
+            };
+            if lifetime == Some(ResourceLifetime::UntilTriggerProcessExit) && !can_follow_trigger {
+                errors.push(format!(
+                    "rule #{number} ({}): action: lifetime \"until_trigger_process_exit\" requires an On Process Start trigger",
+                    display_id(rule)
+                ));
             }
             for message in action.validation_errors() {
                 errors.push(format!(

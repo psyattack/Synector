@@ -21,6 +21,10 @@ const MAX_TRACKED_RULES: usize = 1024;
 pub struct RuleActivity {
     /// Pipelines of this rule that are running right now.
     pub active: usize,
+    /// Processes and overlays a run of this rule still owns. A rule whose pipeline ended but whose
+    /// owned process or overlay is alive is still "running" for conditions, exactly as the GUI
+    /// shows it.
+    pub owned: usize,
     /// Number of pipelines of this rule that have started in this daemon process.
     pub starts: u64,
 }
@@ -36,7 +40,7 @@ pub fn mark_started(rule_id: &str) {
     if activity.len() >= MAX_TRACKED_RULES && !activity.contains_key(rule_id) {
         // Forgetting idle rules is safe: a rule that is not running cannot be observed as running
         // any more. The only loss is the `starts` baseline of a wait that already ended.
-        activity.retain(|_, entry| entry.active > 0);
+        activity.retain(|_, entry| entry.active > 0 || entry.owned > 0);
     }
     let entry = activity.entry(rule_id.to_string()).or_default();
     entry.active += 1;
@@ -53,6 +57,27 @@ pub fn mark_finished(rule_id: &str) {
     }
 }
 
+/// Records that a run of `rule_id` took ownership of one live process or overlay.
+pub fn mark_owned_acquired(rule_id: &str) {
+    let Ok(mut activity) = ACTIVITY.write() else {
+        return;
+    };
+    if activity.len() >= MAX_TRACKED_RULES && !activity.contains_key(rule_id) {
+        activity.retain(|_, entry| entry.active > 0 || entry.owned > 0);
+    }
+    activity.entry(rule_id.to_string()).or_default().owned += 1;
+}
+
+/// Records that an owned process or overlay of `rule_id` was released or was already gone.
+pub fn mark_owned_released(rule_id: &str) {
+    let Ok(mut activity) = ACTIVITY.write() else {
+        return;
+    };
+    if let Some(entry) = activity.get_mut(rule_id) {
+        entry.owned = entry.owned.saturating_sub(1);
+    }
+}
+
 /// Current activity of `rule_id`; a rule that has never run reports the default snapshot.
 pub fn snapshot(rule_id: &str) -> RuleActivity {
     ACTIVITY
@@ -62,9 +87,10 @@ pub fn snapshot(rule_id: &str) -> RuleActivity {
         .unwrap_or_default()
 }
 
-/// Whether `rule_id` has a running pipeline right now.
+/// Whether `rule_id` is running: a live pipeline or a resource it still owns.
 pub fn is_running(rule_id: &str) -> bool {
-    snapshot(rule_id).active > 0
+    let snapshot = snapshot(rule_id);
+    snapshot.active > 0 || snapshot.owned > 0
 }
 
 #[cfg(test)]
@@ -83,26 +109,36 @@ mod tests {
             snapshot(id),
             RuleActivity {
                 active: 1,
+                owned: 0,
                 starts: 1,
             }
         );
 
         // Parallel executions of the same rule are counted together.
         mark_started(id);
-        assert_eq!(snapshot(id), RuleActivity { active: 2, starts: 2 });
+        assert_eq!(snapshot(id), RuleActivity { active: 2, owned: 0, starts: 2 });
 
         mark_finished(id);
         assert!(is_running(id));
-        assert_eq!(snapshot(id), RuleActivity { active: 1, starts: 2 });
+        assert_eq!(snapshot(id), RuleActivity { active: 1, owned: 0, starts: 2 });
 
         mark_finished(id);
         assert!(!is_running(id));
-        assert_eq!(snapshot(id), RuleActivity { active: 0, starts: 2 });
+        assert_eq!(snapshot(id), RuleActivity { active: 0, owned: 0, starts: 2 });
 
         // A stray finish must not underflow the counter.
         mark_finished(id);
         assert!(!is_running(id));
         assert_eq!(snapshot(id).starts, 2);
+
+        // A live owned resource keeps the rule running after its pipeline ended.
+        mark_owned_acquired(id);
+        assert!(is_running(id));
+        assert_eq!(snapshot(id), RuleActivity { active: 0, owned: 1, starts: 2 });
+        mark_owned_released(id);
+        assert!(!is_running(id));
+        mark_owned_released(id);
+        assert_eq!(snapshot(id).owned, 0);
     }
 
     #[test]

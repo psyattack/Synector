@@ -5,13 +5,7 @@ use crate::gui::components::text::fill;
 
 pub(crate) fn action_type_badge(action: &Action, loc: &crate::i18n::Strings) -> &'static str {
     match action {
-        Action::StartProcess { close_on_exit, .. } => {
-            if *close_on_exit {
-                loc.inspector_badge_launch_companion
-            } else {
-                loc.inspector_badge_launch_process
-            }
-        }
+        Action::StartProcess { .. } => loc.inspector_badge_launch_process,
         Action::KillProcess { .. } => loc.inspector_badge_kill_process,
         Action::Notification { .. } => loc.inspector_badge_notification,
         Action::SystemPower { .. } => loc.inspector_badge_system_power,

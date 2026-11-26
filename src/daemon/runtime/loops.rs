@@ -201,12 +201,12 @@ pub(super) async fn spawn_runtime_flush_loop(engine_runtime: Arc<Mutex<DaemonEng
 }
 
 /// Whether the process loop must keep polling: any enabled process or resource rule needs its
-/// lifecycle diff, and a live bound companion needs its exit noticed.
+/// lifecycle diff, and a live owned process needs its exit noticed.
 fn needs_process_polling(
     rules: &[crate::models::Rule],
-    has_active_bound_companions: bool,
+    has_owned_processes: bool,
 ) -> bool {
-    has_active_bound_companions
+    has_owned_processes
         || rules.iter().any(|rule| {
             rule.is_enabled
                 && matches!(
@@ -241,9 +241,10 @@ pub(super) async fn spawn_process_loop(engine_process: Arc<Mutex<DaemonEngine>>)
         let delay_ms = {
             let mut eng = engine_process.lock().await;
             let had_events = eng.tick_process_events().await;
+            eng.prune_owned_resources();
             let needs_polling = needs_process_polling(
                 &eng.config.rules,
-                eng.has_active_bound_companions(),
+                eng.has_active_owned_processes(),
             );
             process_poll_delay_ms(eng.watcher().is_etw_active(), needs_polling, had_events)
         };
@@ -522,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn process_loop_sleeps_when_no_rule_or_companion_needs_polling() {
+    fn process_loop_sleeps_when_no_rule_or_owned_process_needs_polling() {
         assert!(!needs_process_polling(&[], false));
         assert!(
             needs_process_polling(&[process_rule()], false),
@@ -530,7 +531,7 @@ mod tests {
         );
         assert!(
             needs_process_polling(&[], true),
-            "a live bound companion needs its exit noticed"
+            "a live owned process needs its exit noticed"
         );
 
         let mut disabled = process_rule();

@@ -9,6 +9,23 @@ use super::overlay::OverlayDefinition;
 use super::serde_defaults::*;
 use super::trigger::ProcessMatchMode;
 
+/// How long a resource created by a rule step stays alive.
+///
+/// A started process or shown overlay can outlive both the action and the pipeline that created
+/// it, so its lifetime is explicit instead of a boolean "close on exit" flag.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceLifetime {
+    /// Leave the process running / the overlay on screen after the rule is done with it.
+    #[default]
+    Detach,
+    /// Stop the process / hide the overlay when the run that created it ends, however it ends.
+    UntilRunEnd,
+    /// Stop the process / hide the overlay when the process that triggered the run exits.
+    /// Only valid for a process-start trigger that supplies a live primary process.
+    UntilTriggerProcessExit,
+}
+
 #[derive(schemars::JsonSchema, Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "$action_type", rename_all = "snake_case")]
 pub enum Action {
@@ -26,7 +43,7 @@ pub enum Action {
         #[serde(default)]
         run_hidden: bool,
         #[serde(default)]
-        close_on_exit: bool,
+        lifetime: ResourceLifetime,
     },
     #[serde(rename = "kill_process")]
     KillProcess {
@@ -278,7 +295,7 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u32>,
         #[serde(default)]
-        close_on_exit: bool,
+        lifetime: ResourceLifetime,
     },
 }
 

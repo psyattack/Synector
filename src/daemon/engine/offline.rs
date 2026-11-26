@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::models::{Action, Rule, Trigger};
+use crate::daemon::actions::SpawnedResource;
+use crate::models::{Rule, Trigger};
 
 use super::{run_step_loop, PipelineObserver, PipelineOutcome};
 use super::quota::QuotaDecision;
@@ -51,12 +52,45 @@ pub struct OfflineRunResult {
 struct OfflineRunObserver {
     failures: Vec<(usize, String)>,
     abort: Option<(usize, String)>,
+    /// Processes and overlays the run owns; an offline run is a manual run, so it releases all of
+    /// them when the pipeline ends instead of tracking them across daemon lifetime.
+    owned: Vec<SpawnedResource>,
+}
+
+impl OfflineRunObserver {
+    async fn release_owned_resources(&self) {
+        for resource in &self.owned {
+            match resource {
+                SpawnedResource::Process { pid, .. } => {
+                    let _ = crate::daemon::actions::kill_process_tree_by_pid(*pid).await;
+                }
+                SpawnedResource::Overlay {
+                    lifetime: crate::models::ResourceLifetime::Detach,
+                    ..
+                } => {
+                    // A detached overlay is left on screen, exactly like a manual run's Detach.
+                }
+                SpawnedResource::Overlay {
+                    overlay_id,
+                    generation,
+                    ..
+                } => {
+                    crate::daemon::overlay_manager::hide_overlay_if_generation(
+                        overlay_id,
+                        *generation,
+                    );
+                }
+            }
+        }
+    }
 }
 
 impl PipelineObserver for OfflineRunObserver {
     fn step_started(&mut self, _step_index: usize, _total_steps: usize) {}
 
-    fn step_completed(&mut self, _step_index: usize, _action: &Action) {}
+    fn step_completed(&mut self, _step_index: usize, owned: &[SpawnedResource]) {
+        self.owned.extend_from_slice(owned);
+    }
 
     fn step_failed(&mut self, step_index: usize, error: &str, _stopping: bool) {
         self.failures.push((step_index + 1, error.to_string()));
@@ -139,6 +173,7 @@ pub async fn run_rule_offline(rule: &Rule, policy: RuleRunPolicy) -> OfflineRunR
 
     let mut observer = OfflineRunObserver::default();
     let halted = run_step_loop(&rule.actions, &mut context, rule.stop_on_error, &mut observer).await;
+    observer.release_owned_resources().await;
 
     OfflineRunResult {
         skipped: None,

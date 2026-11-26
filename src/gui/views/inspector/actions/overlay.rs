@@ -12,7 +12,7 @@ pub(crate) fn render_overlay_fields(
     let t = ctx.t;
     let idx = ctx.idx;
     let state = ctx.state;
-    let Action::Overlay { overlay_id, custom_overlay, operation, override_text, duration_ms, close_on_exit, } = action else { return; };
+    let Action::Overlay { overlay_id, custom_overlay, operation, override_text, duration_ms, lifetime, } = action else { return; };
     let all_overlays = state.daemon_state.as_ref()
         .map(|s| s.config.overlays.clone())
         .unwrap_or_else(|| crate::config::Library::read().overlays);
@@ -285,22 +285,12 @@ pub(crate) fn render_overlay_fields(
             }
 
             ui.checkbox(&mut overlay_def.hide_from_capture, loc.overlay_studio_hide_from_capture);
-            let can_companion = state.editing_rule.as_ref().is_some_and(|r| matches!(
-                r.trigger,
-                Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
-            ));
-            if !can_companion {
-                *close_on_exit = false;
-            }
-            let resp = ui.add_enabled(
-                can_companion,
-                egui::Checkbox::new(close_on_exit, loc.inspector_overlay_close_on_exit),
-            );
-            if !can_companion {
-                resp.on_disabled_hover_text(loc.inspector_companion_disabled_tip);
-            } else {
-                resp.on_hover_text(loc.inspector_overlay_close_on_exit_tip);
-            }
         });
     }
+
+    let can_follow_trigger = state.editing_rule.as_ref().is_some_and(|r| matches!(
+        r.trigger,
+        Some(Trigger::Process { event: ProcessTriggerEvent::Started, .. })
+    ));
+    render_resource_lifetime(ui, t, loc, idx, lifetime, can_follow_trigger);
 }

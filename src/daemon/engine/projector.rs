@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::ipc::DaemonState;
 use crate::models::Action;
 
-use super::executions::ActiveExecutionItem;
+use super::executions::{ActiveExecutionItem, OwnedResource};
 use super::DaemonEngine;
 
 /// Builds the [`DaemonState`] snapshot the GUI renders. It is a read-only view over the engine:
@@ -60,8 +60,8 @@ impl<'a> StateProjector<'a> {
         }
     }
 
-    /// Active executions grouped per rule, plus the runs implied by a bound companion or a
-    /// showing overlay so the GUI can render a rule as running while its satellite lives.
+    /// Active executions grouped per rule, plus the runs implied by an owned process or overlay so
+    /// the GUI can render a rule as running while its resource lives.
     fn active_rule_executions(
         &self,
         active_overlay_ids: &HashSet<String>,
@@ -82,46 +82,46 @@ impl<'a> StateProjector<'a> {
             }
         }
 
-        // Track active bound satellites waiting for host process exit
-        for bp in self.engine.executions.bound_processes() {
-            if !active_rule_executions.contains_key(&bp.rule_id) {
-                if let Some(rule) = self.engine.config.rules.iter().find(|r| r.id == bp.rule_id) {
-                    let step_idx = rule
-                        .actions
-                        .iter()
-                        .position(|a| matches!(a, Action::StartProcess { close_on_exit: true, .. }))
-                        .unwrap_or(0);
-                    active_rule_executions.insert(
-                        bp.rule_id.clone(),
-                        crate::ipc::ActiveRuleExecutionState {
-                            active_count: 1,
-                            current_step: step_idx,
-                            total_steps: rule.actions.len(),
-                        },
-                    );
-                }
+        // Live resources keep their rule visible as running after the pipeline finished; the step
+        // index points at the action that owns the resource.
+        for resource in self.engine.executions.owned_resources() {
+            if resource.lifetime() == crate::models::ResourceLifetime::Detach {
+                // A detached overlay is recorded for stop cleanup, not as a live resource.
+                continue;
             }
-        }
-
-        // Track active bound overlays waiting for host process exit
-        for bo in self.engine.executions.bound_overlays() {
-            if !active_rule_executions.contains_key(&bo.rule_id) {
-                if let Some(rule) = self.engine.config.rules.iter().find(|r| r.id == bo.rule_id) {
-                    let step_idx = rule
-                        .actions
-                        .iter()
-                        .position(|a| matches!(a, Action::Overlay { close_on_exit: true, .. }))
-                        .unwrap_or(0);
-                    active_rule_executions.insert(
-                        bo.rule_id.clone(),
-                        crate::ipc::ActiveRuleExecutionState {
-                            active_count: 1,
-                            current_step: step_idx,
-                            total_steps: rule.actions.len(),
-                        },
-                    );
-                }
+            if active_rule_executions.contains_key(resource.rule_id()) {
+                continue;
             }
+            let Some(rule) = self
+                .engine
+                .config
+                .rules
+                .iter()
+                .find(|r| r.id == resource.rule_id())
+            else {
+                continue;
+            };
+            let step_idx = rule
+                .actions
+                .iter()
+                .position(|action| match (action, resource) {
+                    (Action::StartProcess { lifetime, .. }, OwnedResource::Process(process)) => {
+                        *lifetime == process.lifetime
+                    }
+                    (Action::Overlay { lifetime, .. }, OwnedResource::Overlay(overlay)) => {
+                        *lifetime == overlay.lifetime
+                    }
+                    _ => false,
+                })
+                .unwrap_or(0);
+            active_rule_executions.insert(
+                resource.rule_id().to_string(),
+                crate::ipc::ActiveRuleExecutionState {
+                    active_count: 1,
+                    current_step: step_idx,
+                    total_steps: rule.actions.len(),
+                },
+            );
         }
 
         // Track rules with active showing overlays

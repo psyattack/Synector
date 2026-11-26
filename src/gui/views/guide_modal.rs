@@ -360,7 +360,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (сек)", "Минимальный интервал между повторными срабатываниями (защита от спама и циклов).", t);
         doc_table_row(ui, "Квота выполнений", "Ограничивает число запусков: за всё время (правило встаёт на паузу при исчерпании) либо за период — час, день, неделя, месяц или своё окно от первого запуска; периодическая квота после сброса счётчика продолжает работать.", t);
         doc_table_row(ui, "Остановка при ошибке", "Прерывание цепочки действий, если один из шагов завершился аварийно.", t);
-        doc_table_row(ui, "Single Instance", "Правило срабатывает только для первого экземпляра при запуске и для последнего — при завершении; привязанные процессы ждут закрытия всех экземпляров.", t);
+        doc_table_row(ui, "Single Instance", "Правило срабатывает только для первого экземпляра при запуске и для последнего — при завершении; ресурсы с временем жизни until_trigger_process_exit ждут закрытия всех экземпляров.", t);
         doc_table_row(ui, "Скрытие иконки в трее (Stealth)", "Фоновый демон работает без значка в области уведомлений.", t);
         doc_table_row(ui, "Маскировка (PE Masking)", "Копия демона запускается как WindowsServiceHost.exe со стандартной иконкой Windows; в Диспетчере задач она выглядит как системный процесс.", t);
         doc_table_row(ui, "Test Rule / Step", "Проверка всей цепочки или отдельного шага прямо в редакторе без ожидания триггера.", t);
@@ -373,7 +373,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode (Сопровождение процесса)",
-            "Если триггером выбран процесс, Synector отслеживает его PID и передаёт контекст в токены. Событие «При завершении» запускает ту же цепочку действий, поэтому общие условия, кулдаун и квота действуют и там. Шаг Start Process с флагом close_on_exit и оверлей с close_with_target доступны только для события «При запуске» и дополнительно закрываются вместе с основным процессом.",
+            "Если триггером выбран процесс, Synector отслеживает его PID и передаёт контекст в токены. Событие «При завершении» запускает ту же цепочку действий, поэтому общие условия, кулдаун и квота действуют и там. Start Process и оверлей с временем жизни until_trigger_process_exit доступны только для события «При запуске» и закрываются вместе с основным процессом; until_run_end закрывает ресурс при завершении самого выполнения, а detach оставляет его.",
             t,
             false,
         );
@@ -396,7 +396,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_table_row(ui, "Cooldown (sec)", "Minimum elapsed time before the rule can trigger again (prevents event flooding).", t);
         doc_table_row(ui, "Execution Quota", "Caps the number of runs: for the rule's lifetime (auto-pauses when spent) or per period — hour, day, week, month, or a custom window that starts with the first run. A periodic quota resumes by itself once the counter resets.", t);
         doc_table_row(ui, "Stop on Error", "Aborts pipeline execution immediately if any action reports a failure.", t);
-        doc_table_row(ui, "Single Instance", "Fires only for the first instance on process start and for the last instance on process exit; bound satellites wait until all instances have closed.", t);
+        doc_table_row(ui, "Single Instance", "Fires only for the first instance on process start and for the last instance on process exit; host-lifetime resources wait until all instances have closed.", t);
         doc_table_row(ui, "Hide Tray Icon (Stealth)", "Runs the background daemon without a notification-area icon.", t);
         doc_table_row(ui, "PE Masking", "Runs a daemon copy as WindowsServiceHost.exe with the generic Windows icon, so Task Manager sees it as a system process.", t);
         doc_table_row(ui, "Test Rule / Step", "Test the full pipeline or single actions directly in the studio without waiting for real triggers.", t);
@@ -409,7 +409,7 @@ fn render_architecture_guide(ui: &mut Ui, t: &Tokens, lang: Language) {
         doc_callout(
             ui,
             "Companion Mode",
-            "With a Process trigger, Synector tracks the executable's PIDs and exposes them to tokens. The On Process Exit event runs the same action pipeline, so pre-conditions, cooldown and quota apply there too. Start Process steps with close_on_exit and overlays with close_with_target are only available for the On Process Start event and close together with the primary process.",
+            "With a Process trigger, Synector tracks the executable's PIDs and exposes them to tokens. The On Process Exit event runs the same action pipeline, so pre-conditions, cooldown and quota apply there too. Start Process steps and overlays with lifetime until_trigger_process_exit are only available for the On Process Start event and close together with the primary process; until_run_end releases the resource when the run ends, and detach leaves it running.",
             t,
             false,
         );

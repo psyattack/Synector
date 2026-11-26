@@ -3,7 +3,7 @@ use tokio::sync::oneshot;
 use crate::daemon::rule_call;
 use crate::daemon::watcher::ProcessEvent;
 use crate::ipc::{IpcRequest, IpcResponse};
-use crate::models::{Action, ConditionOperator, ProcessMatchMode, ProcessTriggerEvent, RuleCondition, RuleConditionItem, ScheduleType, Trigger};
+use crate::models::{Action, ConditionOperator, ProcessMatchMode, ProcessTriggerEvent, ResourceLifetime, RuleCondition, RuleConditionItem, ScheduleType, Trigger};
 
 use super::executions::next_execution_id;
 use super::pipeline::{run_action_pipeline, PipelineRun};
@@ -13,7 +13,7 @@ use super::*;
 use chrono::{Datelike, Timelike};
 
 #[tokio::test]
-async fn test_bound_overlay_companion_lifecycle() {
+async fn test_owned_overlay_lifecycle() {
     let mut config = AppConfig::default();
     let overlay_id = "companion_overlay_hud".to_string();
     let rule = Rule {
@@ -35,7 +35,7 @@ async fn test_bound_overlay_companion_lifecycle() {
                 operation: crate::models::OverlayOperation::Show,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: true,
+                lifetime: ResourceLifetime::UntilTriggerProcessExit,
             },
         ],
         ..Default::default()
@@ -53,16 +53,21 @@ async fn test_bound_overlay_companion_lifecycle() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     engine.drain_action_events();
 
-    // Overlay is registered as bound companion
-    assert_eq!(engine.executions.bound_overlays().len(), 1);
-    assert_eq!(engine.executions.bound_overlays()[0].overlay_id, overlay_id);
-    assert_eq!(engine.executions.bound_overlays()[0].primary_pid, 4321);
+    // The overlay show is owned by the run and bound to the triggering PID.
+    let resources = engine.executions.owned_resources();
+    assert_eq!(resources.len(), 1);
+    let super::executions::OwnedResource::Overlay(overlay) = &resources[0] else {
+        panic!("expected an owned overlay, got {resources:?}");
+    };
+    assert_eq!(overlay.overlay_id, overlay_id);
+    assert_eq!(overlay.primary.pid, 4321);
+    assert_eq!(overlay.lifetime, ResourceLifetime::UntilTriggerProcessExit);
 
-    // State reflects companion supervisor execution
+    // State reflects the live owned resource.
     let state = engine.get_current_state();
     assert!(state.active_rule_executions.contains_key("game_with_overlay"));
 
-    // 2. Process exits -> auto-closes bound overlay
+    // 2. Process exits -> auto-closes the owned overlay
     engine.handle_process_event(ProcessEvent {
         pid: 4321,
         process_name: "mygame.exe".into(),
@@ -71,8 +76,8 @@ async fn test_bound_overlay_companion_lifecycle() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     engine.drain_action_events();
 
-    assert_eq!(engine.executions.bound_overlays().len(), 0, "Bound overlay must be removed after primary process exit");
-    assert!(engine.logs.iter().any(|l| l.message.contains("Auto-closing bound overlay")));
+    assert!(engine.executions.owned_resources().is_empty(), "Owned overlay must be released after the primary process exits");
+    assert!(engine.logs.iter().any(|l| l.message.contains("Hid owned overlay")));
 }
 
 #[test]
@@ -179,7 +184,7 @@ fn test_device_filter_matches() {
 }
 
 #[test]
-fn test_process_trigger_event_and_companion_mode_serde() {
+fn test_process_trigger_event_and_resource_lifetime_serde() {
     let json = r#"{
         "id": "rule_1",
         "name": "Game with Companion",
@@ -194,7 +199,7 @@ fn test_process_trigger_event_and_companion_mode_serde() {
             {
                 "$action_type": "start_process",
                 "file_path": "companion.exe",
-                "close_on_exit": true,
+                "lifetime": "until_run_end",
                 "run_hidden": true
             }
         ]
@@ -207,8 +212,8 @@ fn test_process_trigger_event_and_companion_mode_serde() {
         rule.trigger,
         Some(Trigger::Process { event: ProcessTriggerEvent::Exited, .. })
     ));
-    if let Action::StartProcess { close_on_exit, run_hidden, .. } = &rule.actions[0] {
-        assert!(*close_on_exit);
+    if let Action::StartProcess { lifetime, run_hidden, .. } = &rule.actions[0] {
+        assert_eq!(*lifetime, ResourceLifetime::UntilRunEnd);
         assert!(*run_hidden);
     } else {
         panic!("Expected StartProcess");
@@ -632,15 +637,27 @@ async fn test_single_instance_process_lifecycle() {
 }
 
 #[test]
-fn test_only_start_triggered_process_runs_bind_companions() {
-    let mut rule = notify_rule("bind_companions", "Bind companions");
+fn test_host_lifetime_requires_a_process_start_trigger() {
+    let mut rule = notify_rule("host_lifetime", "Host lifetime");
+    rule.actions = vec![Action::StartProcess {
+        file_path: "hud.exe".into(),
+        arguments: String::new(),
+        working_directory: None,
+        run_as_admin: false,
+        only_if_not_running: false,
+        run_hidden: false,
+        lifetime: ResourceLifetime::UntilTriggerProcessExit,
+    }];
     rule.trigger = Some(Trigger::Process {
         process_name: "game.exe".into(),
         match_mode: ProcessMatchMode::Exact,
         single_instance: false,
         event: ProcessTriggerEvent::Started,
     });
-    assert!(super::pipeline::binds_companions(&rule));
+    assert!(
+        crate::validation::validate_rules(std::slice::from_ref(&rule)).is_empty(),
+        "a start-triggered rule may own a host-lifetime resource"
+    );
 
     rule.trigger = Some(Trigger::Process {
         process_name: "game.exe".into(),
@@ -648,13 +665,18 @@ fn test_only_start_triggered_process_runs_bind_companions() {
         single_instance: false,
         event: ProcessTriggerEvent::Exited,
     });
+    let errors = crate::validation::validate_rules(std::slice::from_ref(&rule));
     assert!(
-        !super::pipeline::binds_companions(&rule),
-        "an exit-triggered run must not bind satellites to a process that is already gone"
+        errors.iter().any(|error| error.contains("until_trigger_process_exit")),
+        "an exit-triggered rule must reject a host-lifetime resource: {errors:?}"
     );
 
     rule.trigger = Some(Trigger::Manual);
-    assert!(super::pipeline::binds_companions(&rule));
+    let errors = crate::validation::validate_rules(std::slice::from_ref(&rule));
+    assert!(
+        errors.iter().any(|error| error.contains("until_trigger_process_exit")),
+        "a manual rule must reject a host-lifetime resource: {errors:?}"
+    );
 }
 
 #[tokio::test]
@@ -1012,7 +1034,7 @@ async fn test_overlay_rule_execution_tracking_and_stop() {
                 operation: crate::models::OverlayOperation::Toggle,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: ResourceLifetime::UntilRunEnd,
             },
         ],
         execution_count: 0,
@@ -1033,15 +1055,29 @@ async fn test_overlay_rule_execution_tracking_and_stop() {
     assert!(!state0.active_rule_executions.contains_key("overlay_rule"));
     assert!(!engine.is_rule_executing("overlay_rule"));
 
-    // Simulate overlay becoming active in overlay_manager
-    crate::daemon::overlay_manager::show_overlay(
+    // Simulate the rule's own overlay show: the run owns that exact generation.
+    let generation = crate::daemon::overlay_manager::show_overlay(
         &crate::models::OverlayDefinition {
             id: overlay_id.clone(),
             ..Default::default()
         },
         false,
         None,
-    );
+    )
+    .expect("overlay shown");
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Overlay(
+        super::executions::OwnedOverlay {
+            execution_id: 1,
+            rule_id: "overlay_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 0,
+                name: String::new(),
+            },
+            overlay_id: overlay_id.clone(),
+            generation,
+            lifetime: ResourceLifetime::UntilRunEnd,
+        },
+    ));
 
     // Allow background thread to process Show command
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1069,48 +1105,6 @@ async fn test_overlay_rule_execution_tracking_and_stop() {
 
     let state_after = engine.get_current_state();
     assert!(!state_after.active_rule_executions.contains_key("overlay_rule"));
-}
-
-#[test]
-fn test_rule_references_active_overlay_scans_if_else_branches() {
-    let nested_overlay_id = "nested_overlay_hud";
-    let rule = Rule {
-        id: "nested_overlay_rule".into(),
-        name: "Nested Overlay Rule".into(),
-        actions: vec![Action::IfElse {
-            conditions: Vec::new(),
-            then_actions: vec![Action::Overlay {
-                overlay_id: nested_overlay_id.into(),
-                custom_overlay: None,
-                operation: crate::models::OverlayOperation::Show,
-                override_text: None,
-                duration_ms: None,
-                close_on_exit: false,
-            }],
-            else_if_branches: Vec::new(),
-            else_actions: Vec::new(),
-        }],
-        ..Default::default()
-    };
-    assert!(
-        !rule.actions.iter().any(|action| matches!(action, Action::Overlay { .. })),
-        "the overlay must live only inside the IfElse branch for this test to prove nesting"
-    );
-
-    let mut active = HashSet::new();
-    active.insert(nested_overlay_id.to_string());
-    assert!(
-        DaemonEngine::rule_references_active_overlay(&rule, &active),
-        "an overlay active inside an IfElse branch must report the rule as executing"
-    );
-
-    let mut other_active = HashSet::new();
-    other_active.insert("some_other_overlay".to_string());
-    assert!(
-        !DaemonEngine::rule_references_active_overlay(&rule, &other_active),
-        "an unrelated active overlay id must not report this rule as executing"
-    );
-    assert!(!DaemonEngine::rule_references_active_overlay(&rule, &HashSet::new()));
 }
 
 #[test]
@@ -1371,7 +1365,7 @@ fn test_matches_process_extension_normalization() {
 }
 
 #[tokio::test]
-async fn test_stop_rule_execution_terminates_and_clears_bound_processes() {
+async fn test_stop_rule_execution_releases_owned_processes() {
     let mut config = AppConfig::default();
     let rule = Rule {
         id: "companion_rule".into(),
@@ -1388,7 +1382,7 @@ async fn test_stop_rule_execution_terminates_and_clears_bound_processes() {
                 run_as_admin: false,
                 only_if_not_running: false,
                 run_hidden: false,
-                close_on_exit: true,
+                lifetime: ResourceLifetime::UntilRunEnd,
             },
         ],
         ..Default::default()
@@ -1396,25 +1390,30 @@ async fn test_stop_rule_execution_terminates_and_clears_bound_processes() {
     config.rules.push(rule);
 
     let mut engine = DaemonEngine::new(config);
-    // Simulate active bound companion process registered for this rule
-    engine.executions.add_bound_process(BoundProcess {
-        rule_id: "companion_rule".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 1234,
-        target_executable: "satellite_tool.exe".into(),
-    });
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 1,
+            rule_id: "companion_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 1234,
+                name: "game.exe".into(),
+            },
+            pid: 12_345,
+            image_path: "satellite_tool.exe".into(),
+            lifetime: ResourceLifetime::UntilRunEnd,
+        },
+    ));
 
-    assert!(engine.is_rule_executing("companion_rule"), "Rule must report executing while bound processes are active");
+    assert!(engine.is_rule_executing("companion_rule"), "Rule must report executing while an owned process is live");
 
-    // Stop rule execution
     engine.stop_rule_execution("companion_rule");
 
-    assert_eq!(engine.executions.bound_processes().len(), 0, "Bound processes must be cleared upon stopping rule");
+    assert!(engine.executions.owned_resources().is_empty(), "Owned processes must be released on stop");
     assert!(!engine.is_rule_executing("companion_rule"), "is_rule_executing must be false after stopping rule");
 }
 
 #[tokio::test]
-async fn test_manual_run_clears_and_ignores_bound_processes() {
+async fn test_manual_run_replaces_owned_resources() {
     let mut config = AppConfig::default();
     let rule = Rule {
         id: "manual_companion_rule".into(),
@@ -1431,7 +1430,7 @@ async fn test_manual_run_clears_and_ignores_bound_processes() {
                 run_as_admin: false,
                 only_if_not_running: false,
                 run_hidden: false,
-                close_on_exit: true,
+                lifetime: ResourceLifetime::UntilTriggerProcessExit,
             },
         ],
         ..Default::default()
@@ -1439,24 +1438,176 @@ async fn test_manual_run_clears_and_ignores_bound_processes() {
     config.rules.push(rule.clone());
 
     let mut engine = DaemonEngine::new(config);
-    // Pre-populate stale bound process from earlier
-    engine.executions.add_bound_process(BoundProcess {
-        rule_id: "manual_companion_rule".into(),
-        primary_process_name: "old_game.exe".into(),
-        primary_pid: 9999,
-        target_executable: "satellite_tool.exe".into(),
-    });
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 1,
+            rule_id: "manual_companion_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 9999,
+                name: "old_game.exe".into(),
+            },
+            pid: 42_424,
+            image_path: "satellite_tool.exe".into(),
+            lifetime: ResourceLifetime::UntilTriggerProcessExit,
+        },
+    ));
 
-    // Trigger manual run (pid == 0 / "Manual Run")
-    let h = engine.trigger(&rule, ExecutionOrigin::Manual, "Manual Run", 0, HashMap::new()).await;
-    if let Some(handle) = h {
+    // A manual run has no triggering process; the host-lifetime resource becomes run-scoped and
+    // both the stale resource and the new one are gone when the run finishes.
+    let handle = engine.trigger(&rule, ExecutionOrigin::Manual, "Manual Run", 0, HashMap::new()).await;
+    if let Some(handle) = handle {
         let _ = handle.await;
     }
     engine.drain_action_events();
 
-    assert_eq!(engine.executions.bound_processes().len(), 0, "Manual run must clear leftover bound processes and avoid registering new ones without host PID");
+    assert!(engine.executions.owned_resources().is_empty(), "Manual run must clear leftover resources and release its own");
     assert!(!engine.is_rule_executing("manual_companion_rule"), "Manual run must not hang in executing state");
-    assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("after manual execution of rule 'manual_companion_rule'")), "Must log force terminating bound satellite after manual run");
+    assert!(engine.logs.iter().any(|l| l.category == "RULE" && l.message.contains("no triggering process")), "The downgraded lifetime must be explained");
+}
+
+#[tokio::test]
+async fn test_manual_run_kills_until_run_end_process() {
+    let dir = std::env::temp_dir().join(format!("synector_owned_proc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the test directory");
+    let exe = dir.join("synector-owned-test.exe");
+    let system_root = std::env::var_os("SystemRoot").expect("SystemRoot");
+    std::fs::copy(
+        std::path::Path::new(&system_root).join("System32").join("cmd.exe"),
+        &exe,
+    )
+    .expect("copy cmd.exe under a unique image name");
+
+    let rule = Rule {
+        id: "owned_proc_rule".into(),
+        name: "Owned process".into(),
+        is_enabled: true,
+        actions: vec![Action::StartProcess {
+            file_path: exe.to_string_lossy().into_owned(),
+            arguments: "/c ping -n 8 127.0.0.1 >nul".into(),
+            working_directory: None,
+            run_as_admin: false,
+            only_if_not_running: false,
+            run_hidden: true,
+            lifetime: ResourceLifetime::UntilRunEnd,
+        }],
+        ..Default::default()
+    };
+    let mut config = AppConfig::default();
+    config.rules.push(rule.clone());
+    let mut engine = DaemonEngine::new(config);
+
+    let handle = engine
+        .trigger(&rule, ExecutionOrigin::Manual, "Manual Run", 0, HashMap::new())
+        .await
+        .expect("manual run started");
+    let _ = handle.await;
+    engine.drain_action_events();
+
+    // Teardown runs on a task, so poll the unique image name until it is gone.
+    let mut alive = true;
+    for _ in 0..30 {
+        alive = crate::daemon::watcher::ProcessWatcher::snapshot_process_map()
+            .values()
+            .any(|name| name.eq_ignore_ascii_case("synector-owned-test.exe"));
+        if !alive {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !alive,
+        "an until_run_end process must be terminated when the run ends"
+    );
+    assert!(engine.executions.owned_resources().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_manual_run_hides_until_run_end_overlay() {
+    let _guard = lock_overlay_state().await;
+    crate::daemon::overlay_manager::init();
+    let overlay_id = "test_run_end_overlay";
+    let rule = Rule {
+        id: "owned_overlay_rule".into(),
+        name: "Owned overlay".into(),
+        is_enabled: true,
+        actions: vec![Action::Overlay {
+            overlay_id: overlay_id.into(),
+            custom_overlay: None,
+            operation: crate::models::OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            lifetime: ResourceLifetime::UntilRunEnd,
+        }],
+        ..Default::default()
+    };
+    let mut config = AppConfig::default();
+    config.rules.push(rule.clone());
+    let mut engine = DaemonEngine::new(config);
+
+    let handle = engine
+        .trigger(&rule, ExecutionOrigin::Manual, "Manual Run", 0, HashMap::new())
+        .await
+        .expect("manual run started");
+    let _ = handle.await;
+    engine.drain_action_events();
+
+    assert!(
+        !crate::daemon::overlay_manager::get_active_overlay_ids().contains(overlay_id),
+        "an until_run_end overlay must be hidden when the run ends"
+    );
+    assert!(engine.executions.owned_resources().is_empty());
+}
+
+#[tokio::test]
+async fn test_stopping_one_rule_does_not_hide_another_rules_overlay() {
+    let _guard = lock_overlay_state().await;
+    crate::daemon::overlay_manager::init();
+    let overlay_id = "shared_stop_overlay";
+    let overlay_rule = |id: &str| Rule {
+        id: id.into(),
+        name: id.into(),
+        is_enabled: true,
+        actions: vec![Action::Overlay {
+            overlay_id: overlay_id.into(),
+            custom_overlay: None,
+            operation: crate::models::OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            lifetime: ResourceLifetime::Detach,
+        }],
+        ..Default::default()
+    };
+    let rule_a = overlay_rule("overlay_owner_a");
+    let rule_b = overlay_rule("overlay_owner_b");
+    let mut config = AppConfig::default();
+    config.rules.push(rule_a.clone());
+    config.rules.push(rule_b.clone());
+    let mut engine = DaemonEngine::new(config);
+
+    for rule in [&rule_a, &rule_b] {
+        let handle = engine
+            .trigger(rule, ExecutionOrigin::Manual, "Manual Run", 0, HashMap::new())
+            .await
+            .expect("manual run started");
+        let _ = handle.await;
+        engine.drain_action_events();
+    }
+    assert!(crate::daemon::overlay_manager::get_active_overlay_ids().contains(overlay_id));
+
+    // Rule A's recorded show was superseded by B's; stopping A must not hide B's overlay.
+    engine.stop_rule_execution("overlay_owner_a");
+    assert!(
+        crate::daemon::overlay_manager::get_active_overlay_ids().contains(overlay_id),
+        "stopping A must leave the newer show of the shared overlay alone"
+    );
+
+    engine.stop_rule_execution("overlay_owner_b");
+    assert!(
+        !crate::daemon::overlay_manager::get_active_overlay_ids().contains(overlay_id),
+        "stopping the run that made the current show must hide it"
+    );
 }
 
 #[tokio::test]
@@ -1680,7 +1831,7 @@ async fn test_import_share_bundles_deps_disables_rules_and_skips_duplicates() {
                 operation: crate::models::OverlayOperation::Show,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: ResourceLifetime::Detach,
             },
         ],
         ..Default::default()
@@ -2470,20 +2621,27 @@ async fn test_webhook_run_is_not_treated_as_manual() {
         ..notify_rule("webhook_run_rule", "Webhook Run Rule")
     });
     let mut engine = DaemonEngine::new(config);
-    engine.executions.add_bound_process(BoundProcess {
-        rule_id: "webhook_run_rule".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 4242,
-        target_executable: "synector-test-nonexistent-satellite.exe".into(),
-    });
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 1,
+            rule_id: "webhook_run_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 4242,
+                name: "game.exe".into(),
+            },
+            pid: 43_210,
+            image_path: "synector-test-nonexistent-satellite.exe".into(),
+            lifetime: ResourceLifetime::UntilTriggerProcessExit,
+        },
+    ));
 
     let rule = engine.config.rules[0].clone();
     let handle = engine.trigger(&rule, ExecutionOrigin::Webhook, "Webhook (/hook)", 0, HashMap::new()).await;
     assert!(handle.is_some());
     assert_eq!(
-        engine.executions.bound_processes().len(),
+        engine.executions.owned_resources().len(),
         1,
-        "a webhook run has no pid but is not a manual run: it must keep companion bindings"
+        "a webhook run has no pid but is not a manual run: it must keep the rule's owned resources"
     );
     engine.abort_rule_executions("webhook_run_rule");
 }
@@ -2531,12 +2689,19 @@ async fn test_sync_rules_aborts_executions_of_removed_rules() {
     let handle = engine.trigger(&rule, ExecutionOrigin::Test, "MANUAL_TEST", 0, HashMap::new()).await.expect("rule started");
     engine.drain_action_events();
     assert!(engine.is_rule_executing("vanishing_rule"));
-    engine.executions.add_bound_process(BoundProcess {
-        rule_id: "vanishing_rule".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 1,
-        target_executable: "synector-test-nonexistent-satellite.exe".into(),
-    });
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 1,
+            rule_id: "vanishing_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 1,
+                name: "game.exe".into(),
+            },
+            pid: 44_444,
+            image_path: "synector-test-nonexistent-satellite.exe".into(),
+            lifetime: ResourceLifetime::UntilRunEnd,
+        },
+    ));
 
     let response = engine.handle_request(IpcRequest::SyncRules(Vec::new())).await;
     assert!(matches!(response, IpcResponse::Ok));
@@ -2546,8 +2711,8 @@ async fn test_sync_rules_aborts_executions_of_removed_rules() {
         "the removed rule's pipeline must be aborted by the declarative sync"
     );
     assert!(
-        engine.executions.bound_processes().is_empty(),
-        "its bound satellites must be torn down with the rule"
+        engine.executions.owned_resources().is_empty(),
+        "its owned resources must be torn down with the rule"
     );
     assert!(handle.await.is_err(), "the aborted task must be cancelled");
 }
@@ -2674,7 +2839,6 @@ async fn test_offline_runner_produces_the_same_step_tokens_as_the_engine_pipelin
         context_name: "Manual Run",
         pid: 0,
         stop_on_error: true,
-        bind_companions: true,
         finished: None,
     };
     let halted = run_action_pipeline(run, &mut engine_ctx, &tx).await;
@@ -2994,63 +3158,111 @@ async fn test_execution_tracker_keeps_pipelines_and_abort_handles_in_step() {
 }
 
 #[test]
-fn test_execution_tracker_releases_bound_companions() {
+fn test_execution_tracker_releases_owned_resources() {
+    use super::executions::{OwnedOverlay, OwnedProcess, OwnedResource, PrimaryProcess};
+
+    let process = |execution_id, rule_id: &str, host_pid, pid, lifetime| {
+        OwnedResource::Process(OwnedProcess {
+            execution_id,
+            rule_id: rule_id.into(),
+            primary: PrimaryProcess {
+                pid: host_pid,
+                name: "game.exe".into(),
+            },
+            pid,
+            image_path: "tool.exe".into(),
+            lifetime,
+        })
+    };
+    let overlay = |execution_id, rule_id: &str, host_pid, id: &str, generation, lifetime| {
+        OwnedResource::Overlay(OwnedOverlay {
+            execution_id,
+            rule_id: rule_id.into(),
+            primary: PrimaryProcess {
+                pid: host_pid,
+                name: "game.exe".into(),
+            },
+            overlay_id: id.into(),
+            generation,
+            lifetime,
+        })
+    };
+
     let mut tracker = ExecutionTracker::new();
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_a".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 1,
-        overlay_id: "overlay_one".into(),
-    });
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_a".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 2,
-        overlay_id: "overlay_two".into(),
-    });
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_b".into(),
-        primary_process_name: "other.exe".into(),
-        primary_pid: 1,
-        overlay_id: "overlay_three".into(),
-    });
-    assert_eq!(tracker.bound_overlays().len(), 3);
+    tracker.add_owned_resource(process(1, "rule_a", 11, 101, ResourceLifetime::UntilRunEnd));
+    tracker.add_owned_resource(process(2, "rule_a", 12, 102, ResourceLifetime::UntilTriggerProcessExit));
+    tracker.add_owned_resource(overlay(3, "rule_b", 13, "overlay_one", 1, ResourceLifetime::UntilRunEnd));
+    tracker.add_owned_resource(overlay(4, "rule_b", 14, "overlay_two", 2, ResourceLifetime::UntilTriggerProcessExit));
+    assert_eq!(tracker.owned_resources().len(), 4);
+    assert!(tracker.is_rule_executing("rule_a"));
 
-    // Both overlays of PID 1 go, the other host's overlay stays.
-    let closed = tracker.take_bound_overlays_where(|overlay| overlay.primary_pid == 1);
-    assert_eq!(closed.len(), 2);
-    assert_eq!(tracker.bound_overlays().len(), 1);
-    assert_eq!(tracker.bound_overlays()[0].overlay_id, "overlay_two");
-
-    // Rule teardown removes every remaining overlay of that rule.
-    assert_eq!(tracker.take_rule_bound_overlays("rule_a").len(), 1);
-    assert!(tracker.bound_overlays().is_empty());
-
-    // A taken identity also drops a same-(rule, overlay) entry that did not match the
-    // predicate itself, matching the pre-split filter + retain pair.
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_c".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 9,
-        overlay_id: "shared".into(),
+    // Only the run-end resources of the finished runs are released.
+    let ended = tracker.take_owned_where(|resource| {
+        resource.lifetime() == ResourceLifetime::UntilRunEnd
     });
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_c".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 1,
-        overlay_id: "shared".into(),
-    });
-    assert_eq!(tracker.take_bound_overlays_where(|overlay| overlay.primary_pid == 1).len(), 1);
-    assert!(tracker.bound_overlays().is_empty());
+    assert_eq!(ended.len(), 2);
+    assert_eq!(tracker.owned_resources().len(), 2);
 
-    tracker.add_bound_overlay(BoundOverlay {
-        rule_id: "rule_d".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 1,
-        overlay_id: "kill_me".into(),
+    // A host exit releases only the resource bound to that exact PID.
+    let host = tracker.take_owned_where(|resource| {
+        resource.lifetime() == ResourceLifetime::UntilTriggerProcessExit
+            && resource.primary().pid == 14
     });
-    tracker.remove_rule_bound_overlays("rule_d");
-    assert!(tracker.bound_overlays().is_empty());
+    assert_eq!(host.len(), 1);
+    assert_eq!(tracker.owned_resources().len(), 1);
+    assert_eq!(tracker.owned_resources()[0].primary().pid, 12);
+    assert!(tracker.is_rule_executing("rule_a"));
+
+    // Stopping a rule releases whatever is left.
+    let rule = tracker.take_owned_where(|resource| resource.rule_id() == "rule_a");
+    assert_eq!(rule.len(), 1);
+    assert!(tracker.owned_resources().is_empty());
+    assert!(!tracker.is_rule_executing("rule_a"));
+    assert!(!tracker.is_rule_executing("rule_b"));
+
+    // A later show of the same overlay replaces the run's previous ownership of that id.
+    tracker.add_owned_resource(overlay(5, "rule_c", 15, "same", 1, ResourceLifetime::UntilRunEnd));
+    tracker.add_owned_resource(overlay(5, "rule_c", 15, "same", 2, ResourceLifetime::UntilRunEnd));
+    assert_eq!(tracker.owned_resources().len(), 1);
+    let OwnedResource::Overlay(kept) = &tracker.owned_resources()[0] else {
+        panic!("expected the overlay");
+    };
+    assert_eq!(kept.generation, 2);
+}
+
+#[test]
+fn test_prune_owned_resources_forgets_dead_and_replaced_resources() {
+    let mut engine = DaemonEngine::new(AppConfig::default());
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 1,
+            rule_id: "pruned_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 1,
+                name: "game.exe".into(),
+            },
+            pid: 4_242_424,
+            image_path: "gone.exe".into(),
+            lifetime: ResourceLifetime::UntilRunEnd,
+        },
+    ));
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Overlay(
+        super::executions::OwnedOverlay {
+            execution_id: 2,
+            rule_id: "pruned_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 2,
+                name: "game.exe".into(),
+            },
+            overlay_id: "not_on_screen".into(),
+            generation: 7,
+            lifetime: ResourceLifetime::UntilRunEnd,
+        },
+    ));
+
+    assert_eq!(engine.prune_owned_resources(), 2);
+    assert!(engine.executions.owned_resources().is_empty());
+    assert!(!engine.is_rule_executing("pruned_rule"));
 }
 
 #[tokio::test]
@@ -3067,18 +3279,32 @@ async fn test_state_projector_aggregates_status_telemetry_and_logs() {
     );
     engine.log("INFO", "TEST", "projector probe");
     engine.executions.record_started(1, tracked_execution("running", Vec::new()));
-    engine.executions.add_bound_process(BoundProcess {
-        rule_id: "companion".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 7,
-        target_executable: "satellite.exe".into(),
-    });
-    engine.executions.add_bound_overlay(BoundOverlay {
-        rule_id: "overlay_rule".into(),
-        primary_process_name: "game.exe".into(),
-        primary_pid: 8,
-        overlay_id: "overlay_one".into(),
-    });
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Process(
+        super::executions::OwnedProcess {
+            execution_id: 2,
+            rule_id: "companion".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 7,
+                name: "game.exe".into(),
+            },
+            pid: 70,
+            image_path: "satellite.exe".into(),
+            lifetime: ResourceLifetime::UntilTriggerProcessExit,
+        },
+    ));
+    engine.executions.add_owned_resource(super::executions::OwnedResource::Overlay(
+        super::executions::OwnedOverlay {
+            execution_id: 3,
+            rule_id: "overlay_rule".into(),
+            primary: super::executions::PrimaryProcess {
+                pid: 8,
+                name: "game.exe".into(),
+            },
+            overlay_id: "overlay_one".into(),
+            generation: 1,
+            lifetime: ResourceLifetime::UntilTriggerProcessExit,
+        },
+    ));
     engine.begin_update_download();
     engine.set_update_progress(0.25);
     engine.set_update_status("Downloading".to_string());
@@ -3096,11 +3322,11 @@ async fn test_state_projector_aggregates_status_telemetry_and_logs() {
     assert_eq!(state.active_rule_executions["running"].total_steps, 2);
     assert!(
         state.active_rule_executions.contains_key("companion"),
-        "a bound companion keeps its rule visible as running"
+        "an owned process keeps its rule visible as running"
     );
     assert!(
         state.active_rule_executions.contains_key("overlay_rule"),
-        "a bound overlay keeps its rule visible as running"
+        "an owned overlay keeps its rule visible as running"
     );
     assert_eq!(state.update_progress, Some(0.25));
     assert_eq!(state.update_status.as_deref(), Some("Downloading"));

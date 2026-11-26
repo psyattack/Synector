@@ -114,7 +114,7 @@ mod tests {
             operation: OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let (payload, warnings) = build_payload(
             vec![rule],
@@ -153,7 +153,7 @@ mod tests {
             operation: OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let (payload, warnings) = build_payload(vec![embedded_rule], &[], &[]);
         assert!(warnings.contains(&ShareWarning::OverlayAssetDropped));
@@ -179,7 +179,7 @@ mod tests {
             operation: OverlayOperation::Show,
             override_text: None,
             duration_ms: None,
-            close_on_exit: false,
+            lifetime: crate::models::ResourceLifetime::Detach,
         }];
         let mut payload = SharePayload::rules_only(vec![rule]);
         payload.overlays = vec![asset_overlay("incoming_assets")];

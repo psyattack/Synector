@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::models::OverlayDefinition;
@@ -14,6 +15,16 @@ pub struct ActiveOverlayProcess {
     pub close_with_target: bool,
     pub target_process: String,
     pub fade_out_ms: Option<u32>,
+    /// Monotonic show id. A run binds the generation it showed, so a later show by another run is
+    /// never hidden by the first run's teardown.
+    pub generation: u64,
+}
+
+/// Generations distinguish individual shows of the same overlay id. Zero is never a generation.
+static NEXT_OVERLAY_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_overlay_generation() -> u64 {
+    NEXT_OVERLAY_GENERATION.fetch_add(1, Ordering::Relaxed).max(1)
 }
 
 static ACTIVE_PROCESSES: OnceLock<Arc<Mutex<HashMap<String, ActiveOverlayProcess>>>> = OnceLock::new();
@@ -34,7 +45,7 @@ pub fn init() {
     let _ = texts_map();
 }
 
-pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_text: Option<String>) {
+pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_text: Option<String>) -> Option<u64> {
     let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
     if let Some(ref txt) = effective_text {
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
@@ -80,9 +91,10 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
     if child.is_none() && !cfg!(test) {
         // Never register an overlay that has no process behind it: a failed spawn
         // must not be reported as active.
-        return;
+        return None;
     }
 
+    let generation = next_overlay_generation();
     lock.insert(
         overlay.id.clone(),
         ActiveOverlayProcess {
@@ -91,8 +103,10 @@ pub fn show_overlay(overlay: &OverlayDefinition, calibration: bool, override_tex
             close_with_target: overlay.close_with_target,
             target_process: overlay.target_process.clone().unwrap_or_default(),
             fade_out_ms: overlay.fade_out_ms,
+            generation,
         },
     );
+    Some(generation)
 }
 
 /// Spawns an overlay window and logs a failure with the overlay id. Spawn errors
@@ -162,56 +176,87 @@ pub fn find_overlay_hwnd(id: &str, pid: Option<u32>) -> Option<windows::Win32::F
     None
 }
 
-pub fn hide_overlay(id: &str) {
+fn take_active_overlay(id: &str, expected_generation: Option<u64>) -> Option<ActiveOverlayProcess> {
     let mut lock = active_map().lock().unwrap();
-    if let Some(mut proc) = lock.remove(id) {
-        let fade_ms = proc.fade_out_ms.unwrap_or(0);
-        let pid = proc.child.as_ref().map(|c| c.id());
+    if let Some(expected) = expected_generation {
+        if lock.get(id).is_none_or(|proc| proc.generation != expected) {
+            return None;
+        }
+    }
+    lock.remove(id)
+}
 
-        #[cfg(windows)]
-        let signaled = if fade_ms > 0 {
-            if let Some(hwnd) = find_overlay_hwnd(id, pid) {
-                unsafe {
-                    use windows::Win32::Foundation::{LPARAM, WPARAM};
-                    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
-                    let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
-                }
-                true
-            } else {
-                false
+fn stop_active_overlay(mut proc: ActiveOverlayProcess) {
+    let id = proc.id.as_str();
+    let fade_ms = proc.fade_out_ms.unwrap_or(0);
+    let pid = proc.child.as_ref().map(|c| c.id());
+
+    #[cfg(windows)]
+    let signaled = if fade_ms > 0 {
+        if let Some(hwnd) = find_overlay_hwnd(id, pid) {
+            unsafe {
+                use windows::Win32::Foundation::{LPARAM, WPARAM};
+                use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
+            true
         } else {
             false
-        };
+        }
+    } else {
+        false
+    };
 
-        if let Some(mut ch) = proc.child.take() {
-            if signaled && fade_ms > 0 {
-                std::thread::spawn(move || {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(fade_ms as u64 + 400);
-                    while std::time::Instant::now() < deadline {
-                        if let Ok(Some(_)) = ch.try_wait() {
-                            return;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(25));
+    if let Some(mut ch) = proc.child.take() {
+        if signaled && fade_ms > 0 {
+            std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(fade_ms as u64 + 400);
+                while std::time::Instant::now() < deadline {
+                    if let Ok(Some(_)) = ch.try_wait() {
+                        return;
                     }
-                    let _ = ch.kill();
-                });
-            } else {
+                    std::thread::sleep(std::time::Duration::from_millis(25));
+                }
                 let _ = ch.kill();
-            }
+            });
+        } else {
+            let _ = ch.kill();
         }
     }
 }
 
-pub fn toggle_overlay(overlay: &OverlayDefinition, override_text: Option<String>) {
-    if get_active_overlay_ids().contains(&overlay.id) {
-        hide_overlay(&overlay.id);
-    } else {
-        show_overlay(overlay, false, override_text);
+pub fn hide_overlay(id: &str) {
+    if let Some(proc) = take_active_overlay(id, None) {
+        stop_active_overlay(proc);
     }
 }
 
-pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_text: Option<String>) {
+/// Hides the overlay only while it is still the show that `generation` identified.
+pub fn hide_overlay_if_generation(id: &str, generation: u64) -> bool {
+    match take_active_overlay(id, Some(generation)) {
+        Some(proc) => {
+            stop_active_overlay(proc);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Current show generation of an active overlay; `None` when it is not on screen.
+pub fn overlay_generation(id: &str) -> Option<u64> {
+    active_map().lock().ok()?.get(id).map(|proc| proc.generation)
+}
+
+pub fn toggle_overlay(overlay: &OverlayDefinition, override_text: Option<String>) -> Option<u64> {
+    if get_active_overlay_ids().contains(&overlay.id) {
+        hide_overlay(&overlay.id);
+        None
+    } else {
+        show_overlay(overlay, false, override_text)
+    }
+}
+
+pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_text: Option<String>) -> Option<u64> {
     let effective_text = override_text.or_else(|| get_overlay_text(&overlay.id));
     if let Some(ref txt) = effective_text {
         texts_map().lock().unwrap().insert(overlay.id.clone(), txt.clone());
@@ -246,9 +291,10 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
     };
 
     if child.is_none() && !cfg!(test) {
-        return;
+        return None;
     }
 
+    let generation = next_overlay_generation();
     lock.insert(
         overlay.id.clone(),
         ActiveOverlayProcess {
@@ -257,8 +303,10 @@ pub fn flash_overlay(overlay: &OverlayDefinition, duration_ms: u32, override_tex
             close_with_target: overlay.close_with_target,
             target_process: overlay.target_process.clone().unwrap_or_default(),
             fade_out_ms: overlay.fade_out_ms,
+            generation,
         },
     );
+    Some(generation)
 }
 
 pub fn hide_all() {

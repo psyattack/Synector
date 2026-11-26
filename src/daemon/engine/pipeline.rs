@@ -5,12 +5,12 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::daemon::actions::ActionRunner;
+use crate::daemon::actions::{ActionRunner, SpawnedResource};
 use crate::daemon::rule_call;
 use crate::daemon::watcher::ProcessWatcher;
-use crate::models::{Action, ProcessMatchMode, ProcessTriggerEvent, Rule, ScheduleType, Trigger};
+use crate::models::{Action, ProcessMatchMode, ResourceLifetime, Rule, ScheduleType, Trigger};
 
-use super::executions::{next_execution_id, ActionCompletionEvent, BoundOverlay, BoundProcess, ExecutionOrigin, PipelineOutcome, RuleCallRuntime, RuleCallStart, RuleSkip};
+use super::executions::{next_execution_id, ActionCompletionEvent, ExecutionOrigin, OwnedOverlay, OwnedProcess, OwnedResource, PipelineOutcome, PrimaryProcess, RuleCallRuntime, RuleCallStart, RuleSkip};
 use super::DaemonEngine;
 
 /// Progress flag shared by one spawn path's guard and observer. The observer clears it when a
@@ -43,7 +43,7 @@ impl Drop for ExecGuard {
         }
         let _ = self.tx.send(ActionCompletionEvent::RuleExecutionFinished {
             execution_id: self.id,
-            _rule_id: self.rule_id.clone(),
+            rule_id: self.rule_id.clone(),
             is_manual: self.is_manual,
         });
         if let Some(completion) = self.completion.take() {
@@ -59,12 +59,10 @@ pub(super) struct PipelineRun<'a> {
     pub(super) execution_id: u64,
     pub(super) rule_id: &'a str,
     pub(super) rule_name: &'a str,
-    /// Trigger context of the primary run, recorded on the companions it binds to a process.
+    /// Trigger context of the primary run, recorded on the resources it owns.
     pub(super) context_name: &'a str,
     pub(super) pid: u32,
     pub(super) stop_on_error: bool,
-    /// Only the primary pipeline binds `close_on_exit` companions; a recurring run does not.
-    pub(super) bind_companions: bool,
     /// Cleared at the first step of a run and set when the run reports its outcome, so an
     /// `ExecGuard` can tell a finished run from an aborted one.
     pub(super) finished: Option<&'a AtomicBool>,
@@ -79,7 +77,6 @@ struct OwnedPipelineRun {
     context_name: String,
     pid: u32,
     stop_on_error: bool,
-    bind_companions: bool,
     finished: RunFinished,
 }
 
@@ -88,8 +85,9 @@ struct OwnedPipelineRun {
 pub(crate) trait PipelineObserver {
     /// Called before the action at `step_index` runs.
     fn step_started(&mut self, step_index: usize, total_steps: usize);
-    /// The action at `step_index` completed with optional pipeline output.
-    fn step_completed(&mut self, step_index: usize, action: &Action);
+    /// The action at `step_index` completed; `owned` lists the processes/overlays it created and
+    /// the engine has to track.
+    fn step_completed(&mut self, step_index: usize, owned: &[SpawnedResource]);
     /// The action at `step_index` failed; `stopping` tells whether `stop_on_error` ends the run.
     fn step_failed(&mut self, step_index: usize, error: &str, stopping: bool);
     /// The run halted early: `abort_reason` is set for a graceful `AbortPipeline`.
@@ -121,7 +119,14 @@ pub(crate) async fn run_step_loop<O: PipelineObserver>(
                     ctx.insert("PrevOutput".to_string(), out.clone());
                     ctx.insert(format!("Step{}.Output", step_idx + 1), out);
                 }
-                observer.step_completed(step_idx, action);
+                observer.step_completed(step_idx, &[]);
+            }
+            Ok(ActionOutcome::ContinueOwned { output, owned }) => {
+                if let Some(out) = output {
+                    ctx.insert("PrevOutput".to_string(), out.clone());
+                    ctx.insert(format!("Step{}.Output", step_idx + 1), out);
+                }
+                observer.step_completed(step_idx, &owned);
             }
             Ok(ActionOutcome::AbortPipeline { reason }) => {
                 observer.pipeline_halted(step_idx, Some(&reason));
@@ -155,7 +160,6 @@ struct EnginePipelineObserver<'a> {
     rule_name: &'a str,
     context_name: &'a str,
     pid: u32,
-    bind_companions: bool,
     finished: Option<&'a AtomicBool>,
 }
 
@@ -176,32 +180,51 @@ impl PipelineObserver for EnginePipelineObserver<'_> {
         });
     }
 
-    fn step_completed(&mut self, _step_index: usize, action: &Action) {
-        if !self.bind_companions {
-            return;
-        }
-        match action {
-            Action::StartProcess { file_path, close_on_exit: true, .. } => {
-                let _ = self.tx.send(ActionCompletionEvent::AddBoundProcess(BoundProcess {
-                    rule_id: self.rule_id.to_string(),
-                    primary_process_name: self.context_name.to_string(),
-                    primary_pid: self.pid,
-                    target_executable: file_path.clone(),
-                }));
-            }
-            Action::Overlay { overlay_id, custom_overlay, close_on_exit: true, .. } => {
-                let resolved_id = custom_overlay
-                    .as_ref()
-                    .map(|o| o.id.clone())
-                    .unwrap_or_else(|| overlay_id.clone());
-                let _ = self.tx.send(ActionCompletionEvent::AddBoundOverlay(BoundOverlay {
-                    rule_id: self.rule_id.to_string(),
-                    primary_process_name: self.context_name.to_string(),
-                    primary_pid: self.pid,
-                    overlay_id: resolved_id,
-                }));
-            }
-            _ => {}
+    fn step_completed(&mut self, _step_index: usize, owned: &[SpawnedResource]) {
+        for resource in owned {
+            // A rule call or a test run has no triggering process; a host-lifetime resource
+            // becomes run-scoped instead of being tracked against a process that does not exist.
+            let lifetime = match resource.lifetime() {
+                ResourceLifetime::UntilTriggerProcessExit if self.pid == 0 => {
+                    let _ = self.tx.send(ActionCompletionEvent::Log {
+                        level: "DEBUG".to_string(),
+                        category: "RULE".to_string(),
+                        message: format!(
+                            "Rule '{}' has no triggering process; its owned resource is released when the run ends",
+                            self.rule_name
+                        ),
+                    });
+                    ResourceLifetime::UntilRunEnd
+                }
+                other => other,
+            };
+            let primary = PrimaryProcess {
+                pid: self.pid,
+                name: self.context_name.to_string(),
+            };
+            let owned = match resource {
+                SpawnedResource::Process { pid, image_path, .. } => {
+                    OwnedResource::Process(OwnedProcess {
+                        execution_id: self.execution_id,
+                        rule_id: self.rule_id.to_string(),
+                        primary,
+                        pid: *pid,
+                        image_path: image_path.clone(),
+                        lifetime,
+                    })
+                }
+                SpawnedResource::Overlay { overlay_id, generation, .. } => {
+                    OwnedResource::Overlay(OwnedOverlay {
+                        execution_id: self.execution_id,
+                        rule_id: self.rule_id.to_string(),
+                        primary,
+                        overlay_id: overlay_id.clone(),
+                        generation: *generation,
+                        lifetime,
+                    })
+                }
+            };
+            let _ = self.tx.send(ActionCompletionEvent::AddOwnedResource(owned));
         }
     }
 
@@ -270,19 +293,9 @@ pub(super) async fn run_action_pipeline(
         rule_name: run.rule_name,
         context_name: run.context_name,
         pid: run.pid,
-        bind_companions: run.bind_companions,
         finished: run.finished,
     };
     run_step_loop(run.actions, ctx, run.stop_on_error, &mut observer).await
-}
-
-/// Whether a run of `rule` may bind `close_on_exit` satellites to its triggering process. A
-/// process-exit run starts after that process is gone, so its companion flag is ignored.
-pub(super) fn binds_companions(rule: &Rule) -> bool {
-    !matches!(
-        rule.trigger,
-        Some(Trigger::Process { event: ProcessTriggerEvent::Exited, .. })
-    )
 }
 
 impl DaemonEngine {
@@ -441,7 +454,6 @@ impl DaemonEngine {
                 context_name: &body.context_name,
                 pid: body.pid,
                 stop_on_error: body.stop_on_error,
-                bind_companions: body.bind_companions,
                 finished: Some(&body.finished),
             };
             run_action_pipeline(run, &mut ctx, &tx).await;
@@ -461,7 +473,7 @@ impl DaemonEngine {
         crate::daemon::rule_activity::mark_finished(&rule_id);
         let _ = tx.send(ActionCompletionEvent::RuleExecutionFinished {
             execution_id,
-            _rule_id: rule_id,
+            rule_id,
             is_manual,
         });
     }
@@ -482,14 +494,9 @@ impl DaemonEngine {
     ) -> Result<Option<tokio::task::JoinHandle<()>>, RuleSkip> {
         self.drain_action_events();
 
-        // Only user-invoked runs force-terminate the satellites they spawn and skip the cooldown;
-        // a webhook or schedule with pid 0 is not a manual run.
+        // Only user-invoked runs replace the rule's previous resources and skip the cooldown; a
+        // webhook or schedule with pid 0 is not a manual run.
         let is_manual = call.is_none() && origin.is_user_invoked();
-        if is_manual {
-            // A user run replaces its rule's satellites without killing the stale ones.
-            let _ = self.executions.take_rule_bound_processes(&rule.id);
-            self.executions.remove_rule_bound_overlays(&rule.id);
-        }
 
         if !self.quota_allows_execution(&rule.id, false) {
             return Err(RuleSkip::Quota);
@@ -528,9 +535,11 @@ impl DaemonEngine {
             return Err(RuleSkip::EmptyPipeline);
         }
 
-        let ov_ids = Self::extract_rule_overlay_ids(rule);
-        if !ov_ids.is_empty() {
-            self.executions.set_rule_overlays(&rule.id, ov_ids);
+        if is_manual {
+            // A user run replaces the rule's previous resources, but only once the run is certain
+            // to start: a quota/condition/empty-pipeline skip must not kill a live companion.
+            // Detached overlays are left alone: they were explicitly detached.
+            self.release_rule_owned(&rule.id, "because a user run replaced it", false);
         }
 
         let mut ctx = Self::pipeline_context(context_name, pid, extra_ctx);
@@ -540,10 +549,6 @@ impl DaemonEngine {
         let rule_id = rule.id.clone();
         let stop_on_error = rule.stop_on_error;
         let context_name = context_name.to_string();
-        // A pipeline fired by the process-exit event runs after its primary is gone, so a
-        // `close_on_exit` companion could never be bound to a live host; the flag is ignored.
-        let bind_companions = binds_companions(rule);
-
         let call_chain = call.as_ref().map(|c| c.chain.clone()).unwrap_or_default();
         let completion = call.map(|c| c.completion);
 
@@ -580,7 +585,6 @@ impl DaemonEngine {
                 context_name,
                 pid,
                 stop_on_error,
-                bind_companions,
                 finished,
             };
             Ok(Some(self.spawn_pipeline(handle, execution_id, tx, guard, body, ctx)))
@@ -699,14 +703,6 @@ impl DaemonEngine {
             self.abort_rule_executions(&rule.id);
         }
 
-        let _ = self.executions.take_rule_bound_processes(&rule.id);
-        self.executions.remove_rule_bound_overlays(&rule.id);
-
-        let ov_ids = Self::extract_rule_overlay_ids(rule);
-        if !ov_ids.is_empty() {
-            self.executions.set_rule_overlays(&rule.id, ov_ids);
-        }
-
         if !self.quota_allows_execution(&rule.id, true) {
             return None;
         }
@@ -723,6 +719,9 @@ impl DaemonEngine {
         if rule.actions.is_empty() {
             return None;
         }
+
+        // A test/run replaces the rule's previous resources only once it is certain to start.
+        self.release_rule_owned(&rule.id, "because a manual run replaced it", false);
 
         // Clear cooldown so manual/test run triggers immediately
         self.rule_last_triggered.remove(&rule.id);
@@ -890,7 +889,6 @@ impl DaemonEngine {
                             context_name: "",
                             pid: 0,
                             stop_on_error: current.stop_on_error,
-                            bind_companions: false,
                             finished: Some(&finished),
                         };
                         if run_action_pipeline(run, &mut ctx, &tx).await {

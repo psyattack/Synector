@@ -641,7 +641,7 @@ mod tests {
                     operation: crate::models::OverlayOperation::Show,
                     override_text: None,
                     duration_ms: None,
-                    close_on_exit: false,
+                    lifetime: crate::models::ResourceLifetime::Detach,
                 },
             ),
             (

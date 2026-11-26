@@ -558,7 +558,7 @@ const ACTION_VARIANTS: &[(&str, &[&str])] = &[
             "run_as_admin",
             "only_if_not_running",
             "run_hidden",
-            "close_on_exit",
+            "lifetime",
         ],
     ),
     (
@@ -667,7 +667,7 @@ const ACTION_VARIANTS: &[(&str, &[&str])] = &[
     ),
     (
         "overlay",
-        &["$action_type", "overlay_id", "custom_overlay", "operation", "override_text", "duration_ms", "close_on_exit"],
+        &["$action_type", "overlay_id", "custom_overlay", "operation", "override_text", "duration_ms", "lifetime"],
     ),
 ];
 

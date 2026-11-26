@@ -20,6 +20,70 @@ pub(crate) use process::*;
 pub(crate) use r#macro::*;
 pub(crate) use system::*;
 
+/// One action's lifetime selector, shared by `start_process` and `overlay` steps.
+///
+/// `UntilTriggerProcessExit` is only offered when the rule fires on process start; choosing it on
+/// another trigger would produce a resource nothing could ever release.
+pub(crate) fn render_resource_lifetime(
+    ui: &mut Ui,
+    t: &Tokens,
+    loc: &crate::i18n::Strings,
+    idx: usize,
+    lifetime: &mut crate::models::ResourceLifetime,
+    can_follow_trigger: bool,
+) {
+    use crate::models::ResourceLifetime;
+
+    if *lifetime == ResourceLifetime::UntilTriggerProcessExit && !can_follow_trigger {
+        *lifetime = ResourceLifetime::Detach;
+    }
+    widgets::hud(ui, loc.inspector_lifetime_label, t.muted);
+    let id = ui.scope_id().with(idx).with("resource_lifetime_combo");
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(lifetime_label(*lifetime, loc))
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            ui.selectable_value(
+                lifetime,
+                ResourceLifetime::Detach,
+                loc.inspector_lifetime_detach,
+            )
+            .on_hover_text(loc.inspector_lifetime_detach_tip);
+            ui.selectable_value(
+                lifetime,
+                ResourceLifetime::UntilRunEnd,
+                loc.inspector_lifetime_until_run_end,
+            )
+            .on_hover_text(loc.inspector_lifetime_until_run_end_tip);
+            let host = ui.add_enabled(
+                can_follow_trigger,
+                egui::Button::new(loc.inspector_lifetime_until_trigger_exit).selected(
+                    *lifetime == ResourceLifetime::UntilTriggerProcessExit,
+                ),
+            );
+            if host.clicked() {
+                *lifetime = ResourceLifetime::UntilTriggerProcessExit;
+            }
+            if can_follow_trigger {
+                host.on_hover_text(loc.inspector_lifetime_until_trigger_exit_tip);
+            } else {
+                host.on_disabled_hover_text(loc.inspector_lifetime_trigger_exit_disabled);
+            }
+        });
+}
+
+fn lifetime_label(
+    lifetime: crate::models::ResourceLifetime,
+    loc: &crate::i18n::Strings,
+) -> &'static str {
+    use crate::models::ResourceLifetime;
+    match lifetime {
+        ResourceLifetime::Detach => loc.inspector_lifetime_detach,
+        ResourceLifetime::UntilRunEnd => loc.inspector_lifetime_until_run_end,
+        ResourceLifetime::UntilTriggerProcessExit => loc.inspector_lifetime_until_trigger_exit,
+    }
+}
+
 /// Format cell for the archive editor: the label is localized and the tooltip is empty.
 pub(crate) fn archive_format_cell(format: crate::models::ArchiveFormat, loc: &crate::i18n::Strings) -> Cell<'static> {
     Cell::new(archive_format_label(format, loc), "")

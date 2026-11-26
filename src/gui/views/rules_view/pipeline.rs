@@ -77,11 +77,7 @@ pub(super) fn render_track_pipeline(
         }
     }
 
-    // 5. Companion mode
-    let has_companion = rule.actions.iter().any(|a| matches!(a, Action::StartProcess { close_on_exit: true, .. }));
-    if has_companion {
-        widgets::badge(ui, loc.rules_summary_bound_satellite, t.good);
-    }
+    // 5. Companion/owned resources are marked inline on the action chip, so no extra badge.
 }
 
 /// One action-step chip.

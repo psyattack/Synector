@@ -193,8 +193,9 @@ replacing the built-in one. The daemon then renders the overlay in a separate pr
 screen when the GUI is closed.
 
 The action decides what happens at runtime: toggle visibility or flash on screen, optional override
-text (tokens such as `{ProcessName}` are allowed), duration and fade, and "close when process exits"
-to bind the overlay to the triggering application. Saved definitions live in `library.json`.
+text (tokens such as `{ProcessName}` are allowed), duration and fade, and a lifetime that keeps the
+overlay until the triggering application exits (`until_trigger_process_exit`) or hides it when the
+rule run ends (`until_run_end`). Saved definitions live in `library.json`.
 
 ### How do I record and replay a macro?
 

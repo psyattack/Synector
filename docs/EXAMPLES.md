@@ -14,7 +14,7 @@ cmd /c "Synector.exe --rules-apply rule.json"
 Use `--rules-sync` instead of `--rules-apply` when the file should become the complete rule set.
 `--dry-run` previews the result.
 
-## Companion process bound to a game
+## Companion process with a host lifetime
 
 Starts a helper tool with the game and closes it when the game exits. `single_instance: true`
 makes the rule fire only for the first matching instance and defers cleanup until every tracked
@@ -37,7 +37,7 @@ instance has exited.
       "file_path": "C:\\Tools\\CompanionHud.exe",
       "arguments": "--attach game.exe",
       "working_directory": "C:\\Tools",
-      "close_on_exit": true
+      "lifetime": "until_trigger_process_exit"
     }
   ]
 }
@@ -287,7 +287,7 @@ honest.
 ```
 
 `stop` aborts what the target is running right now without disabling it. Here a hotkey ends a gaming
-companion that is bound to `game.exe`, while the game itself keeps running:
+companion that follows the lifetime of `game.exe`, while the game itself keeps running:
 
 ```json
 [
@@ -296,7 +296,7 @@ companion that is bound to `game.exe`, while the game itself keeps running:
     "name": "Helper HUD with the game",
     "trigger": { "$trigger_type": "process", "process_name": "game.exe" },
     "actions": [
-      { "$action_type": "start_process", "file_path": "C:\\Tools\\hud.exe", "close_on_exit": true }
+      { "$action_type": "start_process", "file_path": "C:\\Tools\\hud.exe", "lifetime": "until_trigger_process_exit" }
     ]
   },
   {
@@ -316,8 +316,8 @@ logged and does not fail the caller. Direct self-calls and cycles are refused, s
 of a pair together.
 
 A rule's pipeline can also be observed without calling it. `rule_started` and `rule_stopped` are wait
-conditions; "running" means the target's action pipeline is executing right now, not that a companion
-process or overlay it launched is still alive. Here a watcher waits for a long-running mode to begin
+conditions; "running" means the target's action pipeline is executing right now or it still owns a
+live process or overlay from a finished run. Here a watcher waits for a long-running mode to begin
 and then for it to end:
 
 ```json
@@ -456,7 +456,8 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
   `repeat_while_held: true` without hold mode to loop until pressed again.
 - A **process trigger** fires its one action pipeline on `event: "started"` (the default) or
   `event: "exited"`; `single_instance` makes the start run fire for the first instance and the exit
-  run for the last one. `close_on_exit` companions bind only to a start-triggered run.
+  run for the last one. `lifetime: "until_trigger_process_exit"` binds processes and overlays to a
+  start-triggered run; `until_run_end` releases them when the run ends.
 - **Runtime counters** (`execution_count`, `last_executed_at`, the custom quota anchor) are owned by
   `runtime.json`; values in a rule file are ignored when an existing rule is updated.
 - **Share codes** (`SYN1:`) bundle the presets and overlays a rule references; imported rules are
@@ -468,5 +469,5 @@ Apply it with `cmd /c "Synector.exe --rules-apply rule.json"` after saving the b
   `operation: "stop"` aborts its executions without disabling it. Share codes do not rewrite these
   references, so export a calling rule and its target together.
 - **Rule activity** (`rule_running`, wait `rule_started`/`rule_stopped`) observes another rule's
-  pipeline; it reports stopped once the pipeline ends, even if a bound companion process is still
-  alive.
+  pipeline and its live owned resources; it reports stopped once both the pipeline and its
+  `until_trigger_process_exit`/`until_run_end` resources are gone.

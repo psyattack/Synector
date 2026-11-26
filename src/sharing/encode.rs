@@ -82,7 +82,6 @@ fn is_default_share_field(key: &str, value: &serde_json::Value) -> bool {
         "run_as_admin"
         | "only_if_not_running"
         | "run_hidden"
-        | "close_on_exit"
         | "kill_tree"
         | "force"
         | "play_beep"
@@ -115,6 +114,7 @@ fn is_default_share_field(key: &str, value: &serde_json::Value) -> bool {
         "operation" => is_text("run"),
         "match_mode" => is_text("exact"),
         "event" => is_text("started"),
+        "lifetime" => is_text("detach"),
         // Empty collections that are optional on deserialization.
         "events" | "days_of_week" => is_empty_array,
         _ => false,
@@ -292,7 +292,7 @@ mod tests {
                 run_as_admin: false,
                 only_if_not_running: false,
                 run_hidden: false,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             },
             Action::Macro {
                 preset_id: None,
@@ -315,7 +315,7 @@ mod tests {
                 operation: OverlayOperation::Show,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             },
         ];
         let mut second = rule.clone();
@@ -335,7 +335,7 @@ mod tests {
             "\"operation\":\"run\"",
             "\"match_mode\"",
             "\"single_instance\"",
-            "\"close_on_exit\"",
+            "\"lifetime\"",
             "\"event\"",
         ] {
             assert!(!json.contains(stripped), "{stripped} must be stripped: {json}");
@@ -390,7 +390,7 @@ mod tests {
                 operation: crate::models::OverlayOperation::Show,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             },
         ];
 
@@ -421,7 +421,7 @@ mod tests {
                 operation: crate::models::OverlayOperation::Show,
                 override_text: None,
                 duration_ms: None,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             },
             Action::ExecuteScript {
                 interpreter: ScriptType::PowerShell,
@@ -435,7 +435,7 @@ mod tests {
                 run_as_admin: true,
                 only_if_not_running: false,
                 run_hidden: true,
-                close_on_exit: false,
+                lifetime: crate::models::ResourceLifetime::Detach,
             },
             Action::HttpWebhook {
                 url: "https://example.com/hook".into(),

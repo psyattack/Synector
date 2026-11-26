@@ -1,10 +1,9 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::Instant;
 
 use tokio::sync::oneshot;
 
-use crate::daemon::actions::ActionRunner;
-use crate::models::{Action, Rule, RunSource};
+use crate::models::{ResourceLifetime, RunSource};
 
 use super::DaemonEngine;
 
@@ -16,20 +15,77 @@ pub(super) fn next_execution_id() -> u64 {
     EXECUTION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-#[derive(Debug, Clone)]
-pub struct BoundProcess {
-    pub rule_id: String,
-    pub primary_process_name: String,
-    pub primary_pid: u32,
-    pub target_executable: String,
+/// Identity of the process whose lifetime an owned resource follows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrimaryProcess {
+    pub pid: u32,
+    pub name: String,
 }
 
+/// One process a run owns, identified by the PID captured at spawn.
 #[derive(Debug, Clone)]
-pub struct BoundOverlay {
+pub struct OwnedProcess {
+    pub execution_id: u64,
     pub rule_id: String,
-    pub primary_process_name: String,
-    pub primary_pid: u32,
+    pub primary: PrimaryProcess,
+    pub pid: u32,
+    pub image_path: String,
+    pub lifetime: ResourceLifetime,
+}
+
+/// One overlay show a run owns, identified by the generation of that show.
+#[derive(Debug, Clone)]
+pub struct OwnedOverlay {
+    pub execution_id: u64,
+    pub rule_id: String,
+    pub primary: PrimaryProcess,
     pub overlay_id: String,
+    pub generation: u64,
+    pub lifetime: ResourceLifetime,
+}
+
+/// A runtime object a pipeline owns and must release according to its [`ResourceLifetime`].
+#[derive(Debug, Clone)]
+pub enum OwnedResource {
+    Process(OwnedProcess),
+    Overlay(OwnedOverlay),
+}
+
+impl OwnedResource {
+    pub fn execution_id(&self) -> u64 {
+        match self {
+            Self::Process(process) => process.execution_id,
+            Self::Overlay(overlay) => overlay.execution_id,
+        }
+    }
+
+    pub fn rule_id(&self) -> &str {
+        match self {
+            Self::Process(process) => &process.rule_id,
+            Self::Overlay(overlay) => &overlay.rule_id,
+        }
+    }
+
+    pub fn primary(&self) -> &PrimaryProcess {
+        match self {
+            Self::Process(process) => &process.primary,
+            Self::Overlay(overlay) => &overlay.primary,
+        }
+    }
+
+    pub fn lifetime(&self) -> ResourceLifetime {
+        match self {
+            Self::Process(process) => process.lifetime,
+            Self::Overlay(overlay) => overlay.lifetime,
+        }
+    }
+
+    pub fn process_pid(&self) -> Option<u32> {
+        match self {
+            Self::Process(process) => Some(process.pid),
+            Self::Overlay(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -68,7 +124,7 @@ impl RuleSkip {
 
 /// Why a pipeline is running. A process id of zero is not a manual run: webhooks, schedules,
 /// system events and hotkeys all run without a pid, and only user-invoked runs may tear down the
-/// rule's bound satellites when they finish.
+/// rule's owned resources when they finish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionOrigin {
     /// A run the user started from the GUI or through a manual trigger emulation.
@@ -88,8 +144,8 @@ pub enum ExecutionOrigin {
 }
 
 impl ExecutionOrigin {
-    /// True for runs the user started directly. Only those force-terminate the bound satellites
-    /// the run created, and the cooldown never gates them.
+    /// True for runs the user started directly. Only those replace and release the rule's owned
+    /// resources at start and after the pipeline finishes, and the cooldown never gates them.
     pub(super) fn is_user_invoked(self) -> bool {
         matches!(self, Self::Manual | Self::Test)
     }
@@ -139,8 +195,7 @@ pub enum ActionCompletionEvent {
         message: String,
         file_message: String,
     },
-    AddBoundProcess(BoundProcess),
-    AddBoundOverlay(BoundOverlay),
+    AddOwnedResource(OwnedResource),
     RuleExecutionStarted {
         execution_id: u64,
         rule_id: String,
@@ -156,7 +211,7 @@ pub enum ActionCompletionEvent {
     },
     RuleExecutionFinished {
         execution_id: u64,
-        _rule_id: String,
+        rule_id: String,
         is_manual: bool,
     },
     SetRuleCustomIcon {
@@ -182,7 +237,7 @@ pub enum ActionCompletionEvent {
 }
 
 /// Runtime execution tracker: the pipelines that are running, their abort handles, the recurring
-/// test loops and the overlays bound to a host process. The engine mutates it only through these
+/// test loops and the processes/overlays those runs own. The engine mutates it only through these
 /// methods, so an aborted pipeline always loses its abort handle and a finished execution always
 /// leaves the recurring set.
 #[derive(Default)]
@@ -194,14 +249,8 @@ pub(super) struct ExecutionTracker {
     /// Recurring test loops (interval / held-hotkey emulation): rule id → (abort handle,
     /// execution id the loop was started as).
     recurring_tests: HashMap<String, (tokio::task::AbortHandle, u64)>,
-    /// Overlays bound to a host process, hidden when that process exits.
-    bound_overlays: Vec<BoundOverlay>,
-    /// Companion ("bound satellite") processes started by a rule, force-terminated when the rule
-    /// is stopped or its lap finishes.
-    bound_processes: Vec<BoundProcess>,
-    /// Overlay ids a rule started, so a stop can hide overlays of a rule that is not (or no longer)
-    /// in the config.
-    rule_overlays: HashMap<String, Vec<String>>,
+    /// Processes and overlay shows owned by rule runs, released by lifetime.
+    owned_resources: Vec<OwnedResource>,
 }
 
 impl ExecutionTracker {
@@ -209,8 +258,8 @@ impl ExecutionTracker {
         Self::default()
     }
 
-    /// True when a tracked execution kind is running for `rule_id`. The bound-satellite and
-    /// active-overlay scans stay on the engine façade, which combines them with this answer.
+    /// True when a tracked execution kind is running for `rule_id`, including resources a finished
+    /// pipeline still owns.
     pub(super) fn is_rule_executing(&self, rule_id: &str) -> bool {
         self.active_executions
             .values()
@@ -220,6 +269,13 @@ impl ExecutionTracker {
                 .values()
                 .any(|(owning_rule, _)| owning_rule == rule_id)
             || self.recurring_tests.contains_key(rule_id)
+            || self
+                .owned_resources
+                .iter()
+                .any(|resource| {
+                    resource.rule_id() == rule_id
+                        && resource.lifetime() != ResourceLifetime::Detach
+                })
     }
 
     pub(super) fn has_recurring_test(&self, rule_id: &str) -> bool {
@@ -335,164 +391,79 @@ impl ExecutionTracker {
         aborted
     }
 
-    pub(super) fn add_bound_overlay(&mut self, overlay: BoundOverlay) {
-        self.bound_overlays.push(overlay);
+    /// Records a new owned resource for a run. A later show of the same overlay replaces the
+    /// run's previous ownership of that id, so one run owns at most one show of an overlay.
+    /// Detached overlays are recorded for stop cleanup but are not "live resources": they do not
+    /// count toward rule activity and do not make the rule report running.
+    pub(super) fn add_owned_resource(&mut self, resource: OwnedResource) {
+        if let OwnedResource::Overlay(new) = &resource {
+            let mut replaced_rules = Vec::new();
+            self.owned_resources.retain(|existing| {
+                let OwnedResource::Overlay(old) = existing else {
+                    return true;
+                };
+                let same =
+                    old.execution_id == new.execution_id && old.overlay_id == new.overlay_id;
+                if same && old.lifetime != ResourceLifetime::Detach {
+                    replaced_rules.push(old.rule_id.clone());
+                }
+                !same
+            });
+            for rule_id in replaced_rules {
+                crate::daemon::rule_activity::mark_owned_released(&rule_id);
+            }
+        }
+        if resource.lifetime() != ResourceLifetime::Detach {
+            crate::daemon::rule_activity::mark_owned_acquired(resource.rule_id());
+        }
+        self.owned_resources.push(resource);
     }
 
-    pub(super) fn bound_overlays(&self) -> &[BoundOverlay] {
-        &self.bound_overlays
+    pub(super) fn owned_resources(&self) -> &[OwnedResource] {
+        &self.owned_resources
     }
 
-    pub(super) fn remove_rule_bound_overlays(&mut self, rule_id: &str) {
-        self.bound_overlays.retain(|overlay| overlay.rule_id != rule_id);
+    /// True when any owned process is still tracked. The daemon process loop uses this to keep
+    /// polling long enough to notice the host exit that releases it.
+    pub(super) fn has_owned_processes(&self) -> bool {
+        self.owned_resources
+            .iter()
+            .any(|resource| resource.process_pid().is_some())
     }
 
-    /// Removes and returns the bound overlays of one rule.
-    pub(super) fn take_rule_bound_overlays(&mut self, rule_id: &str) -> Vec<BoundOverlay> {
-        self.take_bound_overlays_where(|overlay| overlay.rule_id == rule_id)
-    }
-
-    /// Removes and returns the bound overlays matching `predicate`, keeping the rest in order.
-    /// Entries sharing the `(rule, overlay)` identity of a taken one are removed as well, exactly
-    /// like the pre-split filter + retain pair.
-    pub(super) fn take_bound_overlays_where(
+    /// Removes and returns every owned resource matching `predicate`, keeping insertion order and
+    /// releasing the per-rule activity count for each taken resource.
+    pub(super) fn take_owned_where(
         &mut self,
-        mut predicate: impl FnMut(&BoundOverlay) -> bool,
-    ) -> Vec<BoundOverlay> {
+        mut predicate: impl FnMut(&OwnedResource) -> bool,
+    ) -> Vec<OwnedResource> {
         let mut taken = Vec::new();
         let mut index = 0;
-        while index < self.bound_overlays.len() {
-            if predicate(&self.bound_overlays[index]) {
-                taken.push(self.bound_overlays.remove(index));
+        while index < self.owned_resources.len() {
+            if predicate(&self.owned_resources[index]) {
+                taken.push(self.owned_resources.remove(index));
             } else {
                 index += 1;
             }
         }
-        self.bound_overlays.retain(|kept| {
-            !taken
-                .iter()
-                .any(|gone| gone.rule_id == kept.rule_id && gone.overlay_id == kept.overlay_id)
-        });
-        taken
-    }
-
-    pub(super) fn add_bound_process(&mut self, process: BoundProcess) {
-        self.bound_processes.push(process);
-    }
-
-    pub(super) fn bound_processes(&self) -> &[BoundProcess] {
-        &self.bound_processes
-    }
-
-    pub(super) fn has_any_bound_processes(&self) -> bool {
-        !self.bound_processes.is_empty()
-    }
-
-    /// Removes and returns every bound satellite of one rule, keeping the insertion order.
-    pub(super) fn take_rule_bound_processes(&mut self, rule_id: &str) -> Vec<BoundProcess> {
-        self.take_bound_processes_where(|process| process.rule_id == rule_id)
-    }
-
-    /// Removes and returns the bound processes matching `predicate`, keeping the rest in order.
-    /// Entries sharing the `(rule, target executable)` identity of a taken one are removed as well,
-    /// exactly like the pre-split filter + retain pair in the process-exit path.
-    pub(super) fn take_bound_processes_where(
-        &mut self,
-        mut predicate: impl FnMut(&BoundProcess) -> bool,
-    ) -> Vec<BoundProcess> {
-        let mut taken = Vec::new();
-        let mut index = 0;
-        while index < self.bound_processes.len() {
-            if predicate(&self.bound_processes[index]) {
-                taken.push(self.bound_processes.remove(index));
-            } else {
-                index += 1;
+        for resource in &taken {
+            if resource.lifetime() != ResourceLifetime::Detach {
+                crate::daemon::rule_activity::mark_owned_released(resource.rule_id());
             }
         }
-        self.bound_processes.retain(|kept| {
-            !taken.iter().any(|gone| {
-                gone.rule_id == kept.rule_id && gone.target_executable == kept.target_executable
-            })
-        });
         taken
-    }
-
-    /// Records the overlay ids `rule_id` started, replacing any previous set.
-    pub(super) fn set_rule_overlays(&mut self, rule_id: &str, overlay_ids: Vec<String>) {
-        self.rule_overlays.insert(rule_id.to_string(), overlay_ids);
-    }
-
-    /// Removes and returns the overlay ids recorded for `rule_id`.
-    pub(super) fn take_rule_overlays(&mut self, rule_id: &str) -> Option<Vec<String>> {
-        self.rule_overlays.remove(rule_id)
     }
 }
 
 impl DaemonEngine {
-    /// Whether any rule currently has a bound satellite process alive. Used by the daemon loop to
-    /// decide whether a process trigger must keep polling; the registry lives in the tracker.
-    pub fn has_active_bound_companions(&self) -> bool {
-        self.executions.has_any_bound_processes()
+    /// Whether any rule still owns a live process. The daemon process loop keeps polling while
+    /// this is true so the host exit that releases it is noticed.
+    pub fn has_active_owned_processes(&self) -> bool {
+        self.executions.has_owned_processes()
     }
 
     pub fn is_rule_executing(&self, rule_id: &str) -> bool {
-        if self.executions.is_rule_executing(rule_id)
-            || self
-                .executions
-                .bound_processes()
-                .iter()
-                .any(|bound| bound.rule_id == rule_id)
-        {
-            return true;
-        }
-
-        let active_ovs = crate::daemon::overlay_manager::get_active_overlay_ids();
-        if active_ovs.is_empty() {
-            return false;
-        }
-        let Some(rule) = self.config.rules.iter().find(|r| r.id == rule_id) else {
-            return false;
-        };
-        Self::rule_references_active_overlay(rule, &active_ovs)
-    }
-
-    /// True when any overlay action of `rule` targets an id in `active_overlay_ids`. The scan is
-    /// the full [`Rule::visit_actions`] tree, so `IfElse` branches count.
-    pub(super) fn rule_references_active_overlay(
-        rule: &Rule,
-        active_overlay_ids: &HashSet<String>,
-    ) -> bool {
-        let mut found = false;
-        rule.visit_actions(&mut |action| {
-            if found {
-                return;
-            }
-            if let Action::Overlay { overlay_id, custom_overlay, .. } = action {
-                let id = custom_overlay
-                    .as_ref()
-                    .map(|overlay| overlay.id.as_str())
-                    .unwrap_or(overlay_id.as_str());
-                found = active_overlay_ids.contains(id);
-            }
-        });
-        found
-    }
-
-    pub fn extract_rule_overlay_ids(rule: &Rule) -> Vec<String> {
-        let mut ids = Vec::new();
-        rule.visit_actions(&mut |action| {
-            if let Action::Overlay { overlay_id, custom_overlay, .. } = action {
-                let id = custom_overlay.as_ref().map(|o| o.id.clone()).unwrap_or_else(|| overlay_id.clone());
-                ids.push(id);
-            }
-        });
-        ids
-    }
-
-    pub fn hide_rule_overlays(rule: &Rule) {
-        for id in Self::extract_rule_overlay_ids(rule) {
-            crate::daemon::overlay_manager::hide_overlay(&id);
-        }
+        self.executions.is_rule_executing(rule_id)
     }
 
     /// Aborts the recurring test loop of `rule_id`, if one is running. Recurring loops re-read
@@ -524,74 +495,164 @@ impl DaemonEngine {
             self.log("INFO", "RULE", &format!("Stopped execution of rule: {}", rule_id));
         }
 
-        // 3. Hide any tracked overlays associated with this rule (including draft rules)
-        if let Some(ids) = self.executions.take_rule_overlays(rule_id) {
-            for id in ids {
-                crate::daemon::overlay_manager::hide_overlay(&id);
-            }
-        }
-
-        // 4. Hide any active overlays associated with this rule from config
-        if let Some(rule) = self.config.rules.iter().find(|r| r.id == rule_id) {
-            Self::hide_rule_overlays(rule);
-        }
-
-        self.executions.remove_rule_bound_overlays(rule_id);
-
-        // 5. Force stop and remove any active bound processes for this rule
-        self.terminate_bound_processes(rule_id, &format!("upon stopping rule '{}'", rule_id));
+        // 3. Release every process/overlay this rule still owns, including detached overlay
+        // shows it made: a stop hides exactly the generations that rule started.
+        self.release_rule_owned(
+            rule_id,
+            &format!("because rule '{rule_id}' was stopped"),
+            true,
+        );
 
         crate::daemon::actions::release_all_simulated_inputs();
     }
 
-    /// Normalizes a bound satellite target and builds the kill action used by every teardown path.
-    pub(super) fn bound_satellite_kill(target_executable: &str) -> (String, Action) {
-        let mut target_name = std::path::Path::new(target_executable)
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or(target_executable)
-            .to_string();
-        if !target_name.to_lowercase().ends_with(".exe") && !target_name.contains('.') {
-            target_name.push_str(".exe");
+    /// Releases owned resources, killing processes by their captured PID and hiding only the
+    /// overlay show that this run still owns.
+    pub(super) fn release_owned_resources(
+        &mut self,
+        resources: Vec<OwnedResource>,
+        context: &str,
+    ) {
+        for resource in resources {
+            match resource {
+                OwnedResource::Process(process) => {
+                    if !crate::daemon::actions::is_process_alive(process.pid) {
+                        self.log(
+                            "DEBUG",
+                            "RULE",
+                            &format!(
+                                "Owned process '{}' (pid {}) had already exited {}",
+                                process.image_path, process.pid, context
+                            ),
+                        );
+                        continue;
+                    }
+                    self.log(
+                        "ACTION",
+                        "RULE",
+                        &format!(
+                            "Force terminating owned process '{}' (pid {}) {}",
+                            process.image_path, process.pid, context
+                        ),
+                    );
+                    let log_tx = self.action_tx.clone();
+                    let failure = format!(
+                        "Failed to terminate owned process '{}' (pid {}) {}",
+                        process.image_path, process.pid, context
+                    );
+                    let pid = process.pid;
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            handle.spawn(async move {
+                                if let Err(e) =
+                                    crate::daemon::actions::kill_process_tree_by_pid(pid).await
+                                {
+                                    let _ = log_tx.send(ActionCompletionEvent::SensitiveLog {
+                                        level: "WARN".to_string(),
+                                        category: "ACTION".to_string(),
+                                        message: format!("{failure}: {e}"),
+                                        file_message: format!(
+                                            "{failure} (details omitted from the file log)"
+                                        ),
+                                    });
+                                }
+                            });
+                        }
+                        Err(_) => {
+                            if let Err(e) =
+                                crate::daemon::actions::kill_process_tree_by_pid_blocking(pid)
+                            {
+                                let _ = log_tx.send(ActionCompletionEvent::SensitiveLog {
+                                    level: "WARN".to_string(),
+                                    category: "ACTION".to_string(),
+                                    message: format!("{failure}: {e}"),
+                                    file_message: format!(
+                                        "{failure} (details omitted from the file log)"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+                OwnedResource::Overlay(overlay) => {
+                    if crate::daemon::overlay_manager::hide_overlay_if_generation(
+                        &overlay.overlay_id,
+                        overlay.generation,
+                    ) {
+                        self.log(
+                            "ACTION",
+                            "RULE",
+                            &format!(
+                                "Hid owned overlay '{}' {}",
+                                overlay.overlay_id, context
+                            ),
+                        );
+                    }
+                }
+            }
         }
-        let action = Action::KillProcess {
-            process_name: target_name.clone(),
-            kill_tree: true,
-            force: true,
-        };
-        (target_name, action)
     }
 
-    /// Removes and force-terminates every bound satellite of `rule_id` without touching the
-    /// rule's enabled state. `context` completes "Force terminating bound satellite process 'x'".
-    fn terminate_bound_processes(&mut self, rule_id: &str, context: &str) {
-        let to_kill = self.executions.take_rule_bound_processes(rule_id);
+    /// Releases the resources of one execution that live only until that run ends.
+    pub(super) fn release_execution_until_run_end(&mut self, execution_id: u64, context: &str) {
+        let resources = self.executions.take_owned_where(|resource| {
+            resource.execution_id() == execution_id
+                && resource.lifetime() == ResourceLifetime::UntilRunEnd
+        });
+        self.release_owned_resources(resources, context);
+    }
 
-        for bp in to_kill {
-            let (target_name, action) = Self::bound_satellite_kill(&bp.target_executable);
-            let failure = format!(
-                "Failed to force terminate bound satellite process '{}' {}",
-                target_name, context
-            );
-            self.log(
-                "ACTION",
-                "RULE",
-                &format!("Force terminating bound satellite process '{}' {}", target_name, context),
-            );
+    /// Releases the resources a rule owns. `include_detached` is true for an explicit stop (which
+    /// also hides the detached overlay shows the rule made) and false for a manual run replacing
+    /// its previous run, where a detached overlay must stay on screen.
+    pub(super) fn release_rule_owned(
+        &mut self,
+        rule_id: &str,
+        context: &str,
+        include_detached: bool,
+    ) {
+        let resources = self.executions.take_owned_where(|resource| {
+            resource.rule_id() == rule_id
+                && (include_detached || resource.lifetime() != ResourceLifetime::Detach)
+        });
+        self.release_owned_resources(resources, context);
+    }
 
-            let ctx = HashMap::new();
-            let log_tx = self.action_tx.clone();
-            tokio::spawn(async move {
-                if let Err(e) = ActionRunner::execute(&action, &ctx).await {
-                    let _ = log_tx.send(ActionCompletionEvent::SensitiveLog {
-                        level: "WARN".to_string(),
-                        category: "ACTION".to_string(),
-                        message: format!("{failure}: {e}"),
-                        file_message: format!("{failure} (details omitted from the file log)"),
-                    });
-                }
-            });
+    /// Forgets owned resources that disappeared on their own (a process exited, an overlay was
+    /// hidden or replaced). Updates the rule-activity counters so a stale resource cannot keep a
+    /// rule looking alive forever.
+    pub fn prune_owned_resources(&mut self) -> usize {
+        let dead = self.executions.take_owned_where(|resource| match resource {
+            OwnedResource::Process(process) => {
+                !crate::daemon::actions::is_process_alive(process.pid)
+            }
+            OwnedResource::Overlay(overlay) => {
+                crate::daemon::overlay_manager::overlay_generation(&overlay.overlay_id)
+                    != Some(overlay.generation)
+            }
+        });
+        let count = dead.len();
+        for resource in &dead {
+            match resource {
+                OwnedResource::Process(process) => self.log(
+                    "DEBUG",
+                    "RULE",
+                    &format!(
+                        "Forgot owned process '{}' (pid {}): it is no longer running",
+                        process.image_path, process.pid
+                    ),
+                ),
+                OwnedResource::Overlay(overlay) => self.log(
+                    "DEBUG",
+                    "RULE",
+                    &format!(
+                        "Forgot owned overlay '{}': that show is no longer on screen",
+                        overlay.overlay_id
+                    ),
+                ),
+            }
         }
+        count
     }
 
     /// User-facing stop: abort the executions and disable the rule so its triggers stay quiet.
@@ -604,7 +665,6 @@ impl DaemonEngine {
                 rule.is_enabled = false;
                 disabled_in_config = true;
             }
-            Self::hide_rule_overlays(rule);
         }
         if disabled_in_config {
             self.persist_rules();
@@ -652,11 +712,8 @@ impl DaemonEngine {
                 ActionCompletionEvent::SensitiveLog { level, category, message, file_message } => {
                     self.log_with_file_message(&level, &category, &message, Some(&file_message));
                 }
-                ActionCompletionEvent::AddBoundProcess(bp) => {
-                    self.executions.add_bound_process(bp);
-                }
-                ActionCompletionEvent::AddBoundOverlay(bo) => {
-                    self.executions.add_bound_overlay(bo);
+                ActionCompletionEvent::AddOwnedResource(resource) => {
+                    self.executions.add_owned_resource(resource);
                 }
                 ActionCompletionEvent::RuleExecutionStarted { execution_id, rule_id, step_index, total_steps, call_chain } => {
                     self.executions.record_started(execution_id, ActiveExecutionItem {
@@ -670,18 +727,18 @@ impl DaemonEngine {
                 ActionCompletionEvent::RuleExecutionStep { execution_id, step_index, total_steps, .. } => {
                     self.executions.record_step(execution_id, step_index, total_steps);
                 }
-                ActionCompletionEvent::RuleExecutionFinished { execution_id, _rule_id, is_manual } => {
-                    self.executions.record_finished(execution_id, &_rule_id);
+                ActionCompletionEvent::RuleExecutionFinished { execution_id, rule_id, is_manual } => {
+                    self.executions.record_finished(execution_id, &rule_id);
+
+                    // Run-scoped resources die with the run on every ending (finish, abort, error).
+                    self.release_execution_until_run_end(execution_id, "because its run ended");
 
                     if is_manual {
-                        self.terminate_bound_processes(
-                            &_rule_id,
-                            &format!("after manual execution of rule '{}'", _rule_id),
+                        self.release_rule_owned(
+                            &rule_id,
+                            &format!("after manual execution of rule '{rule_id}'"),
+                            false,
                         );
-
-                        for bo in self.executions.take_rule_bound_overlays(&_rule_id) {
-                            crate::daemon::overlay_manager::hide_overlay(&bo.overlay_id);
-                        }
                     }
                 }
                 ActionCompletionEvent::SetRuleCustomIcon { rule_id, icon_path } => {

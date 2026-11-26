@@ -1,11 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use crate::daemon::actions::ActionRunner;
 use crate::daemon::watcher::{ProcessEvent, ProcessWatcher};
-use crate::models::{Action, ProcessMatchMode, ProcessTriggerEvent, Rule, RuleCondition, RuleConditionItem, ScheduleType, SystemEventType, Trigger};
+use crate::models::{Action, ProcessMatchMode, ProcessTriggerEvent, ResourceLifetime, Rule, RuleCondition, RuleConditionItem, ScheduleType, SystemEventType, Trigger};
 
-use super::executions::{BoundProcess, ExecutionOrigin};
+use super::executions::ExecutionOrigin;
 use super::scheduler::Scheduler;
 use super::DaemonEngine;
 
@@ -120,66 +119,31 @@ impl DaemonEngine {
             self.active_rule_pids.remove(rule_id);
         }
 
-        // 1. Auto-close any bound processes that were launched for this process (Companion Mode in Rules)
-        let to_kill: Vec<BoundProcess> = self.executions.take_bound_processes_where(|bp| {
-            let is_match = bp.primary_pid == event.pid
-                || bp.primary_process_name.eq_ignore_ascii_case(&event.process_name);
-            if !is_match {
+        // 1. Release the resources that were bound to this process lifetime. The PID is the
+        // identity: a same-named process must not tear down another instance's resources. A
+        // single-instance rule defers until its last tracked instance has exited.
+        let to_release = self.executions.take_owned_where(|resource| {
+            if resource.lifetime() != ResourceLifetime::UntilTriggerProcessExit {
                 return false;
             }
-            // If the rule has single_instance enabled, only kill if all instances have exited
-            if let Some(rule) = rules_map.get(&bp.rule_id) {
-                if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
-                    return single_instance_rules_exited.contains(&bp.rule_id);
-                }
+            let single_instance = rules_map.get(resource.rule_id()).is_some_and(|rule| {
+                matches!(
+                    rule.trigger,
+                    Some(Trigger::Process { single_instance: true, .. })
+                )
+            });
+            if single_instance {
+                single_instance_rules_exited.contains(resource.rule_id())
+            } else {
+                resource.primary().pid == event.pid
             }
-            true
         });
+        self.release_owned_resources(
+            to_release,
+            &format!("because '{}' terminated", event.process_name),
+        );
 
-        for bp in to_kill {
-            let (target_name, action) = Self::bound_satellite_kill(&bp.target_executable);
-
-            self.log(
-                "ACTION",
-                "RULE",
-                &format!(
-                    "Auto-closing bound process '{}' (rule: {}) because '{}' terminated",
-                    target_name, bp.rule_id, event.process_name
-                ),
-            );
-
-            let ctx = HashMap::new();
-            let _ = ActionRunner::execute(&action, &ctx).await;
-        }
-
-        // 1.1. Auto-close any bound overlays that were launched for this process (Companion Mode in Rules)
-        let to_close_overlays = self.executions.take_bound_overlays_where(|bo| {
-            let is_match = bo.primary_pid == event.pid
-                || bo.primary_process_name.eq_ignore_ascii_case(&event.process_name);
-            if !is_match {
-                return false;
-            }
-            if let Some(rule) = rules_map.get(&bo.rule_id) {
-                if let Some(Trigger::Process { single_instance: true, .. }) = &rule.trigger {
-                    return single_instance_rules_exited.contains(&bo.rule_id);
-                }
-            }
-            true
-        });
-
-        for bo in to_close_overlays {
-            self.log(
-                "ACTION",
-                "RULE",
-                &format!(
-                    "Auto-closing bound overlay '{}' (rule: {}) because '{}' terminated",
-                    bo.overlay_id, bo.rule_id, event.process_name
-                ),
-            );
-            crate::daemon::overlay_manager::hide_overlay(&bo.overlay_id);
-        }
-
-        // 1.2. Also signal overlay_manager to auto-close any standalone overlays with close_with_target == true
+        // 1.1. Also signal overlay_manager to auto-close any standalone overlays with close_with_target == true
         crate::daemon::overlay_manager::check_process_terminated(&event.process_name);
 
         // 2. Fire the rules whose process trigger watches the exit event. A single-instance rule

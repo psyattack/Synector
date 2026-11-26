@@ -38,9 +38,9 @@ impl Action {
     /// Makes the two overlay identities of an [`Action::Overlay`] agree: the embedded
     /// definition takes the action's `overlay_id` (or donates its id when that is empty).
     ///
-    /// The runner shows the embedded definition while the engine binds `close_on_exit`
-    /// under the action's id; a mismatch between them leaks the overlay. Called on every
-    /// path that accepts a rule definition (config load, share import, CLI apply).
+    /// The runner shows the embedded definition under the action's id while the engine records the
+    /// overlay generation it started; a mismatch between the two would leak the overlay. Called on
+    /// every path that accepts a rule definition (config load, share import, CLI apply).
     pub fn normalize_overlay_ids(&mut self) {
         match self {
             Action::Overlay {

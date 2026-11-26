@@ -13,8 +13,8 @@ pub use monitors::get_system_monitors;
 pub(crate) use monitors::monitor_scale;
 pub use supervisor::{
     check_process_terminated, flash_overlay, get_active_overlay_ids, get_calibrated_position,
-    hide_all, hide_all_sync, hide_overlay, init, save_calibrated_position, show_overlay,
-    toggle_overlay,
+    hide_all, hide_all_sync, hide_overlay, hide_overlay_if_generation, init, overlay_generation,
+    save_calibrated_position, show_overlay, toggle_overlay,
 };
 pub use text::{live_overlay_text_if_changed, update_overlay_text};
 pub use update::{
@@ -98,6 +98,25 @@ mod tests {
         hide_overlay("mgr_test_ov");
         let active_ids_after = get_active_overlay_ids();
         assert!(!active_ids_after.contains("mgr_test_ov"));
+    }
+
+    #[test]
+    fn test_overlay_generation_only_hides_its_own_show() {
+        init();
+
+        let mut def = OverlayDefinition::default_new_overlay();
+        def.id = "mgr_generation_ov".to_string();
+
+        let first = show_overlay(&def, false, None).expect("first show");
+        let second = show_overlay(&def, false, None).expect("second show");
+        assert_ne!(first, second, "each show gets its own generation");
+
+        // The first run's teardown must not hide the second run's show.
+        assert!(!hide_overlay_if_generation("mgr_generation_ov", first));
+        assert!(get_active_overlay_ids().contains("mgr_generation_ov"));
+
+        assert!(hide_overlay_if_generation("mgr_generation_ov", second));
+        assert!(!get_active_overlay_ids().contains("mgr_generation_ov"));
     }
 
     #[test]

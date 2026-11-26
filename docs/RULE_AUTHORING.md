@@ -114,9 +114,27 @@ A `process` trigger fires the rule's one action pipeline on the lifecycle event 
 
 Both choices run the same ordered `actions` pipeline with the same pre-conditions, cooldown and
 quota. `single_instance: true` fires the start event for the first matching instance and the exit
-event for the last one. `close_on_exit` on a `start_process` action or an `overlay` action binds the
-companion to the triggering process and is only available when the trigger fires on start; an
-exit-triggered run cannot bind a satellite to a process that is already gone.
+event for the last one. `start_process` and `overlay` actions take a `lifetime` that says how long
+the process or overlay they create may live:
+
+- `"detach"` (the default) — leave it running or on screen after the run, as before. A detached
+  process is not owned and is never stopped; a detached overlay still records its show, so stopping
+  the rule hides that exact show (a later show by another rule is left alone);
+- `"until_run_end"` — terminate the process or hide that overlay show when the run that created it
+  ends, however it ends (finish, failure, abort or stop);
+- `"until_trigger_process_exit"` — keep it until the process that triggered the rule exits. This is
+  the old companion binding and is only valid for a process-start trigger with a live primary
+  process; an exit-triggered rule cannot bind to a process that is already gone. A rule call, manual
+  run or test run has no primary process, so the engine treats the value as `until_run_end` there.
+
+The engine records the PID captured at spawn and the generation of the overlay show it started, so
+teardown targets exactly that process or show instead of every process with the same name. A rule
+whose pipeline ended but still owns a live process or overlay reports running in both the rule list
+and `rule_running` / `rule_stopped`; a dead process or a hidden/replaced overlay show is pruned on
+the process loop.
+
+The former `close_on_exit` flags are gone: a rule file that still carries one is rejected as an
+unknown key, and a share code containing it fails import validation. Use `lifetime` instead.
 
 ```json
 {
@@ -195,15 +213,15 @@ and `wait` only matters for `call`:
   and `{CallerRuleId}` tokens described in [SCRIPTING.md](SCRIPTING.md#context-and-tokens).
 - `wait: true` pauses the caller until the called pipeline ends or is stopped; `wait: false` (the
   default) continues immediately. A skipped, failed or stopped call never blocks the caller forever.
-- `stop` aborts every active execution of the target: running pipelines are cancelled, its overlays
-  are hidden, companion satellites started by it are terminated and simulated input is released. The
-  target stays enabled, so its own triggers keep working; nothing has to re-enable it. Stopping a
-  rule that is not running is a logged no-op.
+- `stop` aborts every active execution of the target: running pipelines are cancelled, the overlay
+  shows that target made are hidden (only while they are still the active show), its owned processes
+  are terminated and simulated input is released. The target stays enabled, so its own triggers keep
+  working; nothing has to re-enable it. Stopping a rule that is not running is a logged no-op.
 - Direct recursion and cycles are rejected before the target starts: a rule cannot call itself, and a
   call to a rule that is already in the call chain is refused. A chain may contain at most eight
   rules.
-- A rule called by another rule is not a manual run: it does not tear down the target's companion
-  processes when its pipeline ends.
+- A rule called by another rule is not a manual run: it does not release the target's
+  `until_trigger_process_exit` resources when its pipeline ends.
 
 Share codes carry only the rules you export. Overlay button and toggle targets inside a bundled
 overlay are rewritten to the final imported rule ids, but `rule_control` actions and rule-activity
@@ -229,19 +247,19 @@ Wait and check steps can observe a rule instead of a system event:
 
 - `rule_running` is an ordinary condition: it works in `conditions`, `if_else` and `check`.
   `rule_started` and `rule_stopped` are wait conditions.
-- "Running" means the target has an action pipeline executing right now — the same state a
-  `rule_control` stop ends. A rule that started a companion process but already finished its
-  pipeline reports stopped.
+- "Running" means the target has an action pipeline executing right now **or** still owns a live
+  process or overlay from a finished run — the same state a `rule_control` stop ends. A rule whose
+  companion has already exited is pruned and reports stopped.
 - Waits poll every 100 ms. `rule_started` also completes when the target started at any point since
-  the wait began, even if it finished before the next poll; `rule_stopped` completes as soon as no
-  pipeline of the target is running. `rule_stopped` passes immediately when the target has not
-  started, so it waits for the current run to end, not for the next one to begin.
+  the wait began, even if it finished before the next poll; `rule_stopped` completes as soon as the
+  target has no running pipeline and no live owned resource. `rule_stopped` passes immediately when
+  the target has not started, so it waits for the current run to end, not for the next one to begin.
 - An empty `rule_id` never satisfies the condition. A `rule_id` that does not match a configured
   rule is simply never running (`rule_stopped` and `rule_running` with `must_be_running: false`
   pass); `--rules-validate` warns about both.
-- A pipeline cannot observe its own stop: while it runs, `rule_started` is true and `rule_stopped`
-  stays false until the pipeline ends. To keep a rule from running twice, gate it with
-  `rule_running` on its own id and `must_be_running: false` in its pre-conditions.
+- A pipeline cannot observe its own stop: while it runs, and while a resource it owns is still
+  alive, `rule_started` is true and `rule_stopped` stays false. To keep a rule from running twice,
+  gate it with `rule_running` on its own id and `must_be_running: false` in its pre-conditions.
 
 ## Webhook trigger
 
@@ -296,6 +314,7 @@ curl http://127.0.0.1:48123/api/v1/trigger/backup
   `ram_mb`; every configured limit must hold, so with both set a process has to meet both, and a
   CPU-only limit fires on CPU alone;
 - a custom quota window needs `value` between 1 and 100000;
+- `lifetime: "until_trigger_process_exit"` needs a process trigger firing on `started`;
 - tag colours must be six ASCII hex digits, written as `#RRGGBB` (the leading `#` is optional in a
   rule file);
 - an infinite macro requires a global-hotkey trigger.
@@ -383,7 +402,7 @@ so an imported rule never references a missing preset or overlay.
 
 ## Ready-to-use recipes
 
-See [EXAMPLES.md](EXAMPLES.md) for complete rules: companion processes, hotkey actions, webhooks
+See [EXAMPLES.md](EXAMPLES.md) for complete rules: owned companion processes with lifetimes, hotkey actions, webhooks
 with quotas, file watchers and archives, weekday schedules, If/Else branching, rule chaining with
 `rule_control`, sleep/resume audio toggles, and launch-wait-tune pipelines.
 

@@ -77,7 +77,7 @@ executable after the window is closed (see
 
 `src/app/` (entered from `src/main.rs`) dispatches in a fixed order: standalone overlay windows →
 CLI rule commands → update-file cleanup → `--status`/`--run-rule` → self-elevation → daemon or GUI.
-Runtime flags, overlay companions and CLI command spellings come from one vocabulary table in
+Runtime flags, standalone overlay windows and CLI command spellings come from one vocabulary table in
 `src/app/args.rs`; the CLI keeps its own parser but a gate test pins that the two spellings sets
 agree. Overlay windows are separate
 processes and must stay on the fast path; they never touch update files or single-instance mutexes.
@@ -301,11 +301,12 @@ through the same per-rule validator as the GUI Save and CLI apply paths: a rule 
 invalid (an out-of-range custom quota window, a wait outside 0..=86400 s, a malformed schedule) is
 skipped on its own, with its id and errors logged. Neither check drops a rule the GUI or CLI would
 accept. The unknown-key check is how the fields removed from the model (`schedule.delay_sec`, the
-`system` trigger's `idle_duration_sec`, the `resource` condition's `duration_sec`) are handled — no
+`system` trigger's `idle_duration_sec`, the `resource` condition's `duration_sec`, the rule-level
+`on_exit_actions`, and the action-level `close_on_exit`) are handled — no
 migration shim rewrites old files, so such a rule must be updated. `--rules-apply` and share import
 reject the input instead of skipping. Overlay actions are normalized on the same load, so the
-embedded definition and `overlay_id` share one id and a `close_on_exit` binding refers to the
-overlay that actually runs.
+embedded definition and `overlay_id` share one id and an owned overlay show refers to the overlay
+that actually runs.
 
 The daemon is the only writer while it is reachable. The GUI sends section-scoped requests
 (`SaveSettings`, `SaveRule`, `ReorderRules`, `ResetRule`, `SaveOverlay`, ...), so the two processes
@@ -359,7 +360,7 @@ Other sources are mixed by nature:
   detection, the file watcher, resource thresholds, session lock, AC/battery power source,
   user idle/active, network state and system telemetry (CPU, RAM, network, battery, volume).
   Polling loops back off when no rule uses the corresponding trigger: the process snapshots drop to
-  a 3 s dormancy tick when no process or resource rule and no bound companion needs them, foreground
+  a 3 s dormancy tick when no process or resource rule and no owned process needs them, foreground
   focus drops to 3 s without a `window_focus` rule, and the system-event sampler drops to 10 s when
   no enabled rule has a system trigger or an `event` condition (its notification window still wakes
   it for suspend, display and device broadcasts). The system trigger's idle
@@ -392,15 +393,17 @@ cooldown/quota limits. `src/daemon/engine.rs` is the `DaemonEngine` facade: it s
 triggered runs, evaluates conditions, enforces quotas and cooldowns, tracks active executions and
 reports analytics. The implementation is split by owner under `src/daemon/engine/`: `scheduler`
 owns admission and tick throttling, `quota` the documented counter semantics, `executions` active
-pipelines, abort handles, recurring test loops and bound satellites, `pipeline` the step loop, the
+pipelines, abort handles, recurring test loops and owned processes/overlays, `pipeline` the step loop, the
 single launch machinery behind the triggered/recurring paths and the call/context entry points,
 `triggers` the process/window/schedule/resource/system intake, `projector` the read-only
 `DaemonState` snapshot the IPC layer serializes, `state` the log buffer and section persistence,
 `ipc` the request dispatcher and rule writers, `offline` the `--run-rule` fallback, `update` the
 updater display state (`UpdateStatus`), `rule_call` the dispatcher installed by the daemon,
-`activity` the process-wide activity registry, and `tests` the engine suite. The bound-satellite,
-bound-overlay and rule-overlay registries live in the tracker, so one teardown owner is responsible
-for them; `DaemonEngine::trigger(rule, origin, context_name, pid, extra_ctx)` is the only pipeline
+`activity` the process-wide activity registry, and `tests` the engine suite. The owned-resource
+registry lives in the tracker, so one teardown owner is responsible for it: process teardown targets
+the PID captured at spawn, overlay teardown hides only the recorded show generation (a detached
+overlay show is recorded there only so a rule stop can hide that exact generation).
+`DaemonEngine::trigger(rule, origin, context_name, pid, extra_ctx)` is the only pipeline
 entry point and every caller states the `ExecutionOrigin` explicitly (there is no string-to-origin
 fallback). Condition evaluation and process/window/device matching live in `src/daemon/conditions.rs`,
 which the action handlers call directly; `Rule::visit_actions` in the model is the one read-only
@@ -505,31 +508,47 @@ the counter through one path. Readers (wait polling, check, if/else and pre-cond
 lock directly and never touch the engine mutex, so a condition cannot freeze the daemon or deadlock
 against the pipeline it observes.
 
-`active` is the number of pipelines of the rule that run right now. That is the same state
-`rule_control stop` acts on: a rule whose pipeline ended but whose companion process or overlay is
-still alive reports stopped. Waits poll the snapshot every 100 ms like the other wait conditions;
+`active` is the number of pipelines of the rule that run right now, and `owned` counts the live
+processes and overlay shows a run of the rule still owns. A rule whose pipeline ended but still owns
+a resource reports running to the rule list, `rule_running` and `rule_stopped` alike; a stopped rule
+(`rule_control stop`, user stop, sync removal) releases both. Waits poll the snapshot every 100 ms
+like the other wait conditions;
 `RuleStarted` additionally remembers the rule's monotonic `starts` counter when the wait begins, so
 a start that already finished between two polls still satisfies it. An empty target never satisfies
 a rule-activity condition; a target that does not exist is simply never running, and the CLI
 validator warns about both.
 
-## Companion mode (bound satellites)
+## Resource lifetimes (owned processes and overlays)
 
-`Action::StartProcess { close_on_exit: true }` attaches a companion process to a primary
-application: the satellite starts with it and terminates when it exits. `Action::Overlay` has the
-same `close_on_exit` flag for HUDs. While the primary application runs, the binding is tracked in
-the daemon's active execution state so the rule list and analytics show it. Only a run the user
-starts directly (Run/Test Run, an overlay click target or `--run-rule`) force-terminates the rule's
-bound satellites at start and after the pipeline finishes; scheduled, webhook, hotkey and
-system-event runs leave them tracked while the primary process keeps running.
+`start_process` and `overlay` actions carry a `ResourceLifetime`: `detach` (the default) leaves the
+process or overlay alone, `until_run_end` releases it when the run that created it ends (finish,
+failure, abort or stop), and `until_trigger_process_exit` is the companion lifetime that keeps it
+alive until the triggering process exits. Only a process-start run with a live pid can use the host
+lifetime; validation rejects it on exit-triggered and manual rules, and a rule call or test run
+without a primary process downgrades it to `until_run_end` rather than leaking the resource.
+
+The engine captures the spawned PID (normal spawn, and `Start-Process -PassThru` for an elevated
+launch) and the generation of the overlay show it put on screen. Teardown kills that exact PID tree
+with `taskkill /T` and hides the overlay only while the recorded generation is still the active show,
+so a later show by another run is never hidden by the first run's cleanup. Every overlay show is
+recorded for rule-stop cleanup, including a `detach` show; only a non-detached resource counts as a
+live resource for rule activity and the GUI. `until_run_end` teardown runs on every pipeline ending; a
+user-run (Run/Test Run, overlay click target, `--run-rule`) first releases the rule's previous
+non-detached resources, and a stop/abort/removal releases all of them, detached shows included. The
+process loop prunes resources whose process already exited or whose overlay show is gone, and updates
+the activity counter, so a stale companion cannot keep a rule looking running.
 
 Process-triggered rules choose which lifecycle event fires their pipeline with `event`: `started`
 (the default) or `exited`. Both choices run the same ordered pipeline through the ordinary trigger
 path, so pre-conditions, cooldown, quota and analytics apply to either one; a start-triggered run
-can bind `close_on_exit` satellites, an exit-triggered run cannot because its primary process is
+can own a host-lifetime resource, an exit-triggered run cannot because its primary process is
 already gone. `single_instance` does not prevent more copies of the application from starting; it
 makes the start pipeline fire only for the first matching instance and the exit pipeline fire only
-when the last tracked instance has exited, and it defers bound-satellite cleanup until then.
+when the last tracked instance has exited, and it defers host-lifetime cleanup until then. A rule
+call or a test run without a primary process is not manual, but it has no host to wait for, so its
+host-lifetime resources are released with the run. An overlay definition's own `close_with_target`
+remains a separate, name-based option for a standalone overlay window; it is not part of the rule
+resource lifetime and does not affect processes started by an action.
 
 ## Input simulation and Macro Studio
 

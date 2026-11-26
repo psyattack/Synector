@@ -199,9 +199,14 @@ pub(super) fn format_single_condition_tooltip(cond: &RuleCondition, idx: usize, 
 
 pub(super) fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -> String {
     match action {
-        Action::StartProcess { file_path, .. } => {
+        Action::StartProcess { file_path, lifetime, .. } => {
             let fname = std::path::Path::new(file_path).file_name().unwrap_or_default().to_string_lossy();
-            format!("{} {}", loc.summary_action_launch, fname)
+            format!(
+                "{} {}{}",
+                loc.summary_action_launch,
+                fname,
+                lifetime_suffix(*lifetime, loc)
+            )
         }
         Action::KillProcess { process_name, .. } => {
             format!("{} {}", loc.summary_action_kill, process_name)
@@ -407,19 +412,32 @@ pub(super) fn format_action_brief(action: &Action, loc: &crate::i18n::Strings) -
                 crate::models::FileSystemOperation::AppendText => loc.rules_brief_fs_append.replace("{}", &fname),
             }
         }
-        Action::Overlay { operation, .. } => {
-            match operation {
+        Action::Overlay { operation, lifetime, .. } => {
+            let brief = match operation {
                 crate::models::OverlayOperation::Toggle => loc.rules_brief_overlay_toggle.to_string(),
                 crate::models::OverlayOperation::Flash => loc.rules_brief_overlay_flash.to_string(),
                 crate::models::OverlayOperation::Show => loc.rules_brief_overlay_show.to_string(),
                 crate::models::OverlayOperation::Hide => loc.rules_brief_overlay_hide.to_string(),
                 crate::models::OverlayOperation::SetText => loc.rules_brief_overlay_set_text.to_string(),
-            }
+            };
+            format!("{brief}{}", lifetime_suffix(*lifetime, loc))
         }
         Action::RuleControl { operation, .. } => match operation {
             crate::models::RuleControlOperation::Call => loc.rules_brief_rule_call.to_string(),
             crate::models::RuleControlOperation::Stop => loc.rules_brief_rule_stop.to_string(),
         },
+    }
+}
+
+/// Suffix that marks a host-bound resource in the action chip, next to the action brief.
+fn lifetime_suffix(
+    lifetime: crate::models::ResourceLifetime,
+    loc: &crate::i18n::Strings,
+) -> &'static str {
+    if lifetime == crate::models::ResourceLifetime::UntilTriggerProcessExit {
+        loc.rules_summary_bound
+    } else {
+        ""
     }
 }
 
@@ -999,5 +1017,47 @@ mod tests {
             )
         );
         assert_ne!(res_en, format_single_condition_brief(&resource, ru));
+    }
+
+    #[test]
+    fn test_action_brief_marks_host_bound_resources() {
+        use crate::models::{OverlayOperation, ResourceLifetime};
+
+        let loc = i18n::get(Language::English);
+        let start = |lifetime| Action::StartProcess {
+            file_path: "C:\\Tools\\HUD.exe".into(),
+            arguments: String::new(),
+            working_directory: None,
+            run_as_admin: false,
+            only_if_not_running: false,
+            run_hidden: false,
+            lifetime,
+        };
+        let detached = format!("{} HUD.exe", loc.summary_action_launch);
+        assert_eq!(
+            format_action_brief(&start(ResourceLifetime::Detach), loc),
+            detached
+        );
+        assert_eq!(
+            format_action_brief(&start(ResourceLifetime::UntilTriggerProcessExit), loc),
+            format!("{detached}{}", loc.rules_summary_bound)
+        );
+
+        let overlay = |lifetime| Action::Overlay {
+            overlay_id: "overlay_crosshair".into(),
+            custom_overlay: None,
+            operation: OverlayOperation::Show,
+            override_text: None,
+            duration_ms: None,
+            lifetime,
+        };
+        assert!(
+            format_action_brief(&overlay(ResourceLifetime::UntilTriggerProcessExit), loc)
+                .ends_with(loc.rules_summary_bound)
+        );
+        assert!(
+            !format_action_brief(&overlay(ResourceLifetime::Detach), loc)
+                .contains(loc.rules_summary_bound)
+        );
     }
 }

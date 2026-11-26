@@ -98,9 +98,6 @@ impl DaemonEngine {
             IpcRequest::DeleteRule(id) => {
                 // The rule is going away: aborting (not pausing) is the only thing left to do.
                 self.abort_rule_executions(&id);
-                if let Some(rule) = self.config.rules.iter().find(|r| r.id == id) {
-                    Self::hide_rule_overlays(rule);
-                }
                 self.config.rules.retain(|r| r.id != id);
                 self.rule_last_triggered.remove(&id);
                 self.scheduler.forget_rule(&id);
@@ -430,6 +427,38 @@ impl DaemonEngine {
                 self.log("INFO", "TEST", "Step test executed successfully");
                 Ok(())
             }
+            Ok(crate::daemon::actions::ActionOutcome::ContinueOwned { owned, .. }) => {
+                // A step test is a one-step run: release whatever the step started instead of
+                // registering it with a pipeline that does not exist.
+                for resource in owned {
+                    match resource {
+                        crate::daemon::actions::SpawnedResource::Process { pid, .. } => {
+                            tokio::spawn(async move {
+                                let _ = crate::daemon::actions::kill_process_tree_by_pid(pid)
+                                    .await;
+                            });
+                        }
+                        crate::daemon::actions::SpawnedResource::Overlay {
+                            lifetime: crate::models::ResourceLifetime::Detach,
+                            ..
+                        } => {
+                            // A detached overlay stays on screen, exactly like a pipeline run.
+                        }
+                        crate::daemon::actions::SpawnedResource::Overlay {
+                            overlay_id,
+                            generation,
+                            ..
+                        } => {
+                            crate::daemon::overlay_manager::hide_overlay_if_generation(
+                                &overlay_id,
+                                generation,
+                            );
+                        }
+                    }
+                }
+                self.log("INFO", "TEST", "Step test executed successfully");
+                Ok(())
+            }
             Ok(crate::daemon::actions::ActionOutcome::AbortPipeline { reason }) => {
                 self.log("INFO", "TEST", &format!("Pipeline check halted: {reason}"));
                 Ok(())
@@ -618,7 +647,7 @@ impl DaemonEngine {
         }
         // Stop what the replaced set still has running. A surviving rule may get a new pipeline
         // under its running executions, and a vanished rule has nothing left to own its pipelines
-        // or bound companions.
+        // or owned resources.
         let incoming_ids: HashSet<&str> = synced.iter().map(|r| r.id.as_str()).collect();
         let removed: Vec<String> = self.config.rules.iter()
             .filter(|r| !incoming_ids.contains(r.id.as_str()))
