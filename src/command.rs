@@ -1,8 +1,8 @@
 //! One bounded subprocess runner and one outcome type for short-lived helper processes.
 //!
-//! Action helpers, the Lua `syn.run_cmd` bridge and the updater's external tools all spawn a
-//! helper program with the same requirements: a wall-clock deadline, captured output that cannot
-//! grow the daemon's heap without bound, and a result the caller can turn into its own message.
+//! Action helpers and the Lua `syn.run_cmd` bridge spawn a helper program with the same
+//! requirements: a wall-clock deadline, captured output that cannot grow the daemon's heap
+//! without bound, and a result the caller can turn into its own message.
 //! The runner keeps draining a pipe after the capture cap so the child never blocks on a full
 //! buffer, kills the child (and optionally its process tree) at the deadline, and reports
 //! spawn/wait failures separately so each caller keeps its exact error text.
@@ -25,11 +25,6 @@ pub(crate) const MAX_CAPTURED_OUTPUT: usize = 64 * 1024;
 
 /// Wall-clock ceiling for short system utilities (taskkill, powercfg, netsh).
 pub(crate) const UTILITY_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Wall-clock ceiling for the updater's external extraction tools (`tar.exe`,
-/// `powershell.exe`). These helpers used to run unbounded; a stuck tool must not wedge the
-/// daemon's update task.
-pub(crate) const TOOL_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Per-execution kill switch for a script's whole process tree.
 ///

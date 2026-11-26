@@ -24,7 +24,7 @@ pub(super) fn system32_tool(name: &str) -> Result<PathBuf, String> {
 
 /// Escapes a value for a PowerShell single-quoted literal by doubling every apostrophe.
 ///
-/// Every path interpolated into the extraction and restart scripts goes through this helper: an
+/// Every path interpolated into the restart script goes through this helper: an
 /// apostrophe inside a single-quoted PowerShell string would otherwise end the literal, breaking
 /// the script or injecting commands into an elevated process.
 pub(super) fn escape_ps_literal(value: &str) -> String {

@@ -107,7 +107,7 @@ records the `--gui-exe` path and `shutdown` owns the signal plus the ordered seq
 | `src/daemon/` services | Process watcher, hotkeys, system events, telemetry (`src/daemon/telemetry/`), the rolling analytics collector (`src/daemon/analytics.rs`), tray (`src/daemon/tray/`), file watcher, Lua runner, webhook server, named-pipe server, Discord RPC |
 | `src/app/` | Process entry and dispatch: fixed stage order, the shared argv vocabulary (`src/app/args.rs`; spellings in `src/arg_spellings.rs`), daemon spawn, elevation, console reattachment, update-file cleanup, `--status` and `--run-rule` |
 | `src/win_args.rs` | One Windows command-line helper set: UTF-16-equivalent argument splitting/quoting/joining, PowerShell single-quoted literal escaping and the no-window spawn flag shared by the daemon, the app tier, updater, autorun and shortcuts |
-| `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `syn.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording. The updater's external extraction tools run through the same bounded runner (600 s ceiling) |
+| `src/command.rs` | One bounded subprocess runner and one `CommandOutcome`: spawn/wait errors keep the action wording, output is capped at 64 KiB per stream with truncation flags, a timeout kills the child (optionally its process tree, used by the Lua `syn.run_cmd` bridge), and `ensure_success` centralises the utility timeout/exit-code wording |
 | `src/win_com.rs` | One COM apartment guard (MTA or STA, infallible or fallible) shared by action audio, telemetry audio and shortcut creation; it uninitialises only when `CoInitializeEx` returned `S_OK`, so a thread another component already initialised is never decremented |
 | `src/daemon/engine/rule_call.rs` | Rule-to-rule control channel between `Action::RuleControl` and the engine dispatcher; the historical `crate::daemon::rule_call` module path is kept as a re-export |
 | `src/daemon/engine/activity.rs` | Process-wide running-pipeline snapshot behind rule-activity conditions; the historical `crate::daemon::rule_activity` module path is kept as a re-export |
@@ -460,8 +460,7 @@ tracked variant: each execution owns a Windows Job Object, so the action's deadl
 manual step test (`StopTestStep`) terminate every descendant whatever its name or executable. A
 process that leaves the tree by design (UAC elevation through AppInfo, Task Scheduler) is outside
 the job, a failed job assignment falls back to `taskkill /T`, and the job is not kill-on-close, so a
-script that starts a background program and exits leaves that program running as before. The
-updater's external extraction tools run through the same runner with a 600 s ceiling. The Windows
+script that starts a background program and exits leaves that program running as before. The Windows
 argument quoter, PowerShell literal escaper and no-window spawn flag live in `src/win_args.rs`; the
 COM apartment guard lives in `src/win_com.rs`. The budgets are 300 s for PowerShell/Batch scripts,
 600 s for archive helpers and 120 s for an elevation prompt; a spawn failure, non-zero exit or

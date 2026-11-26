@@ -262,12 +262,18 @@ mod tests {
 
     /// Writes a zip archive with the given `(file name, contents)` entries.
     fn write_zip(zip_path: &Path, files: &[(&str, &[u8])]) {
+        write_zip_with_options(zip_path, files, zip::write::SimpleFileOptions::default());
+    }
+
+    fn write_zip_with_options(
+        zip_path: &Path,
+        files: &[(&str, &[u8])],
+        options: zip::write::SimpleFileOptions,
+    ) {
         use std::io::Write as _;
         let mut writer = zip::ZipWriter::new(std::fs::File::create(zip_path).unwrap());
         for (name, contents) in files {
-            writer
-                .start_file(*name, zip::write::SimpleFileOptions::default())
-                .unwrap();
+            writer.start_file(*name, options).unwrap();
             writer.write_all(contents).unwrap();
         }
         writer.finish().unwrap();
@@ -306,6 +312,148 @@ mod tests {
             .expect_err("an archive without Synector.exe must be rejected");
         assert!(err.contains("Synector.exe"), "unexpected error: {err}");
         assert!(!extracted_target.exists(), "an arbitrary .exe must never be staged");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_synector_exe_from_subfolder() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_nested_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("nested.zip");
+        write_zip(&zip_path, &[("folder/Synector.exe", b"MZ_NESTED_EXECUTABLE")]);
+
+        let target = temp_dir.join("Nested.exe");
+        extract_exe_from_zip(&zip_path, &target).expect("a nested Synector.exe must be accepted");
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZ_NESTED_EXECUTABLE");
+        assert!(!target.with_extension("extracting").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_accepts_lowercase_synector_exe() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_lower_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("lowercase.zip");
+        write_zip(&zip_path, &[("synector.exe", b"MZ_LOWERCASE_EXECUTABLE")]);
+
+        let target = temp_dir.join("Lowercase.exe");
+        extract_exe_from_zip(&zip_path, &target).expect("the file name match must be case-insensitive");
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZ_LOWERCASE_EXECUTABLE");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_replaces_a_stale_staged_executable() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_replace_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("fresh.zip");
+        write_zip(&zip_path, &[("Synector.exe", b"MZ_FRESH_EXECUTABLE")]);
+
+        let target = temp_dir.join("Staged.exe");
+        std::fs::write(&target, b"STALE_PENDING_EXECUTABLE").unwrap();
+        extract_exe_from_zip(&zip_path, &target)
+            .expect("a stale staged executable must be replaced");
+        assert_eq!(std::fs::read(&target).unwrap(), b"MZ_FRESH_EXECUTABLE");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_rejects_duplicate_synector_exe() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_dup_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("duplicate.zip");
+        write_zip(
+            &zip_path,
+            &[("Synector.exe", b"MZ_FIRST"), ("folder/synector.exe", b"MZ_SECOND")],
+        );
+
+        let target = temp_dir.join("Duplicate.exe");
+        let err = extract_exe_from_zip(&zip_path, &target)
+            .expect_err("an archive with two Synector.exe entries must be rejected");
+        assert!(err.contains("more than one Synector.exe"), "unexpected error: {err}");
+        assert!(!target.exists(), "an ambiguous archive must not stage anything");
+        assert!(!target.with_extension("extracting").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_rejects_unsafe_entry_path() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_unsafe_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("unsafe.zip");
+        write_zip(&zip_path, &[("../Synector.exe", b"MZ_ESCAPE")]);
+
+        let target = temp_dir.join("Unsafe.exe");
+        let err = extract_exe_from_zip(&zip_path, &target)
+            .expect_err("an archive entry outside the archive root must be rejected");
+        assert!(err.contains("unsafe path"), "unexpected error: {err}");
+        assert!(!target.exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_rejects_executable_above_limit() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_limit_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("too_large.zip");
+        write_zip(&zip_path, &[("Synector.exe", b"MZ_FAR_TOO_LARGE_FOR_THE_LIMIT")]);
+
+        let target = temp_dir.join("TooLarge.exe");
+        let err = super::portable::extract_exe_with_limit(&zip_path, &target, 16)
+            .expect_err("an executable above the limit must be rejected");
+        assert!(err.contains("limit is 16"), "unexpected error: {err}");
+        assert!(!target.exists());
+        assert!(!target.with_extension("extracting").exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_extract_rejects_corrupted_entry_checksum() {
+        let temp_dir = std::env::temp_dir().join(format!("synector_test_zip_crc_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = temp_dir.join("corrupt.zip");
+        let payload = b"MZ_CORRUPTED_CRC_PAYLOAD_0123456789";
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        write_zip_with_options(&zip_path, &[("Synector.exe", payload)], stored);
+
+        // Corrupt one payload byte while keeping the sizes intact, so the reader reaches EOF and
+        // the checksum check is what fails.
+        let mut bytes = std::fs::read(&zip_path).unwrap();
+        let position = bytes
+            .windows(payload.len())
+            .position(|window| window == payload)
+            .expect("the stored payload must be present in the archive");
+        bytes[position + 4] ^= 0xff;
+        std::fs::write(&zip_path, bytes).unwrap();
+
+        let target = temp_dir.join("Corrupted.exe");
+        let err = extract_exe_from_zip(&zip_path, &target)
+            .expect_err("an entry with a broken checksum must be rejected");
+        assert!(!err.is_empty());
+        assert!(!target.exists());
+        assert!(!target.with_extension("extracting").exists());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

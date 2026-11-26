@@ -1,8 +1,13 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::command::{run_command_bounded, TOOL_TIMEOUT};
 use super::install_mode::{is_masked_daemon_exe, masked_daemon_dir};
-use super::util::{escape_ps_literal, system32_tool};
+
+/// Ceiling for the executable extracted from a portable update archive.
+///
+/// The release executable is about 30 MiB; this limit only has to bound a corrupt or malicious
+/// archive, not to track the real binary size.
+const MAX_PORTABLE_EXE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Executable of the running Synector GUI process, if one exists.
 #[cfg(windows)]
@@ -80,108 +85,123 @@ pub(super) fn resolve_portable_target_from(
     running_gui()
 }
 
-/// Recursively locates the exact `Synector.exe` entry in an extracted archive. Any other
-/// executable is ignored: the archive is downloaded content, and picking an arbitrary .exe would
-/// install and start it as Synector.
-fn find_synector_exe(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.eq_ignore_ascii_case("Synector.exe") {
-                return Some(path);
-            }
-        } else if path.is_dir() {
-            if let Some(found) = find_synector_exe(&path) {
-                return Some(found);
-            }
-        }
-    }
-    None
+/// Extracts the main executable from a zip archive into `target_exe_path`.
+///
+/// Only the `Synector.exe` entry is read: the archive is downloaded content, and extracting it
+/// wholesale would write names chosen by a remote file into the installation directory. The
+/// executable may sit in a subfolder or use any letter case, but an ambiguous archive (two
+/// candidates), an unsafe path or a suspicious size is refused instead of picked arbitrarily.
+pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(), String> {
+    extract_exe_with_limit(zip_path, target_exe_path, MAX_PORTABLE_EXE_BYTES)
 }
 
-/// Unpacks a zip archive into a temporary folder and extracts the main executable into `target_exe_path`.
-pub fn extract_exe_from_zip(zip_path: &Path, target_exe_path: &Path) -> Result<(), String> {
-    let extract_dir = zip_path.with_extension("extracted");
-    if extract_dir.exists() {
-        let _ = std::fs::remove_dir_all(&extract_dir);
-    }
-    std::fs::create_dir_all(&extract_dir)
-        .map_err(|e| format!("Failed to create temporary extraction directory {:?}: {e}", extract_dir))?;
+/// The testable core of [`extract_exe_from_zip`] with an explicit size ceiling.
+pub(super) fn extract_exe_with_limit(
+    zip_path: &Path,
+    target: &Path,
+    limit: u64,
+) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path)
+        .map_err(|e| format!("Failed to open zip archive {:?}: {e}", zip_path))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| format!("Failed to read zip archive {:?}: {e}", zip_path))?;
 
-    let mut extracted_successfully = false;
-
-    // 1. Try Windows built-in bsdtar (`tar.exe`). System tools are launched by absolute path:
-    // bare names resolve through the executable's directory and the inherited working directory
-    // before System32, which would let a planted binary run with the daemon's rights.
-    #[cfg(windows)]
-    {
-        match system32_tool("tar.exe") {
-            Ok(tar) => {
-                let mut cmd = std::process::Command::new(tar);
-                cmd.args(["-xf", &zip_path.to_string_lossy(), "-C", &extract_dir.to_string_lossy()]);
-                crate::win_args::apply_no_window(&mut cmd);
-                if let Ok(outcome) = run_command_bounded(cmd, TOOL_TIMEOUT) {
-                    if outcome.succeeded() {
-                        extracted_successfully = true;
-                    }
-                }
-            }
-            Err(err) => crate::logging::warn("UPDATER", &err),
+    let mut found = None;
+    for index in 0..archive.len() {
+        // Metadata only: nothing is decompressed and no archive-supplied path is used on disk.
+        let entry = archive
+            .by_index_data(index)
+            .map_err(|e| format!("Failed to read zip entry #{index}: {e}"))?;
+        if entry.is_dir() {
+            continue;
         }
-    }
-
-    // 2. Fallback to PowerShell Expand-Archive if tar is unavailable
-    #[cfg(windows)]
-    if !extracted_successfully {
-        match system32_tool("powershell.exe") {
-            Ok(powershell) => {
-                let zip_esc = escape_ps_literal(&zip_path.to_string_lossy());
-                let dir_esc = escape_ps_literal(&extract_dir.to_string_lossy());
-                let ps_script = format!(
-                    "Expand-Archive -LiteralPath '{zip_esc}' -DestinationPath '{dir_esc}' -Force"
-                );
-                let mut cmd = std::process::Command::new(powershell);
-                cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
-                crate::win_args::apply_no_window(&mut cmd);
-                if let Ok(outcome) = run_command_bounded(cmd, TOOL_TIMEOUT) {
-                    if outcome.succeeded() {
-                        extracted_successfully = true;
-                    }
-                }
-            }
-            Err(err) => crate::logging::warn("UPDATER", &err),
+        let name = entry
+            .name()
+            .map_err(|e| format!("Failed to read the name of zip entry #{index}: {e}"))?
+            .replace('\\', "/");
+        let base = name.rsplit('/').next().unwrap_or_default();
+        if !base.eq_ignore_ascii_case("Synector.exe") {
+            continue;
         }
+        if name.starts_with('/') || name.split('/').any(|part| part == "..") {
+            return Err(format!(
+                "The downloaded zip archive contains Synector.exe at an unsafe path: {name:?}"
+            ));
+        }
+        if found.is_some() {
+            return Err("The downloaded zip archive contains more than one Synector.exe".to_string());
+        }
+        let size = entry.size();
+        if size == 0 || size > limit {
+            return Err(format!(
+                "The Synector.exe in the downloaded zip archive has an unexpected size ({size} bytes; the limit is {limit})"
+            ));
+        }
+        found = Some((index, size));
     }
 
-    if !extracted_successfully {
-        let _ = std::fs::remove_dir_all(&extract_dir);
+    let Some((index, declared_size)) = found else {
+        return Err("The downloaded zip archive does not contain Synector.exe".to_string());
+    };
+
+    let mut entry = archive
+        .by_index(index)
+        .map_err(|e| format!("Failed to open Synector.exe in the zip archive: {e}"))?;
+
+    let tmp = target.with_extension("extracting");
+    let _ = std::fs::remove_file(&tmp);
+    let mut out = std::fs::File::create(&tmp)
+        .map_err(|e| format!("Failed to create temporary file {:?}: {e}", tmp))?;
+
+    // Read one byte past the limit too, so an entry whose header lies about its size is caught.
+    // Reading to EOF also makes the zip reader verify the entry's CRC32.
+    let copied = match std::io::copy(&mut entry.by_ref().take(limit + 1), &mut out) {
+        Ok(copied) => copied,
+        Err(e) => {
+            drop(out);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Failed to extract Synector.exe to {:?}: {e}", tmp));
+        }
+    };
+    drop(out);
+
+    if copied > limit {
+        let _ = std::fs::remove_file(&tmp);
         return Err(format!(
-            "Failed to unpack zip archive {:?} (tar.exe and powershell.exe extraction both failed)",
-            zip_path
+            "The Synector.exe in the downloaded zip archive is larger than the {limit}-byte limit"
+        ));
+    }
+    if copied != declared_size {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "The Synector.exe in the downloaded zip archive has an inconsistent size ({declared_size} declared, {copied} read)"
         ));
     }
 
-    // Recursively locate the exact `Synector.exe` entry inside extract_dir.
-    let found_exe = match find_synector_exe(&extract_dir) {
-        Some(p) => p,
-        None => {
-            let _ = std::fs::remove_dir_all(&extract_dir);
-            return Err("The downloaded zip archive does not contain Synector.exe".to_string());
+    let mut header = [0u8; 2];
+    let mut extracted = match std::fs::File::open(&tmp) {
+        Ok(file) => file,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("Failed to verify the extracted executable {:?}: {e}", tmp));
         }
     };
-
-    if target_exe_path.exists() {
-        let _ = std::fs::remove_file(target_exe_path);
+    let header_result = extracted.read_exact(&mut header);
+    drop(extracted);
+    if header_result.is_err() || &header != b"MZ" {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(
+            "The downloaded zip archive entry Synector.exe is not a Windows executable".to_string(),
+        );
     }
 
-    if let Err(e) = std::fs::copy(&found_exe, target_exe_path) {
-        let _ = std::fs::remove_dir_all(&extract_dir);
-        return Err(format!("Failed to copy extracted executable to {:?}: {e}", target_exe_path));
+    if let Err(e) = std::fs::rename(&tmp, target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!(
+            "Failed to move the extracted executable to {:?}: {e}",
+            target
+        ));
     }
-
-    let _ = std::fs::remove_dir_all(&extract_dir);
     Ok(())
 }
 

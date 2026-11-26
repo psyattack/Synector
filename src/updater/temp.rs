@@ -67,8 +67,17 @@ pub fn clean_temp_update_files() {
                 &format!("Removed leftover update file {}", pending.display()),
             );
         }
-        // Extraction always happens under the update temp directory (`<zip>.extracted`), never
-        // next to the executable, so there is no exe-adjacent extraction directory to remove.
+        let extracting = exe_path.with_extension("extracting");
+        if extracting.exists() {
+            let _ = std::fs::remove_file(&extracting);
+            crate::logging::debug(
+                "UPDATER",
+                &format!("Removed leftover update file {}", extracting.display()),
+            );
+        }
+        // A portable update stages `<exe>.pending` and its in-progress `<exe>.extracting` sibling
+        // next to the executable; both are removed above. The archive is streamed straight into
+        // that file, so there is no extraction directory to clean up.
     }
 
     let now = std::time::SystemTime::now();
