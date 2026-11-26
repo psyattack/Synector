@@ -1,5 +1,38 @@
 # Changelog
 
+## [3.3.0](https://github.com/psyattack/Synector/compare/v3.2.0...v3.3.0) - 2026-11-26
+
+### Added
+- Process and Overlay Lifetimes: a Start Process or Overlay step now picks how long the tool it starts lives. Leave running (the default) keeps it after the rule finishes, Stop with the run closes it whenever that run ends, fails or is stopped, and Stop with the triggering process keeps it until the app that triggered the rule exits (offered on On Process Start rules; a rule call or test run without a process stops with the run instead). The Lifetime selector replaces the old Auto-close checkbox, and a step bound to the triggering app is marked (BOUND) right on its chip in the rules list.
+- Stoppable Step Tests: the Test button of a step now shows the same running highlight a live execution uses and turns into Stop, so a script or wait that takes minutes can be aborted together with every process it started instead of leaving the editor waiting. Test outcomes are written to the activity log; the PASS and FAIL badges are gone.
+- Script Editor History: the expanded script dialog keeps its own text history, so while it is open Ctrl+Z and Ctrl+Y step through the script's edits and leave the rule draft's undo untouched.
+
+### Changed
+- Rule Format (breaking): `close_on_exit` on `start_process` and `overlay` is removed. A rule, share code or applied file that still carries it is rejected, so that rule is skipped with its id in the log. Rebuild the step with `lifetime` set to `detach`, `until_run_end` or `until_trigger_process_exit`.
+- Rule Activity: a rule that still owns a live process or overlay from a finished run counts as running for `rule_running`, `rule_started`/`rule_stopped` and the rules list. Stopping a rule releases the processes and overlay shows that rule made, and a newer show started elsewhere is left alone.
+
+### Fixed
+- Analytics: the activity stream keeps the mouse wheel while the pointer is over it, so reaching the end of the log no longer scrolls the whole page towards the dashboard. A stream whose rows fit still lets the page scroll.
+- Rules List: the running step chip no longer draws an arrow; the accent fill, bold label and CURRENT STEP tooltip still mark it.
+
+<details><summary>Detailed Changelog</summary>
+
+### Added
+- **gui:** add script modal undo history and move step lifetimes (by @psyattack in 3661c83)
+- **engine:** replace companion flags with resource lifetimes (by @psyattack in b25e53f)
+- **engine:** make manual step tests stoppable with tree kill (by @psyattack in d350170)
+
+### Changed
+- trim redundant and outdated documentation (by @psyattack in b4e9cf6)
+- **updater:** extract the portable exe without external tools (by @psyattack in 6687632)
+
+### Fixed
+- **gui:** trap the wheel inside the activity log stream (by @psyattack in 1ebf82c)
+- **gui:** remove the arrow from the running step chip (by @psyattack in e61525c)
+
+</details>
+
+
 ## [3.2.0](https://github.com/psyattack/Synector/compare/v3.1.1...v3.2.0) - 2026-11-25
 
 ### Added
